@@ -369,6 +369,15 @@ export class ManagerClient {
     return this.post('/library/skills/install', { skill, agent }, signal);
   }
 
+  /**
+   * Create a new library skill (agentskills.io SKILL.md folder). Admin-gated on
+   * the manager. Returns the created catalog entry; throws ManagerError on a
+   * validation failure or name conflict (409 already_exists).
+   */
+  async createSkill(input: CreateSkillInput, signal?: AbortSignal): Promise<LibrarySkillEntry> {
+    return this.post('/library/skills/create', input, signal);
+  }
+
   /** Attach external MCP servers to an agent. Takes effect on next rebuild. */
   async setAgentMcp(agentId: string, servers: McpServerSpec[], signal?: AbortSignal): Promise<SetMcpResult> {
     return this.post(`/agents/${encodeURIComponent(agentId)}/mcp`, { servers }, signal);
@@ -491,6 +500,12 @@ export interface LibrarySkillEntry {
   name: string;
   hasSkillMd?: boolean;
   source_path?: string;
+  /** SKILL.md frontmatter description (catalog display). */
+  description?: string | null;
+  /** Tags parsed from frontmatter metadata.tags (catalog filtering). */
+  tags?: string[];
+  /** SKILL.md frontmatter license. */
+  license?: string | null;
 }
 
 export interface LibraryPluginEntry {
@@ -499,6 +514,25 @@ export interface LibraryPluginEntry {
   version?: string | null;
   description?: string | null;
   source_path?: string;
+  /** Manifest author name, when present. */
+  author?: string | null;
+  /** Origin: repository/homepage/marketplace URL, or "bundled (local)". */
+  source?: string | null;
+}
+
+/** Input for createSkill — mirrors the agentskills.io SKILL.md frontmatter. */
+export interface CreateSkillInput {
+  name: string;
+  description: string;
+  license?: string;
+  compatibility?: string;
+  /** Space-separated tool allow-list → frontmatter `allowed-tools`. */
+  allowedTools?: string;
+  /** Arbitrary string→string map → frontmatter `metadata` (tags, category…). */
+  metadata?: Record<string, string>;
+  /** Markdown instructions (body after the frontmatter). */
+  body?: string;
+  overwrite?: boolean;
 }
 
 /** MCP server transport — only the serializable kinds cross the spawn boundary. */

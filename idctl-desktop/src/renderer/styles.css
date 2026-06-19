@@ -154,6 +154,18 @@ body {
 button.chip { cursor: pointer; font: inherit; font-size: 11px; }
 button.chip:hover { border-color: var(--muted); }
 button.chip.on { background: var(--accent); color: #04121c; border-color: var(--accent); }
+button.chip.tag { color: var(--muted); }
+button.chip.tag.on { color: #04121c; }
+
+/* Skill catalog (Capabilities → Skills) */
+.catalog-search { width: 220px; max-width: 100%; }
+.create-skill { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 8px 0; background: var(--bg-2); }
+.create-skill textarea { background: var(--bg-3); border: 1px solid var(--line); border-radius: 6px; color: var(--text); padding: 6px 8px; font: inherit; resize: vertical; }
+.skill-catalog { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.skill-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--bg-2); }
+.skill-card-head { display: flex; align-items: center; gap: 8px; }
+.skill-desc { margin: 6px 0 0; }
+.skill-tags { margin-top: 8px; }
 
 /* Cross-team relay mode picker */
 .relay-modes { display: flex; flex-wrap: wrap; gap: 8px; }

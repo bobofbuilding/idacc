@@ -12,7 +12,7 @@ import { SCOPE_PRESETS, TTL_PRESETS } from '../../../idctl/src/keys/types.ts';
 import type { AgentAccount, SessionKey } from '../../../idctl/src/keys/types.ts';
 import { kindNeedsKey, type ProviderProfile, type McpServerProfile } from '../../../idctl/src/settings/schema.ts';
 import { buildRuntimeCatalog } from '../../../idctl/src/settings/runtimeCatalog.ts';
-import type { McpServerSpec } from '../../../idctl/src/api/client.ts';
+import type { McpServerSpec, CreateSkillInput } from '../../../idctl/src/api/client.ts';
 
 const MGR_DEFAULT = 'http://127.0.0.1:4100';
 let managerUrl = localStorage.getItem('idctl.managerUrl') || MGR_DEFAULT;
@@ -125,6 +125,7 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   librarySkills: () => client.librarySkills(),
   libraryPlugins: () => client.libraryPlugins(),
   installSkill: (skill: string, agent: string) => client.installSkill(String(skill), String(agent)),
+  createSkill: (input: CreateSkillInput) => client.createSkill(input),
   setAgentMcp: (agentId: string, servers: McpServerSpec[]) => client.setAgentMcp(String(agentId), servers ?? []),
   rebuildAgent: (agent: string) => client.remote(`/agent ${agent} rebuild`),
   'mcp:list': async () => lsGet<McpServerProfile[]>('idctl.mcpServers', []),

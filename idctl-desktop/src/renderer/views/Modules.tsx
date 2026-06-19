@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { call, type FleetStore } from '../store.ts';
-import type { LibrarySkillEntry, LibraryPluginEntry, McpServerSpec, SetMcpResult } from '../../../../idctl/src/api/client.ts';
+import type { LibrarySkillEntry, LibraryPluginEntry, McpServerSpec, SetMcpResult, CreateSkillInput } from '../../../../idctl/src/api/client.ts';
 import {
   type McpServerProfile,
   type McpTransport,
@@ -22,6 +22,21 @@ function TestCell({ r }: { r?: TestResult }) {
   if (r.testing) return <span className="warn-text">testing…</span>;
   if (r.ok) return <span className="ok-text" title={(r.tools ?? []).join(', ')}>✓ {r.tools?.length ?? 0} tools</span>;
   return <span className="status-error" title={r.error}>✕ {(r.error ?? 'failed').slice(0, 44)}</span>;
+}
+
+// agentskills.io `name` rule: 1–64 chars, lowercase alphanumerics + single
+// hyphens, no leading/trailing/consecutive hyphens. (Folder name == skill name.)
+const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+function skillNameError(name: string): string | null {
+  const n = name.trim();
+  if (!n) return 'required';
+  if (n.length > 64) return 'max 64 characters';
+  if (!SKILL_NAME_RE.test(n)) return 'lowercase letters, digits, single hyphens';
+  return null;
+}
+/** Split a comma/space separated tag string into a clean list. */
+function splitTags(s: string): string[] {
+  return s.split(/[,\n]/).map((t) => t.trim()).filter(Boolean);
 }
 
 /** Parse "KEY=value, KEY2=value2" into an object (or undefined if empty). */
@@ -194,6 +209,73 @@ export function Modules({ store }: { store: FleetStore }) {
   async function installSkillAll(skill: string) {
     await applyToTargets(`install ${skill}`, (a) => call('installSkill', skill, a.name));
   }
+
+  // ---- Skills catalog: search + tag filtering ----------------------------
+  const [skillQuery, setSkillQuery] = useState('');
+  const [tagFilter, setTagFilter] = useState<Set<string>>(new Set());
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of skills) for (const t of s.tags ?? []) set.add(t);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [skills]);
+  function toggleTag(t: string) {
+    setTagFilter((prev) => {
+      const n = new Set(prev);
+      n.has(t) ? n.delete(t) : n.add(t);
+      return n;
+    });
+  }
+  const filteredSkills = useMemo(() => {
+    const q = skillQuery.trim().toLowerCase();
+    return skills.filter((s) => {
+      const tags = s.tags ?? [];
+      if (tagFilter.size > 0 && !tags.some((t) => tagFilter.has(t))) return false;
+      if (!q) return true;
+      return (
+        s.name.toLowerCase().includes(q) ||
+        (s.description ?? '').toLowerCase().includes(q) ||
+        tags.some((t) => t.toLowerCase().includes(q))
+      );
+    });
+  }, [skills, skillQuery, tagFilter]);
+
+  // ---- Skills: create a new skill (agentskills.io SKILL.md) ---------------
+  const [showCreate, setShowCreate] = useState(false);
+  const blankSkill = { name: '', description: '', tags: '', category: '', license: '', compatibility: '', tools: '', body: '' };
+  const [ns, setNs] = useState(blankSkill);
+  const nameErr = skillNameError(ns.name);
+  const createValid = !nameErr && ns.description.trim().length > 0 && ns.description.trim().length <= 1024;
+  async function createSkill() {
+    if (!createValid) return;
+    setBusy(true);
+    setNote(`creating skill ${ns.name.trim()}…`);
+    try {
+      const metadata: Record<string, string> = {};
+      const tags = splitTags(ns.tags);
+      if (tags.length) metadata.tags = tags.join(', ');
+      if (ns.category.trim()) metadata.category = ns.category.trim();
+      const input: CreateSkillInput = {
+        name: ns.name.trim(),
+        description: ns.description.trim(),
+        ...(ns.license.trim() && { license: ns.license.trim() }),
+        ...(ns.compatibility.trim() && { compatibility: ns.compatibility.trim() }),
+        ...(ns.tools.trim() && { allowedTools: ns.tools.trim() }),
+        ...(Object.keys(metadata).length && { metadata }),
+        ...(ns.body.trim() && { body: ns.body }),
+      };
+      const entry = await call<LibrarySkillEntry>('createSkill', input);
+      setNote(`created skill ${entry.name} ✓ — now in the catalog`);
+      setNs(blankSkill);
+      setShowCreate(false);
+      await reload();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setNote(`create failed: ${/already_exists/.test(msg) ? 'a skill with that name already exists' : msg}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // # selected agents that have at least one MCP server attached (→ show Rebuild).
   const anyAttached = targetAgents.some((a) => curMcp(a).length > 0);
   const targetLabel = targetCount === 0 ? 'no agents' : targetCount === 1 ? targetAgents[0].name : `${targetCount} agents`;
@@ -379,39 +461,99 @@ export function Modules({ store }: { store: FleetStore }) {
 
       {tab === 'skills' ? (
       <section className="card grow">
-        <h3>Skills — know-how for the agent</h3>
+        <div className="row-actions" style={{ alignItems: 'baseline' }}>
+          <h3 className="grow">Skill catalog — know-how for the agent</h3>
+          <button className="btn primary small" onClick={() => setShowCreate((s) => !s)}>
+            {showCreate ? '− Cancel' : '+ Create skill'}
+          </button>
+        </div>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Markdown instructions installed into an agent — procedures and conventions that teach it <i>how</i> to do things with the tools it already has (e.g. task-discipline, wallet, inter-agent). Installing on <b>{targetLabel}</b> takes effect immediately (applies to every selected agent).
+          Markdown instructions (the <a href="https://agentskills.io" target="_blank" rel="noreferrer">agentskills.io</a> <span className="mono">SKILL.md</span> standard) that teach an agent <i>how</i> to do things with the tools it already has. Browse, filter by tag, then install on <b>{targetLabel}</b> — applies to every selected agent immediately.
         </p>
-        <table className="grid">
-          <thead>
-            <tr><th>name</th><th>installed</th><th></th></tr>
-          </thead>
-          <tbody>
-            {skills.map((s) => {
-              const have = skillCount(s.name);
-              const all = targetCount > 0 && have === targetCount;
-              return (
-                <tr key={s.name}>
-                  <td className="b">{s.name}</td>
-                  <td className={have > 0 ? 'ok-text' : 'muted'}>{have}/{targetCount}</td>
-                  <td className="row-actions">
-                    <button className="btn" disabled={busy || targetCount === 0 || all} onClick={() => void installSkillAll(s.name)}>
-                      {all ? 'Installed' : `Install → ${targetLabel}`}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-            {skills.length === 0 ? (
-              <tr>
-                <td colSpan={3} className="muted center pad">
-                  No library skills found on this manager.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
+
+        {showCreate ? (
+          <div className="create-skill">
+            <div className="kv" style={{ gridTemplateColumns: '130px 1fr', gap: '8px 12px' }}>
+              <span>name *</span>
+              <b>
+                <input style={{ width: 260 }} placeholder="lowercase-with-hyphens" value={ns.name} onChange={(e) => setNs((p) => ({ ...p, name: e.target.value }))} />
+                {ns.name ? (
+                  <span className={`small ${nameErr ? 'status-error' : 'ok-text'}`} style={{ marginLeft: 8 }}>{nameErr ? `✕ ${nameErr}` : '✓'}</span>
+                ) : <span className="muted small" style={{ marginLeft: 8 }}>folder name == skill name · max 64</span>}
+              </b>
+              <span>description *</span>
+              <b>
+                <textarea style={{ width: '100%', minHeight: 46 }} placeholder="What the skill does and WHEN to use it (keywords help the agent pick it). Max 1024 chars." value={ns.description} onChange={(e) => setNs((p) => ({ ...p, description: e.target.value }))} />
+                <span className="muted small">{ns.description.trim().length}/1024</span>
+              </b>
+              <span>tags</span>
+              <b><input style={{ width: '100%' }} placeholder="comma-separated, e.g. documents, pdf, extraction" value={ns.tags} onChange={(e) => setNs((p) => ({ ...p, tags: e.target.value }))} /></b>
+              <span>category</span>
+              <b><input style={{ width: 260 }} placeholder="optional primary category" value={ns.category} onChange={(e) => setNs((p) => ({ ...p, category: e.target.value }))} /></b>
+              <span>license</span>
+              <b><input style={{ width: 260 }} placeholder="optional, e.g. MIT" value={ns.license} onChange={(e) => setNs((p) => ({ ...p, license: e.target.value }))} /></b>
+              <span>compatibility</span>
+              <b><input style={{ width: '100%' }} placeholder="optional env requirements, e.g. Requires git + python 3.14" value={ns.compatibility} onChange={(e) => setNs((p) => ({ ...p, compatibility: e.target.value }))} /></b>
+              <span>allowed-tools</span>
+              <b><input style={{ width: '100%' }} placeholder="optional, space-separated, e.g. Bash(git:*) Read" value={ns.tools} onChange={(e) => setNs((p) => ({ ...p, tools: e.target.value }))} /></b>
+              <span>instructions</span>
+              <b><textarea style={{ width: '100%', minHeight: 120, fontFamily: 'var(--mono, monospace)' }} placeholder="Markdown body (step-by-step instructions, examples, edge cases). Left blank, a stub is generated." value={ns.body} onChange={(e) => setNs((p) => ({ ...p, body: e.target.value }))} /></b>
+            </div>
+            <div className="row-actions" style={{ marginTop: 10 }}>
+              <span className="muted small grow">writes <span className="mono">skills/{ns.name.trim() || '<name>'}/SKILL.md</span> on the manager · won't overwrite an existing skill</span>
+              <button className="btn primary" disabled={busy || !createValid} onClick={() => void createSkill()}>Create skill</button>
+            </div>
+          </div>
+        ) : null}
+
+        {allTags.length > 0 ? (
+          <div className="row-actions" style={{ flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+            <input className="catalog-search" placeholder="search skills…" value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
+            <span className="chips">
+              {allTags.map((t) => (
+                <button key={t} className={`chip${tagFilter.has(t) ? ' on' : ''}`} onClick={() => toggleTag(t)}>
+                  {tagFilter.has(t) ? '✓ ' : ''}{t}
+                </button>
+              ))}
+            </span>
+            {tagFilter.size > 0 ? <button className="btn small" onClick={() => setTagFilter(new Set())}>clear</button> : null}
+          </div>
+        ) : skills.length > 0 ? (
+          <input className="catalog-search" style={{ marginTop: 8 }} placeholder="search skills…" value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
+        ) : null}
+
+        <div className="skill-catalog">
+          {filteredSkills.map((s) => {
+            const have = skillCount(s.name);
+            const all = targetCount > 0 && have === targetCount;
+            return (
+              <div className="skill-card" key={s.name}>
+                <div className="skill-card-head">
+                  <span className="b">{s.name}</span>
+                  {s.license ? <span className="muted small">· {s.license}</span> : null}
+                  <span className="grow" />
+                  <span className={have > 0 ? 'ok-text small' : 'muted small'}>{have}/{targetCount}</span>
+                  <button className="btn" disabled={busy || targetCount === 0 || all} onClick={() => void installSkillAll(s.name)}>
+                    {all ? 'Installed' : `Install → ${targetLabel}`}
+                  </button>
+                </div>
+                {s.description ? <p className="muted small skill-desc">{s.description}</p> : null}
+                {(s.tags ?? []).length > 0 ? (
+                  <div className="chips skill-tags">
+                    {(s.tags ?? []).map((t) => (
+                      <button key={t} className={`chip tag${tagFilter.has(t) ? ' on' : ''}`} onClick={() => toggleTag(t)}>{t}</button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+          {skills.length === 0 ? (
+            <p className="muted center pad">No library skills found on this manager. Create one above to get started.</p>
+          ) : filteredSkills.length === 0 ? (
+            <p className="muted center pad">No skills match the current filter.</p>
+          ) : null}
+        </div>
       </section>
       ) : null}
 
@@ -426,20 +568,25 @@ export function Modules({ store }: { store: FleetStore }) {
             <tr>
               <th>name</th>
               <th>version</th>
+              <th>provider</th>
               <th>description</th>
             </tr>
           </thead>
           <tbody>
-            {plugins.map((p) => (
-              <tr key={p.name}>
-                <td className="b">{p.name}</td>
-                <td className="muted small">{p.version ?? '—'}</td>
-                <td className="muted">{p.description ?? ''}</td>
-              </tr>
-            ))}
+            {plugins.map((p) => {
+              const provider = p.author || p.source || null;
+              return (
+                <tr key={p.name}>
+                  <td className="b">{p.name}</td>
+                  <td className="muted small">{p.version ?? '—'}</td>
+                  <td className="muted small" title={p.source ?? undefined}>{provider ?? '—'}</td>
+                  <td className="muted">{p.description ?? ''}</td>
+                </tr>
+              );
+            })}
             {plugins.length === 0 ? (
               <tr>
-                <td colSpan={3} className="muted center pad">
+                <td colSpan={4} className="muted center pad">
                   No plugins found. Plugins live in <span className="mono">plugins/claude-code</span> on the manager host.
                 </td>
               </tr>

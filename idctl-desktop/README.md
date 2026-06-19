@@ -62,8 +62,12 @@ All panels are wired:
 - **Schedule** — per‑agent heartbeat intervals and recurring calendar check‑ins.
 - **Teams** — switch, create from the default template, an add‑agent form, and
   cross‑team relay policy (with per‑agent overrides).
-- **Capabilities** — attach MCP servers (catalog + live connection Test), install
-  skills, view plugins; assign to one or many agents/teams.
+- **Capabilities** — attach MCP servers (catalog + live connection Test); a
+  searchable, tag‑filtered **skill catalog** that follows the
+  [agentskills.io](https://agentskills.io) `SKILL.md` standard, including a
+  **create‑skill** form (name/description/tags/license/compatibility/allowed‑tools
+  + Markdown body); and a plugins view showing each plugin's provider. Install or
+  assign to one or many agents/teams.
 - **Settings** — connect managers and inference backends (Ollama, LM Studio, any
   OpenAI‑compatible server, Anthropic, OpenAI) with live model discovery;
   Subscriptions (runtime OAuth sign‑in status); and Self‑update.

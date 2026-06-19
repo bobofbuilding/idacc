@@ -68,7 +68,7 @@ function keySourceOf(p: ProviderProfile): 'config' | 'env' | 'none' {
 function listProvidersEnriched(): (ProviderProfile & { keySource: 'config' | 'env' | 'none'; needsKey: boolean })[] {
   return loadSettings().providers.map((p) => ({ ...p, keySource: keySourceOf(p), needsKey: kindNeedsKey(p.kind) }));
 }
-import type { McpServerSpec } from '../../../idctl/src/api/client.ts';
+import type { McpServerSpec, CreateSkillInput } from '../../../idctl/src/api/client.ts';
 
 // idctl-desktop is the operator's local control center talking to 127.0.0.1,
 // so it is a legitimate admin client (admin-gated routes: skill install, MCP attach).
@@ -153,6 +153,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   librarySkills: () => client.librarySkills(),
   libraryPlugins: () => client.libraryPlugins(),
   installSkill: (skill: string, agent: string) => client.installSkill(String(skill), String(agent)),
+  createSkill: (input: CreateSkillInput) => client.createSkill(input),
   setAgentMcp: (agentId: string, servers: McpServerSpec[]) => client.setAgentMcp(String(agentId), servers ?? []),
   rebuildAgent: (agent: string) => client.remote(`/agent ${agent} rebuild`),
 
