@@ -141,6 +141,10 @@ body {
    grow via .grow / .cols — flex-shrink:0 only stops them compressing below
    their content. (Previously this was scoped to .view.modules only.) */
 .view > .card { flex-shrink: 0; }
+/* A grow card stacked in a column (e.g. Settings → Inference backends) must size
+   to its CONTENT and grow into spare space — never collapse to flex-basis:0 and
+   clip its bottom content when the cards above it already fill the viewport. */
+.view > .card.grow { flex: 1 0 auto; }
 /* Cards sitting side-by-side in a row likewise shouldn't squeeze their content
    narrower than it needs (buttons wrapping/clipping). */
 .cols > .card { min-width: 0; }

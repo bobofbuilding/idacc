@@ -46,7 +46,7 @@ export function Settings({ store }: { store: FleetStore }) {
   const [updStatus, setUpdStatus] = useState<{ latest?: string; available?: boolean; staged?: boolean; checking?: boolean; error?: string; lastChecked?: number } | null>(null);
   const [manifestUrl, setManifestUrl] = useState('');
   // subscriptions (runtime OAuth: Claude / ChatGPT)
-  type Sub = { provider: string; loggedIn: boolean; plan?: string; email?: string; method?: string; detail?: string };
+  type Sub = { provider: string; loggedIn: boolean; installed?: boolean; plan?: string; email?: string; method?: string; detail?: string };
   type SubKey = 'claude' | 'chatgpt' | 'cursor';
   const [subs, setSubs] = useState<{ claude: Sub; chatgpt: Sub; cursor: Sub } | null>(null);
   const [subBusy, setSubBusy] = useState<string | null>(null);
@@ -296,12 +296,14 @@ export function Settings({ store }: { store: FleetStore }) {
                   {s.email ? ` · ${s.email}` : ''}
                   {!s.email && s.detail ? ` · ${s.detail}` : ''}
                 </span>
+              ) : s?.installed === false ? (
+                <span className="warn-text" title={s.detail}>○ CLI not installed</span>
               ) : (
                 <span className="muted">○ not signed in</span>
               )}
               <span className="row-actions" style={{ display: 'inline-flex', marginLeft: 12 }}>
-                <button className="btn" disabled={subBusy === key} onClick={() => void signinSub(key)}>
-                  {s?.loggedIn ? 'Switch account' : 'Sign in'}
+                <button className="btn" disabled={subBusy === key} onClick={() => void signinSub(key)} title={s?.installed === false ? s.detail : undefined}>
+                  {s?.loggedIn ? 'Switch account' : s?.installed === false ? 'Install…' : 'Sign in'}
                 </button>
                 {s?.loggedIn ? (
                   <button className="btn" disabled={subBusy === key} onClick={() => void signoutSub(key)}>

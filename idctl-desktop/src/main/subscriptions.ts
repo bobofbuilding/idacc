@@ -13,23 +13,38 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { shell } from 'electron';
 
 const execFileP = promisify(execFile);
 
+/** Candidate CLI dirs (GUI apps inherit a minimal PATH). */
+function cliDirs(): string[] {
+  const home = homedir();
+  return ['/opt/homebrew/bin', `${home}/.local/bin`, '/usr/local/bin', '/usr/bin', '/bin', ...(process.env.PATH ? process.env.PATH.split(':') : [])];
+}
 /** GUI apps inherit a minimal PATH — add the usual CLI locations so claude/codex resolve. */
 function cliEnv(): NodeJS.ProcessEnv {
-  const home = homedir();
-  const dirs = ['/opt/homebrew/bin', `${home}/.local/bin`, '/usr/local/bin', '/usr/bin', '/bin'];
-  const existing = process.env.PATH ? process.env.PATH.split(':') : [];
-  return { ...process.env, PATH: [...dirs, ...existing].join(':') };
+  return { ...process.env, PATH: cliDirs().join(':') };
 }
+/** Is a CLI binary installed (resolvable on the augmented PATH)? */
+function cliInstalled(bin: string): boolean {
+  return cliDirs().some((d) => existsSync(`${d}/${bin}`));
+}
+/** Install hint shown when a subscription CLI isn't present. */
+const INSTALL_HINT: Record<string, string> = {
+  cursor: 'cursor-agent not installed — install the Cursor CLI: curl https://cursor.com/install -fsS | bash',
+  claude: 'claude CLI not installed',
+  chatgpt: 'codex CLI not installed',
+};
 
 export type SubProvider = 'claude' | 'chatgpt' | 'cursor';
 
 export interface SubStatus {
   provider: SubProvider;
   loggedIn: boolean;
+  /** Whether the provider's CLI is installed at all. */
+  installed?: boolean;
   plan?: string;
   email?: string;
   method?: string;
@@ -71,15 +86,18 @@ async function codexStatus(): Promise<SubStatus> {
 
 /** Cursor subscription via `cursor-agent status` (Pro/Business OAuth). */
 async function cursorStatus(): Promise<SubStatus> {
+  if (!cliInstalled('cursor-agent')) {
+    return { provider: 'cursor', loggedIn: false, installed: false, detail: INSTALL_HINT.cursor };
+  }
   try {
     const { stdout, stderr } = await execFileP('cursor-agent', ['status'], { env: cliEnv(), timeout: 8000 });
     const out = `${stdout}${stderr}`.trim();
     const loggedIn = /logged in|authenticated|signed in/i.test(out) && !/not logged in|not authenticated|signed out/i.test(out);
     const email = out.match(/[\w.+-]+@[\w.-]+\.\w+/)?.[0];
-    return { provider: 'cursor', loggedIn, email, detail: out.slice(0, 200) };
+    return { provider: 'cursor', loggedIn, installed: true, email, detail: out.slice(0, 200) };
   } catch (e: unknown) {
     const err = e as { stdout?: string; message?: string };
-    return { provider: 'cursor', loggedIn: false, detail: (err.stdout || err.message || '').trim() };
+    return { provider: 'cursor', loggedIn: false, installed: true, detail: (err.stdout || err.message || '').trim() };
   }
 }
 
@@ -95,6 +113,9 @@ export async function subsStatus(): Promise<{ claude: SubStatus; chatgpt: SubSta
  */
 export function subsSignin(provider: SubProvider): Promise<{ started: boolean; url?: string; error?: string }> {
   const [bin, args] = LOGIN_CMD[provider] ?? LOGIN_CMD.claude;
+  if (!cliInstalled(bin)) {
+    return Promise.resolve({ started: false, error: INSTALL_HINT[provider] ?? `${bin} is not installed` });
+  }
   return new Promise((resolve) => {
     let child;
     try {
