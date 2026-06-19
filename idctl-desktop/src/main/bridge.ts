@@ -154,6 +154,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   libraryPlugins: () => client.libraryPlugins(),
   installSkill: (skill: string, agent: string) => client.installSkill(String(skill), String(agent)),
   createSkill: (input: CreateSkillInput) => client.createSkill(input),
+  usage: () => client.usage(),
   setAgentMcp: (agentId: string, servers: McpServerSpec[]) => client.setAgentMcp(String(agentId), servers ?? []),
   rebuildAgent: (agent: string) => client.remote(`/agent ${agent} rebuild`),
 

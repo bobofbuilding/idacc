@@ -56,7 +56,8 @@ All panels are wired:
 - **Chat** — talk to the team's `lead` manager agent; streams the reply.
 - **Inbox** — answer questions the manager is blocked on.
 - **Tasks** — create / claim / assign / complete tasks.
-- **Health** — probe agent liveness.
+- **Health** — probe agent liveness, plus a local‑model (Ollama) token
+  throughput gauge and 24h/7d token‑usage averages (cloud API runtimes excluded).
 - **Identity & Keys** — per‑agent ENS / ID Chain / OWS wallet, Safe smart
   account, and scoped (optionally non‑expiring) ERC‑4337 session keys.
 - **Schedule** — per‑agent heartbeat intervals and recurring calendar check‑ins.

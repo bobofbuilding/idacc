@@ -213,6 +213,22 @@ export class ManagerClient {
     await this.post('/manager/inbox/respond', { query_id: queryId, message, session_id: sessionId }, signal);
   }
 
+  // ---- Local-model token usage (Ollama) ---------------------------------
+
+  /**
+   * Aggregated local-model (Ollama) token usage for the Health page: 24h/7d
+   * windows + a recent-throughput reading. Returns null on managers that
+   * predate the /usage route (older managers don't track tokens).
+   */
+  async usage(signal?: AbortSignal): Promise<UsageReport | null> {
+    try {
+      return await this.get<UsageReport>('/usage', signal);
+    } catch (err) {
+      if (err instanceof ManagerError) return null; // older manager: no route
+      throw err;
+    }
+  }
+
   // ---- Health probes ----------------------------------------------------
 
   async probeAll(signal?: AbortSignal): Promise<ProbeResult> {
@@ -553,6 +569,33 @@ export interface InstallSkillResult {
   installed: string;
   agent: string;
   skills: string[];
+}
+
+/** One agent's token throughput within a usage window. */
+export interface UsageAgent {
+  agent: string;
+  count: number;
+  output: number;
+  avgTps: number;
+}
+
+/** Aggregated token usage over a window (24h or 7d). */
+export interface UsageWindow {
+  count: number;
+  input: number;
+  output: number;
+  total: number;
+  avgPerQuery: number;
+  /** Token-weighted average throughput (output tokens / generation seconds). */
+  avgTps: number;
+  agents: UsageAgent[];
+}
+
+export interface UsageReport {
+  now: number;
+  day: UsageWindow;
+  week: UsageWindow;
+  recent: { tps: number | null; output: number | null; model: string; agent: string; at: number } | null;
 }
 
 export interface ScheduleEntry {
