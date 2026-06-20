@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { call, type FleetStore } from '../store.ts';
-import { usePrompt } from '../components/prompt.tsx';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
 import { RUNTIMES, offerableRuntimes } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 
@@ -77,7 +76,6 @@ export function Dashboard({ store }: { store: FleetStore }) {
   const [catalog, setCatalog] = useState<Record<string, string[]>>({});
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const modelRefs = useRef<Record<string, HTMLSelectElement | null>>({});
-  const prompt = usePrompt();
   const sel: Agent | undefined = store.agents.find((a) => a.id === selected) ?? store.agents[0];
 
   // Per-runtime model catalog (synced providers + curated). Refreshed when the
@@ -86,6 +84,14 @@ export function Dashboard({ store }: { store: FleetStore }) {
     call<Record<string, string[]>>('runtime:models').then(setCatalog).catch(() => setCatalog({}));
     call<ProviderRow[]>('providers:list').then(setProviders).catch(() => setProviders([]));
   }, [store.lastUpdated]);
+
+  // On entry, actively probe every backing provider so the model dropdowns offer
+  // the FULL live model list — no manual "custom" entry needed. Best-effort; the
+  // cached runtime:models above renders instantly while this refreshes it.
+  useEffect(() => {
+    call<Record<string, string[]>>('runtime:probe').then(setCatalog).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function probeRuntimes() {
     setBusy('probe runtimes');
@@ -110,11 +116,6 @@ export function Dashboard({ store }: { store: FleetStore }) {
     }
   }
   async function setModel(a: Agent, model: string) {
-    if (model === '__custom') {
-      const m = await prompt({ title: `Model for ${a.name}:`, defaultValue: a.model ?? '', okLabel: 'Set model' });
-      if (!m?.trim()) return;
-      model = m.trim();
-    }
     if (!model || model === a.model) return;
     setBusy(`model ${a.name}`);
     try {
@@ -231,7 +232,6 @@ export function Dashboard({ store }: { store: FleetStore }) {
                             {short(m)}
                           </option>
                         ))}
-                        <option value="__custom">custom…</option>
                       </select>
                       {mismatch ? <span className="warn-text" title={mismatch} style={{ marginLeft: 4, cursor: 'help' }}>⚠</span> : null}
                     </td>

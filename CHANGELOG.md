@@ -8,6 +8,11 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.34] — 2026-06-20
+- Dashboard: the model dropdown now **probes every backing provider on entry** and
+  offers the full live model list per runtime — the free-text **"custom…"** entry
+  has been removed (no more typing model ids by hand).
+
 ## [0.1.33] — 2026-06-20
 - Runtime picker (Dashboard + Teams): the **claude-sdk** runtime
   (`claude-agent-sdk`) is now only offered when an **Anthropic API backend is
