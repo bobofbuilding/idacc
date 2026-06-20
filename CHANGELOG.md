@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.35] — 2026-06-20
+- Settings → Self-update: removed the **manifest URL** field. Updates come from
+  the app's GitHub releases; the self-hosted-manifest override was an unused
+  advanced option that just cluttered the tile (still settable via config for
+  anyone who genuinely self-hosts an update feed).
+
 ## [0.1.34] — 2026-06-20
 - Dashboard: the model dropdown now **probes every backing provider on entry** and
   offers the full live model list per runtime — the free-text **"custom…"** entry

@@ -56,7 +56,6 @@ export function Settings({ store }: { store: FleetStore }) {
   const [version, setVersion] = useState('');
   const [upd, setUpd] = useState<{ autoUpgrade?: boolean; updateManifestUrl?: string; updateRepo?: string } | null>(null);
   const [updStatus, setUpdStatus] = useState<{ latest?: string; available?: boolean; staged?: boolean; checking?: boolean; error?: string; lastChecked?: number } | null>(null);
-  const [manifestUrl, setManifestUrl] = useState('');
   // subscriptions (runtime OAuth: Claude / ChatGPT)
   type Sub = { provider: string; loggedIn: boolean; installed?: boolean; plan?: string; email?: string; method?: string; detail?: string };
   type SubKey = 'claude' | 'chatgpt' | 'cursor';
@@ -68,7 +67,6 @@ export function Settings({ store }: { store: FleetStore }) {
     setVersion(await call<string>('app:version').catch(() => ''));
     const u = await call<typeof upd>('update:getSettings').catch(() => null);
     setUpd(u);
-    setManifestUrl(u?.updateManifestUrl ?? '');
     setUpdStatus(await call<typeof updStatus>('update:status').catch(() => null));
     setSubs(await call<{ claude: Sub; chatgpt: Sub; cursor: Sub }>('subs:status').catch(() => null));
   }
@@ -418,19 +416,9 @@ export function Settings({ store }: { store: FleetStore }) {
             />{' '}
             <span className="muted small">apply a staged update on next launch</span>
           </b>
-          <span>manifest URL</span>
-          <b>
-            <input
-              style={{ width: '100%' }}
-              placeholder="https://… or file:///… update.json"
-              value={manifestUrl}
-              onChange={(e) => setManifestUrl(e.target.value)}
-              onBlur={() => void saveUpdate({ updateManifestUrl: manifestUrl.trim() || undefined })}
-            />
-          </b>
         </div>
         <div className="row-actions" style={{ marginTop: 10 }}>
-          <span className="muted small grow">{upd?.updateRepo ? `repo: ${upd.updateRepo}` : ''}</span>
+          <span className="muted small grow">{upd?.updateRepo ? `updates from GitHub releases · ${upd.updateRepo}` : ''}</span>
           <button className="btn" onClick={() => void checkUpdate()}>Check now</button>
         </div>
       </section>
