@@ -89,17 +89,20 @@ export function App() {
               ) : null}
             </button>
           ))}
+          {update?.available && update.staged && dismissed !== update.latest ? (
+            <div className="sb-update" title={`Update downloaded — restart to apply v${update.latest}`}>
+              <div className="uv-line">⬆ <span className="uv-from">v{update.current}</span> → <span className="uv-to">v{update.latest}</span></div>
+              <div className="uv-actions">
+                <button className="btn primary uv-go" disabled={applying} onClick={() => void applyUpdate()}>{applying ? 'Updating…' : 'Restart & update'}</button>
+                <button className="uv-x" title="Later" onClick={() => setDismissed(update.latest ?? '')}>✕</button>
+              </div>
+            </div>
+          ) : null}
         </nav>
 
         <main className="content">
           <Router view={view} store={store} />
-          <StatusBar
-            store={store}
-            update={update?.available && update.staged && dismissed !== update.latest ? update : null}
-            applying={applying}
-            onApply={() => void applyUpdate()}
-            onDismiss={() => setDismissed(update?.latest ?? '')}
-          />
+          <StatusBar store={store} />
         </main>
       </div>
     </div>
@@ -136,30 +139,11 @@ function Router({ view, store }: { view: ViewId; store: ReturnType<typeof useFle
   }
 }
 
-function StatusBar({
-  store,
-  update,
-  applying,
-  onApply,
-  onDismiss,
-}: {
-  store: ReturnType<typeof useFleet>;
-  update: UpdateStatus | null;
-  applying: boolean;
-  onApply: () => void;
-  onDismiss: () => void;
-}) {
+function StatusBar({ store }: { store: ReturnType<typeof useFleet> }) {
   const dot =
     store.connection === 'online' ? 'ok' : store.connection === 'offline' ? 'err' : 'warn';
   return (
     <footer className="statusbar">
-      {update ? (
-        <span className="sb-update" title={`Update downloaded — restart to apply v${update.latest}`}>
-          ⬆ <span className="uv-from">v{update.current}</span> → <span className="uv-to">v{update.latest}</span>
-          <button className="btn primary uv-go" disabled={applying} onClick={onApply}>{applying ? '…' : 'Restart'}</button>
-          <button className="uv-x" title="Later" onClick={onDismiss}>✕</button>
-        </span>
-      ) : null}
       <span className={`pill ${dot}`}>● {store.connection}</span>
       <span className="muted">{store.managerUrl || '—'}</span>
       <span className="sep">·</span>

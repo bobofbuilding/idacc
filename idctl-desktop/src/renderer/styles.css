@@ -35,17 +35,18 @@ body {
 .titlebar-name { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
 
 /* Self-update banner */
-/* Compact update chip in the status bar, just left of the "● online" pill. */
+/* Update chip pinned to the bottom of the sidebar, under the Settings nav item. */
 .sb-update {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 2px 4px 2px 9px; margin-right: 4px;
-  border: 1px solid var(--accent); border-radius: 12px; background: var(--bg-3);
-  font-family: var(--mono, ui-monospace, monospace);
+  margin-top: auto; margin-bottom: 2px;
+  padding: 8px 9px; border: 1px solid var(--accent); border-radius: 8px; background: var(--bg-3);
+  font-size: 11px;
 }
+.sb-update .uv-line { font-family: var(--mono, ui-monospace, monospace); margin-bottom: 7px; white-space: nowrap; }
 .sb-update .uv-from { color: var(--muted); }
 .sb-update .uv-to { color: var(--ok); font-weight: 700; }
-.sb-update .uv-go { font-size: 11px; padding: 1px 8px; border-radius: 10px; }
-.sb-update .uv-x { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 11px; line-height: 1; padding: 0 2px; }
+.sb-update .uv-actions { display: flex; align-items: center; gap: 6px; }
+.sb-update .uv-go { font-size: 11px; padding: 4px 8px; flex: 1; border-radius: 6px; }
+.sb-update .uv-x { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px; }
 .sb-update .uv-x:hover { color: var(--text); }
 
 .body { flex: 1; display: flex; min-height: 0; }
