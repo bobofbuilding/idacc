@@ -187,8 +187,12 @@ async function isOwnRepoRoot(path: string): Promise<boolean> {
   return norm(top) === norm(path);
 }
 
-export async function pickProjectFolder(): Promise<string | null> {
+export async function pickProjectFolder(defaultPath?: string): Promise<string | null> {
   const opts: Electron.OpenDialogOptions = { title: 'Choose a project folder', properties: ['openDirectory', 'createDirectory'] };
+  // Open the dialog at the standard projects folder when we have one, so new
+  // clones/imports land alongside the rest by default.
+  const fallback = defaultPath || detectProjectsRoot();
+  if (fallback && existsSync(fallback)) opts.defaultPath = fallback;
   const win = BrowserWindow.getFocusedWindow();
   const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
   return res.canceled || !res.filePaths[0] ? null : res.filePaths[0];

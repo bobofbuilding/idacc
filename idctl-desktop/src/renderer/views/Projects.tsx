@@ -163,7 +163,7 @@ export function Projects({ store }: { store: FleetStore }) {
     setBusy(true);
     try {
       setNote('choose where to clone it…');
-      const parent = await call<string | null>('project:pickFolder').catch(() => null);
+      const parent = await call<string | null>('project:pickFolder', root ?? undefined).catch(() => null);
       if (!parent) { setNote('cancelled'); return; }
       setNote('cloning… (large repos take a moment)');
       const c = await call<CloneResult>('project:cloneGithub', url, parent);

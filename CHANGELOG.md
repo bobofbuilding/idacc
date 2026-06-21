@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.47] — 2026-06-21
+- The folder picker (Add from GitHub's "Clone & add", Import folder, Browse,
+  change-root) now **opens at your standard projects folder** by default — so
+  new clones and imports land alongside the rest instead of wherever the dialog
+  last was. Falls back to the auto-detected workspace projects root.
+
 ## [0.1.46] — 2026-06-21
 - **Sync the Projects page from your id-agents workspace.** New "⟳ Sync
   workspace" button auto-discovers the projects folder

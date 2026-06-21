@@ -128,7 +128,7 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'app:hardware':
       return getHardware();
     case 'project:pickFolder':
-      return pickProjectFolder();
+      return pickProjectFolder(args[0] as string | undefined);
     case 'project:openFolder':
       return openProjectFolder(args[0] as string);
     case 'project:readme':
