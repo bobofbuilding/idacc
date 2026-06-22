@@ -53,6 +53,22 @@ export interface IdctlConfig {
    * projects` dir, auto-detected on first run. Client-side only.
    */
   projectsRoot?: string;
+  /**
+   * Optional local image generator, preferred over the cloud (OpenRouter) image
+   * provider for image creation in chat. `url` is the server base (e.g.
+   * http://127.0.0.1:7860 for Automatic1111, or an OpenAI-compatible base). When
+   * unset, image generation falls back to the cloud provider. Client-side only.
+   */
+  imageServer?: ImageServerConfig;
+}
+
+/** A local image-generation backend. */
+export interface ImageServerConfig {
+  url: string;
+  /** API style: 'auto1111' = Stable Diffusion WebUI /sdapi/v1/txt2img; 'openai' = /v1/images/generations. */
+  type: 'auto1111' | 'openai';
+  /** Optional model/checkpoint name (openai-style image APIs). */
+  model?: string;
 }
 
 export type ProjectStatus = 'active' | 'paused' | 'blocked' | 'done';

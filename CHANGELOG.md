@@ -8,6 +8,17 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.63] — 2026-06-22
+- **Local image generation (free) — preferred over the cloud.** Image creation
+  in chat now uses a **local image server first**, falling back to the cloud
+  (OpenRouter) only if none is set or it’s unreachable. Settings → Inference has
+  a **Local image generator** card: point it at Automatic1111 / Forge (Stable
+  Diffusion WebUI on `:7860`, started with `--api`) or a LocalAI-style OpenAI
+  images API (`:8080`), or click **Detect** to find one on localhost. Supports
+  both the `/sdapi/v1/txt2img` and `/v1/images/generations` APIs. (Note: the
+  Claude/ChatGPT/Cursor subscriptions and Ollama models are text/vision-only and
+  can’t generate images — a local image server or the cloud are the options.)
+
 ## [0.1.62] — 2026-06-22
 - **Cleaner composer.** Removed the helper hint line under the chat input
   (image/plan/live-feed tips); the behavior is unchanged.

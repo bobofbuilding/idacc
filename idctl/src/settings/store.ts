@@ -9,7 +9,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, chmodSync, renameSync, unlinkSync } from 'node:fs';
 import { resolveConfigPath, configDir } from './paths.ts';
-import { emptyConfig, defaultUpdateSettings, DEFAULT_TEAM, type IdctlConfig, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderProfile, type ProviderSync, type UpdateSettings } from './schema.ts';
+import { emptyConfig, defaultUpdateSettings, DEFAULT_TEAM, type IdctlConfig, type ImageServerConfig, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderProfile, type ProviderSync, type UpdateSettings } from './schema.ts';
 
 export function loadSettings(file = resolveConfigPath()): IdctlConfig {
   if (!existsSync(file)) return emptyConfig();
@@ -45,6 +45,9 @@ export function loadSettings(file = resolveConfigPath()): IdctlConfig {
       knownTeams: raw.knownTeams === undefined ? [DEFAULT_TEAM] : raw.knownTeams,
       projects: Array.isArray(raw.projects) ? raw.projects : undefined,
       projectsRoot: typeof raw.projectsRoot === 'string' ? raw.projectsRoot : undefined,
+      imageServer: raw.imageServer && typeof raw.imageServer === 'object' && typeof (raw.imageServer as any).url === 'string'
+        ? raw.imageServer
+        : undefined,
     };
     // Validation: at most one default provider.
     let seenDefault = false;
@@ -232,6 +235,22 @@ export function upsertProject(p: ProjectEntry, file = resolveConfigPath()): Idct
   if (i >= 0) list[i] = p;
   else list.push(p);
   cfg.projects = list;
+  saveSettings(cfg, file);
+  return cfg;
+}
+
+/** Set (or clear, with null) the preferred local image-generation backend. */
+export function setImageServer(server: ImageServerConfig | null, file = resolveConfigPath()): IdctlConfig {
+  const cfg = loadSettings(file);
+  if (server && typeof server.url === 'string' && server.url.trim()) {
+    cfg.imageServer = {
+      url: server.url.trim().replace(/\/+$/, ''),
+      type: server.type === 'openai' ? 'openai' : 'auto1111',
+      model: typeof server.model === 'string' && server.model.trim() ? server.model.trim() : undefined,
+    };
+  } else {
+    delete cfg.imageServer;
+  }
   saveSettings(cfg, file);
   return cfg;
 }

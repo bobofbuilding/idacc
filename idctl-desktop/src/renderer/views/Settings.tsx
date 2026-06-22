@@ -236,6 +236,39 @@ export function Settings({ store }: { store: FleetStore }) {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [stackConfirm, setStackConfirm] = useState<string | null>(null);
+
+  // Local image generator (preferred over the cloud provider for image creation).
+  type ImgServer = { url: string; type: 'auto1111' | 'openai'; model?: string };
+  const [imgServer, setImgServer] = useState<ImgServer | null>(null);
+  const [imgUrl, setImgUrl] = useState('');
+  const [imgType, setImgType] = useState<'auto1111' | 'openai'>('auto1111');
+  const [imgMsg, setImgMsg] = useState('');
+  const [imgBusy, setImgBusy] = useState(false);
+  async function loadImgServer() {
+    const s = await call<ImgServer | null>('image:getServer').catch(() => null);
+    setImgServer(s);
+    if (s) { setImgUrl(s.url); setImgType(s.type); }
+  }
+  async function saveImgServer() {
+    setImgBusy(true); setImgMsg('');
+    try {
+      const url = imgUrl.trim();
+      const saved = await call<ImgServer | null>('image:setServer', url ? { url, type: imgType } : null);
+      setImgServer(saved);
+      setImgMsg(url ? 'saved ✓ — image creation will use this server first (cloud is the fallback)' : 'cleared — image creation uses the cloud provider');
+    } catch {
+      setImgMsg('save failed');
+    } finally { setImgBusy(false); }
+  }
+  async function detectImg() {
+    setImgBusy(true); setImgMsg('scanning localhost…');
+    try {
+      const found = await call<ImgServer | null>('image:detectServer').catch(() => null);
+      if (found) { setImgUrl(found.url); setImgType(found.type); setImgMsg(`found ${found.type === 'auto1111' ? 'Stable Diffusion (Automatic1111)' : 'an image API'} at ${found.url} — click Save to use it`); }
+      else setImgMsg('no local image server found — run Automatic1111 (Stable Diffusion WebUI) on :7860, or LocalAI on :8080');
+    } finally { setImgBusy(false); }
+  }
+
   async function loadOllama() {
     const r = await call<{ ok: boolean; models: { name: string; size?: number; parameterSize?: string }[] }>('ollama:tags').catch(() => ({ ok: false, models: [] as { name: string }[] }));
     setOllamaModels(r.models ?? []);
@@ -320,6 +353,7 @@ export function Settings({ store }: { store: FleetStore }) {
   }
   useEffect(() => {
     void loadOllama();
+    void loadImgServer();
     void call<HardwareInfo>('app:hardware').then(setHardware).catch(() => {});
     const idagents = (window as { idagents?: { onOllamaPull?: (cb: (p: unknown) => void) => () => void } }).idagents;
     const off = idagents?.onOllamaPull?.((p) => {
@@ -538,6 +572,27 @@ export function Settings({ store }: { store: FleetStore }) {
             })}
             {filteredModels.length === 0 ? <p className="muted small center pad">No models match.</p> : null}
           </div>
+        </div>
+      </section>
+
+      <section className="card">
+        <h3>Local image generator</h3>
+        <p className="muted small" style={{ marginTop: -4 }}>
+          Image creation in chat uses this <b>first</b> (free, private), falling back to the cloud provider (OpenRouter) only if it’s unset or unreachable. Run a local image server — <a className="ext-link" href="https://github.com/AUTOMATIC1111/stable-diffusion-webui" target="_blank" rel="noreferrer">Automatic1111</a> / Forge (Stable Diffusion WebUI, start with <span className="mono">--api</span>) on <span className="mono">:7860</span>, or a <a className="ext-link" href="https://localai.io" target="_blank" rel="noreferrer">LocalAI</a>-style image API on <span className="mono">:8080</span>. The subscriptions and Ollama models are text/vision-only and can’t generate images.
+        </p>
+        <div className="row-actions" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+          <input className="catalog-search" style={{ flex: '1 1 280px' }} placeholder="http://127.0.0.1:7860" value={imgUrl} disabled={imgBusy} onChange={(e) => setImgUrl(e.target.value)} />
+          <select className="cell-select" value={imgType} disabled={imgBusy} onChange={(e) => setImgType(e.target.value as 'auto1111' | 'openai')} title="API style">
+            <option value="auto1111">Stable Diffusion (Automatic1111)</option>
+            <option value="openai">OpenAI images API (LocalAI…)</option>
+          </select>
+          <button className="btn" disabled={imgBusy} onClick={() => void detectImg()}>Detect</button>
+          <button className="btn primary" disabled={imgBusy} onClick={() => void saveImgServer()}>{imgBusy ? '…' : 'Save'}</button>
+          {imgServer ? <button className="btn" disabled={imgBusy} title="Clear — use the cloud provider" onClick={() => { setImgUrl(''); void saveImgServer(); }}>Clear</button> : null}
+        </div>
+        <div className="muted small" style={{ marginTop: 6 }}>
+          {imgServer ? <>Active: <b className="accent-text">{imgServer.type === 'auto1111' ? 'Stable Diffusion' : 'image API'}</b> at <span className="mono">{imgServer.url}</span>. </> : <>No local image server — image creation uses the cloud provider. </>}
+          {imgMsg ? <span className={/(failed|no local)/.test(imgMsg) ? 'status-error' : 'ok-text'}>{imgMsg}</span> : null}
         </div>
       </section>
 

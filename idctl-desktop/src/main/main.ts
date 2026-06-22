@@ -14,8 +14,9 @@ import { pickProjectFolder, openProjectFolder, projectReadme, projectGit, projec
 import { pickChatFiles, saveChatFiles } from './chatfiles.ts';
 import { listChats, getChat, saveChat, renameChat, removeChat, genTitle, unreadChatCount, markChatRead, patchChat, type ChatSession, type ChatPatch } from './chatstore.ts';
 import { listPlans, getPlan, savePlan, removePlan, type Plan } from './planstore.ts';
-import { generateImage, readImage, imageModels } from './images.ts';
-import { loadSettings, setUpdateSettings } from '../../../idctl/src/settings/store.ts';
+import { generateImage, readImage, imageModels, getImageServer, detectImageServer } from './images.ts';
+import { loadSettings, setUpdateSettings, setImageServer } from '../../../idctl/src/settings/store.ts';
+import type { ImageServerConfig } from '../../../idctl/src/settings/schema.ts';
 
 // Bundled as CommonJS → __dirname is the output dir (out/main/).
 declare const __dirname: string;
@@ -210,6 +211,12 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return readImage(args[0] as string);
     case 'image:models':
       return imageModels();
+    case 'image:getServer':
+      return getImageServer();
+    case 'image:setServer':
+      return setImageServer((args[0] as ImageServerConfig | null) ?? null).imageServer ?? null;
+    case 'image:detectServer':
+      return detectImageServer();
     case 'app:runInTerminal':
       return runInTerminal(args[0] as string);
     default:
