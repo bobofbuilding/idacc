@@ -12,6 +12,15 @@ import { loadSettings, resolveProviderKey } from '../../../idctl/src/settings/st
 import { chatImagesDir } from './chatstore.ts';
 
 const DEFAULT_IMAGE_MODEL = 'google/gemini-2.5-flash-image';
+const QUALITY_MODEL = 'google/gemini-3-pro-image';
+
+/** Pick an image model from the prompt: a higher-quality model when the prompt
+ *  asks for it, else the fast/cheap default. (Replaces the manual model picker.) */
+function pickImageModel(prompt: string): string {
+  return /\b(photo-?realistic|photoreal|high[- ]?(quality|res|resolution)|hi-?res|detailed|intricate|4k|8k|ultra|professional|logo|poster|render(ing)?|cinematic)\b/i.test(prompt)
+    ? QUALITY_MODEL
+    : DEFAULT_IMAGE_MODEL;
+}
 
 /** The provider used for image generation: prefer OpenRouter, else any enabled
  *  openai-compatible/openai provider. */
@@ -30,7 +39,7 @@ export async function generateImage(prompt: string, model?: string): Promise<Ima
   const key = resolveProviderKey(prov);
   if (!key) return { ok: false, error: `no API key for ${prov.name}` };
   const base = (prov.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-  const mdl = model || DEFAULT_IMAGE_MODEL;
+  const mdl = model || pickImageModel(p); // auto-routed from the prompt when not specified
   try {
     const r = await fetch(`${base}/chat/completions`, {
       method: 'POST',

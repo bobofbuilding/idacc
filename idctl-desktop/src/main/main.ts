@@ -12,7 +12,7 @@ import { ollamaTags, ollamaPull, ollamaRemove } from './ollama.ts';
 import { getHardware, runInTerminal } from './system.ts';
 import { pickProjectFolder, openProjectFolder, projectReadme, projectGit, projectGitRun, githubMeta, cloneGithub, detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { pickChatFiles, saveChatFiles } from './chatfiles.ts';
-import { listChats, getChat, saveChat, renameChat, removeChat, type ChatSession } from './chatstore.ts';
+import { listChats, getChat, saveChat, renameChat, removeChat, genTitle, type ChatSession } from './chatstore.ts';
 import { generateImage, readImage, imageModels } from './images.ts';
 import { loadSettings, setUpdateSettings } from '../../../idctl/src/settings/store.ts';
 
@@ -162,6 +162,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return renameChat(args[0] as string, args[1] as string);
     case 'chats:remove':
       return removeChat(args[0] as string);
+    case 'chat:genTitle':
+      return genTitle(args[0] as string);
     case 'image:generate':
       return generateImage(args[0] as string, args[1] as string | undefined);
     case 'image:read':

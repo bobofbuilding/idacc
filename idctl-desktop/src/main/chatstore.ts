@@ -56,6 +56,11 @@ function fileFor(id: string): string {
 
 export interface ChatSummary { id: string; title: string; team: string; messageCount: number; updatedAt: number }
 
+/** A session is worth keeping once it has a real exchange (not just the greeting). */
+function hasContent(s: ChatSession): boolean {
+  return Array.isArray(s.messages) && s.messages.some((m) => m.role !== 'system');
+}
+
 export function listChats(team?: string): ChatSummary[] {
   const dir = chatsDir();
   const out: ChatSummary[] = [];
@@ -63,8 +68,10 @@ export function listChats(team?: string): ChatSummary[] {
     if (!f.endsWith('.json')) continue;
     try {
       const s = JSON.parse(readFileSync(join(dir, f), 'utf8')) as ChatSession;
+      // Prune empty chats (no real message) left over from earlier behavior.
+      if (!hasContent(s)) { try { rmSync(join(dir, f), { force: true }); } catch { /* */ } continue; }
       if (team && s.team !== team) continue;
-      out.push({ id: s.id, title: s.title || '(untitled)', team: s.team, messageCount: Array.isArray(s.messages) ? s.messages.length : 0, updatedAt: s.updatedAt || 0 });
+      out.push({ id: s.id, title: s.title || '(untitled)', team: s.team, messageCount: s.messages.length, updatedAt: s.updatedAt || 0 });
     } catch { /* skip a corrupt file */ }
   }
   return out.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -78,8 +85,10 @@ export function getChat(id: string): ChatSession | null {
   } catch { return null; }
 }
 
-export function saveChat(session: ChatSession): { ok: boolean; id: string } {
+export function saveChat(session: ChatSession): { ok: boolean; id: string; skipped?: boolean } {
   if (!session?.id) throw new Error('session id required');
+  // Only cache chats that have an actual message — skip empty "New chat" shells.
+  if (!hasContent(session)) return { ok: true, id: session.id, skipped: true };
   const f = fileFor(session.id);
   const now = Date.now();
   const payload: ChatSession = {
@@ -107,6 +116,38 @@ export function renameChat(id: string, title: string): { ok: boolean } {
   s.title = String(title || '').slice(0, 200);
   saveChat(s);
   return { ok: true };
+}
+
+/** Generate a short chat title from the opening message using a local Ollama
+ *  model (free, no cloud cost). Returns '' on any failure — caller keeps its
+ *  own fallback (the clipped first message). */
+export async function genTitle(text: string): Promise<string> {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  if (!clean) return '';
+  const ollama = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '');
+  let installed: string[] = [];
+  try {
+    const r = await fetch(`${ollama}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    if (r.ok) installed = ((await r.json()) as { models?: { name: string }[] }).models?.map((m) => m.name) ?? [];
+  } catch { return ''; }
+  // Prefer the smallest installed model for a fast, cheap title.
+  const order = ['llama3.2:1b', 'qwen3:1.7b', 'qwen2.5:3b', 'qwen3:4b', 'llama3.2:latest'];
+  const model = order.find((m) => installed.includes(m)) || installed[0];
+  if (!model) return '';
+  const prompt = `Give a concise 3-6 word title (Title Case, no quotes, no trailing punctuation) for a conversation that opens with:\n"${clean}"\nTitle:`;
+  try {
+    const r = await fetch(`${ollama}/api/generate`, {
+      method: 'POST',
+      body: JSON.stringify({ model, prompt, stream: false, options: { num_predict: 24, temperature: 0.2 } }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) return '';
+    let t = String(((await r.json()) as { response?: string }).response ?? '');
+    t = t.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^[\s"'`]+|[\s"'`]+$/g, '').split('\n')[0].replace(/[.!?]+$/, '').trim();
+    return t.slice(0, 60);
+  } catch {
+    return '';
+  }
 }
 
 export function removeChat(id: string): { ok: boolean } {

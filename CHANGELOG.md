@@ -8,6 +8,16 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.54] — 2026-06-22
+- **Image generation: no more model picker.** The model is now auto-selected
+  from your prompt (a higher-quality model when the prompt asks for it —
+  photorealistic / detailed / logo / 4k — otherwise the fast, cheap default).
+- **Chats are only saved once they have a real message** — empty "New chat"
+  shells aren't cached, and leftover empties are pruned from the list.
+- **Chat titles are auto-generated** from the opening message by a local Ollama
+  model (free, no cloud cost), with the first-message text as an instant
+  fallback. Renaming still locks the title.
+
 ## [0.1.53] — 2026-06-22
 - Renamed the **Tasks** nav item + page heading to **Work** — it now covers
   Tasks, Schedule, and Loops under one inclusive title. (The first tab is still

@@ -75,11 +75,11 @@ export function Chat({ store }: { store: FleetStore }) {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [attachments, setAttachments] = useState<PickedFile[]>([]);
-  const [imgModels, setImgModels] = useState<string[]>([]);
-  const [imgModel, setImgModel] = useState('');
+  const [canImage, setCanImage] = useState(false); // an image-capable provider is configured
   const idRef = useRef(1);
   const endRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef(''); // the currently-active session id (for late-arriving replies)
+  const sessionRef = useRef<Session | null>(null); // mirror of the active session (to persist a gated empty chat)
   const deletedRef = useRef<Set<string>>(new Set()); // sessions deleted this run — drop their late writes
 
   const activeKey = `idctl.chat.session.${team}`;
@@ -105,7 +105,7 @@ export function Chat({ store }: { store: FleetStore }) {
   // Load projects, image models, the saved session list, and restore the active chat.
   useEffect(() => {
     void call<ProjectEntry[]>('projects:list').then(setProjects).catch(() => {});
-    void call<string[]>('image:models').then((m) => { setImgModels(m); setImgModel((cur) => cur || m[0] || ''); }).catch(() => {});
+    void call<string[]>('image:models').then((m) => setCanImage(m.length > 0)).catch(() => {});
     let alive = true;
     (async () => {
       const list = await call<ChatSummary[]>('chats:list', team).catch(() => []);
@@ -127,6 +127,7 @@ export function Chat({ store }: { store: FleetStore }) {
   }, [team]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [session?.messages]);
+  useEffect(() => { sessionRef.current = session; }, [session]);
 
   const msgs = session?.messages ?? [];
   const target = session && store.agents.some((a) => a.name === session.target) ? session.target : defaultTarget;
@@ -157,11 +158,19 @@ export function Chat({ store }: { store: FleetStore }) {
     setSession((cur) => (cur && cur.id === sid
       ? { ...cur, messages: cur.messages.map((x) => (x.id === id ? { ...x, ...patchMsg } : x)), updatedAt: Date.now() }
       : cur));
-    // Authoritative: patch the session's file whether or not it's active.
+    // Authoritative: patch the session's file. If it doesn't exist yet (an empty
+    // chat wasn't cached) but it's the active one, persist the in-memory session
+    // now that this update gives it real content.
     const s = await call<Session | null>('chats:get', sid).catch(() => null);
-    if (!s || deletedRef.current.has(sid)) return;
-    s.messages = s.messages.map((x) => (x.id === id ? { ...x, ...patchMsg } : x));
-    await call('chats:save', s).catch(() => {});
+    if (deletedRef.current.has(sid)) return;
+    const patchMsgs = (ms: Msg[]) => ms.map((x) => (x.id === id ? { ...x, ...patchMsg } : x));
+    if (s) {
+      s.messages = patchMsgs(s.messages);
+      await call('chats:save', s).catch(() => {});
+    } else if (sessionRef.current && sessionRef.current.id === sid) {
+      const cur = sessionRef.current;
+      await call('chats:save', { ...cur, messages: patchMsgs(cur.messages), updatedAt: Date.now() }).catch(() => {});
+    }
     void refreshList();
   }
 
@@ -185,8 +194,21 @@ export function Chat({ store }: { store: FleetStore }) {
   function setFocus(pid: string) { patch((s) => ({ ...s, projectId: pid })); }
   function rename(title: string) { patch((s) => ({ ...s, title, named: true })); }
   function autoTitle(text: string) {
-    // Refine the auto name from the first message — unless the user has renamed it.
+    // Immediate fallback name from the first message — unless the user has renamed it.
     patch((s) => (s.named ? s : { ...s, title: clip(text.replace(/\s+/g, ' '), 48) }));
+  }
+  /** Apply a generated title to session `sid` even after a chat switch; never
+   *  overrides a user rename, and persists to the file (or in-memory if not yet cached). */
+  async function applyAutoTitle(sid: string, title: string) {
+    if (!title || deletedRef.current.has(sid)) return;
+    setSession((cur) => (cur && cur.id === sid && !cur.named ? { ...cur, title } : cur));
+    const s = await call<Session | null>('chats:get', sid).catch(() => null);
+    if (s && !s.named && !deletedRef.current.has(sid)) { s.title = title; await call('chats:save', s).catch(() => {}); void refreshList(); }
+  }
+  /** Generate a concise title from the opening message (local Ollama; best-effort). */
+  async function genTitle(sid: string, text: string) {
+    const t = await call<string>('chat:genTitle', text).catch(() => '');
+    if (t && t.trim()) await applyAutoTitle(sid, t.trim());
   }
 
   async function addAttachments() {
@@ -228,7 +250,7 @@ export function Chat({ store }: { store: FleetStore }) {
         { id: myId, role: 'you', who: 'you', text: text || '(files only)', files: saved.map((f) => ({ name: f.name, isImage: f.isImage })) },
         { id: replyId, role: 'agent', who: target, text: '', pending: true },
       );
-      if (text) autoTitle(text);
+      if (text) { autoTitle(text); void genTitle(sid, text); }
       setInput('');
       setAttachments([]);
       try {
@@ -250,18 +272,18 @@ export function Chat({ store }: { store: FleetStore }) {
     const genId = idRef.current++;
     pushMsgs({ id: genId, role: 'system', who: '', text: `🎨 generating image — "${clip(prompt, 60)}"…`, pending: true });
     autoTitle(prompt);
+    void genTitle(sid, prompt);
     setInput('');
     try {
-      const res = await call<ImageResult>('image:generate', prompt, imgModel || undefined).catch((): ImageResult => ({ ok: false, error: 'request failed' }));
+      // No model arg — the main process auto-routes the image model from the prompt.
+      const res = await call<ImageResult>('image:generate', prompt).catch((): ImageResult => ({ ok: false, error: 'request failed' }));
       if (!res.ok || !res.path) { await resolveMsg(sid, genId, { text: `✗ image failed: ${res.error ?? 'unknown error'}`, pending: false }); return; }
       const cost = typeof res.costUsd === 'number' ? ` · $${res.costUsd.toFixed(3)}` : '';
-      await resolveMsg(sid, genId, { role: 'agent', who: res.model || imgModel || 'image', text: `🎨 ${prompt}${cost}`, image: { path: res.path, prompt, model: res.model || imgModel }, pending: false });
+      await resolveMsg(sid, genId, { role: 'agent', who: res.model || 'image', text: `🎨 ${prompt}${cost}`, image: { path: res.path, prompt, model: res.model || 'image' }, pending: false });
     } finally {
       setBusy(false);
     }
   }
-
-  const canImage = imgModels.length > 0;
 
   return (
     <div className="view">
@@ -325,7 +347,7 @@ export function Chat({ store }: { store: FleetStore }) {
 
           <div className="composer">
             <button className="btn attach-btn" title={destDir ? 'Attach files' : 'Focus a project or pick an agent with a workspace to attach files'} disabled={busy || !destDir} onClick={() => void addAttachments()}>📎</button>
-            <button className="btn attach-btn" title={canImage ? `Generate an image from the box (${imgModel})` : 'Add an OpenRouter key in Settings → Inference to generate images'} disabled={busy || !canImage || !input.trim()} onClick={() => void genImage()}>🎨</button>
+            <button className="btn attach-btn" title={canImage ? 'Generate an image from the box (model auto-picked from your prompt)' : 'Add an OpenRouter key in Settings → Inference to generate images'} disabled={busy || !canImage || !input.trim()} onClick={() => void genImage()}>🎨</button>
             <input
               className="composer-input"
               value={input}
@@ -337,13 +359,7 @@ export function Chat({ store }: { store: FleetStore }) {
             <button className="btn primary" disabled={busy || (!input.trim() && attachments.length === 0)} onClick={() => void send()}>{busy ? '…' : 'Send'}</button>
           </div>
           {canImage ? (
-            <div className="muted small" style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-              🎨 image model
-              <select className="cell-select small" value={imgModel} disabled={busy} onChange={(e) => setImgModel(e.target.value)}>
-                {imgModels.map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
-              <span>· type a prompt and hit 🎨 (billed to OpenRouter)</span>
-            </div>
+            <div className="muted small" style={{ marginTop: 6 }}>🎨 type a prompt and hit the button — the image model is auto-picked from your prompt (billed to OpenRouter)</div>
           ) : null}
         </section>
 
