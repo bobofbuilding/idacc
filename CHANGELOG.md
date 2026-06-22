@@ -8,6 +8,24 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.57] — 2026-06-22
+- **Ask for a plan in Chat → it auto-saves to Plans.** When a chat message
+  clearly asks for a plan (“draft a plan for…”, “/plan …”), the agent’s reply is
+  also saved to **Work › Plans** with an auto-titled entry — a chat line
+  confirms the save. Conservative detection (won’t fire on “planet”/“planner” or
+  “according to plan”).
+- **Live “behind the scenes” feed in Chat.** While an agent works, the reply
+  bubble shows an elapsed timer plus a live activity feed built from the fleet
+  event stream — including work the lead farms out to other agents, so you can
+  see things running **in parallel**. A compact trace is kept with the finished
+  reply (expand “behind the scenes”).
+- **Auto-decompose work on assign.** New **⚡ Assign work to fleet** in the Tasks
+  tab: describe an objective, the lead splits it into concrete sub-tasks (each
+  owned by the best-suited agent, with dependencies), you review/adjust owners,
+  then **Create & dispatch** — independent tasks are farmed out in parallel and
+  dependents follow their prerequisites. Every sub-task appears in the Tasks
+  view with live status, so parallel execution is visible.
+
 ## [0.1.56] — 2026-06-22
 - **New Plans tab in Work.** Request a plan and an agent drafts it (Markdown),
   saved to the Plans tab. **Generate** new plans right from there (objective +

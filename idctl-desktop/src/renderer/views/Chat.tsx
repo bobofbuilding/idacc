@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, useEffect } from 'react';
 import { call, resolveCoordinator, agentsLeadFirst, type FleetStore } from '../store.ts';
 import type { ProjectEntry } from '../../../../idctl/src/settings/schema.ts';
+import type { ManagerEvent } from '../../../../idctl/src/api/types.ts';
 
 type PickedFile = { path: string; name: string; size: number; isImage: boolean };
 type SavedFile = { name: string; path: string; size: number; isImage: boolean };
@@ -12,6 +13,7 @@ interface Msg {
   text: string;
   files?: { name: string; isImage: boolean }[];
   image?: { path: string; prompt: string; model: string };
+  trace?: string[];       // behind-the-scenes fleet activity captured while this reply ran
   pending?: boolean;
 }
 interface Session {
@@ -51,6 +53,68 @@ function isImageRequest(text: string): boolean {
   return verbNoun.test(text) || nounOf.test(text) || /\b(image|picture|photo) of\b/i.test(text);
 }
 function stripImageCmd(text: string): string { return text.replace(IMG_CMD, '').trim(); }
+
+// Plan-request routing: when a chat message clearly asks for a plan, the reply
+// is also saved to the Work › Plans tab. Conservative — needs an action verb +
+// "plan", an explicit "<kind> plan"/"plan out"/"roadmap", or the `/plan …` form.
+const PLAN_CMD = /^\/plan\s+/i;
+function isPlanRequest(text: string): boolean {
+  if (PLAN_CMD.test(text)) return true;
+  if (/\bplan\s+out\b/i.test(text) || /\broadmap\b/i.test(text)) return true;
+  if (/\b(implementation|project|migration|rollout|action|step[- ]by[- ]step|build|release|test|testing|deployment|launch|onboarding|game|product)\s+plan\b/i.test(text)) return true;
+  if (/\b(make|create|draft|write|build|design|put together|come up with|generate|prepare|lay out|outline|propose)\b[^.?!\n]{0,30}\bplan\b/i.test(text)) return true;
+  if (/\b(give|show)\s+me\b[^.?!\n]{0,30}\bplan\b/i.test(text)) return true;
+  return false;
+}
+function stripPlanCmd(text: string): string { return text.replace(PLAN_CMD, '').trim(); }
+function newPlanId(): string { return `plan_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
+
+// ---- Live "behind the scenes" feed -----------------------------------------
+// Turn raw manager events (seq > sinceSeq) into short, plain-English lines so a
+// running dispatch shows what the fleet is doing — including work farmed out to
+// other agents in parallel. Mirrors the Dashboard activity formatter, trimmed.
+const QUERY_VERB: Record<string, string> = {
+  dispatched: 'was asked', received: 'received the query', processing: 'is thinking',
+  delivered: 'replied', done: 'finished', complete: 'finished', completed: 'finished',
+  failed: 'failed', timeout: 'timed out', cancelled: 'was cancelled', queued: 'queued the query',
+};
+function sstr(x: unknown): string { return typeof x === 'string' ? x : ''; }
+function previewOf(d: Record<string, unknown>): string {
+  return sstr(d.message_preview) || sstr(d.preview) || sstr(d.message) || sstr(d.text) || sstr(d.title) || sstr(d.note);
+}
+export interface TraceLine { seq: number; line: string; cls: 'accent' | 'ok' | 'err' }
+// `sinceTs` is a wall-clock floor (the dispatch start). The store stamps LIVE
+// events with arrival time but leaves the historical replay batch unstamped, so
+// requiring a timestamp >= sinceTs keeps an empty/low-seq buffer from flooding
+// the feed with history (and prevents that history from being persisted).
+function traceLines(events: ManagerEvent[], sinceSeq: number, sinceTs: number, byId: Map<string, string>): TraceLine[] {
+  const name = (id: string) => (id ? byId.get(id) ?? (/^agent_\d+_/.test(id) ? '@' + id.replace(/^agent_\d+_/, '') : id) : '');
+  const out: TraceLine[] = [];
+  for (const e of events) {
+    if (!e || e.seq <= sinceSeq || (e.timestamp ?? 0) < sinceTs) continue;
+    const t = e.topic || '';
+    const d = e.data ?? {};
+    const who = name(sstr(d.agent) || sstr(e.actor) || sstr(d.from) || sstr(d.name));
+    let line = '';
+    let cls: TraceLine['cls'] = 'accent';
+    if (t.startsWith('query:')) {
+      const st = sstr(d.status) || t.split(':')[1] || '';
+      const verb = QUERY_VERB[st] || (st ? `query ${st}` : 'query');
+      const pv = previewOf(d);
+      line = `${who ? who + ' ' : ''}${verb}${pv ? ` · “${clip(pv, 80)}”` : ''}`;
+      cls = /fail|expired|error|timeout|cancel/.test(st) ? 'err' : /deliver|done|complete/.test(st) ? 'ok' : 'accent';
+    } else if (t.startsWith('task:')) {
+      line = [who, clip(previewOf(d) || sstr(d.status) || t.split(':')[1], 90)].filter(Boolean).join(' — ');
+    } else if (/relay|delegat|deleg|\bask\b/.test(t)) {
+      const to = name(sstr(d.to) || sstr(d.target) || sstr(d.delegate));
+      line = [who, to].filter(Boolean).join(' → ');
+    } else if (t.startsWith('agent:')) {
+      line = [who, t.split(':')[1]].filter(Boolean).join(' ');
+    } else continue; // skip noise (snapshots, heartbeat housekeeping, etc.)
+    if (line.trim()) out.push({ seq: e.seq, line: line.trim(), cls });
+  }
+  return out.slice(-8);
+}
 function newSessionId(): string { return `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
 function fmtAge(ts: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -89,11 +153,35 @@ export function Chat({ store }: { store: FleetStore }) {
   const [busy, setBusy] = useState(false);
   const [attachments, setAttachments] = useState<PickedFile[]>([]);
   const [canImage, setCanImage] = useState(false); // an image-capable provider is configured
+  // Live "behind the scenes" feed for the in-flight dispatch (elapsed + fleet activity).
+  const [running, setRunning] = useState<{ sid: string; replyId: number; startedAt: number; sinceSeq: number } | null>(null);
+  const [, setTick] = useState(0); // 1 Hz re-render so the elapsed timer ticks
   const idRef = useRef(1);
   const endRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef(''); // the currently-active session id (for late-arriving replies)
   const sessionRef = useRef<Session | null>(null); // mirror of the active session (to persist a gated empty chat)
   const deletedRef = useRef<Set<string>>(new Set()); // sessions deleted this run — drop their late writes
+  const liveTraceRef = useRef<TraceLine[]>([]); // latest derived trace (read at completion to persist)
+
+  // Resolve agent ids → readable names for the live activity feed.
+  const agentNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of store.agents) { if (a.id) m.set(a.id, a.name); m.set(a.name, a.name); }
+    return m;
+  }, [store.agents]);
+  // Behind-the-scenes activity for the running dispatch (events after it started).
+  // Floor timestamps a hair before startedAt to tolerate stamp/poll ordering.
+  const liveTrace = useMemo(
+    () => (running ? traceLines(store.events, running.sinceSeq, running.startedAt - 1500, agentNameById) : []),
+    [running, store.events, agentNameById],
+  );
+  useEffect(() => { liveTraceRef.current = liveTrace; }, [liveTrace]);
+  // Tick once a second while a dispatch is running so the elapsed time updates.
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [running]);
 
   const activeKey = `idctl.chat.session.${team}`;
   function blankSession(): Session {
@@ -187,6 +275,27 @@ export function Chat({ store }: { store: FleetStore }) {
     void refreshList();
   }
 
+  /** Append a system line to session `sid` even after a chat switch (file-authoritative). */
+  async function appendSystem(sid: string, text: string) {
+    const m: Msg = { id: idRef.current++, role: 'system', who: '', text };
+    if (sessionRef.current?.id === sid) { pushMsgs(m); return; }
+    if (deletedRef.current.has(sid)) return;
+    const s = await call<Session | null>('chats:get', sid).catch(() => null);
+    if (s && !deletedRef.current.has(sid)) { s.messages = [...s.messages, m]; await call('chats:save', s).catch(() => {}); void refreshList(); }
+  }
+  /** Save a chat reply as a Plan (Work › Plans). Returns the plan title, or '' on failure. */
+  async function savePlanFromChat(request: string, content: string, agent: string): Promise<string> {
+    const now = Date.now();
+    const title = clip(stripPlanCmd(request).replace(/\s+/g, ' ').trim(), 60) || 'Plan from chat';
+    const plan = {
+      id: newPlanId(), title, request, agent, team, status: 'draft' as const,
+      content, version: 1,
+      revisions: [{ version: 1, at: now, note: `From chat: ${clip(stripPlanCmd(request), 80)}`, content }],
+      createdAt: now, updatedAt: now,
+    };
+    try { await call('plans:save', plan); return title; } catch { return ''; }
+  }
+
   function newChat() { const s = blankSession(); adoptSession(s); persist(s); }
   async function openChat(id: string) {
     if (id === session?.id) return;
@@ -263,6 +372,7 @@ export function Chat({ store }: { store: FleetStore }) {
         if (saved.length === 0 && !text) return;
       }
       const message = compose(text, saved);
+      const planRequest = !!text && isPlanRequest(text);
       const myId = idRef.current++;
       const replyId = idRef.current++;
       pushMsgs(
@@ -272,11 +382,29 @@ export function Chat({ store }: { store: FleetStore }) {
       if (text) { autoTitle(text); void genTitle(sid, text); }
       setInput('');
       setAttachments([]);
+      // Start the live "behind the scenes" feed: snapshot the event cursor so we
+      // only surface activity caused by this dispatch (and any work it farms out).
+      const sinceSeq = store.events.reduce((mx, e) => Math.max(mx, e?.seq ?? 0), 0);
+      liveTraceRef.current = [];
+      setRunning({ sid, replyId, startedAt: Date.now(), sinceSeq });
       try {
         const reply = await call<string>('dispatch', `/ask ${target} ${qArg(message)}`);
-        await resolveMsg(sid, replyId, { text: reply, pending: false });
+        const trace = liveTraceRef.current.slice(-6).map((t) => t.line);
+        await resolveMsg(sid, replyId, { text: reply, pending: false, trace: trace.length ? trace : undefined });
+        // Plan request → also save the reply to Work › Plans (skip empty replies
+        // and one-line refusals; a real plan always has some substance).
+        if (planRequest) {
+          const real = (reply || '').trim();
+          const usable = real.length >= 24 && real !== '(empty reply)' && real !== '(no reply)' && !real.startsWith('✗');
+          if (usable) {
+            const title = await savePlanFromChat(text, real, target);
+            await appendSystem(sid, title ? `📋 Saved to Plans → “${title}” (Work › Plans tab)` : '⚠ Couldn’t save this to Plans.');
+          }
+        }
       } catch (err) {
         await resolveMsg(sid, replyId, { role: 'system', text: `✗ ${err instanceof Error ? err.message : String(err)}`, pending: false });
+      } finally {
+        setRunning(null);
       }
     } finally {
       setBusy(false);
@@ -339,16 +467,34 @@ export function Chat({ store }: { store: FleetStore }) {
       <div className="cols chat-cols">
         <section className="card chat">
           <div className="messages">
-            {msgs.map((m) => (
+            {msgs.map((m) => {
+              const live = running && running.replyId === m.id;
+              const elapsed = live ? Math.max(0, Math.floor((Date.now() - running.startedAt) / 1000)) : 0;
+              return (
               <div key={m.id} className={`msg ${m.role}`}>
                 {m.role !== 'system' ? <div className="msg-who">{m.role === 'you' ? 'you' : m.who}</div> : null}
-                <div className="msg-body">{m.pending && !m.image ? <span className="spin">▌ {m.text || 'thinking…'}</span> : m.text}</div>
+                <div className="msg-body">{m.pending && !m.image ? <span className="spin">▌ {m.text || (live ? `${m.who} working… ${elapsed}s` : 'thinking…')}</span> : m.text}</div>
+                {/* Live behind-the-scenes feed while this reply is running. */}
+                {live && liveTrace.length ? (
+                  <div className="chat-trace">
+                    <div className="chat-trace-head muted small">behind the scenes · live</div>
+                    {liveTrace.map((t) => <div key={t.seq} className={`chat-trace-row trace-${t.cls}`}>{t.line}</div>)}
+                  </div>
+                ) : null}
+                {/* Captured trace, persisted with a finished reply. */}
+                {!m.pending && m.trace && m.trace.length ? (
+                  <details className="chat-trace done">
+                    <summary className="muted small">behind the scenes · {m.trace.length} step{m.trace.length === 1 ? '' : 's'}</summary>
+                    {m.trace.map((line, i) => <div key={i} className="chat-trace-row">{line}</div>)}
+                  </details>
+                ) : null}
                 {m.image ? <ChatImage path={m.image.path} /> : null}
                 {m.files && m.files.length ? (
                   <div className="msg-files">{m.files.map((f) => <span key={f.name} className="file-chip" title={f.name}>{f.isImage ? '🖼' : '📄'} {f.name}</span>)}</div>
                 ) : null}
               </div>
-            ))}
+              );
+            })}
             <div ref={endRef} />
           </div>
 
@@ -376,9 +522,10 @@ export function Chat({ store }: { store: FleetStore }) {
             />
             <button className="btn primary" disabled={busy || (!input.trim() && attachments.length === 0)} onClick={() => void send()}>{busy ? '…' : 'Send'}</button>
           </div>
-          {canImage ? (
-            <div className="muted small" style={{ marginTop: 6 }}>Send auto-detects image requests (e.g. “generate an image of…”, “/image …”) → 🎨 via OpenRouter; everything else goes to {target}.</div>
-          ) : null}
+          <div className="muted small" style={{ marginTop: 6 }}>
+            {canImage ? <>Send auto-detects image requests (“generate an image of…”, “/image …”) → 🎨; </> : null}
+            ask for a plan (“draft a plan for…”, “/plan …”) and the reply is saved to <b>Work › Plans</b>. Everything else goes to {target} — watch the live feed below the reply.
+          </div>
         </section>
 
         <aside className="card targets">

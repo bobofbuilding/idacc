@@ -34,6 +34,7 @@ import { discoverLocalServers, type DiscoveredServer } from '../../../idctl/src/
 import { kindNeedsKey, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
 import { buildRuntimeCatalog } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import { testMcpServer } from './mcpTest.ts';
+import { decomposeWork, createAndDispatchPlan, type SubTask } from './work.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -125,6 +126,20 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // dispatch / lifecycle
   dispatch: (command: string) => client.dispatch(String(command)),
   remote: (command: string, agent?: string) => client.remote(String(command), agent),
+
+  // auto-decompose work for the fleet: lead splits an objective into sub-tasks…
+  'work:decompose': async (objective: string, lead: string) => {
+    const agents = await client.agents().catch(() => []);
+    const list = agents.map((a) => ({
+      name: a.name,
+      runtime: a.runtime,
+      skills: Array.isArray(a.metadata?.skills) ? (a.metadata!.skills as string[]) : [],
+    }));
+    return decomposeWork(client, String(objective), String(lead), list);
+  },
+  // …then create them all + farm out the work (parallel where possible).
+  'work:createPlan': (objective: string, subtasks: SubTask[]) =>
+    createAndDispatchPlan(client, String(objective), Array.isArray(subtasks) ? subtasks : []),
 
   // health probes
   probeAll: () => client.probeAll(),

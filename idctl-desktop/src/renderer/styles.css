@@ -284,6 +284,20 @@ button.chip.incompat:hover { border-color: var(--line); }
 .chat-focus { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: -4px 0 8px; padding: 6px 10px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; }
 .chat-focus .mono { font-family: var(--mono, ui-monospace, monospace); opacity: .8; word-break: break-all; }
 .msg-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+/* Live + persisted "behind the scenes" fleet activity under an agent reply. */
+.chat-trace { margin: 6px 0 2px; padding: 6px 10px; background: var(--bg-2); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 8px; max-width: 560px; }
+.chat-trace.done { padding: 4px 10px; }
+.chat-trace.done > summary { cursor: pointer; list-style: revert; }
+.chat-trace-head { letter-spacing: .04em; text-transform: uppercase; margin-bottom: 3px; }
+.chat-trace-row { font-size: 12px; line-height: 1.5; color: var(--text-2, var(--muted)); white-space: pre-wrap; }
+.chat-trace-row.trace-ok { color: var(--ok, #4caf7d); }
+.chat-trace-row.trace-err { color: var(--danger, #e5534b); }
+/* Auto-decompose preview: proposed sub-tasks before they're created + dispatched. */
+.decomp-list { display: flex; flex-direction: column; gap: 6px; }
+.decomp-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; }
+.decomp-num { flex: 0 0 auto; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; background: var(--bg-3); border-radius: 999px; }
+.decomp-main { flex: 1 1 auto; min-width: 0; }
+.decomp-row .cell-select { flex: 0 0 auto; max-width: 160px; }
 .attach-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
 .file-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; background: var(--bg-3); border: 1px solid var(--line); border-radius: 999px; font-size: 12px; max-width: 280px; }
 .file-chip .muted { font-size: 11px; }
