@@ -21,6 +21,7 @@ import { Select } from '../components/Select.tsx';
 
 import { DashboardView } from '../views/DashboardView.tsx';
 import { ChatView } from '../views/ChatView.tsx';
+import { OnboardView } from '../views/OnboardView.tsx';
 import { InboxView } from '../views/InboxView.tsx';
 import { TasksView } from '../views/TasksView.tsx';
 import { HealthView } from '../views/HealthView.tsx';
@@ -92,6 +93,10 @@ export function App({ config }: { config: Config }) {
         doFlash('refreshing…', 'info');
         return;
       }
+      if (input === 'n') {
+        setView('onboard');
+        return;
+      }
       if (key.tab && key.shift) {
         cycle(-1);
         return;
@@ -100,9 +105,9 @@ export function App({ config }: { config: Config }) {
         cycle(1);
         return;
       }
-      // 1-9 map to the first nine views; 0 maps to the tenth (Settings).
+      // 1-9 map to the first nine numeric views; 0 always opens Settings.
       if (input === '0') {
-        const id = viewAtIndex(9);
+        const id = VIEWS.find((v) => v.id === 'settings')?.id;
         if (id) setView(id);
         return;
       }
@@ -178,6 +183,8 @@ function ActiveView({ view }: { view: ViewId }) {
       return <DashboardView />;
     case 'chat':
       return <ChatView />;
+    case 'onboard':
+      return <OnboardView />;
     case 'inbox':
       return <InboxView />;
     case 'tasks':
@@ -213,7 +220,7 @@ function HelpOverlay({ onClose }: { onClose: () => void }) {
         idctl — keys
       </Text>
       <Text>
-        <Text color={theme.accent}>1-9 / Tab</Text> switch view ·{' '}
+        <Text color={theme.accent}>1-9 / Tab</Text> switch view · <Text color={theme.accent}>n</Text> onboard ·{' '}
         <Text color={theme.accent}>r</Text> refresh · <Text color={theme.accent}>t</Text> team ·{' '}
         <Text color={theme.accent}>q</Text> quit
       </Text>

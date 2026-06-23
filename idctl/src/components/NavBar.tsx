@@ -18,7 +18,7 @@ export function NavBar({ active, inboxCount }: Props) {
       </Text>
       {VIEWS.map((v, i) => {
         const isActive = v.id === active;
-        const key = i === 9 ? '0' : String(i + 1); // 10th view is reached via 0
+        const key = v.shortcut ?? (v.id === 'settings' ? '0' : i < 9 ? String(i + 1) : 'Tab');
         const badge = v.id === 'inbox' && inboxCount > 0 ? `(${inboxCount})` : '';
         return (
           <Text key={v.id}>

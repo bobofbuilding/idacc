@@ -3,6 +3,7 @@
 export type ViewId =
   | 'dash'
   | 'chat'
+  | 'onboard'
   | 'inbox'
   | 'tasks'
   | 'health'
@@ -15,13 +16,15 @@ export type ViewId =
 export interface ViewDef {
   id: ViewId;
   label: string;
-  /** Compact label for the (now 10-wide) nav bar. */
+  /** Compact label for the nav bar. */
   short: string;
+  shortcut?: string;
 }
 
 export const VIEWS: ViewDef[] = [
   { id: 'dash', label: 'Dashboard', short: 'Dash' },
   { id: 'chat', label: 'Chat', short: 'Chat' },
+  { id: 'onboard', label: 'Onboard agent', short: 'New', shortcut: 'n' },
   { id: 'inbox', label: 'Inbox', short: 'Inbox' },
   { id: 'tasks', label: 'Tasks', short: 'Tasks' },
   { id: 'health', label: 'Health', short: 'Health' },

@@ -82,10 +82,10 @@ export function ScheduleView() {
             checkins.slice(0, 9).map((c, i) => (
               <Text key={String(c.id ?? i)}>
                 <Text color={statusColor(c.status)}>●</Text>{' '}
-                <Text>{String(c.title ?? c.delegate ?? c.id ?? 'check-in')}</Text>
+                <Text>{c.linkedTask?.title ?? c.linkedTask?.name ?? c.owner ?? String(c.id ?? 'check-in')}</Text>
                 <Text color={theme.dim}>
-                  {c.delegate ? ` → ${c.delegate}` : ''}
-                  {c.nextDueAt ? ` · due ${ago(c.nextDueAt)}` : ''}
+                  {c.owner ? ` → ${c.owner}` : ''}
+                  {c.nextFireAt ? ` · due ${ago(c.nextFireAt)}` : ''}
                 </Text>
               </Text>
             ))
