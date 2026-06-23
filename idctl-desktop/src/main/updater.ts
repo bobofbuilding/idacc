@@ -15,7 +15,7 @@
  * the swap runs in a small shell helper spawned detached right before quit.
  */
 
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, Notification } from 'electron';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, copyFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -73,6 +73,37 @@ function settings(): UpdateSettings | undefined {
 
 function emit(): void {
   mainWindow?.webContents.send('update:status', status);
+}
+
+let lastNotifiedVersion: string | null = null;
+/**
+ * Fire a native OS notification the first time a given version is freshly staged,
+ * so a background-detected update surfaces system-wide — even when the app is
+ * unfocused, minimized, or the user is on a page other than Settings. Once per
+ * version per session; clicking it brings the window forward.
+ */
+function notifyStaged(version: string, notes?: string): void {
+  if (lastNotifiedVersion === version) return;
+  lastNotifiedVersion = version;
+  if (process.env.IDCTL_SHOT) return; // headless screenshot runs
+  try {
+    if (!Notification.isSupported()) return;
+    const n = new Notification({
+      title: 'Update ready',
+      body: `v${version} downloaded — restart the app to apply.`,
+      subtitle: notes ? notes.split('\n')[0].slice(0, 120) : undefined,
+      silent: false,
+    });
+    n.on('click', () => {
+      if (!mainWindow) return;
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    });
+    n.show();
+  } catch {
+    /* notifications are best-effort */
+  }
 }
 
 async function readManifest(url: string): Promise<UpdateManifest> {
@@ -151,8 +182,13 @@ export async function checkForUpdate(): Promise<UpdateStatus> {
     if (latest && compareVersions(latest.version, status.current) > 0) {
       // Newer version — stage it so a restart can apply it.
       const already = readStaged();
-      if (!already || already.version !== latest.version) await stage(latest);
+      const freshlyStaged = !already || already.version !== latest.version;
+      if (freshlyStaged) await stage(latest);
       status = { ...status, checking: false, available: true, staged: true, latest: latest.version, notes: latest.notes, lastChecked };
+      // Ping the OS the first time we download a given version — so it surfaces
+      // even when the user isn't on the Settings page. Skip on cold-start of an
+      // already-staged build (the sidebar chip handles that quietly).
+      if (freshlyStaged) notifyStaged(latest.version, latest.notes);
     } else {
       status = { ...status, checking: false, available: false, staged: !!readStaged(), latest: latest?.version, lastChecked };
     }

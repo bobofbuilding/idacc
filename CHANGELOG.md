@@ -8,6 +8,15 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.80] — 2026-06-23
+- **Background updates now ping you system‑wide.** The app already checked for
+  updates in the background (on launch, every few hours, and on window focus) and
+  showed a sidebar “Restart & update” chip — but you'd only really notice it on the
+  Settings page. Now, the first time a background check downloads a new version, you
+  get a native **macOS notification** (“Update ready — v0.1.x downloaded, restart to
+  apply”); clicking it brings the app forward. Fires once per version, even when the
+  app is unfocused or minimized.
+
 ## [0.1.79] — 2026-06-23
 - **Agent identity lives on the Identity & Keys page now.** The per‑agent onchain
   identity (ENS / ID‑chain domain, OWS wallet, and **Register identity** /
