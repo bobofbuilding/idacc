@@ -27,9 +27,9 @@ export function Inbox({ store }: { store: FleetStore }) {
       ) : null}
 
       <section className="card grow">
-        <h3>Manager inbox <span className="muted small">· the manager is blocked on your reply</span></h3>
+        <h3>Manager inbox <span className="muted small">{store.inbox.length ? `· ${store.inbox.length} waiting on your reply` : '· nothing needs a reply right now'}</span></h3>
         {store.inbox.length === 0 ? (
-          <div className="muted center pad">Nothing waiting — the manager isn't blocked on you.</div>
+          <div className="muted center pad">You're all caught up — no questions from the manager or your agents.</div>
         ) : (
           store.inbox.map((it) => <InboxRow key={it.query_id} item={it} onDone={() => store.refresh()} />)
         )}

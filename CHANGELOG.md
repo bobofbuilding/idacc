@@ -8,6 +8,17 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.116] — 2026-06-24
+- **Lead triage of unassigned To Do tasks.** New **⚖ Triage To Do (N)** button on the
+  Tasks toolbar: the team lead reviews every unassigned task in the To Do lane, assigns
+  each to the best-fit **active** agent, and dispatches it to start work (Backlog/Holding
+  waiting-lanes are left alone). An **auto** checkbox keeps the lead doing this for newly
+  unassigned To Do tasks as they appear (throttled ~90s). A progress toast reports the
+  result and survives page navigation.
+- **Clearer Inbox.** The Manager-inbox card no longer claims "the manager is blocked on
+  your reply" when nothing is waiting — it now reads **"nothing needs a reply right now"**
+  when empty (and "N waiting on your reply" when there is), matching the empty state.
+
 ## [0.1.115] — 2026-06-24
 - **Dispatch notifications you can't miss + leave the page freely.** Compile & dispatch,
   fan-out, and "Assign work to fleet" now raise a global toast that shows a spinner while

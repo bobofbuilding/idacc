@@ -38,7 +38,7 @@ import { discoverLocalServers, type DiscoveredServer } from '../../../idctl/src/
 import { kindNeedsKey, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
 import { buildRuntimeCatalog } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import { testMcpServer } from './mcpTest.ts';
-import { decomposeWork, createAndDispatchPlan, fanOutObjective, teamLeads, type SubTask } from './work.ts';
+import { decomposeWork, createAndDispatchPlan, fanOutObjective, teamLeads, triageUnassigned, type SubTask } from './work.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -192,6 +192,8 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'work:teamLeads': (teams: string[]) => teamLeads(client, Array.isArray(teams) ? teams.map(String) : []),
   'work:fanout': (objective: string, teams: string[]) =>
     fanOutObjective(client, String(objective), Array.isArray(teams) ? teams.map(String) : []),
+  // Lead triages unassigned To-Do tasks: assign each to the best active agent + dispatch.
+  'work:triage': (lead: string) => triageUnassigned(client, String(lead)),
 
   // health probes
   probeAll: () => client.probeAll(),

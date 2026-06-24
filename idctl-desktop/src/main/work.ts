@@ -9,8 +9,8 @@
  */
 
 import type { ManagerClient } from '../../../idctl/src/api/client.ts';
-import type { Agent } from '../../../idctl/src/api/types.ts';
-import { setTaskLane } from '../../../idctl/src/settings/store.ts';
+import type { Agent, Task } from '../../../idctl/src/api/types.ts';
+import { setTaskLane, loadSettings } from '../../../idctl/src/settings/store.ts';
 
 export interface SubTask { title: string; description: string; agent: string; dependsOn: number[] }
 export interface CreatedTask { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; dependsOn: number[]; dispatched: boolean }
@@ -273,4 +273,105 @@ export async function fanOutObjective(client: ManagerClient, objective: string, 
       }
     }),
   );
+}
+
+// ---- Lead triage of unassigned To-Do tasks --------------------------------
+
+export interface TriageResult { considered: number; assigned: { ref: string; agent: string }[]; skipped: number; dispatched: number; error?: string }
+
+function statusCol(status: string): 'todo' | 'doing' | 'done' {
+  if (/done|complete/i.test(status)) return 'done';
+  if (/doing|claim|progress|start|active/i.test(status)) return 'doing';
+  return 'todo';
+}
+function taskRef(t: Task): string { return t.shortId ?? t.name ?? t.uuid ?? t.title; }
+
+const TRIAGE_PROMPT = (taskLines: string, agentLines: string) =>
+  `You are the team lead. Assign each UNASSIGNED to-do task below to the best-suited ACTIVE agent on your team.
+
+Tasks (ref :: title — description):
+${taskLines}
+
+Active agents:
+${agentLines}
+
+Return ONLY a JSON array (no prose, no markdown fence): [{"ref":"<task ref EXACTLY as given>","agent":"<one of the active agent names above>"}]
+Rules:
+- Assign EVERY task to exactly one ACTIVE agent; never assign one marked [STOPPED].
+- Match each task to the agent whose role/skills fit best; spread load sensibly across agents.`;
+
+const TRIAGE_WORK = (ref: string, title: string, desc: string) =>
+  `You've been assigned task ${ref}: ${title}
+${desc ? desc + '\n' : ''}Do this task now. When finished, mark it done with: /task done ${ref}
+If you cannot complete it, still mark it done with a brief failure note.`;
+
+/**
+ * Have the team lead triage UNASSIGNED tasks that are sitting in the To-Do lane
+ * (status=todo, no owner; Backlog/Holding waiting-lanes are intentionally skipped),
+ * assign each to the best-fit ACTIVE agent, and dispatch the work (fire-and-forget,
+ * background — like createAndDispatchPlan). Returns once assignments are made.
+ */
+export async function triageUnassigned(client: ManagerClient, lead: string, opts: { dispatch?: boolean } = {}): Promise<TriageResult> {
+  const dispatch = opts.dispatch !== false;
+  const [tasks, roster] = await Promise.all([
+    client.tasks().catch(() => [] as Task[]),
+    client.agents().catch(() => [] as Agent[]) as Promise<Agent[]>,
+  ]);
+  const active = roster.filter((a) => isActiveStatus(a.status));
+  const activeNames = new Set(active.map((a) => a.name));
+  // Skip the waiting lanes (Backlog/Holding) — only triage the To-Do lane. Lanes are an
+  // app-side overlay; a todo-status task with no overlay defaults to the To-Do lane.
+  const lanes = (loadSettings().taskLanes ?? {}) as Record<string, string>;
+  const unassigned = tasks.filter((t) => {
+    if (t.ownerName) return false;
+    if (statusCol(t.status) !== 'todo') return false;
+    const lane = lanes[taskRef(t)];
+    return !lane || lane === 'todo';
+  });
+  if (!unassigned.length) return { considered: 0, assigned: [], skipped: 0, dispatched: 0 };
+  if (!active.length) return { considered: unassigned.length, assigned: [], skipped: unassigned.length, dispatched: 0, error: 'no active agents to assign to' };
+
+  const byRef = new Map(unassigned.map((t) => [taskRef(t), t]));
+  const taskLines = unassigned.map((t) => `- ${taskRef(t)} :: ${clip(t.title, 100)}${t.description ? ' — ' + clip(t.description, 140) : ''}`).join('\n');
+  const agentLines = active.map((a) => {
+    const skills = Array.isArray(a.metadata?.skills) ? (a.metadata!.skills as string[]) : [];
+    return `- ${a.name}${a.runtime ? ` (${a.runtime})` : ''}${skills.length ? ` — skills: ${skills.slice(0, 6).join(', ')}` : ''}`;
+  }).join('\n');
+
+  let raw = '';
+  try { raw = await client.dispatch(`/ask ${lead} ${qArg(TRIAGE_PROMPT(taskLines, agentLines))}`); }
+  catch (e) { return { considered: unassigned.length, assigned: [], skipped: unassigned.length, dispatched: 0, error: e instanceof Error ? e.message : String(e) }; }
+
+  const planned = new Map<string, string>(); // ref → agent (validated, active)
+  for (const o of extractJsonArray(raw) ?? []) {
+    const rec = (o ?? {}) as Record<string, unknown>;
+    const ref = String(rec.ref ?? rec.task ?? '').trim();
+    let agent = String(rec.agent ?? rec.owner ?? '').trim();
+    if (!byRef.has(ref) || planned.has(ref)) continue;
+    if (!activeNames.has(agent)) agent = active[0].name; // coerce to an active agent
+    planned.set(ref, agent);
+  }
+  // Round-robin any tasks the model didn't cover onto active agents (none left behind).
+  let i = 0;
+  for (const ref of byRef.keys()) {
+    if (!planned.has(ref)) { planned.set(ref, active[i % active.length].name); i++; }
+  }
+
+  // Assign owners (sets the owner DB row; manager moves owned → doing).
+  const assigned: { ref: string; agent: string }[] = [];
+  for (const [ref, agent] of planned) {
+    try { await client.remote(`/task assign ${ref} ${agent}`); assigned.push({ ref, agent }); }
+    catch { /* skip this one; keep going */ }
+  }
+  // Dispatch the work in the background so the agents actually do it (assign ≠ work).
+  let dispatched = 0;
+  if (dispatch) {
+    for (const { ref, agent } of assigned) {
+      const t = byRef.get(ref);
+      if (!t) continue;
+      dispatched++;
+      void client.dispatch(`/ask ${agent} ${qArg(TRIAGE_WORK(ref, t.title, clip(t.description ?? '', 400)))}`).then(() => {}, () => {});
+    }
+  }
+  return { considered: unassigned.length, assigned, skipped: unassigned.length - assigned.length, dispatched };
 }

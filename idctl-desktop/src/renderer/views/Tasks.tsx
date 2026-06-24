@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { call, resolveCoordinator, type FleetStore } from '../store.ts';
 import { usePrompt } from '../components/prompt.tsx';
 import { useToast } from '../components/toast.tsx';
@@ -15,6 +15,7 @@ type CreatedTask = { idx: number; ref: string; title: string; agent: string; ok:
 type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: number };
 type TeamLead = { team: string; lead: string | null; activeCount: number; totalCount: number };
 type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
+type TriageResult = { considered: number; assigned: { ref: string; agent: string }[]; skipped: number; dispatched: number; error?: string };
 
 type Tab = 'tasks' | 'plans' | 'schedule' | 'loops' | 'dream';
 const TABS: { id: Tab; label: string }[] = [
@@ -133,6 +134,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const [assignNote, setAssignNote] = useState('');
   const [fanTeams, setFanTeams] = useState<Set<string>>(new Set()); // other teams to fan the objective out to
   const [teamInfo, setTeamInfo] = useState<TeamLead[]>([]);          // active-lead + running counts per team
+  const [autoTriage, setAutoTriage] = useState(false);              // lead keeps auto-assigning unassigned To-Do tasks
+  const [triaging, setTriaging] = useState(false);                  // a triage pass is in flight (guards re-entry)
+  const lastTriageRef = useRef(0);                                  // cooldown clock for auto-triage
   const prompt = usePrompt();
   const toast = useToast();
 
@@ -250,6 +254,43 @@ function TasksPanel({ store }: { store: FleetStore }) {
     }
   }
 
+  // Lead triages unassigned To-Do tasks: assign each to the best active agent + dispatch.
+  async function triage(silent = false) {
+    if (triaging) return;
+    if (!leadName) { if (!silent) setNote('no lead available to triage'); return; }
+    const pending = tasks.filter((t) => !t.ownerName && laneOf(t) === 'todo');
+    if (!pending.length) { if (!silent) setNote('no unassigned To Do tasks'); return; }
+    setTriaging(true);
+    lastTriageRef.current = Date.now();
+    const t = toast({ kind: 'progress', text: `${leadName} is triaging ${pending.length} unassigned To Do task${pending.length === 1 ? '' : 's'}…` });
+    try {
+      const res = await call<TriageResult>('work:triage', leadName);
+      if (res.error) { t.update({ kind: 'error', text: `Triage: ${res.error}` }); setNote(`triage: ${res.error}`); }
+      else {
+        const summary = res.assigned.length
+          ? `assigned ${res.assigned.length}${res.dispatched ? ` · dispatched ${res.dispatched}` : ''}${res.skipped ? ` · ${res.skipped} skipped` : ''}`
+          : 'nothing to assign';
+        t.update({ kind: res.assigned.length ? 'success' : 'info', text: `${leadName} triaged To Do — ${summary}` });
+        setNote(res.assigned.length ? `${summary} ✓` : summary);
+        await reload();
+      }
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      t.update({ kind: 'error', text: `Triage failed: ${m}` });
+      setNote(`triage failed: ${m}`);
+    } finally { setTriaging(false); }
+  }
+
+  // Auto-triage: when enabled, the lead keeps assigning unassigned To-Do tasks as they
+  // appear (on the 5s poll), throttled by a 90s cooldown so it never hammers the lead.
+  useEffect(() => {
+    if (!autoTriage || triaging) return;
+    const pending = tasks.filter((t) => !t.ownerName && laneOf(t) === 'todo').length;
+    if (!pending || Date.now() - lastTriageRef.current < 90_000) return;
+    void triage(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoTriage, tasks, triaging]);
+
   async function run(cmd: string, label: string) {
     setBusy(true);
     setNote(`${label}…`);
@@ -344,6 +385,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const routineCount = tasks.filter(isRoutine).length;
   const openCount = tasks.filter((t) => !isDone(t)).length;
   const doneCount = tasks.filter(isDone).length;
+  // Unassigned tasks sitting in the To-Do lane — what the lead can triage/assign.
+  const unassignedTodo = tasks.filter((t) => !t.ownerName && laneOf(t) === 'todo').length;
   // Done tasks auto-archive: hidden from the board by default, revealed by the "show archived" toggle.
   const archivedCount = tasks.filter((t) => isDone(t) && (!hideRoutine || !isRoutine(t))).length;
   const filtered = tasks.filter((t) => {
@@ -369,6 +412,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
             <button className="btn" disabled={busy} title="Permanently delete completed (archived) tasks from the manager" onClick={() => setConfirmClear(true)}>Clear archived</button>
           )
         ) : null}
+        <button className="btn" disabled={busy || triaging || !unassignedTodo} title={unassignedTodo ? `Have ${leadName || 'the lead'} assign the ${unassignedTodo} unassigned To Do task${unassignedTodo === 1 ? '' : 's'} to the best active agents and start them` : 'no unassigned To Do tasks'} onClick={() => void triage()}>{triaging ? '⚖ Triaging…' : `⚖ Triage To Do${unassignedTodo ? ` (${unassignedTodo})` : ''}`}</button>
+        <label className="muted small" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer' }} title="Keep the lead auto-assigning new unassigned To Do tasks (checked every poll, throttled ~90s)">
+          <input type="checkbox" checked={autoTriage} onChange={(e) => setAutoTriage(e.target.checked)} />
+          auto
+        </label>
         <button className="btn" disabled={busy} title="Ask the lead to surface task blockers that need YOUR decision → they appear as option-questions in the Inbox" onClick={() => void surfaceBlockers()}>⚠ Surface blockers</button>
         <button className="btn" disabled={busy || proposing} onClick={() => { setShowAssign((v) => !v); setAssignNote(''); setProposal(null); }}>{showAssign ? '− Close' : '⚡ Assign work to fleet'}</button>
         <button className="btn primary" disabled={busy} onClick={() => void newTask()}>+ New task</button>
