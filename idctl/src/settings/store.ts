@@ -336,6 +336,17 @@ export function setTaskLane(ref: string, lane: string, file = resolveConfigPath(
   return cfg;
 }
 
+/** Record a task's prerequisite refs (app-side dependency overlay). Empty deps clears it. */
+export function setTaskDeps(ref: string, deps: string[], file = resolveConfigPath()): IdctlConfig {
+  const cfg = loadSettings(file);
+  const all = { ...(cfg.taskDeps ?? {}) };
+  const clean = Array.from(new Set((deps ?? []).map(String).filter((d) => d && d !== ref)));
+  if (clean.length) all[ref] = clean; else delete all[ref];
+  cfg.taskDeps = all;
+  saveSettings(cfg, file);
+  return cfg;
+}
+
 export function setDefaultTeam(name: string, file = resolveConfigPath()): IdctlConfig {
   const cfg = loadSettings(file);
   cfg.defaultTeam = name;

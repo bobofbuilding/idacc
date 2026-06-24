@@ -123,6 +123,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const [showArchived, setShowArchived] = useState(false); // done tasks auto-archive (hidden) until revealed
   const [dragRef, setDragRef] = useState<string | null>(null); // task being dragged across lanes
   const [laneOverlay, setLaneOverlay] = useState<Record<string, string>>({}); // ref → fine-grained lane
+  const [depsOverlay, setDepsOverlay] = useState<Record<string, string[]>>({}); // ref → prerequisite refs (app-side; manager has no deps)
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   // Auto-decompose: describe an objective → lead splits it → create + farm out.
@@ -219,6 +220,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
       setTasks([]);
     }
     setLaneOverlay(await call<Record<string, string>>('tasks:lanes').catch(() => ({})));
+    setDepsOverlay(await call<Record<string, string[]>>('tasks:deps').catch(() => ({})));
   }
   useEffect(() => {
     reload();
@@ -239,6 +241,17 @@ function TasksPanel({ store }: { store: FleetStore }) {
     const ov = laneOverlay[ref(t)] as Lane | undefined;
     if (ov && LANE_STATUS[ov] === colOf(t.status)) return ov;
     return DEFAULT_LANE[colOf(t.status)];
+  }
+  // Resolve a task's prerequisites from the app-side deps overlay (the manager has none).
+  // A missing prereq (removed task) counts as satisfied so nothing blocks forever.
+  const taskIndex = new Map(tasks.map((t) => [ref(t), t] as const));
+  function prereqsOf(t: Task): { ref: string; task?: Task; done: boolean }[] {
+    return (depsOverlay[ref(t)] ?? []).map((r) => { const d = taskIndex.get(r); return { ref: r, task: d, done: d ? isDone(d) : true }; });
+  }
+  // How many (live) tasks list THIS task as a prerequisite.
+  function blocksCount(t: Task): number {
+    const r = ref(t);
+    return Object.keys(depsOverlay).filter((k) => depsOverlay[k]?.includes(r) && taskIndex.has(k)).length;
   }
   // Drag a card to a lane → save the lane overlay + set the mapped manager status if it changed.
   async function moveToLane(t: Task, lane: Lane) {
@@ -801,7 +814,21 @@ function TasksPanel({ store }: { store: FleetStore }) {
               style={{ border: `1px solid ${working ? 'rgba(60,203,120,0.55)' : stale ? 'rgba(224,163,60,0.55)' : 'var(--border, #2a2a2a)'}`, borderRadius: 6, padding: '6px 8px', background: 'var(--bg, #141414)', cursor: busy ? 'default' : 'grab' }}
             >
               <div className="b" style={{ fontSize: 13 }}>{t.title}</div>
-              <div className="muted small mono">{t.shortId ?? ref(t)}{isRoutine(t) ? ' · routine' : ''}{store.viewAll && t.teamName ? ` · ${t.teamName}` : ''}</div>
+              <div className="muted small mono">{t.shortId ?? ref(t)}{isRoutine(t) ? ' · routine' : ''}{store.viewAll && t.teamName ? ` · ${t.teamName}` : ''}{(() => { const n = blocksCount(t); return n ? ` · blocks ${n}` : ''; })()}</div>
+              {(() => {
+                const pre = prereqsOf(t);
+                if (!pre.length) return null;
+                const blocked = !isDone(t) && pre.some((p) => !p.done);
+                return (
+                  <div className="small" style={{ marginTop: 2, color: blocked ? '#e0a33c' : 'var(--muted, #8a8a8a)' }}
+                    title={`Depends on:\n${pre.map((p) => `${p.ref}${p.task ? ` · ${p.task.title}` : ' (removed)'} — ${p.done ? 'done' : 'pending'}`).join('\n')}${blocked ? '\n\nBlocked until the pending prerequisite(s) finish.' : ''}`}>
+                    <span style={{ fontWeight: blocked ? 600 : 400 }}>{blocked ? '🔒 blocked · after ' : '⇢ after '}</span>
+                    {pre.map((p, i) => (
+                      <span key={p.ref}>{i ? ', ' : ''}<span className="mono">{p.ref}</span>{p.done ? ' ✓' : ' ⏳'}</span>
+                    ))}
+                  </div>
+                );
+              })()}
               <div className="row-actions" style={{ marginTop: 4, alignItems: 'center', gap: 6 }}>
                 {working ? (
                   <span className="small" title={`${t.ownerName} recently picked this up${uAbs ? ` — moved to Doing ${uAbs}` : ''}`}

@@ -8,6 +8,14 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.142] — 2026-06-24
+- **Task dependencies are now visible on the board.** When Plan decomposition creates tasks with
+  “after #N” edges, those are persisted app-side (`taskDeps` overlay — the manager has no deps
+  field) and each card shows **⇢ after &lt;ref&gt; ✓/⏳**, turning into an amber **🔒 blocked** when a
+  prerequisite isn’t done yet. Cards that others depend on show **· blocks N**. A removed
+  prerequisite counts as satisfied (never blocks forever). New bridge: `tasks:deps`/`tasks:setDeps`.
+  Note: only plans decomposed from this version on record edges; pre-existing tasks show none.
+
 ## [0.1.141] — 2026-06-24
 - **Work › Create is now a 5-mode creator** (was just auto-decompose). The fold-out has a mode
   switch — all decoupled per team:

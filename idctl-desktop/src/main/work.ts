@@ -10,7 +10,7 @@
 
 import type { ManagerClient } from '../../../idctl/src/api/client.ts';
 import type { Agent, Task } from '../../../idctl/src/api/types.ts';
-import { setTaskLane, loadSettings } from '../../../idctl/src/settings/store.ts';
+import { setTaskLane, setTaskDeps, loadSettings } from '../../../idctl/src/settings/store.ts';
 
 export interface SubTask { title: string; description: string; agent: string; dependsOn: number[] }
 export interface CreatedTask { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; dependsOn: number[]; dispatched: boolean }
@@ -207,6 +207,20 @@ export async function createAndDispatchPlan(
       created.push({ idx: i, ref: st.title, title: st.title, agent: st.agent, ok: false, error: e instanceof Error ? e.message : String(e), dependsOn: st.dependsOn, dispatched: false });
     }
   }
+
+  // Persist the dependency graph app-side (the manager has no deps field) so the board
+  // can surface "blocked by …". Map each task's backward dep indices → the created refs.
+  try {
+    for (let i = 0; i < created.length; i++) {
+      const c = created[i];
+      if (!c.ok) continue;
+      const refs = (list[i].dependsOn || [])
+        .filter((d) => d >= 0 && d < created.length && created[d]?.ok)
+        .map((d) => created[d].ref);
+      if (refs.length) setTaskDeps(c.ref, refs);
+    }
+  } catch { /* overlay is best-effort */ }
+
   // Queue-only: tasks created in the lane, not farmed out — the lead works them later.
   if (!dispatch) return { created, dispatched: 0, deferred: created.filter((c) => c.ok).length };
 

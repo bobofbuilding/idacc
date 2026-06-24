@@ -29,6 +29,7 @@ import {
   setLocalConcurrencyPref,
   setSkillTags,
   setTaskLane,
+  setTaskDeps,
 } from '../../../idctl/src/settings/store.ts';
 import { detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { realpathSync } from 'node:fs';
@@ -187,6 +188,9 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // app-side Kanban lane overlay (task ref → fine-grained lane; never sent to the manager)
   'tasks:lanes': () => Promise.resolve(loadSettings().taskLanes ?? {}),
   'tasks:setLane': (ref: string, lane: string) => Promise.resolve(setTaskLane(String(ref), String(lane ?? '')).taskLanes ?? {}),
+  // app-side dependency overlay (task ref → prerequisite refs; the manager has no deps field)
+  'tasks:deps': () => Promise.resolve(loadSettings().taskDeps ?? {}),
+  'tasks:setDeps': (ref: string, deps: string[]) => Promise.resolve(setTaskDeps(String(ref), Array.isArray(deps) ? deps.map(String) : []).taskDeps ?? {}),
 
   // dispatch / lifecycle
   dispatch: (command: string) => client.dispatch(String(command)),

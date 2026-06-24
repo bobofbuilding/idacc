@@ -58,6 +58,13 @@ export interface IdctlConfig {
    * knows todo/doing/done; this refines the board within those. Client-side only.
    */
   taskLanes?: Record<string, string>;
+  /**
+   * App-side dependency graph for tasks — task ref → the refs it depends on
+   * (its prerequisites). The manager has no deps field, so plan decomposition
+   * records the "after #N" edges here and the board surfaces "blocked by …".
+   * Client-side only.
+   */
+  taskDeps?: Record<string, string[]>;
   /** Local project tracker entries (the "Projects" page). Client-side only. */
   projects?: ProjectEntry[];
   /**
