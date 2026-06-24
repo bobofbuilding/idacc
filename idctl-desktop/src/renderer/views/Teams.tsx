@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { call, agentsLeadFirst, resolveCoordinator, type FleetStore } from '../store.ts';
 import { offerableRuntimes } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import { AgentTable } from './AgentTable.tsx';
 import type { ConfigEntry, DeployPreflight, DesignedTeam, LibrarySkillEntry, McpServerSpec, TeamTemplate } from '../../../../idctl/src/api/client.ts';
 import type { OnboardPlan, OnboardResult } from '../../../../idctl/src/api/onboard.ts';
 import { MCP_CATALOG, buildFromCatalog } from '../../../../idctl/src/settings/mcpCatalog.ts';
@@ -497,6 +498,8 @@ export function Teams({ store }: { store: FleetStore }) {
           )}
         </section>
       ) : null}
+
+      {tab === 'structure' ? <AgentTable store={store} /> : null}
 
       {tab === 'manage' ? (
       <section className="card">

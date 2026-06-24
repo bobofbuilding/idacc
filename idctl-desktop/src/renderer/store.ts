@@ -65,8 +65,6 @@ export interface FleetStore {
   viewAll: boolean;
   /** All agents across every team (each tagged with `.team`); populated only while viewAll. */
   allAgents: TeamAgent[];
-  /** Merged recent activity across every team; populated only while viewAll. */
-  allEvents: TeamEvent[];
   refresh: () => void;
   refreshChatUnread: () => Promise<void>;
   setTeam: (team: string) => Promise<void>;
@@ -96,9 +94,6 @@ export function useFleet(): FleetStore {
     try { return localStorage.getItem('idctl.viewAll') !== 'false'; } catch { return true; }
   });
   const [allAgents, setAllAgents] = useState<TeamAgent[]>([]);
-  const [allEvents, setAllEvents] = useState<TeamEvent[]>([]);
-  const viewAllRef = useRef(viewAll);
-  useEffect(() => { viewAllRef.current = viewAll; }, [viewAll]);
   const setViewAll = useCallback((on: boolean) => {
     setViewAllState(on);
     try { localStorage.setItem('idctl.viewAll', String(on)); } catch { /* no storage */ }
@@ -213,21 +208,17 @@ export function useFleet(): FleetStore {
     // restart this loop, or it would reset the cursor to 0 and replay history.
   }, [streamEpoch]);
 
-  // Holistic aggregate: while viewAll, fetch every team's agents + merge their recent
-  // events into one fleet-wide stream (each tagged with its team). Cleared when off.
+  // Holistic aggregate: while viewAll, fetch every team's agents (each tagged with its team)
+  // so the fleet grid + status bar can show all teams at once. Cleared when off.
   useEffect(() => {
-    if (!viewAll) { setAllAgents([]); setAllEvents([]); return; }
+    if (!viewAll) { setAllAgents([]); return; }
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
       try {
-        const [groups, ev] = await Promise.all([
-          call<{ team: string; agents: Agent[] }[]>('agents:allTeams').catch(() => []),
-          call<TeamEvent[]>('events:multi', 80).catch(() => []),
-        ]);
+        const groups = await call<{ team: string; agents: Agent[] }[]>('agents:allTeams').catch(() => []);
         if (!alive) return;
         setAllAgents(groups.flatMap((g) => g.agents.map((a) => ({ ...a, team: g.team }))));
-        setAllEvents(ev);
       } catch { /* keep last */ }
       finally { if (alive) timer = setTimeout(load, 3000); }
     };
@@ -235,5 +226,5 @@ export function useFleet(): FleetStore {
     return () => { alive = false; clearTimeout(timer); };
   }, [viewAll, tick]);
 
-  return { connection, managerUrl, team, coordinator, agents, teams, events, inbox, chatUnread, lastError, lastUpdated, viewAll, allAgents, allEvents, refresh, refreshChatUnread, setTeam, setCoordinator, setViewAll };
+  return { connection, managerUrl, team, coordinator, agents, teams, events, inbox, chatUnread, lastError, lastUpdated, viewAll, allAgents, refresh, refreshChatUnread, setTeam, setCoordinator, setViewAll };
 }

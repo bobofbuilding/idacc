@@ -8,6 +8,15 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.122] — 2026-06-24
+- **Dashboard is now your lead.** The Dashboard is a chat **locked to the team lead** (no
+  agent picker) beside a slim, **properly-detailed** live activity feed (recent events with
+  real descriptions — fixes the stale/terse feed from the holistic change).
+- **Fleet grid moved to HR Manager** (Structure tab) and made **holistic** — it lists every
+  team's agents grouped by team when "All teams" is selected, with per-agent runtime/model
+  switching + lifecycle actions routed to each agent's own team. This is also the fix for
+  "All teams didn't show all teams." (New shared `AgentTable` component.)
+
 ## [0.1.121] — 2026-06-24
 - **Honest task status (no more false "working").** A task card only shows the green
   **● working** pulse when it *recently* entered Doing. A task left in Doing 30m+ with no

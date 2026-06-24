@@ -155,7 +155,7 @@ function ChatImage({ path }: { path: string }) {
   return <img className="chat-img" src={url} alt="generated" />;
 }
 
-export function Chat({ store }: { store: FleetStore }) {
+export function Chat({ store, embedded = false, lockTarget }: { store: FleetStore; embedded?: boolean; lockTarget?: string }) {
   const team = store.team ?? 'default';
   const defaultTarget = useMemo(
     () => resolveCoordinator(store.agents, store.coordinator) ?? 'lead',
@@ -360,7 +360,7 @@ export function Chat({ store }: { store: FleetStore }) {
   useEffect(() => { sessionRef.current = session; }, [session]);
 
   const msgs = session?.messages ?? [];
-  const target = session && store.agents.some((a) => a.name === session.target) ? session.target : defaultTarget;
+  const target = lockTarget ?? (session && store.agents.some((a) => a.name === session.target) ? session.target : defaultTarget);
   const targetAgent = store.agents.find((a) => a.name === target);
   const focused = projects.find((p) => p.id === session?.projectId);
   const destDir = focused?.path || targetAgent?.workingDirectory || '';
@@ -755,9 +755,9 @@ export function Chat({ store }: { store: FleetStore }) {
   }
 
   return (
-    <div className="view">
-      <header className="view-head">
-        <h1>Chat</h1>
+    <div className={embedded ? 'chat-embedded' : 'view'} style={embedded ? { display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1, minHeight: 0 } : undefined}>
+      <header className={embedded ? 'row-actions' : 'view-head'} style={embedded ? { marginBottom: 6, alignItems: 'center' } : undefined}>
+        {!embedded ? <h1>Chat</h1> : null}
         <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>
           <select className="cell-select" value={session?.id ?? ''} disabled={busy} onChange={(e) => void openChat(e.target.value)} title="Open a saved chat" style={{ maxWidth: 220 }}>
             {session && !sessions.some((s) => s.id === session.id) ? <option value={session.id}>{session.title || '(this chat)'}</option> : null}
@@ -786,8 +786,8 @@ export function Chat({ store }: { store: FleetStore }) {
         </div>
       ) : null}
 
-      <div className="cols chat-cols">
-        <section className="card chat">
+      <div className={embedded ? '' : 'cols chat-cols'} style={embedded ? { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } : undefined}>
+        <section className="card chat" style={embedded ? { flex: 1, minHeight: 0 } : undefined}>
           <div
             className="messages"
             ref={listRef}
@@ -861,6 +861,7 @@ export function Chat({ store }: { store: FleetStore }) {
           </div>
         </section>
 
+        {!embedded ? (
         <aside className="card targets">
           <h3>Address</h3>
           {orderedAgents.map((a) => (
@@ -873,6 +874,7 @@ export function Chat({ store }: { store: FleetStore }) {
           ))}
           <p className="muted small" style={{ marginTop: 8 }}>★ = coordinator. Chat defaults to it; name it anything.</p>
         </aside>
+        ) : null}
       </div>
     </div>
   );
