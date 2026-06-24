@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { call, resolveCoordinator, type FleetStore } from '../store.ts';
+import { usePrompt } from '../components/prompt.tsx';
+import { useToast } from '../components/toast.tsx';
 import type { ProjectEntry, ProjectStatus } from '../../../../idctl/src/settings/schema.ts';
 
 const STATUSES: ProjectStatus[] = ['active', 'paused', 'blocked', 'done'];
@@ -55,6 +57,8 @@ function GitStatus({ g }: { g?: GitInfo }) {
 }
 
 export function Projects({ store }: { store: FleetStore }) {
+  const prompt = usePrompt();
+  const toast = useToast();
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   const [gitMap, setGitMap] = useState<Record<string, GitInfo>>({});
   const [gitOut, setGitOut] = useState<Record<string, { action: string; output: string }>>({});
@@ -259,6 +263,24 @@ export function Projects({ store }: { store: FleetStore }) {
       setBusy(false);
     }
   }
+  // Publish a change per project: route a GitHub-commit task to ops-lead (who holds the
+  // creds) rather than committing from here. This is the standard "request for change" flow.
+  async function requestCommit(p: ProjectEntry) {
+    const desc = await prompt({ title: `Request a commit & push for “${p.name}”`, placeholder: 'describe the change / what to commit', okLabel: 'Request commit' });
+    if (!desc || !desc.trim()) return;
+    const q = (s: string) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+    const t = toast({ kind: 'progress', text: `Requesting ops-lead to commit & push “${p.name}”…` });
+    try {
+      const title = `Commit & push: ${p.name}`;
+      const body = `Project “${p.name}”${p.path ? ` at ${p.path}` : ''}. Review the working changes, commit them with a clear message, and push to the remote (init/create the GitHub repo if it doesn't exist yet). Requested change: ${desc.trim()}`;
+      await call('remote', `/task create ${q(title)} --owner ops-lead --description ${q(body)}`, undefined, 'ops-team');
+      void call('remote', `/ask ops-lead ${q(`New change request — ${title}. ${body} Delegate to git-manager/deployer and mark the task done when pushed.`)}`, undefined, 'ops-team').catch(() => {});
+      t.update({ kind: 'success', text: `Requested ops-lead to commit & push “${p.name}” ✓` });
+    } catch (e) {
+      t.update({ kind: 'error', text: `Request failed: ${e instanceof Error ? e.message : String(e)}` });
+    }
+  }
+
   async function runGit(p: ProjectEntry, action: string) {
     if (!p.path) return;
     setGitBusy(`${p.id}:${action}`);
@@ -410,6 +432,7 @@ export function Projects({ store }: { store: FleetStore }) {
                   <div className="row-actions" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                     <GitStatus g={g} />
                     <span className="grow" />
+                    <button className="btn small primary" title="Ask the ops team to commit & push this project's changes (routes a GitHub-commit task to ops-lead)" onClick={() => void requestCommit(p)}>⤴ Request commit</button>
                     <button className="btn small" title="Open folder" onClick={() => void call('project:openFolder', p.path)}>open ↗</button>
                   </div>
                   <div className="muted small mono project-path" title={p.path}>{p.path}</div>

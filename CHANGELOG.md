@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.125] — 2026-06-24
+- **Projects: per-project "⤴ Request commit."** Each project with a path now has a button that
+  routes a **GitHub-commit task to ops-lead** (commit + push that project's changes, init the
+  repo if needed) — you describe the change, it creates the ops-team task + nudges the lead.
+  Publishing per project now flows through the ops team, matching the release flow.
+
 ## [0.1.124] — 2026-06-24
 - **Heavy models auto-hide.** Ollama models too big for your machine's RAM/disk are hidden
   from the catalog and collapsed under a **"show N models too heavy for this machine"** toggle
