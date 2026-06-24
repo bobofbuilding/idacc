@@ -7,6 +7,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, basename, resolve } from 'node:path';
 import { detectProjectsRoot } from './projects.ts';
+import { loadSettings } from '../../../idctl/src/settings/store.ts';
 
 export interface BrainPlan {
   num?: string;
@@ -17,9 +18,11 @@ export interface BrainPlan {
   notes?: string;
 }
 
-/** Resolve the brain plans dir from the configured/auto-detected projects root. */
+/** Resolve the brain plans dir from the projects root. Falls back to the saved
+ *  `projectsRoot` setting (what the Projects page configures) when no explicit
+ *  root is passed — detectProjectsRoot itself only reads its arg/env/plist/cwd. */
 export function brainPlansDir(configured?: string): string | null {
-  const root = detectProjectsRoot(configured);
+  const root = detectProjectsRoot(configured ?? loadSettings().projectsRoot);
   if (!root) return null;
   const dir = join(root, 'brain', 'plans');
   return existsSync(dir) ? dir : null;

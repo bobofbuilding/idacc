@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.102] — 2026-06-24
+- **Fix: Plans → Brain plans said "brain plans dir not found" even when configured.**
+  The brain-plans reader called the projects-root detector with no argument, so it
+  never consulted the **saved `projectsRoot`** (the one the Projects page sets). It now
+  falls back to that setting, so the brain's live plan index loads as intended.
+
 ## [0.1.101] — 2026-06-24
 - **New Dream tab (Work page).** An agent runs an offline "dream" — a reflection pass
   over its recent work and the shared brain — and returns a report with four sections:
