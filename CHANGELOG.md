@@ -8,6 +8,16 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.136] — 2026-06-24
+- **HR Manager → Build is one inline form (no popouts).** The Build tab now renders the team
+  builder inline: pick a team (**new or existing**), **start from** a library template/saved
+  config (prepopulates the description) or describe with AI, review the roster, and build —
+  all in place. The separate "+ From template" / "Build a team" / "Build & add agents" popout
+  buttons are gone.
+- **Removed the "Coordinator preset" button** from HR Manager (Structure + Manage); use **✦ AI
+  draft** to generate lead instructions instead.
+- **Capabilities defaults to "All teams"** (all-teams is the standard per page now).
+
 ## [0.1.135] — 2026-06-24
 - **Re-dispatch actually recovers stalled tasks now.** A stalled task is handed to a *different*
   active agent (not the original owner) — because the owner can be **wedged while still reporting

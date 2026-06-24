@@ -86,7 +86,7 @@ export function Modules({ store }: { store: FleetStore }) {
   const activeTeam = store.team ?? 'default';
   // Apply scope: this team / all teams / all team leads. Cross-team scopes route each apply to
   // the agent's OWN team.
-  const [scope, setScope] = useState<'team' | 'all' | 'leads'>('team');
+  const [scope, setScope] = useState<'team' | 'all' | 'leads'>('all'); // default: every team (all-teams is the standard)
   const [coords, setCoords] = useState<Record<string, string>>({});
   useEffect(() => { call<{ coordinators?: Record<string, string> }>('coordinator:hierarchy').then((h) => setCoords(h.coordinators ?? {})).catch(() => {}); }, [store.lastUpdated]);
   // Capability gating: an agent can only be a target for the active tab's

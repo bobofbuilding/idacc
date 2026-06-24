@@ -105,10 +105,6 @@ ${COORDINATION_TAIL}`;
 export function Teams({ store }: { store: FleetStore }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string>('');
-  const [createOpen, setCreateOpen] = useState(false);
-  // The unified AI Team Builder. null = closed; a string = open with that target
-  // team preselected ('' opens in new-team mode).
-  const [builderTeam, setBuilderTeam] = useState<string | null>(null);
 
   // HR pillars as tabs + the live structure graph.
   const [tab, setTab] = useState<'structure' | 'build' | 'manage' | 'route'>('structure');
@@ -392,32 +388,6 @@ export function Teams({ store }: { store: FleetStore }) {
           <button key={k} className={`tab${tab === k ? ' active' : ''}`} onClick={() => setTab(k)}>{lbl}</button>
         ))}
       </div>
-      {builderTeam !== null ? (
-        <TeamBuilder
-          team={builderTeam}
-          existingTeams={store.teams.map((t) => t.name)}
-          providers={providers}
-          modelCatalog={modelCatalog}
-          skillCatalog={skillCatalog}
-          onClose={() => setBuilderTeam(null)}
-          onBusy={setBusy}
-          onMessage={setMsg}
-          onDone={(createdTeam) => { if (createdTeam) void store.setTeam(createdTeam); store.refresh(); }}
-        />
-      ) : null}
-      {createOpen ? (
-        <CreateTeamModal
-          existingTeams={store.teams.map((t) => t.name)}
-          onClose={() => setCreateOpen(false)}
-          onBusy={setBusy}
-          onMessage={setMsg}
-          onCreated={async (name) => {
-            await store.setTeam(name);
-            store.refresh();
-          }}
-        />
-      ) : null}
-
       {tab === 'structure' ? (
         <section className="card">
           <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -462,7 +432,6 @@ export function Teams({ store }: { store: FleetStore }) {
               </div>
               <div className="muted small" style={{ margin: '8px 0 4px' }}>goals &amp; instructions — appended to this agent’s system prompt</div>
               <div className="row-actions" style={{ gap: 8, marginBottom: 6, alignItems: 'center' }}>
-                <button className="btn small" disabled={instrBusy} onClick={() => setInstrText(COORDINATOR_PRESET)}>Coordinator preset</button>
                 <button className="btn small" disabled={instrBusy} onClick={() => void aiDraftInstr()}>✦ AI draft</button>
                 {instrText.trim() ? <button className="btn small" disabled={instrBusy} onClick={() => setInstrText('')}>Clear</button> : null}
                 <span className="grow" />
@@ -478,7 +447,7 @@ export function Teams({ store }: { store: FleetStore }) {
               <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
                 <h4 style={{ margin: 0 }}>{activeTeam} <span className="muted small">· {store.agents.length} agents</span></h4>
                 <span className="row-actions" style={{ gap: 6 }}>
-                  <button className="btn small primary" onClick={() => setBuilderTeam(activeTeam)}>✦ Build / add agents</button>
+                  <button className="btn small primary" onClick={() => setTab('build')}>✦ Build / add agents</button>
                   <button className="btn small" onClick={() => setTab('route')}>⇄ Relay</button>
                 </span>
               </div>
@@ -547,21 +516,20 @@ export function Teams({ store }: { store: FleetStore }) {
       ) : null}
 
       {tab === 'build' ? (
-      <section className="card">
-        <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-          <div>
-            <h3 style={{ margin: 0 }}>Build &amp; add agents</h3>
-            <p className="muted small" style={{ margin: '4px 0 0' }}>
-              Create a team from a template, design a brand-new team with AI, or add agents to <b>{activeTeam}</b> — describe what you need and AI builds the roster (per-agent runtime, model &amp; skills).
-            </p>
-          </div>
-          <div className="row-actions" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn" disabled={busy} onClick={() => setCreateOpen(true)} title="Create a team from a library template or saved server config">+ From template</button>
-            <button className="btn" disabled={busy} onClick={() => setBuilderTeam('')} title="Describe a brand-new team in plain English (or paste a spec) and let AI design + build the whole roster">✦ Build a team</button>
-            <button className="btn primary" disabled={busy} onClick={() => setBuilderTeam(activeTeam)} title={`Add agents to ${activeTeam}`}>✦ Build / add agents</button>
-          </div>
-        </div>
-      </section>
+        // One inline form: pick a team (new or existing) + start from a template/config or
+        // describe with AI → review the roster → build. No popouts.
+        <TeamBuilder
+          inline
+          team=""
+          existingTeams={store.teams.map((t) => t.name)}
+          providers={providers}
+          modelCatalog={modelCatalog}
+          skillCatalog={skillCatalog}
+          onClose={() => { /* inline — nothing to close */ }}
+          onBusy={setBusy}
+          onMessage={setMsg}
+          onDone={(createdTeam) => { if (createdTeam) void store.setTeam(createdTeam); store.refresh(); }}
+        />
       ) : null}
 
       {tab === 'route' ? (
@@ -682,14 +650,16 @@ export function Teams({ store }: { store: FleetStore }) {
       <section className="card">
         <h3>Agent instructions — coordination &amp; behavior</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
-          A persistent directive added to an agent’s system prompt. Use <b>Coordinator preset</b> on your <b>lead</b> so it <b>compresses</b> each request, <b>breaks it up</b>, <b>delegates</b> the pieces to its teammates (or another team’s lead), and <b>summarizes results step by step</b> — instead of doing everything itself. Survives rebuilds; takes effect after the rebuild this triggers.
+          A persistent directive added to an agent’s system prompt — e.g. tell your <b>lead</b> to
+          <b> compress</b> each request, <b>break it up</b>, <b>delegate</b> the pieces to its teammates
+          (or another team’s lead), and <b>summarize results step by step</b> instead of doing everything
+          itself. Use <b>✦ AI draft</b> to generate one. Survives rebuilds; takes effect after the rebuild this triggers.
         </p>
         <div className="row-actions" style={{ gap: 8, alignItems: 'center', marginBottom: 6 }}>
           <span className="muted small">agent</span>
           <select className="cell-select" value={instrTarget} disabled={instrBusy} onChange={(e) => setInstrAgent(e.target.value)}>
             {store.agents.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
           </select>
-          <button className="btn small" disabled={instrBusy} onClick={() => setInstrText(COORDINATOR_PRESET)}>Coordinator preset</button>
           <button className="btn small" disabled={instrBusy} onClick={() => void aiDraftInstr()}>✦ AI draft</button>
           {instrText.trim() ? <button className="btn small" disabled={instrBusy} onClick={() => setInstrText('')}>Clear</button> : null}
           <span className="grow" />
@@ -698,7 +668,7 @@ export function Teams({ store }: { store: FleetStore }) {
         </div>
         <textarea
           style={{ width: '100%', minHeight: 120, fontFamily: 'var(--mono, ui-monospace, monospace)', fontSize: 12 }}
-          placeholder={`Custom instructions for ${instrTarget || 'this agent'} — or click “Coordinator preset”. Leave empty for none.`}
+          placeholder={`Custom instructions for ${instrTarget || 'this agent'} — or click “✦ AI draft”. Leave empty for none.`}
           value={instrText}
           disabled={instrBusy}
           onChange={(e) => setInstrText(e.target.value)}
@@ -966,6 +936,7 @@ function TeamBuilder({
   providers,
   modelCatalog,
   skillCatalog,
+  inline = false,
   onClose,
   onBusy,
   onMessage,
@@ -976,6 +947,7 @@ function TeamBuilder({
   providers: ProviderRow[];
   modelCatalog: Record<string, string[]>;
   skillCatalog: string[];
+  inline?: boolean;
   onClose: () => void;
   onBusy: (b: boolean) => void;
   onMessage: (m: string) => void;
@@ -1012,6 +984,17 @@ function TeamBuilder({
 
   // ---- spec / AI design ----
   const [spec, setSpec] = useState('');
+  // "Start from" sources — prefill the describe box from a library template or saved config.
+  const [templates, setTemplates] = useState<TeamTemplate[]>([]);
+  const [configs, setConfigs] = useState<ConfigEntry[]>([]);
+  useEffect(() => {
+    let live = true;
+    Promise.all([
+      call<TeamTemplate[]>('libraryTeams').catch(() => [] as TeamTemplate[]),
+      call<ConfigEntry[]>('configs').catch(() => [] as ConfigEntry[]),
+    ]).then(([tpls, cfgs]) => { if (live) { setTemplates(tpls); setConfigs(cfgs.filter((c) => c.name !== 'default')); } });
+    return () => { live = false; };
+  }, []);
   const [rows, setRows] = useState<Row[]>([blankRow()]);
   // Once the roster is hand-edited or AI-designed, stop letting the live spec parse
   // overwrite it (so manual curation isn't silently discarded mid-edit).
@@ -1202,12 +1185,27 @@ function TeamBuilder({
   const postCls = (s?: PostStat) => (s === 'ok' ? 'ok' : s === 'failed' ? 'failed' : 'running');
 
   return (
-    <div className="modal-overlay" onMouseDown={() => (locked ? undefined : onClose())}>
-      <div className="modal onboard-modal create-team-modal" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal-title">Build a team</div>
+    <div className={inline ? 'card' : 'modal-overlay'} onMouseDown={inline ? undefined : () => (locked ? undefined : onClose())}>
+      <div className={inline ? '' : 'modal onboard-modal create-team-modal'} onMouseDown={inline ? undefined : (e) => e.stopPropagation()}>
+        <div className="modal-title">{inline ? 'Build a team — or add agents to an existing one' : 'Build a team'}</div>
         <div className="create-team-layout">
           {/* LEFT: describe + batch options + coordination/relay */}
           <div>
+            <div className="row-actions" style={{ gap: 6, marginBottom: 6, alignItems: 'center' }}>
+              <span className="muted small">start from</span>
+              <select className="cell-select" disabled={locked} value="" onChange={(e) => {
+                const v = e.target.value; e.currentTarget.value = '';
+                if (!v) return;
+                const [kind, name] = v.split(':');
+                const src = kind === 'tpl' ? templates.find((x) => x.name === name) : configs.find((x) => x.name === name);
+                const desc = src && typeof (src as { description?: unknown }).description === 'string' ? (src as { description?: string }).description : '';
+                setSpec(`Base this team on the "${name}" ${kind === 'tpl' ? 'library template' : 'saved config'}${desc ? ` (${desc})` : ''}: recreate its roster — a lead coordinator plus workers — and adjust as needed.`);
+              }}>
+                <option value="">blank — describe below</option>
+                {templates.length ? <optgroup label="Templates">{templates.map((t) => <option key={`tpl:${t.name}`} value={`tpl:${t.name}`}>{t.name}</option>)}</optgroup> : null}
+                {configs.length ? <optgroup label="Saved configs">{configs.map((c) => <option key={`cfg:${c.name}`} value={`cfg:${c.name}`}>{c.name}</option>)}</optgroup> : null}
+              </select>
+            </div>
             <div className="muted small" style={{ marginBottom: 6 }}>describe the team you want — or paste a spec</div>
             <textarea
               autoFocus
