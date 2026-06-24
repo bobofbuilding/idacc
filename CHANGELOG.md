@@ -8,6 +8,16 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.100] — 2026-06-24
+- **Loops can now string agents + tasks into an AI-drafted chain.** The Loops tab
+  leads with **Agent chains**: describe a goal, hit **✦ Draft chain**, and an agent
+  designs an ordered sequence of steps — each step = (agent + task). Review/edit the
+  steps (reorder, swap the agent, rewrite the task, add/remove), then **Run** it: each
+  step executes in order via `/ask`, and **every step's output is fed to the next as
+  context**, with live per-step status + output. Chains are **saved and re-runnable**.
+  The original single-agent recurring loop is still here, renamed **Scheduled
+  objectives**.
+
 ## [0.1.99] — 2026-06-24
 - **Plans now shows the brain's live plan set.** The Plans tab leads with a **Brain
   plans** section read straight from the brain's `plans/` directory (its `README.md`
