@@ -8,6 +8,16 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.124] — 2026-06-24
+- **Heavy models auto-hide.** Ollama models too big for your machine's RAM/disk are hidden
+  from the catalog and collapsed under a **"show N models too heavy for this machine"** toggle
+  at the bottom (installed ones always stay visible).
+- **Port warnings de-noised.** Local-LLM-stack ⚠ now appears **only when a port is actually in
+  use** right now — the "also default for N others" notices (not real conflicts) are gone.
+  Help text + the in-use message clarified.
+- **Subscriptions Re-check feedback.** The Re-check button now shows **Checking…** while it
+  re-probes the CLIs, so you can see it's working.
+
 ## [0.1.123] — 2026-06-24
 - **Health: runtime/model controls + live.** The Health roster is now the shared **AgentTable**
   — per-agent runtime/model dropdowns + lifecycle actions + per-row **Probe**, live and holistic

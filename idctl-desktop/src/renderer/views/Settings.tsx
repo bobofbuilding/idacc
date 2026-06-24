@@ -60,6 +60,7 @@ export function Settings({ store }: { store: FleetStore }) {
   type Sub = { provider: string; loggedIn: boolean; installed?: boolean; plan?: string; email?: string; method?: string; detail?: string };
   type SubKey = 'claude' | 'chatgpt' | 'cursor';
   const [subs, setSubs] = useState<{ claude: Sub; chatgpt: Sub; cursor: Sub } | null>(null);
+  const [subsBusy, setSubsBusy] = useState(false);
   const [subBusy, setSubBusy] = useState<string | null>(null);
 
   async function reload() {
@@ -74,7 +75,9 @@ export function Settings({ store }: { store: FleetStore }) {
     setSubs(await call<{ claude: Sub; chatgpt: Sub; cursor: Sub }>('subs:status').catch(() => null));
   }
   async function recheckSubs() {
-    setSubs(await call<{ claude: Sub; chatgpt: Sub; cursor: Sub }>('subs:status').catch(() => null));
+    setSubsBusy(true);
+    try { setSubs(await call<{ claude: Sub; chatgpt: Sub; cursor: Sub }>('subs:status').catch(() => null)); }
+    finally { setSubsBusy(false); }
   }
   async function signinSub(provider: SubKey) {
     setSubBusy(provider);
@@ -234,6 +237,7 @@ export function Settings({ store }: { store: FleetStore }) {
   // catalog browsers: model filters + stacks filter + copy feedback
   const [modelQuery, setModelQuery] = useState('');
   const [modelCap, setModelCap] = useState<ModelCapability | 'all'>('all');
+  const [showHeavy, setShowHeavy] = useState(false); // reveal models too heavy for this machine
   const [stackTag, setStackTag] = useState<string>('all');
   const [hardware, setHardware] = useState<HardwareInfo | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
@@ -369,14 +373,16 @@ export function Settings({ store }: { store: FleetStore }) {
     const r = await call<{ ran: boolean }>('app:runInTerminal', cmd).catch(() => ({ ran: false }));
     if (!r.ran) await copyText(cmd); // Terminal automation blocked → silent clipboard fallback
   }
-  /** Port-conflict risk for a stack: already-in-use (strong) or shared default (info). */
-  function stackPortWarn(s: LocalStackEntry): { level: 'warn' | 'error'; msg: string } | null {
+  /** Real port conflict only: this stack's default port is ACTUALLY in use right now (a
+   *  detected running server or a configured provider). We no longer warn about stacks that
+   *  merely share a default port — that's not a conflict unless you actually run both, and it
+   *  was just noise. Run a "Scan running" to refresh what's live. */
+  function stackPortWarn(s: LocalStackEntry): { level: 'error'; msg: string } | null {
     if (s.defaultPort == null) return null;
     if (runningPorts.has(s.defaultPort) || providers.some((p) => providerPort(p) === s.defaultPort)) {
-      return { level: 'error', msg: `port ${s.defaultPort} already in use on this machine` };
+      return { level: 'error', msg: `port ${s.defaultPort} is in use — install it on a different port` };
     }
-    const others = LOCAL_STACKS.filter((x) => x.id !== s.id && x.defaultPort === s.defaultPort).length;
-    return others ? { level: 'warn', msg: `port ${s.defaultPort} also default for ${others} other${others > 1 ? 's' : ''}` } : null;
+    return null;
   }
   useEffect(() => {
     void loadOllama();
@@ -525,7 +531,7 @@ export function Settings({ store }: { store: FleetStore }) {
         ))}
         <div className="row-actions" style={{ marginTop: 6 }}>
           <span className="muted small grow">Sign-in opens your browser to complete OAuth; status refreshes after.</span>
-          <button className="btn" onClick={() => void recheckSubs()}>Re-check</button>
+          <button className="btn" disabled={subsBusy} onClick={() => void recheckSubs()}>{subsBusy ? 'Checking…' : 'Re-check'}</button>
         </div>
       </section>
 
@@ -593,8 +599,8 @@ export function Settings({ store }: { store: FleetStore }) {
               ))}
             </span>
           </div>
-          <div className="catalog-grid">
-            {filteredModels.map((m) => {
+          {(() => {
+            const renderModelRow = (m: LocalModelEntry) => {
               const inst = modelInstalled(m.id);
               const warn = fitWarn(m);
               return (
@@ -622,9 +628,25 @@ export function Settings({ store }: { store: FleetStore }) {
                   )}
                 </div>
               );
-            })}
-            {filteredModels.length === 0 ? <p className="muted small center pad">No models match.</p> : null}
-          </div>
+            };
+            // Auto-hide models too heavy for this machine (but keep any you've installed); list
+            // them at the bottom behind a show/hide toggle.
+            const heavy = filteredModels.filter((m) => fitWarn(m) && !modelInstalled(m.id));
+            const fits = filteredModels.filter((m) => !(fitWarn(m) && !modelInstalled(m.id)));
+            return (
+              <div className="catalog-grid">
+                {fits.map(renderModelRow)}
+                {filteredModels.length === 0 ? <p className="muted small center pad">No models match.</p> : null}
+                {heavy.length ? (
+                  <button className="btn small" style={{ marginTop: 6, alignSelf: 'flex-start' }} onClick={() => setShowHeavy((v) => !v)}
+                    title="These exceed your machine's RAM/disk (checked at the top)">
+                    {showHeavy ? '▾ hide' : '▸ show'} {heavy.length} model{heavy.length > 1 ? 's' : ''} too heavy for this machine
+                  </button>
+                ) : null}
+                {showHeavy ? heavy.map(renderModelRow) : null}
+              </div>
+            );
+          })()}
         </div>
       </section>
 
@@ -652,7 +674,7 @@ export function Settings({ store }: { store: FleetStore }) {
       <section className="card">
         <h3>Local LLM stacks</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Self-hostable inference servers you can run <b>next to Ollama</b> — from <a className="ext-link" href="https://github.com/av/awesome-llm-services" target="_blank" rel="noreferrer">awesome-llm-services</a>. <b>Install</b> opens the command in your Terminal (visible and abortable — nothing runs silently); app-only stacks link to their download. Once installed it appears under <b>Discover local servers</b> below and can be added as a backend. ⚠ flags a port already in use on this machine.
+          Self-hostable inference servers you can run <b>next to Ollama</b> — from <a className="ext-link" href="https://github.com/av/awesome-llm-services" target="_blank" rel="noreferrer">awesome-llm-services</a>. <b>Install</b> opens the command in your Terminal (visible and abortable — nothing runs silently); app-only stacks show <b>Get ↗</b> (no CLI install — opens the download). After installing + starting one, hit <b>⟳ Scan running</b> then add it under <b>Inference backends</b> below. ⚠ only appears when a stack's default port is <i>actually</i> in use right now (shared default ports are no longer flagged — they aren't a conflict unless you run two at once).
         </p>
         <div className="row-actions" style={{ flexWrap: 'wrap', gap: 6 }}>
           <span className="chips grow">
