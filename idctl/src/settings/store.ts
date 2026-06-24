@@ -318,6 +318,14 @@ export function setPrimaryCoordinator(team: string, agent: string, file = resolv
   return cfg;
 }
 
+/** Merge auto-derived skill tags into the client-side categorization overlay. */
+export function setSkillTags(tags: Record<string, string[]>, file = resolveConfigPath()): IdctlConfig {
+  const cfg = loadSettings(file);
+  cfg.skillTags = { ...(cfg.skillTags ?? {}), ...tags };
+  saveSettings(cfg, file);
+  return cfg;
+}
+
 export function setDefaultTeam(name: string, file = resolveConfigPath()): IdctlConfig {
   const cfg = loadSettings(file);
   cfg.defaultTeam = name;

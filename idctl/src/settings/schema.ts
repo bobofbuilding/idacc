@@ -45,6 +45,13 @@ export interface IdctlConfig {
    * actions append to it. Set to null/[] to disable filtering (show all).
    */
   knownTeams?: string[];
+  /**
+   * App-side skill categorization overlay — auto-derived tags for library skills
+   * whose SKILL.md frontmatter has no `metadata.tags`, keyed by skill name. Merged
+   * into the Capabilities catalog display + tag search; NEVER written back to the
+   * skill file. Cached so auto-categorization runs once per skill. Client-side only.
+   */
+  skillTags?: Record<string, string[]>;
   /** Local project tracker entries (the "Projects" page). Client-side only. */
   projects?: ProjectEntry[];
   /**

@@ -68,6 +68,10 @@ function parseKV(s: string): Record<string, string> | undefined {
 export function Modules({ store }: { store: FleetStore }) {
   const [mcp, setMcp] = useState<McpServerProfile[]>([]);
   const [skills, setSkills] = useState<LibrarySkillEntry[]>([]);
+  // App-side categorization overlay: skill name → auto-derived tags (merged into
+  // the catalog display + tag search for skills whose SKILL.md has no tags).
+  const [autoTags, setAutoTags] = useState<Record<string, string[]>>({});
+  const [categorizing, setCategorizing] = useState(false);
   const [plugins, setPlugins] = useState<LibraryPluginEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string>('');
@@ -171,10 +175,36 @@ export function Modules({ store }: { store: FleetStore }) {
     setMcp(await call<McpServerProfile[]>('mcp:list').catch(() => []));
     setSkills(await call<LibrarySkillEntry[]>('librarySkills').catch(() => []));
     setPlugins(await call<LibraryPluginEntry[]>('libraryPlugins').catch(() => []));
+    setAutoTags(await call<Record<string, string[]>>('skills:autoTags').catch(() => ({})));
   }
   useEffect(() => {
     reload();
   }, [store.team, store.lastUpdated]);
+
+  // Auto-categorize on load: any skill with neither frontmatter tags nor a cached
+  // overlay gets tagged via one batch AI call (heuristic fallback), cached so it
+  // only runs once per new skill. `needs` flips false afterward, so this settles.
+  useEffect(() => {
+    if (categorizing) return;
+    const needs = skills.some((s) => !(s.tags && s.tags.length) && !(autoTags[s.name] && autoTags[s.name].length));
+    if (!needs) return;
+    let alive = true;
+    setCategorizing(true);
+    call<Record<string, string[]>>('skills:categorize')
+      .then((m) => { if (alive) setAutoTags(m); })
+      .catch(() => {})
+      .finally(() => { if (alive) setCategorizing(false); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skills, autoTags]);
+
+  // Re-run AI categorization for all untagged skills (ignores the cache).
+  async function recategorize() {
+    setCategorizing(true);
+    try { setAutoTags(await call<Record<string, string[]>>('skills:categorize', true)); }
+    catch (e) { setNote(`categorize failed: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { setCategorizing(false); }
+  }
   useEffect(() => {
     pickCatalog(MCP_CATALOG[0]?.id ?? '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -265,9 +295,12 @@ export function Modules({ store }: { store: FleetStore }) {
   const [tagFilter, setTagFilter] = useState<Set<string>>(new Set());
   const allTags = useMemo(() => {
     const set = new Set<string>();
-    for (const s of skills) for (const t of s.tags ?? []) set.add(t);
+    for (const s of skills) {
+      for (const t of s.tags ?? []) set.add(t);
+      for (const t of autoTags[s.name] ?? []) set.add(t);
+    }
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [skills]);
+  }, [skills, autoTags]);
   function toggleTag(t: string) {
     setTagFilter((prev) => {
       const n = new Set(prev);
@@ -278,7 +311,7 @@ export function Modules({ store }: { store: FleetStore }) {
   const filteredSkills = useMemo(() => {
     const q = skillQuery.trim().toLowerCase();
     return skills.filter((s) => {
-      const tags = s.tags ?? [];
+      const tags = [...(s.tags ?? []), ...(autoTags[s.name] ?? [])];
       if (tagFilter.size > 0 && !tags.some((t) => tagFilter.has(t))) return false;
       if (!q) return true;
       return (
@@ -287,7 +320,7 @@ export function Modules({ store }: { store: FleetStore }) {
         tags.some((t) => t.toLowerCase().includes(q))
       );
     });
-  }, [skills, skillQuery, tagFilter]);
+  }, [skills, skillQuery, tagFilter, autoTags]);
 
   // ---- Skills: create a new skill (agentskills.io SKILL.md) ---------------
   const [showCreate, setShowCreate] = useState(false);
@@ -581,9 +614,16 @@ export function Modules({ store }: { store: FleetStore }) {
               ))}
             </span>
             {tagFilter.size > 0 ? <button className="btn small" onClick={() => setTagFilter(new Set())}>clear</button> : null}
+            <span className="grow" />
+            {categorizing
+              ? <span className="muted small">✦ categorizing…</span>
+              : <button className="btn small" disabled={busy} title="Re-run AI auto-categorization for untagged skills" onClick={() => void recategorize()}>↻ re-categorize</button>}
           </div>
         ) : skills.length > 0 ? (
-          <input className="catalog-search" style={{ marginTop: 8 }} placeholder="search skills…" value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
+          <div className="row-actions" style={{ gap: 6, marginTop: 8, alignItems: 'center' }}>
+            <input className="catalog-search" placeholder="search skills…" value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
+            {categorizing ? <span className="muted small">✦ categorizing…</span> : null}
+          </div>
         ) : null}
 
         <div className="skill-catalog">
@@ -617,13 +657,22 @@ export function Modules({ store }: { store: FleetStore }) {
                   )}
                 </div>
                 {s.description ? <p className="muted small skill-desc">{s.description}</p> : null}
-                {(s.tags ?? []).length > 0 ? (
-                  <div className="chips skill-tags">
-                    {(s.tags ?? []).map((t) => (
-                      <button key={t} className={`chip tag${tagFilter.has(t) ? ' on' : ''}`} onClick={() => toggleTag(t)}>{t}</button>
-                    ))}
-                  </div>
-                ) : null}
+                {(() => {
+                  const fm = new Set(s.tags ?? []);
+                  const tags = [...new Set([...(s.tags ?? []), ...(autoTags[s.name] ?? [])])];
+                  return tags.length > 0 ? (
+                    <div className="chips skill-tags">
+                      {tags.map((t) => (
+                        <button
+                          key={t}
+                          className={`chip tag${tagFilter.has(t) ? ' on' : ''}${fm.has(t) ? '' : ' auto'}`}
+                          title={fm.has(t) ? t : `${t} — auto-categorized`}
+                          onClick={() => toggleTag(t)}
+                        >{t}</button>
+                      ))}
+                    </div>
+                  ) : null;
+                })()}
               </div>
             );
           })}

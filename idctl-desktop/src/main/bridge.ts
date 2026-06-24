@@ -27,6 +27,7 @@ import {
   removeProject,
   saveSettings,
   setLocalConcurrencyPref,
+  setSkillTags,
 } from '../../../idctl/src/settings/store.ts';
 import { detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { realpathSync } from 'node:fs';
@@ -289,6 +290,21 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // modules: skills + plugins catalog, install, MCP attach + rebuild
   librarySkills: () => client.librarySkills(),
   libraryPlugins: () => client.libraryPlugins(),
+  // Skill auto-categorization (app-side tag overlay; never writes the SKILL.md).
+  // Returns the cached name→tags overlay merged into the Capabilities catalog.
+  'skills:autoTags': () => Promise.resolve(loadSettings().skillTags ?? {}),
+  // Categorize library skills lacking frontmatter tags via one batch /ask (heuristic
+  // fallback), persist to the overlay, and return the full overlay. force=true
+  // re-categorizes every untagged skill (ignores the cache).
+  'skills:categorize': async (force?: boolean) => {
+    const skills = await client.librarySkills();
+    const cached = loadSettings().skillTags ?? {};
+    const targets = skills.filter((s) => !(s.tags && s.tags.length) && (force || !cached[s.name]));
+    if (!targets.length) return cached;
+    const derived = await client.categorizeSkillsAI(targets.map((s) => ({ name: s.name, description: s.description })));
+    setSkillTags(derived);
+    return loadSettings().skillTags ?? {};
+  },
   installSkill: (skill: string, agent: string) => client.installSkill(String(skill), String(agent)),
   createSkill: (input: CreateSkillInput) => client.createSkill(input),
   deleteSkill: (name: string) => client.deleteSkill(String(name)),

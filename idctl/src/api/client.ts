@@ -87,6 +87,68 @@ export function sanitizeDesignedTeam(
   return { team, agents };
 }
 
+/** Controlled vocabulary for skill auto-categorization. The AI picks tags from
+ *  this set (plus at most one extra specific tag) so catalog tags stay consistent
+ *  and filterable; the heuristic fallback maps onto the same vocabulary. */
+export const SKILL_CATEGORIES = [
+  'research', 'coding', 'documentation', 'communication', 'messaging', 'coordination',
+  'knowledge', 'identity', 'wallet', 'onchain', 'payments', 'registry', 'catalog',
+  'monitoring', 'deployment', 'automation', 'workflow', 'data', 'integration',
+  'security', 'testing', 'admin', 'marketplace', 'general',
+] as const;
+
+// Keyword → category rules for the offline heuristic categorizer (the fallback
+// when no agent is available, and the per-skill baseline AI results merge over).
+const SKILL_TAG_RULES: Array<[RegExp, string[]]> = [
+  [/research|investigat|analy|\bstudy\b|explore/i, ['research']],
+  [/\bcod(e|ing)\b|implement|program|refactor|compil|file change|run command/i, ['coding']],
+  [/document|\bdocs?\b|readme|write[- ]?up/i, ['documentation']],
+  [/messag|\bchat\b|xmtp|\bemail\b|notif/i, ['messaging', 'communication']],
+  [/communicat|send and receive|talk to/i, ['communication']],
+  [/coordinat|delegat|orchestrat|\blead\b|\bteam\b/i, ['coordination']],
+  [/knowledge|graph|memory|persistent|recall|\bbrain\b/i, ['knowledge']],
+  [/identity|\bens\b|persona|profile/i, ['identity']],
+  [/wallet|\bsign\b|transaction|on[- ]?chain|ethereum|\baddress(es)?\b/i, ['wallet', 'onchain']],
+  [/\bpay\b|payment|invoice|\btoken\b|billing/i, ['payments']],
+  [/regist(er|ry)|directory|public[- ]?agent|discover/i, ['registry']],
+  [/catalog/i, ['catalog']],
+  [/monitor|watch|alert|health|probe|uptime/i, ['monitoring']],
+  [/deploy|release|publish|\bship\b/i, ['deployment']],
+  [/\btask\b|lifecycle|discipline|\bclaim\b|workflow/i, ['workflow']],
+  [/\badmin\b|manage|control|provision/i, ['admin']],
+  [/\btest\b|verify|\bqa\b|assert/i, ['testing']],
+  [/security|\bauth\b|secret|permission|guard/i, ['security']],
+  [/market(place)?|skillmesh|listing/i, ['marketplace']],
+  [/\bapi\b|integrat|connect|webhook/i, ['integration']],
+  [/\bdata\b|database|\bsql\b|extract|\bcsv\b|\bjson\b|spreadsheet/i, ['data']],
+  [/automat|schedul|\bcron\b|trigger/i, ['automation']],
+];
+
+/** Offline, deterministic categorizer: map a skill's name+description to up to
+ *  `max` vocabulary tags. Returns ['general'] when nothing matches. Pure. */
+export function heuristicSkillTags(name: string, description?: string | null, max = 4): string[] {
+  const hay = `${name} ${description ?? ''}`;
+  const out: string[] = [];
+  for (const [re, tags] of SKILL_TAG_RULES) {
+    if (re.test(hay)) for (const t of tags) if (!out.includes(t)) out.push(t);
+  }
+  return (out.length ? out : ['general']).slice(0, max);
+}
+
+/** Validate an AI categorization reply into a clean name→tags map: keep only the
+ *  skill names we asked about, slug + dedupe each tag, cap per skill. Pure. */
+export function sanitizeSkillTags(raw: unknown, names: string[], max = 4): Record<string, string[]> {
+  const known = new Set(names);
+  const obj = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {};
+  const out: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (!known.has(k) || !Array.isArray(v)) continue;
+    const tags = [...new Set(v.map((t) => slugName(String(t))).filter(Boolean))].slice(0, max);
+    if (tags.length) out[k] = tags;
+  }
+  return out;
+}
+
 export class NetworkError extends Error {
   constructor(message: string) {
     super(message);
@@ -641,6 +703,44 @@ export class ManagerClient {
     try { obj = JSON.parse(reply.slice(start, end + 1)); }
     catch { throw new ManagerError('AI design: reply was not valid JSON'); }
     return sanitizeDesignedTeam(obj, { runtimes, models: opts.models, skills });
+  }
+
+  /**
+   * Auto-categorize library skills that lack frontmatter tags. Dispatches ONE
+   * `/ask` to a running agent to tag the whole batch from {@link SKILL_CATEGORIES},
+   * and uses the offline {@link heuristicSkillTags} as a per-skill baseline / full
+   * fallback (no agent, or AI failure/garbage). Always returns a name→tags entry
+   * for every input skill.
+   */
+  async categorizeSkillsAI(
+    skills: Array<{ name: string; description?: string | null }>,
+    opts: { agent?: string; onTick?: (status: string) => void; signal?: AbortSignal } = {},
+  ): Promise<Record<string, string[]>> {
+    const out: Record<string, string[]> = {};
+    for (const s of skills) out[s.name] = heuristicSkillTags(s.name, s.description); // baseline
+    if (!skills.length) return out;
+    const agent = await this.resolveHelperAgent(opts.agent);
+    if (!agent) return out; // no running agent → heuristic only
+    const list = skills
+      .map((s) => `- ${s.name}: ${(s.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)}`)
+      .join('\n');
+    const prompt =
+      'Categorize each skill below with 1–3 short tags chosen from this controlled ' +
+      'vocabulary (you MAY add at most one extra specific tag if clearly warranted): ' +
+      SKILL_CATEGORIES.join(', ') + '. ' +
+      'Return JSON ONLY — no prose, no markdown fences: a map of skill name → array of ' +
+      'lowercase tag strings, e.g. {"pdf-tools":["data","documentation"]}. Cover every skill.\n\nSKILLS:\n' + list;
+    try {
+      const reply = await this.dispatch(`/ask ${agent} ${qArg(prompt)}`, { onTick: opts.onTick, signal: opts.signal });
+      const start = reply.indexOf('{');
+      const end = reply.lastIndexOf('}');
+      if (start < 0 || end <= start) return out; // no JSON → keep heuristic baseline
+      const ai = sanitizeSkillTags(JSON.parse(reply.slice(start, end + 1)), skills.map((s) => s.name));
+      for (const [name, tags] of Object.entries(ai)) if (tags.length) out[name] = tags; // AI overrides baseline
+      return out;
+    } catch {
+      return out; // AI dispatch/parse failed → heuristic baseline
+    }
   }
 
   // ---- Team relay (cross-team delegation allow-list) --------------------

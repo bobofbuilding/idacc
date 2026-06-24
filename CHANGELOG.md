@@ -8,6 +8,21 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.96] — 2026-06-24
+- **Skills are now auto-categorized, so the catalog's tag search actually works.**
+  Skills created in other sessions land in the library with no `metadata.tags`, so
+  the Capabilities → Skills tag filter was empty for them. Now any untagged skill is
+  automatically tagged on catalog load:
+  - **AI batch categorization** — one `/ask` to a running agent tags every untagged
+    skill at once from a controlled category vocabulary (research, coding, messaging,
+    wallet, onchain, knowledge, …); falls back to an **offline keyword heuristic**
+    when no agent is up, so it always produces tags.
+  - **App-side overlay** — derived tags are cached in the control center's settings
+    and merged into the catalog display + tag search; the skill's `SKILL.md` is never
+    modified. Auto-tags are shown with an `auto` style; **↻ re-categorize** re-runs it.
+  - The existing **search box + tag-chip filter** now spans both frontmatter and
+    auto‑derived tags, so every skill is findable by tag.
+
 ## [0.1.95] — 2026-06-24
 - **Internal:** added a unit test for the AI Team Builder's design sanitization
   (`sanitizeDesignedTeam` — drops off‑list runtime/model/skill picks, dedupes agent
