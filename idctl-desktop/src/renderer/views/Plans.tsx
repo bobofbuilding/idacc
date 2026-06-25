@@ -136,106 +136,77 @@ export function Plans({ store }: { store: FleetStore }) {
   const [busyFile, setBusyFile] = useState<string | null>(null); // one brain-plan action at a time
   const [audit, setAudit] = useState<Record<string, { from?: string; to?: string; summary: string }>>({});
   const [blockers, setBlockers] = useState<Record<string, string>>({});
-  // One unified compile/dispatch picker per plan: the ACTIVE team gets tasks in a chosen
-  // lane (cards land on the board you're viewing), and/or OTHER teams get the plan handed
-  // to their active lead. Same procedure, one Go.
-  const [compileFor, setCompileFor] = useState<string | null>(null);  // plan file with the picker open
-  const [compileLane, setCompileLane] = useState('doing');            // lane for the active team's tasks
-  const [compileActive, setCompileActive] = useState(true);           // include the active team
-  const [fanPick, setFanPick] = useState<Set<string>>(new Set());     // other teams to hand the plan to
-  const [teamInfo, setTeamInfo] = useState<TeamLead[]>([]);           // active-lead + running counts per team
-  const COMPILE_LANES = [{ id: 'backlog', label: 'Backlog' }, { id: 'holding', label: 'Holding' }, { id: 'todo', label: 'To Do' }, { id: 'doing', label: 'Doing (work now)' }];
-  const activeTeam = store.team ?? 'default';
-  const otherTeams = useMemo(() => store.teams.map((t) => t.name).filter((n) => n && n !== activeTeam), [store.teams, activeTeam]);
-
-  // Load active-lead info for the other teams when the picker opens.
-  useEffect(() => {
-    if (!compileFor || !otherTeams.length) return;
-    let live = true;
-    call<TeamLead[]>('work:teamLeads', otherTeams).then((r) => { if (live) setTeamInfo(r); }).catch(() => { if (live) setTeamInfo([]); });
-    return () => { live = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compileFor, store.teams.length]);
   type StatusWrite = { ok: boolean; from?: string; to?: string; error?: string };
 
-  async function auditPlan(p: BrainPlan) {
+  // ── Unified "Work" pipeline: AUDIT → FIND BLOCKERS → COMPILE & DISPATCH ──────────
+  // One button. The plan is first audited (real status refreshed), then scanned for
+  // blockers, then compiled into tasks and dispatched to EVERY active team/agent
+  // automatically — no team picking; items get delegated + assigned as needed.
+  async function auditCore(p: BrainPlan): Promise<string> {
     const who = genAgent;
-    if (!who) { setMsg('no agent available to audit'); return; }
-    setBusyFile(p.file); setMsg(`${who} is auditing “${p.title}” against the codebase…`);
-    try {
-      const got = await call<{ file: string; content: string } | null>('brain:plan', p.file).catch(() => null);
-      const reply = okContent(await call<string>('dispatch', `/ask ${who} ${qArg(AUDIT_PROMPT(p.title, got?.content ?? ''))}`));
-      const a = reply.indexOf('{'); const b = reply.lastIndexOf('}');
-      const obj = a >= 0 && b > a ? (() => { try { return JSON.parse(reply.slice(a, b + 1)); } catch { return null; } })() : null;
-      const status = String(obj?.status ?? '').trim();
-      const summary = String(obj?.summary ?? '').trim() || reply.slice(0, 300);
-      if (!status) { if (aliveRef.current) { setAudit((m) => ({ ...m, [p.file]: { summary } })); setMsg('audit returned no clear status'); } return; }
-      const res = await call<StatusWrite>('brain:setPlanStatus', p.file, status).catch((): StatusWrite => ({ ok: false, error: 'write failed' }));
-      if (!aliveRef.current) return;
-      setAudit((m) => ({ ...m, [p.file]: { from: res.from, to: res.to, summary } }));
-      setMsg(res.ok ? `“${p.title}”: ${res.from} → ${res.to} ✓` : `audited (write failed: ${res.error ?? 'n/a'})`);
-      await reloadBrain();
-    } catch (err) {
-      if (aliveRef.current) setMsg(`audit failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally { if (aliveRef.current) setBusyFile(null); }
+    if (!who) return 'no agent to audit';
+    const got = await call<{ file: string; content: string } | null>('brain:plan', p.file).catch(() => null);
+    const reply = okContent(await call<string>('dispatch', `/ask ${who} ${qArg(AUDIT_PROMPT(p.title, got?.content ?? ''))}`));
+    const a = reply.indexOf('{'); const b = reply.lastIndexOf('}');
+    const obj = a >= 0 && b > a ? (() => { try { return JSON.parse(reply.slice(a, b + 1)); } catch { return null; } })() : null;
+    const status = String(obj?.status ?? '').trim();
+    const summary = String(obj?.summary ?? '').trim() || reply.slice(0, 300);
+    if (!status) { if (aliveRef.current) setAudit((m) => ({ ...m, [p.file]: { summary } })); return 'no clear status'; }
+    const res = await call<StatusWrite>('brain:setPlanStatus', p.file, status).catch((): StatusWrite => ({ ok: false, error: 'write failed' }));
+    if (aliveRef.current) setAudit((m) => ({ ...m, [p.file]: { from: res.from, to: res.to, summary } }));
+    await reloadBrain();
+    return res.ok ? `${res.from} → ${res.to}` : 'audit (write failed)';
   }
-
-  async function findBlockers(p: BrainPlan) {
+  async function blockersCore(p: BrainPlan): Promise<string> {
     const who = genAgent;
-    if (!who) { setMsg('no agent available'); return; }
-    setBusyFile(p.file); setMsg(`${who} is checking “${p.title}” for blockers…`);
-    try {
-      const got = await call<{ file: string; content: string } | null>('brain:plan', p.file).catch(() => null);
-      const reply = okContent(await call<string>('dispatch', `/ask ${who} ${qArg(BLOCKERS_PROMPT(p.title, got?.content ?? ''))}`));
-      if (aliveRef.current) { setBlockers((m) => ({ ...m, [p.file]: reply || 'no response' })); setMsg(`blockers checked for “${p.title}”`); }
-    } catch (err) {
-      if (aliveRef.current) setMsg(`blockers check failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally { if (aliveRef.current) setBusyFile(null); }
+    if (!who) return 'no agent';
+    const got = await call<{ file: string; content: string } | null>('brain:plan', p.file).catch(() => null);
+    const reply = okContent(await call<string>('dispatch', `/ask ${who} ${qArg(BLOCKERS_PROMPT(p.title, got?.content ?? ''))}`));
+    if (aliveRef.current) setBlockers((m) => ({ ...m, [p.file]: reply || 'no response' }));
+    return reply ? 'blockers noted' : 'no blockers';
   }
-
-  // Unified compile & dispatch. The ACTIVE team (if included) gets the plan decomposed
-  // into tasks in the chosen lane — lane='doing' → the lead auto-sorts (dependency order),
-  // assigns each task, and dispatches them to completion (board auto-updates); other lanes
-  // queue them unowned. EACH chosen OTHER team gets the same plan handed to its active lead,
-  // which runs it independently on its own board. One step, fanned out in parallel.
-  async function runDispatch(p: BrainPlan) {
-    const teams = [...fanPick];
-    if (!compileActive && !teams.length) { setMsg('pick the active team and/or other teams first'); return; }
+  // Compile the plan + dispatch to ALL active teams/agents — no selection. The primary
+  // (owning) team gets trackable task cards (auto-assigned + worked); every OTHER active
+  // team gets the plan handed to its lead, run in parallel.
+  async function dispatchCore(p: BrainPlan): Promise<string> {
+    const got = await call<{ file: string; content: string } | null>('brain:plan', p.file).catch(() => null);
+    const obj = `Implement this plan, end to end:\n\n# ${p.title}\n\n${got?.content ?? ''}`;
+    const parts: string[] = [];
+    const allTeams = store.teams.map((t) => t.name).filter(Boolean);
+    const leads = await call<TeamLead[]>('work:teamLeads', allTeams).catch(() => [] as TeamLead[]);
+    const primary = store.team ?? 'default';
     const who = genAgent;
-    if (compileActive && !who) { setMsg('no agent available to compile tasks'); return; }
-    setCompileFor(null); setBusyFile(p.file);
-    setMsg(`dispatching “${p.title}”…`);
-    // A global toast carries progress → result; it survives leaving this page (the work
-    // runs in the main process and keeps going regardless of which view is open).
-    const t = toast({ kind: 'progress', text: `Compiling & dispatching “${p.title}”…` });
+    if ((leads.find((l) => l.team === primary)?.activeCount ?? 0) > 0 && who) {
+      const dec = await call<DecomposeResult>('work:decompose', obj, who).catch((): DecomposeResult => ({ ok: false, subtasks: [], raw: '', error: 'decompose failed' }));
+      if (dec.ok && dec.subtasks.length) {
+        const res = await call<CreatePlanResult>('work:createPlan', obj, dec.subtasks, { lane: 'doing', dispatch: true });
+        parts.push(`${primary}: dispatched ${res.created.filter((c) => c.ok).length}`);
+      } else { parts.push(`${primary}: ${dec.error || 'no tasks'}`); }
+    }
+    const others = leads.filter((l) => l.team !== primary && l.activeCount > 0 && l.lead).map((l) => l.team);
+    if (others.length) {
+      const fr = await call<FanoutResult[]>('work:fanout', obj, others).catch(() => [] as FanoutResult[]);
+      for (const r of fr) parts.push(`${r.team}: ${r.status === 'dispatched' ? `→ ${r.lead}` : r.status === 'no-active-agent' ? 'no agent' : 'failed'}`);
+    }
+    return parts.join(' · ') || 'no active teams available';
+  }
+  // One button → all three phases, single live toast.
+  async function runWork(p: BrainPlan) {
+    if (busyFile) return;
+    setBusyFile(p.file);
+    const t = toast({ kind: 'progress', text: `Working “${p.title}” — auditing status…` });
     try {
-      const got = await call<{ file: string; content: string } | null>('brain:plan', p.file).catch(() => null);
-      const obj = `Implement this plan, end to end:\n\n# ${p.title}\n\n${got?.content ?? ''}`;
-      const parts: string[] = [];
-      // 1) Active team → tasks in the chosen lane (Doing dispatches the lead to work them).
-      if (compileActive && who) {
-        const dispatch = compileLane === 'doing';
-        const dec = await call<DecomposeResult>('work:decompose', obj, who);
-        if (dec.ok && dec.subtasks.length) {
-          const res = await call<CreatePlanResult>('work:createPlan', obj, dec.subtasks, { lane: compileLane, dispatch });
-          const ok = res.created.filter((c) => c.ok).length;
-          parts.push(`${activeTeam}: ${dispatch ? `dispatched ${ok}` : `queued ${ok}`} → ${compileLane}`);
-        } else {
-          parts.push(`${activeTeam}: ${dec.error || 'could not split into tasks'}`);
-        }
-      }
-      // 2) Other teams → each team's active lead runs it independently, in parallel.
-      if (teams.length) {
-        const fr = await call<FanoutResult[]>('work:fanout', obj, teams);
-        for (const r of fr) parts.push(`${r.team}: ${r.status === 'dispatched' ? `→ ${r.lead}` : r.status === 'no-active-agent' ? 'no active agent' : 'failed'}`);
-      }
-      const summary = parts.join(' · ') || 'nothing dispatched';
-      t.update({ kind: 'success', text: `“${p.title}” dispatched — ${summary}` }); // shows even if you've navigated away
-      if (aliveRef.current) { setMsg(summary); setFanPick(new Set()); }
+      const a = await auditCore(p);
+      t.update({ kind: 'progress', text: `Working “${p.title}” — scanning for blockers… (${a})` });
+      const b = await blockersCore(p);
+      t.update({ kind: 'progress', text: `Working “${p.title}” — compiling & dispatching to active teams…` });
+      const d = await dispatchCore(p);
+      t.update({ kind: 'success', text: `“${p.title}” ✓ audited (${a}) · ${b} · ${d}` });
+      if (aliveRef.current) setMsg(`audited (${a}) · ${b} · ${d}`);
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
-      t.update({ kind: 'error', text: `“${p.title}” dispatch failed: ${m}` });
-      if (aliveRef.current) setMsg(`dispatch failed: ${m}`);
+      t.update({ kind: 'error', text: `“${p.title}” work failed: ${m}` });
+      if (aliveRef.current) setMsg(`work failed: ${m}`);
     } finally { if (aliveRef.current) setBusyFile(null); }
   }
 
@@ -407,41 +378,9 @@ export function Plans({ store }: { store: FleetStore }) {
           <span className="muted">{isOpen ? '▾' : '▸'}</span>
         </div>
         <div className="row-actions" style={{ gap: 6, padding: '0 8px 6px', flexWrap: 'wrap' }} onClick={(e) => e.stopPropagation()}>
-          <button className="btn small" disabled={busyFile !== null} title="Verify the real status against the codebase and update it" onClick={() => void auditPlan(p)}>{acting ? '…' : '✦ Audit status'}</button>
-          <button className="btn small" disabled={busyFile !== null} title="Ask an agent what's blocking this plan" onClick={() => void findBlockers(p)}>⚠ Find blockers</button>
-          {compileFor === p.file ? (
-            <div style={{ flexBasis: '100%', display: 'flex', flexDirection: 'column', gap: 6, border: '1px solid var(--border, #2a2a2a)', borderRadius: 6, padding: 8, marginTop: 4 }}>
-              <div className="muted small">Compile &amp; dispatch “{p.title}” to one or more teams — the active team gets task cards on this board, others run it via their lead:</div>
-              <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                <input type="checkbox" checked={compileActive} disabled={busyFile !== null} onChange={(e) => setCompileActive(e.target.checked)} />
-                <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#3ccb78', display: 'inline-block' }} />
-                <b>{activeTeam}</b> <span className="muted">(this board)</span> → into
-                <select className="cell-select small" value={compileLane} disabled={busyFile !== null || !compileActive} onChange={(e) => setCompileLane(e.target.value)}>
-                  {COMPILE_LANES.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
-                </select>
-              </label>
-              {otherTeams.map((name) => {
-                const info = teamInfo.find((t) => t.team === name);
-                const canTake = (info?.activeCount ?? 0) > 0 && !!info?.lead;
-                return (
-                  <label key={name} className="small" title={!info ? 'checking…' : canTake ? `lead: ${info.lead} · ${info.activeCount}/${info.totalCount} running` : `${info?.totalCount ?? 0} agent(s), none running`}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, opacity: canTake ? 1 : 0.5, cursor: canTake && busyFile === null ? 'pointer' : 'not-allowed' }}>
-                    <input type="checkbox" disabled={!canTake || busyFile !== null} checked={fanPick.has(name)}
-                      onChange={(e) => setFanPick((prev) => { const n = new Set(prev); if (e.target.checked) n.add(name); else n.delete(name); return n; })} />
-                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: canTake ? '#3ccb78' : '#888', display: 'inline-block' }} />
-                    {name} <span className="muted">{info ? `${info.activeCount}/${info.totalCount}` : '…'}</span>
-                    <span className="muted">{canTake ? `→ ${info!.lead}` : '(none running)'}</span>
-                  </label>
-                );
-              })}
-              <div className="row-actions" style={{ gap: 6, marginTop: 2 }}>
-                <button className="btn small primary" disabled={busyFile !== null || (!compileActive && !fanPick.size)} onClick={() => void runDispatch(p)}>Go</button>
-                <button className="btn small" disabled={busyFile !== null} onClick={() => { setCompileFor(null); setFanPick(new Set()); }}>Cancel</button>
-              </div>
-            </div>
-          ) : (
-            <button className="btn small" disabled={busyFile !== null} title="Compile this plan into tasks for the active team (pick a lane) and/or fan it out to other teams' active leads — one step" onClick={() => { setCompileFor(p.file); setFanPick(new Set()); }}>⤳ Compile &amp; dispatch</button>
-          )}
+          <button className="btn small primary" disabled={busyFile !== null}
+            title="Work this plan end-to-end, automatically: ① audit its real status → ② scan for blockers → ③ compile into tasks and dispatch to EVERY active team & agent (no team picking — work is delegated and assigned as needed)."
+            onClick={() => void runWork(p)}>{acting ? '⏳ Working…' : '▶ Work'}</button>
           <span className="grow" />
           {brainStatusKey(p.status) !== 'pending' ? <button className="btn small" disabled={busyFile !== null} title="Reset this plan's status to ⏳ PENDING" onClick={() => void setBrainPending(p)}>⏳ Set pending</button> : null}
         </div>

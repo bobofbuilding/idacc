@@ -8,6 +8,14 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.151] — 2026-06-25
+- **Plans: one ▶ Work button** replaces the three brain-plan actions (Audit status / Find blockers /
+  Compile & dispatch). It runs them as a unified pipeline: ① **audit** the plan's real status →
+  ② **scan for blockers** → ③ **compile into tasks + dispatch to EVERY active team & agent
+  automatically** — the primary team gets trackable task cards (auto-assigned), every other active
+  team gets the plan handed to its lead in parallel. **No team picker** — work is delegated and
+  assigned as needed. One live toast shows all three phases.
+
 ## [0.1.150] — 2026-06-25
 - **Self-healing, standardized git guards** so the commit/sync process stays clean across every
   project:
