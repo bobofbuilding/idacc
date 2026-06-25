@@ -62,9 +62,12 @@ fs.writeFileSync(f, (i >= 0 ? t.slice(0, i) + entry + t.slice(i) : t + "\n" + en
 
 # --- 3) typecheck (a broken build never gets shipped), then commit + tag + push ---
 ( cd "$DESK" && npm run typecheck )
-SUBJECT="$(printf '%s' "$NOTE" | head -1)"   # commit-msg hook prepends "vX.Y.Z:" from package.json
+# Stamp the version onto the subject ourselves (the commit-msg hook is idempotent and leaves a
+# "v…"-prefixed subject untouched — so this works whether or not the hook is installed in this clone).
+SUBJECT="$(printf '%s' "$NOTE" | head -1)"
 git add -A
-git commit -q -m "$SUBJECT"
+git commit -q -m "v$VER: $SUBJECT"
+git pull --rebase origin main   # fold in any concurrent agent pushes before we publish (fail-stops on conflict)
 git tag "v$VER"
 git push origin main --tags
 echo "✓ committed + tagged v$VER + pushed to origin/main"
