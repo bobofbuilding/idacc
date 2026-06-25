@@ -346,7 +346,6 @@ export function Projects({ store }: { store: FleetStore }) {
     // actual git work to git-manager — the responsible agent for commits/pushes.
     const ownTeam = p.team || defaultTeamName || 'default';
     const ownLead = teamLeadOf(ownTeam);
-    if (p.path) void call('project:ensureSecretGitignore', p.path).catch(() => {}); // belt: gitignore secrets before any commit
     const t = toast({ kind: 'progress', text: `Requesting ${ownTeam}/${ownLead} to commit & push “${p.name}” (via git-manager)…` });
     try {
       const title = `Commit & push: ${p.name}`;

@@ -11,7 +11,7 @@ import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRel
 import { subsStatus, subsSignin, subsSignout, subsInstall, type SubProvider } from './subscriptions.ts';
 import { ollamaTags, ollamaPull, ollamaRemove } from './ollama.ts';
 import { getHardware, runInTerminal } from './system.ts';
-import { pickProjectFolder, openProjectFolder, projectReadme, projectGit, projectGitRun, githubMeta, cloneGithub, projectDiff, createGithubRepo, linkGithubRepo, forkGithub, ensureSecretGitignoreCommitted, detectProjectsRoot, scanProjectsRoot } from './projects.ts';
+import { pickProjectFolder, openProjectFolder, projectReadme, projectGit, projectGitRun, githubMeta, cloneGithub, projectDiff, createGithubRepo, linkGithubRepo, forkGithub, detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { pickChatFiles, saveChatFiles, savePastedFile } from './chatfiles.ts';
 import { listChats, listInflightChats, getChat, saveChat, renameChat, removeChat, genTitle, unreadChatCount, markChatRead, patchChat, type ChatSession, type ChatPatch } from './chatstore.ts';
 import { listPlans, getPlan, savePlan, removePlan, type Plan } from './planstore.ts';
@@ -224,10 +224,6 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return createGithubRepo(args[0] as string, (args[1] as { name?: string; description?: string; private?: boolean }) ?? {});
     case 'project:linkRepo':
       return linkGithubRepo(args[0] as string, args[1] as string);
-    case 'project:ensureSecretGitignore':
-      // Self-healing: add the managed secrets block AND commit it (best-effort push), so the
-      // standard never leaves .gitignore perpetually uncommitted. Idempotent → at most once/repo.
-      return ensureSecretGitignoreCommitted(args[0] as string);
     case 'project:fork':
       return forkGithub(args[0] as string, args[1] as string);
     case 'project:detectRoot':

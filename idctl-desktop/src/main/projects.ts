@@ -116,75 +116,10 @@ function githubToken(): string | undefined {
   }
 }
 
-// Standard secret patterns every repo should ignore so credentials never get committed.
-const SECRET_GITIGNORE_BLOCK = [
-  '# --- secrets (managed by ID Agents Control Center) ---',
-  '.env',
-  '.env.*',
-  '!.env.example',
-  '!.env.sample',
-  '!.env.template',
-  '*.pem',
-  '*.key',
-  '*.p12',
-  '*.pfx',
-  '*.keystore',
-  'id_rsa',
-  'id_ed25519',
-  '*.secret',
-  'secrets.json',
-  'service-account*.json',
-  'gha-creds-*.json',
-  '.netrc',
-  '.pgpass',
-  '# --- end secrets ---',
-].join('\n');
-const SECRET_GITIGNORE_MARKER = '# --- secrets (managed by ID Agents Control Center) ---';
-
-/** Ensure a repo's .gitignore covers common secret files (idempotent, additive). Makes
- *  "secrets are gitignored" the standard for every repo the app links/creates/commits. */
-export function ensureSecretGitignore(path: string): { ok: boolean; added: boolean; error?: string } {
-  try {
-    if (!path || !existsSync(path)) return { ok: false, added: false, error: 'folder not found' };
-    const gi = join(path, '.gitignore');
-    const existing = existsSync(gi) ? readFileSync(gi, 'utf8') : '';
-    if (existing.includes(SECRET_GITIGNORE_MARKER)) return { ok: true, added: false };
-    const sep = existing ? (existing.endsWith('\n') ? '\n' : '\n\n') : '';
-    writeFileSync(gi, `${existing}${sep}${SECRET_GITIGNORE_BLOCK}\n`, { mode: 0o644 });
-    return { ok: true, added: true };
-  } catch (e) {
-    return { ok: false, added: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-const SECRET_GITIGNORE_COMMIT_MSG = 'chore: gitignore secrets (managed by ID Agents Control Center)';
-
-/** Ensure the managed secrets block is in .gitignore AND committed, so the standard never
- *  leaves a perpetually-uncommitted .gitignore — the cause of "uncommitted in every project."
- *  Idempotent: once the block is present (added=false) this is a no-op, so it self-heals each
- *  repo exactly once. The commit is scoped to ONLY .gitignore (never sweeps in unrelated work),
- *  and the push is best-effort — a protected-branch / offline / no-upstream failure leaves the
- *  change committed locally (the dirty flag is cleared) for the next sync to push. */
-export async function ensureSecretGitignoreCommitted(
-  path: string,
-): Promise<{ ok: boolean; added: boolean; committed: boolean; pushed: boolean; error?: string }> {
-  const r = ensureSecretGitignore(path);
-  if (!r.ok || !r.added) return { ...r, committed: false, pushed: false };
-  if (!(await isOwnRepoRoot(path))) return { ...r, committed: false, pushed: false }; // not a repo root — leave the file
-  try {
-    await git(path, ['add', '.gitignore']);
-    // `-- .gitignore` commits only that path even if other work is staged/dirty.
-    await git(path, ['commit', '-m', SECRET_GITIGNORE_COMMIT_MSG, '--', '.gitignore']);
-  } catch (e) {
-    return { ...r, committed: false, pushed: false, error: e instanceof Error ? e.message : String(e) };
-  }
-  let pushed = false;
-  try {
-    const branch = await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']);
-    if (branch && branch !== 'HEAD') { await git(path, ['push', 'origin', `HEAD:${branch}`], 60000); pushed = true; }
-  } catch { /* protected branch / offline / no upstream — committed locally, next sync pushes */ }
-  return { ...r, committed: true, pushed };
-}
+// (Retired) The app used to append a managed "secrets" block to every project's .gitignore
+// and auto-commit it. In practice every repo already ignored .env, so the block was redundant
+// noise — and stamping a tool-branded comment into others' repos was confusing. Removed; repos
+// own their own .gitignore.
 
 /** Can git actually reach this repo over SSH (the user's key) or HTTPS? This is the
  *  transport git uses, so it's the real "do I have access" test — independent of the
@@ -320,7 +255,6 @@ export async function createGithubRepo(path: string, opts: { name?: string; desc
     const sshUrl = String(repo.ssh_url ?? `git@github.com:${slug}.git`);
     const htmlUrl = String(repo.html_url ?? `https://github.com/${slug}`);
     await git(path, ['remote', 'add', 'origin', sshUrl]); // SSH — never embed the token in the remote
-    await ensureSecretGitignoreCommitted(path); // standardize + COMMIT secrets-ignore before any first push
     return { ok: true, slug, sshUrl, htmlUrl };
   } catch (e) {
     const err = e as { stderr?: string; message?: string };
@@ -359,7 +293,6 @@ export async function linkGithubRepo(path: string, url: string): Promise<{ ok: b
     }
     await git(path, ['remote', 'add', 'origin', sshUrl]); // SSH — never embed a token
     await git(path, ['fetch', 'origin'], 120000).catch(() => {}); // pull down refs; ignore auth hiccups
-    await ensureSecretGitignoreCommitted(path); // standardize + COMMIT so .gitignore never sits uncommitted
     return { ok: true, slug, remoteUrl: sshUrl };
   } catch (e) {
     const err = e as { stderr?: string; message?: string };

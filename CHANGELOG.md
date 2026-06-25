@@ -8,6 +8,13 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.164] — 2026-06-25
+- **Retired the managed-secrets `.gitignore` standard (reverts 0.1.154 + 0.1.163).** It appended a
+  tool-branded secrets block to every project and auto-committed it — but every repo already ignored
+  `.env`, so the block was redundant noise, and stamping the tool's name into others' repos was just
+  confusing. Removed the auto-add/auto-commit entirely; repos own their own `.gitignore`. The blocks
+  already committed to the project repos were reverted by hand.
+
 ## [0.1.163] — 2026-06-25
 - **The secrets-gitignore standard now commits itself — no more “uncommitted in every project.”**
   `ensureSecretGitignore` added a managed `.gitignore` block to every project but never committed it,
