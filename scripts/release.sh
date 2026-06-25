@@ -40,6 +40,9 @@ CUR="$(node -p "require('$DESK/package.json').version")"
 VER="${VER_ARG:-$(node -e "const [a,b,c]=process.argv[1].split('.'); console.log(\`\${a}.\${b}.\${Number(c)+1}\`)" "$CUR")}"
 echo "▶ releasing v$VER  (was v$CUR)"
 
+# --- 0) typecheck FIRST, before mutating anything — a failure leaves the tree pristine ---
+( cd "$DESK" && npm run typecheck )
+
 # --- 1) bump the version in package.json + package-lock.json (first match, keep formatting) ---
 node -e '
 const fs = require("fs"); const [cur, ver] = process.argv.slice(1);
@@ -60,8 +63,7 @@ const i = t.indexOf("## [");
 fs.writeFileSync(f, (i >= 0 ? t.slice(0, i) + entry + t.slice(i) : t + "\n" + entry));
 ' "$VER" "$NOTE"
 
-# --- 3) typecheck (a broken build never gets shipped), then commit + tag + push ---
-( cd "$DESK" && npm run typecheck )
+# --- 3) commit + tag + push (typecheck already passed in step 0) ---
 # Stamp the version onto the subject ourselves (the commit-msg hook is idempotent and leaves a
 # "v…"-prefixed subject untouched — so this works whether or not the hook is installed in this clone).
 SUBJECT="$(printf '%s' "$NOTE" | head -1)"
