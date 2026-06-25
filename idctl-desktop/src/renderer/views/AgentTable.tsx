@@ -139,6 +139,12 @@ export function AgentTable({ store, onProbe, probeBusy }: { store: FleetStore; o
       if (window.confirm(`Delete agent "${a.name}"? Working files are left in place.`)) void run(`delete ${a.name}`, `/delete ${a.name}`, team);
       return;
     }
+    if (act === 'Reset session') {
+      // Start a fresh conversation — drops the agent's accumulated context. Use this to deflate a
+      // bloated codex session (multi-million-token prompts) so its next turns are cheap again.
+      void run(`reset session ${a.name}`, `/clear ${a.name}`, team);
+      return;
+    }
     void run(`${act} ${a.name}`, `/agent ${a.name} ${act.toLowerCase()}`, team);
   }
   async function setEffort(a: TeamAgent, effort: string) {
@@ -217,6 +223,7 @@ export function AgentTable({ store, onProbe, probeBusy }: { store: FleetStore; o
             <option>Start</option>
             <option>Stop</option>
             <option>Rebuild</option>
+            <option>Reset session</option>
             <option>Probe</option>
             <option>Delete</option>
           </select>

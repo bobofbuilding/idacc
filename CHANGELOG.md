@@ -8,6 +8,14 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.173] — 2026-06-25
+- **Phase 5: codex session hygiene + fleet spend.** New **Reset session** agent action (HR Manager →
+  agent ⋯ menu) starts a fresh conversation — drops a bloated codex context (the multi-million-token
+  prompts) so the agent's next turns are cheap again. The Dashboard's live coordination tree now shows
+  **fleet token spend / 24h + turns + top spender**, so cost is visible at a glance. Fixed the
+  aggregate `/usage` to clamp the same stale cache-inflated records the per-task view already drops, so
+  the spend numbers reflect real (non-cached) tokens — not the 200M+ phantom.
+
 ## [0.1.172] — 2026-06-25
 - **Phase 4: live coordination tree on the Dashboard.** A real-time mirror of *who's driving what* —
   primary lead → secondary leads (researcher / coder) → team leads → workers — each with a live state

@@ -19,6 +19,12 @@ function ago(ts?: number): string {
   return `${Math.round(s / 3600)}h`;
 }
 function str(x: unknown): string { return typeof x === 'string' ? x : ''; }
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 10_000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1_000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
 function agentLabel(idOrName: string, byId: Map<string, string>): string {
   if (!idOrName) return '';
   return byId.get(idOrName) ?? (/^agent_\d+_/.test(idOrName) ? '@' + idOrName.replace(/^agent_\d+_/, '') : idOrName);
@@ -85,11 +91,18 @@ const DONE_RE = /done|complete/i;
 function CoordinationTree({ store }: { store: FleetStore }) {
   const [hier, setHier] = useState<OrgHier>({ primary: null, secondaries: [], coordinators: {}, teams: [] });
   const [tasks, setTasks] = useState<LiteTask[]>([]);
+  const [spend, setSpend] = useState<{ total: number; count: number; top?: { agent: string; total: number } } | null>(null);
   useEffect(() => {
     let live = true;
     const load = () => {
       void call<OrgHier>('org:hierarchy').then((h) => { if (live && h) setHier(h); }).catch(() => {});
       void call<LiteTask[]>('tasks:allTeams').then((t) => { if (live) setTasks(Array.isArray(t) ? t : []); }).catch(() => {});
+      void call<{ day?: { total?: number; count?: number; agents?: { agent: string; total?: number; output: number }[] } }>('usage').then((u) => {
+        if (!live || !u?.day) return;
+        const agents = u.day.agents ?? [];
+        const top = agents.length ? agents.map((a) => ({ agent: a.agent, total: a.total ?? a.output })).sort((x, y) => y.total - x.total)[0] : undefined;
+        setSpend({ total: u.day.total ?? 0, count: u.day.count ?? 0, top });
+      }).catch(() => {});
     };
     load();
     const iv = setInterval(load, 5000);
@@ -121,7 +134,15 @@ function CoordinationTree({ store }: { store: FleetStore }) {
 
   return (
     <section className="card" style={{ marginBottom: 12, flexShrink: 0 }}>
-      <h3 style={{ marginTop: 0 }}>Live coordination <span className="muted small">· who's driving what, right now</span></h3>
+      <h3 style={{ marginTop: 0, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+        Live coordination <span className="muted small">· who's driving what, right now</span>
+        <span className="grow" />
+        {spend ? (
+          <span className="muted small" title="Fleet token spend in the last 24h (new, non-cached tokens) and the top spender — Reset session on a heavy agent from HR Manager to deflate a bloated context.">
+            ✳ {fmtTokens(spend.total)} tokens / 24h · {spend.count} turns{spend.top ? ` · top ${spend.top.agent} ${fmtTokens(spend.top.total)}` : ''}
+          </span>
+        ) : null}
+      </h3>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div>{node(primary, 'primary lead')}</div>
         {hier.secondaries.map((s) => (
