@@ -235,23 +235,29 @@ function TasksPanel({ store }: { store: FleetStore }) {
   // In holistic mode each per-task action must hit the task's OWN team.
   const taskTeam = (t: Task): string | undefined => (store.viewAll ? t.teamName : undefined);
 
-  // A task's effective lane: its overlay lane if that still matches the manager status,
-  // else the default lane for the real status (so an agent's status change wins).
-  function laneOf(t: Task): Lane {
-    const ov = laneOverlay[ref(t)] as Lane | undefined;
-    if (ov && LANE_STATUS[ov] === colOf(t.status)) return ov;
-    return DEFAULT_LANE[colOf(t.status)];
-  }
   // Resolve a task's prerequisites from the app-side deps overlay (the manager has none).
   // A missing prereq (removed task) counts as satisfied so nothing blocks forever.
   const taskIndex = new Map(tasks.map((t) => [ref(t), t] as const));
   function prereqsOf(t: Task): { ref: string; task?: Task; done: boolean }[] {
     return (depsOverlay[ref(t)] ?? []).map((r) => { const d = taskIndex.get(r); return { ref: r, task: d, done: d ? isDone(d) : true }; });
   }
+  // Blocked = not done AND at least one prerequisite isn't done yet.
+  function isBlocked(t: Task): boolean {
+    return !isDone(t) && prereqsOf(t).some((p) => !p.done);
+  }
   // How many (live) tasks list THIS task as a prerequisite.
   function blocksCount(t: Task): number {
     const r = ref(t);
     return Object.keys(depsOverlay).filter((k) => depsOverlay[k]?.includes(r) && taskIndex.has(k)).length;
+  }
+  // A task's effective lane: an explicit overlay (if it still matches the manager status)
+  // wins; otherwise a BLOCKED task waits in Holding (it isn't really being worked until
+  // its prerequisites finish), and anything else lands in the default lane for its status.
+  function laneOf(t: Task): Lane {
+    const ov = laneOverlay[ref(t)] as Lane | undefined;
+    if (ov && LANE_STATUS[ov] === colOf(t.status)) return ov;
+    if (isBlocked(t)) return 'holding';
+    return DEFAULT_LANE[colOf(t.status)];
   }
   // Drag a card to a lane → save the lane overlay + set the mapped manager status if it changed.
   async function moveToLane(t: Task, lane: Lane) {
@@ -557,6 +563,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
   // Owned "doing" tasks with no status change in 30m+ → stalled (re-dispatchable).
   const stalledTasks = tasks.filter((t) => {
     if (colOf(t.status) !== 'doing' || !t.ownerName) return false;
+    if (isBlocked(t)) return false; // a blocked task isn't stalled — it's waiting on a prerequisite
     const up = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
     return up > 0 && Date.now() - up > 30 * 60 * 1000;
   });
@@ -799,8 +806,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
             // updatedAt only changes on a status change, so "long in doing with no update" is a
             // strong stall signal — don't claim "working" when a task has sat untouched for 30m+.
             const upMs = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
-            const stale = owned && upMs > 0 && Date.now() - upMs > 30 * 60 * 1000;
-            const working = owned && !stale;                     // recently moved to doing → plausibly active
+            const blocked = isBlocked(t);                        // waiting on a prerequisite → parked in Holding
+            const stale = owned && !blocked && upMs > 0 && Date.now() - upMs > 30 * 60 * 1000;
+            const working = owned && !stale && !blocked;         // recently moved to doing → plausibly active
             const cAbs = absTime(t.createdAt);
             const uAbs = absTime(t.updatedAt);
             const dAbs = absTime(t.completedAt ?? t.updatedAt);
@@ -811,7 +819,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
               onDragStart={(e) => { setDragRef(ref(t)); e.dataTransfer.setData('text/plain', ref(t)); e.dataTransfer.effectAllowed = 'move'; }}
               onDragEnd={() => setDragRef(null)}
               className="kanban-card"
-              style={{ border: `1px solid ${working ? 'rgba(60,203,120,0.55)' : stale ? 'rgba(224,163,60,0.55)' : 'var(--border, #2a2a2a)'}`, borderRadius: 6, padding: '6px 8px', background: 'var(--bg, #141414)', cursor: busy ? 'default' : 'grab' }}
+              style={{ border: `1px solid ${blocked ? 'rgba(96,165,250,0.5)' : working ? 'rgba(60,203,120,0.55)' : stale ? 'rgba(224,163,60,0.55)' : 'var(--border, #2a2a2a)'}`, borderRadius: 6, padding: '6px 8px', background: 'var(--bg, #141414)', cursor: busy ? 'default' : 'grab' }}
             >
               <div className="b" style={{ fontSize: 13 }}>{t.title}</div>
               <div className="muted small mono">{t.shortId ?? ref(t)}{isRoutine(t) ? ' · routine' : ''}{store.viewAll && t.teamName ? ` · ${t.teamName}` : ''}{(() => { const n = blocksCount(t); return n ? ` · blocks ${n}` : ''; })()}</div>
@@ -830,7 +838,12 @@ function TasksPanel({ store }: { store: FleetStore }) {
                 );
               })()}
               <div className="row-actions" style={{ marginTop: 4, alignItems: 'center', gap: 6 }}>
-                {working ? (
+                {blocked ? (
+                  <span className="small" title={`Waiting on a prerequisite — parked in Holding until it's done.${t.ownerName ? ` (owner: ${t.ownerName})` : ''}`}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#60a5fa', background: 'rgba(96,165,250,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
+                    ⏸ {t.ownerName ? `${t.ownerName} · ` : ''}waiting
+                  </span>
+                ) : working ? (
                   <span className="small" title={`${t.ownerName} recently picked this up${uAbs ? ` — moved to Doing ${uAbs}` : ''}`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#3ccb78', background: 'rgba(60,203,120,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
                     <span className="idctl-pulse" style={{ width: 7, height: 7, borderRadius: '50%', background: '#3ccb78', display: 'inline-block' }} />

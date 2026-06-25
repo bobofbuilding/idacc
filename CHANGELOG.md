@@ -8,6 +8,14 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.144] — 2026-06-25
+- **Blocked tasks wait in Holding, not Doing.** A task with an unfinished prerequisite no longer
+  sits in the Doing lane — `laneOf` parks it in **Holding Pattern** until its prerequisites
+  complete, then it flows back automatically. Knock-on effects: blocked tasks are excluded from
+  **stalled** detection / re-dispatch (they’re waiting, not stuck) and from **Triage**/unassigned
+  counts (the `todo`-lane filters skip them), so nothing dispatches a task that can’t start. Cards
+  show a blue **⏸ waiting** badge instead of “working/stalled”.
+
 ## [0.1.143] — 2026-06-24
 - **Plans now show created/updated timestamps.** Draft plans display **created … · updated …**
   (relative, with exact local date-time on hover) on each card, plus an explicit created/updated/
