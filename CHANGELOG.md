@@ -8,6 +8,23 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.177] — 2026-06-25
+- **Tasks board: a live flow that actually populates.** The board looked empty because **every task
+  was `done`** (the fleet had finished its work) and done tasks were *all* hidden. The **Done lane now
+  shows the most-recent completions** (the latest 25; older ones auto-archive behind a **show older**
+  toggle), so the board reads as a live flow of finished work instead of a blank slate. Still re-fetches
+  every 5s.
+- **Removed the Adjustment Loop.** The needs-adjustment / under-review / rework band and all of its
+  auto-machinery (the review overlay, auto-resolve timer, and the surfaced-blocker → needs-adjustment
+  shuffle) are gone — surfacing a blocker still posts the decision to the Inbox, it just no longer
+  reshuffles lanes. Simpler board.
+- **Backlog → Under Review.** The Waiting area's **Backlog** tile is replaced by an **Under Review**
+  tile (a manual review gate you drag work into between Doing and Done). Lanes are now **Under Review ·
+  Holding Pattern | To Do · Doing · Done**.
+- **Fixed all-teams task duplication.** When the manager keeps a single global task pool (every team's
+  `/tasks` returns the same rows), the holistic view showed each task once per team. `tasks:allTeams`
+  now dedupes by stable id, so each task appears once.
+
 ## [0.1.176] — 2026-06-25
 - **Plan lifecycle: drafts now flow into the living brain plans.** Marking a draft **done no longer
   hides it** — a done draft stays visible so you can finalize it. New **↑ Promote to live plan** button

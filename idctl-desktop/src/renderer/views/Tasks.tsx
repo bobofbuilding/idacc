@@ -65,19 +65,19 @@ function colOf(status: string): Col {
   if (/doing|claim|progress|start|active/i.test(status)) return 'doing';
   return 'todo';
 }
-type Lane = 'backlog' | 'holding' | 'todo' | 'doing' | 'done' | 'needs-adjustment' | 'under-review' | 'rework';
+// Lanes: a simple flow. "Under Review" + "Holding Pattern" are the waiting areas; To Do →
+// Doing → Done is the main flow. (The old Backlog + Adjustment Loop — needs-adjustment/rework —
+// were removed; Under Review now lives in the waiting areas.)
+type Lane = 'under-review' | 'holding' | 'todo' | 'doing' | 'done';
 const LANE_STATUS: Record<Lane, Col> = {
-  backlog: 'todo', holding: 'todo', todo: 'todo',
-  doing: 'doing', 'needs-adjustment': 'doing', 'under-review': 'doing', rework: 'doing',
-  done: 'done',
+  'under-review': 'doing', holding: 'todo', todo: 'todo', doing: 'doing', done: 'done',
 };
 const DEFAULT_LANE: Record<Col, Lane> = { todo: 'todo', doing: 'doing', done: 'done' };
-// Lane groups mirror the workflow diagram: waiting → main flow → adjustment loop.
 const LANE_GROUPS: { title: string; lanes: { id: Lane; label: string }[] }[] = [
-  { title: 'Waiting Areas', lanes: [{ id: 'backlog', label: 'Backlog' }, { id: 'holding', label: 'Holding Pattern' }] },
+  { title: 'Waiting', lanes: [{ id: 'under-review', label: 'Under Review' }, { id: 'holding', label: 'Holding Pattern' }] },
   { title: 'Main Flow', lanes: [{ id: 'todo', label: 'To Do' }, { id: 'doing', label: 'Doing' }, { id: 'done', label: 'Done' }] },
-  { title: 'Adjustment Loop', lanes: [{ id: 'needs-adjustment', label: 'Needs Adjustment' }, { id: 'under-review', label: 'Under Review' }, { id: 'rework', label: 'Rework' }] },
 ];
+const RECENT_DONE_CAP = 25; // the Done lane shows the most-recent N completions; older auto-archive
 /** Relative age. createdAt comes from the manager in SECONDS; normalize to ms. */
 function ago(ts?: number): string {
   if (!ts) return '—';
@@ -137,7 +137,6 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const [dragRef, setDragRef] = useState<string | null>(null); // task being dragged across lanes
   const [laneOverlay, setLaneOverlay] = useState<Record<string, string>>({}); // ref → fine-grained lane
   const [depsOverlay, setDepsOverlay] = useState<Record<string, string[]>>({}); // ref → prerequisite refs (app-side; manager has no deps)
-  const [reviewOverlay, setReviewOverlay] = useState<Record<string, { state: string; at: number }>>({}); // ref → adjustment-loop state + when-set
   const [taskUsage, setTaskUsage] = useState<Record<string, { tokens: number; input: number; output: number; ms: number; turns: number }>>({}); // ref → token spend
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   // Auto-decompose: describe an objective → lead splits it → create + farm out.
@@ -239,7 +238,6 @@ function TasksPanel({ store }: { store: FleetStore }) {
     }
     setLaneOverlay(await call<Record<string, string>>('tasks:lanes').catch(() => ({})));
     setDepsOverlay(await call<Record<string, string[]>>('tasks:deps').catch(() => ({})));
-    setReviewOverlay(await call<Record<string, { state: string; at: number }>>('tasks:review').catch(() => ({})));
     // Per-task token spend — fetch per displayed team (the endpoint is team-scoped) and merge.
     try {
       const teamsShown = store.viewAll
@@ -285,55 +283,15 @@ function TasksPanel({ store }: { store: FleetStore }) {
       return !!d && !isDone(d); // count only dependents that are still pending
     }).length;
   }
-  // Actively "working" signal — owned, in Doing, recently updated. Used to detect a
-  // block has passed (the agent picked it back up after the user's response).
-  function isWorking(t: Task): boolean {
-    if (colOf(t.status) !== 'doing' || !t.ownerName) return false;
-    const up = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
-    return up > 0 && Date.now() - up < 30 * 60 * 1000;
-  }
-  // Adjustment-loop state for a task (needs-adjustment | under-review | rework), or ''.
-  function reviewOf(t: Task): '' | 'needs-adjustment' | 'under-review' | 'rework' {
-    if (isDone(t)) return '';
-    const s = reviewOverlay[ref(t)]?.state;
-    return (s === 'needs-adjustment' || s === 'under-review' || s === 'rework') ? s : '';
-  }
-  // A task's effective lane. Blocked states WIN over a stored lane overlay so a task that
-  // becomes blocked auto-moves out of Doing — even though dispatch stamped it as 'doing':
-  //   1) blocked on a USER decision → the Adjustment Loop (needs-adjustment/under-review/rework)
-  //   2) dependency-blocked → Holding Pattern
-  //   3) else honor a manual drag (overlay matching the status column)
-  //   4) else the default lane for the status.
+  // A task's effective lane. A dependency-blocked task auto-moves to Holding (wins over a
+  // stored overlay); else honor a manual drag (overlay matching the status column); else the
+  // default lane for the status.
   function laneOf(t: Task): Lane {
-    const rv = reviewOf(t);
-    if (rv) return rv;
     if (isBlocked(t)) return 'holding';
     const ov = laneOverlay[ref(t)] as Lane | undefined;
     if (ov && LANE_STATUS[ov] === colOf(t.status)) return ov;
     return DEFAULT_LANE[colOf(t.status)];
   }
-  // Auto-resolve the adjustment loop once a block has PASSED: a reviewed task that
-  // completes, OR has been Under Review / Rework for 10m+ since the user responded with
-  // no re-block (the agent has had the answer and moved on). Clearing returns it to its
-  // normal lane (Holding / To Do / Doing, as fits). isWorking gates the next-poll check.
-  useEffect(() => {
-    const REVIEW_TTL = 10 * 60 * 1000;
-    const toClear = tasks.filter((t) => {
-      const e = reviewOverlay[ref(t)];
-      if (!e) return false;
-      if (isDone(t)) return true;
-      return (e.state === 'under-review' || e.state === 'rework') && isWorking(t) && Date.now() - e.at > REVIEW_TTL;
-    });
-    if (!toClear.length) return;
-    let alive = true;
-    void (async () => {
-      let map = reviewOverlay;
-      for (const t of toClear) { try { map = (await call<Record<string, { state: string; at: number }>>('tasks:setReview', ref(t), '')); } catch { /* keep going */ } }
-      if (alive) setReviewOverlay(map);
-    })();
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, reviewOverlay]);
   // Drag a card to a lane → save the lane overlay + set the mapped manager status if it changed.
   async function moveToLane(t: Task, lane: Lane) {
     if (laneOf(t) === lane) return;
@@ -341,8 +299,6 @@ function TasksPanel({ store }: { store: FleetStore }) {
     setBusy(true); setNote(`move ${ref(t)} → ${lane.replace(/-/g, ' ')}…`);
     try {
       await call('tasks:setLane', ref(t), lane);
-      // A manual drag overrides the automatic adjustment-loop state for this task.
-      if (reviewOverlay[ref(t)]) await call('tasks:setReview', ref(t), '').catch(() => {});
       if (colOf(t.status) !== targetStatus) await call('remote', `/task status ${ref(t)} ${targetStatus}`, undefined, taskTeam(t));
       setNote('');
       await reload();
@@ -378,10 +334,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
         const taskRef = match ? ref(match) : (taskKey || undefined);
         const taskTitle = match ? match.title : (taskKey || undefined);
         await call('questions:add', { question, options, agent, taskRef, taskTitle, team: store.team ?? 'default' });
-        if (taskRef) await call('tasks:setReview', taskRef, 'needs-adjustment').catch(() => {}); // → Needs Adjustment lane
         added++;
       }
-      if (added) { setReviewOverlay(await call<Record<string, { state: string; at: number }>>('tasks:review').catch(() => reviewOverlay)); toast({ kind: 'info', text: `⚙ surfaced ${added} blocker decision${added === 1 ? '' : 's'} → Inbox` }); }
+      if (added) toast({ kind: 'info', text: `⚙ surfaced ${added} blocker decision${added === 1 ? '' : 's'} → Inbox` });
       if (!silent) setNote(added ? `added ${added} blocker question${added === 1 ? '' : 's'} to the Inbox ✓` : 'no blocker decisions found');
     } catch (err) {
       if (!silent) setNote(`blocker scan failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -638,11 +593,19 @@ function TasksPanel({ store }: { store: FleetStore }) {
     const up = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
     return up > 0 && Date.now() - up > 30 * 60 * 1000;
   });
-  // Done tasks auto-archive: hidden from the board by default, revealed by the "show archived" toggle.
-  const archivedCount = tasks.filter((t) => isDone(t) && (!hideRoutine || !isRoutine(t))).length;
+  // The Done lane shows RECENT completions (the most-recent N) so the board reads as a live
+  // flow instead of looking empty when everything's finished. Older done tasks auto-archive
+  // (hidden) until "show archived" is toggled. updatedAt/completedAt share a scale, so raw sort.
+  const doneTs = (t: Task) => t.completedAt ?? t.updatedAt ?? t.createdAt ?? 0;
+  const recentDoneRefs = new Set(
+    tasks.filter(isDone).sort((a, b) => doneTs(b) - doneTs(a)).slice(0, RECENT_DONE_CAP).map(ref),
+  );
+  const isRecentDone = (t: Task) => isDone(t) && recentDoneRefs.has(ref(t));
+  // Archived = done but NOT recent (older completions hidden behind the toggle).
+  const archivedCount = tasks.filter((t) => isDone(t) && !isRecentDone(t) && (!hideRoutine || !isRoutine(t))).length;
   const filtered = tasks.filter((t) => {
     if (hideRoutine && isRoutine(t)) return false;
-    if (!showArchived && isDone(t)) return false;
+    if (!showArchived && isDone(t) && !isRecentDone(t)) return false; // recent completions stay visible
     const s = q.trim().toLowerCase();
     return !s || t.title.toLowerCase().includes(s) || (t.ownerName ?? '').toLowerCase().includes(s) || ref(t).toLowerCase().includes(s);
   });
@@ -849,11 +812,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
             <input type="checkbox" checked={hideRoutine} onChange={(e) => setHideRoutine(e.target.checked)} />
             hide routine{routineCount ? ` (${routineCount})` : ''}
           </label>
-          <label className="muted small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} title="Completed tasks auto-archive (hidden) to keep the board clean — toggle to see them in the Done lane">
+          <label className="muted small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} title={`The Done lane shows the ${RECENT_DONE_CAP} most-recent completions; older ones auto-archive to keep the flow readable — toggle to reveal them`}>
             <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
-            show archived{archivedCount ? ` (${archivedCount})` : ''}
+            show older{archivedCount ? ` (${archivedCount})` : ''}
           </label>
-          <span className="muted small" title="The board re-fetches every 5s; drag a card between lanes">⟳ live · drag between lanes</span>
+          <span className="muted small" title="The board re-fetches every 5s; the Done lane shows recent completions; drag a card between lanes">⟳ live flow · drag between lanes</span>
           <span className="grow" />
           {note ? <span className={`small ${/failed/.test(note) ? 'status-error' : 'muted'}`}>{note}</span> : null}
         </div>
@@ -866,11 +829,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
             // strong stall signal — don't claim "working" when a task has sat untouched for 30m+.
             const upMs = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
             const blocked = isBlocked(t);                        // waiting on a prerequisite → parked in Holding
-            const review = reviewOf(t);                          // adjustment loop (decision/under-review/rework)
-            const reviewColor = review === 'needs-adjustment' ? '224,163,60' : review === 'under-review' ? '167,139,250' : review === 'rework' ? '251,113,133' : '';
-            const reviewLabel = review === 'needs-adjustment' ? '⚖ needs your decision' : review === 'under-review' ? '👁 under review' : review === 'rework' ? '↻ rework' : '';
-            const stale = owned && !blocked && !review && upMs > 0 && Date.now() - upMs > 30 * 60 * 1000;
-            const working = owned && !stale && !blocked && !review; // recently moved to doing → plausibly active
+            const stale = owned && !blocked && upMs > 0 && Date.now() - upMs > 30 * 60 * 1000;
+            const working = owned && !stale && !blocked;         // recently moved to doing → plausibly active
             const cAbs = absTime(t.createdAt);
             const uAbs = absTime(t.updatedAt);
             const dAbs = absTime(t.completedAt ?? t.updatedAt);
@@ -881,7 +841,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
               onDragStart={(e) => { setDragRef(ref(t)); e.dataTransfer.setData('text/plain', ref(t)); e.dataTransfer.effectAllowed = 'move'; }}
               onDragEnd={() => setDragRef(null)}
               className="kanban-card"
-              style={{ border: `1px solid ${reviewColor ? `rgba(${reviewColor},0.6)` : blocked ? 'rgba(96,165,250,0.5)' : working ? 'rgba(60,203,120,0.55)' : stale ? 'rgba(224,163,60,0.55)' : 'var(--border, #2a2a2a)'}`, borderRadius: 6, padding: '6px 8px', background: 'var(--bg, #141414)', cursor: busy ? 'default' : 'grab' }}
+              style={{ border: `1px solid ${blocked ? 'rgba(96,165,250,0.5)' : working ? 'rgba(60,203,120,0.55)' : stale ? 'rgba(224,163,60,0.55)' : 'var(--border, #2a2a2a)'}`, borderRadius: 6, padding: '6px 8px', background: 'var(--bg, #141414)', cursor: busy ? 'default' : 'grab' }}
             >
               <div className="b" style={{ fontSize: 13 }}>{t.title}</div>
               <div className="muted small mono">{t.shortId ?? ref(t)}{isRoutine(t) ? ' · routine' : ''}{store.viewAll && t.teamName ? ` · ${t.teamName}` : ''}{(() => { const n = blocksCount(t); return n ? ` · blocks ${n}` : ''; })()}</div>
@@ -916,12 +876,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
                 );
               })()}
               <div className="row-actions" style={{ marginTop: 4, alignItems: 'center', gap: 6 }}>
-                {review ? (
-                  <span className="small" title={review === 'needs-adjustment' ? 'Blocked on a decision — answer it in the Inbox (option, comment, or “I’ll handle it”).' : review === 'under-review' ? 'You responded — the agent is working your answer. Auto-resolves once the block passes.' : 'Re-blocked after review — respond again in the Inbox to push it forward.'}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: `rgb(${reviewColor})`, background: `rgba(${reviewColor},0.14)`, borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
-                    {reviewLabel}{t.ownerName ? ` · ${t.ownerName}` : ''}
-                  </span>
-                ) : blocked ? (
+                {blocked ? (
                   <span className="small" title={`Waiting on a prerequisite — parked in Holding until it's done.${t.ownerName ? ` (owner: ${t.ownerName})` : ''}`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#60a5fa', background: 'rgba(96,165,250,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
                     ⏸ {t.ownerName ? `${t.ownerName} · ` : ''}waiting
@@ -933,7 +888,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     {t.ownerName} · working
                   </span>
                 ) : stale ? (
-                  <span className="small" title={`${t.ownerName} has held this in Doing for ${ago(t.updatedAt)} with no status change — it may be stalled. Re-assign it, or drag it to Rework/To Do to re-dispatch.`}
+                  <span className="small" title={`${t.ownerName} has held this in Doing for ${ago(t.updatedAt)} with no status change — it may be stalled. Re-assign it, hit ↻ to re-dispatch, or drag it back to To Do.`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
                     ⏳ {t.ownerName} · stalled {ago(t.updatedAt)}
                   </span>
@@ -984,21 +939,16 @@ function TasksPanel({ store }: { store: FleetStore }) {
                   {items.map(card)}
                   {items.length === 0 ? (
                     lane.id === 'done' && !showArchived && archivedCount > 0
-                      ? <button className="btn small" style={{ width: '100%' }} title="Completed tasks auto-archive to keep the board clean — click to reveal them" onClick={() => setShowArchived(true)}>🗄 {archivedCount} archived · show</button>
+                      ? <button className="btn small" style={{ width: '100%' }} title="Older completed tasks auto-archive — click to reveal them" onClick={() => setShowArchived(true)}>🗄 {archivedCount} older · show</button>
                       : <div className="muted small center" style={{ padding: '8px 0' }}>—</div>
                   ) : null}
                 </div>
               </div>
             );
           };
-          // full → width:100% (the Adjustment band); grow → flex weight so the bottom
-          // row sizes Waiting:Main = 1:2 (i.e. ⅓ and ⅔ of the Adjustment band's width).
-          const groupBox = (g: { title: string; lanes: { id: Lane; label: string }[] }, opts: { full?: boolean; grow?: number } = {}) => {
-            const sizing: CSSProperties = opts.full
-              ? { width: '100%' }
-              : opts.grow
-                ? { flex: `${opts.grow} 1 0`, minWidth: 0 }
-                : { flexShrink: 0 };
+          // grow → flex weight so the row sizes Waiting:Main = 1:2 (⅓ Waiting, ⅔ Main Flow).
+          const groupBox = (g: { title: string; lanes: { id: Lane; label: string }[] }, opts: { grow?: number } = {}) => {
+            const sizing: CSSProperties = opts.grow ? { flex: `${opts.grow} 1 0`, minWidth: 0 } : { flexShrink: 0 };
             return (
               <div key={g.title} className="kanban-group" style={{ border: '1px solid var(--border, #2a2a2a)', borderRadius: 8, padding: 8, background: 'var(--panel, #1b1b1b)', ...sizing }}>
                 <div className="muted small b" style={{ marginBottom: 6 }}>{g.title}</div>
@@ -1008,19 +958,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
               </div>
             );
           };
-          // Adjustment Loop is a full-width band on top; below it Waiting (⅓) + Main Flow (⅔).
-          const adjust = LANE_GROUPS.find((g) => g.title === 'Adjustment Loop');
-          const flow = LANE_GROUPS.filter((g) => g.title !== 'Adjustment Loop');
           return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {adjust ? (
-                <div className="kanban-groups" style={{ display: 'flex', overflowX: 'auto' }}>
-                  {groupBox(adjust, { full: true })}
-                </div>
-              ) : null}
-              <div className="kanban-groups" style={{ display: 'flex', gap: 14, alignItems: 'flex-start', overflowX: 'auto' }}>
-                {flow.map((g) => groupBox(g, { grow: g.title === 'Main Flow' ? 2 : 1 }))}
-              </div>
+            <div className="kanban-groups" style={{ display: 'flex', gap: 14, alignItems: 'flex-start', overflowX: 'auto' }}>
+              {LANE_GROUPS.map((g) => groupBox(g, { grow: g.title === 'Main Flow' ? 2 : 1 }))}
             </div>
           );
         })()}

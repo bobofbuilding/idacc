@@ -261,14 +261,25 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
 
   // tasks
   tasks: () => client.tasks(),
-  // Holistic task board: every team's tasks, each tagged with its teamName.
+  // Holistic task board: every team's tasks, each tagged with its teamName. Some managers keep
+  // a SINGLE global task pool (every team's /tasks returns the same rows) — so DEDUPE by stable
+  // id (shortId → uuid → name) to avoid showing each task once per team. For a genuinely
+  // per-team manager, ids don't collide across teams, so nothing is dropped.
   'tasks:allTeams': async () => {
     const teams = await client.teams().catch(() => []);
     const names = teams.length ? teams.map((t) => t.name) : [cfg.team ?? 'default'];
     const per = await Promise.all(
       names.map(async (name) => (await client.withTeam(name).tasks().catch(() => [])).map((t) => ({ ...t, teamName: t.teamName ?? name }))),
     );
-    return per.flat();
+    const seen = new Set<string>();
+    const out: typeof per[number] = [];
+    for (const t of per.flat()) {
+      const id = String(t.shortId ?? t.uuid ?? t.name ?? t.title ?? '');
+      if (id && seen.has(id)) continue;
+      if (id) seen.add(id);
+      out.push(t);
+    }
+    return out;
   },
   // app-side Kanban lane overlay (task ref → fine-grained lane; never sent to the manager)
   'tasks:lanes': () => Promise.resolve(loadSettings().taskLanes ?? {}),
