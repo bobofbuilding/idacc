@@ -243,6 +243,30 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
       .sort((a, b) => ((a.timestamp ?? 0) - (b.timestamp ?? 0)) || ((Number(a.seq) || 0) - (Number(b.seq) || 0)))
       .slice(-lim);
   },
+  // Holistic manager comms: merge every team's manager-owned /news inbox so the
+  // Dashboard activity tile includes message/reply traffic even when no event
+  // row was emitted for that communication.
+  'news:allTeams': async (limit?: number) => {
+    const lim = Math.min(Number(limit) || 80, 160);
+    const teams = await client.teams().catch(() => []);
+    const names = teams.length ? teams.map((t) => t.name) : [cfg.team ?? 'default'];
+    const perTeam = Math.max(8, Math.ceil(lim / Math.max(1, names.length)));
+    const per = await Promise.all(
+      names.map(async (name) =>
+        (await client.withTeam(name).news(perTeam).catch(() => []))
+          .map((n) => ({ ...n, teamName: name })),
+      ),
+    );
+    const seen = new Set<string>();
+    const out: Array<(typeof per)[number][number]> = [];
+    for (const n of per.flat()) {
+      const id = `${n.teamName}:${n.id ?? `${n.timestamp}:${n.type}:${n.message ?? ''}`}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(n);
+    }
+    return out.sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0)).slice(0, lim);
+  },
   // Live agent activity (tool/file steps) for the chat "what they're doing" feed.
   // Team-scoped so a same-named agent in another team can't bleed in; an optional
   // queryId narrows to a single dispatch (exact attribution when two dispatches

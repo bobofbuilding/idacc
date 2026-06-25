@@ -20,6 +20,7 @@ import { listLoops, getLoop, saveLoop, removeLoop, type Loop } from './loopstore
 import { listDreams, getDream, saveDream, removeDream, type Dream } from './dreamstore.ts';
 import { listQuestions, addQuestion, removeQuestion, type BlockerQuestion } from './questionstore.ts';
 import { generateImage, readImage, imageModels, getImageServer, detectImageServer } from './images.ts';
+import { readWiki } from './wiki.ts';
 import { loadSettings, setUpdateSettings, setImageServer } from '../../../idctl/src/settings/store.ts';
 import type { ImageServerConfig } from '../../../idctl/src/settings/schema.ts';
 import { startBroker, armBroker, disarmBroker, setWatching, brokerStatus, auditTail, panicBroker, setSupervised, setPaused, confirmAction, pendingActions, setPanicHotkey, mintAgentToken, brokerUrl, stopBroker } from './computeruse/broker.ts';
@@ -322,6 +323,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return detectImageServer();
     case 'app:runInTerminal':
       return runInTerminal(args[0] as string);
+    case 'wiki:get':
+      return readWiki();
     // Computer Use (broker + macOS permissions live in the Electron main process)
     case 'cu:status':
       return brokerStatus();

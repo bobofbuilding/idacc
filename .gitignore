@@ -34,3 +34,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Runtime uploads (transient screenshots / attachments from the chat composer)
+uploads/

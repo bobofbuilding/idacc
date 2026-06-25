@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 rmSync(resolve(ROOT, 'out'), { recursive: true, force: true });
 mkdirSync(resolve(ROOT, 'out/renderer'), { recursive: true });
+mkdirSync(resolve(ROOT, 'out/docs'), { recursive: true });
 
 const common = { bundle: true, sourcemap: true, logLevel: 'info', loader: { '.ts': 'ts', '.tsx': 'tsx' } };
 
@@ -51,4 +52,5 @@ await build({
 });
 
 cpSync(resolve(ROOT, 'src/renderer/index.html'), resolve(ROOT, 'out/renderer/index.html'));
+cpSync(resolve(ROOT, '../docs/CONTROL_CENTER_WIKI.json'), resolve(ROOT, 'out/docs/CONTROL_CENTER_WIKI.json'));
 console.log('built → out/');

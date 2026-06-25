@@ -126,6 +126,7 @@ export interface InboxItem {
 }
 
 export interface NewsItem {
+  id?: number;
   type: string;
   timestamp: number;
   message?: string;

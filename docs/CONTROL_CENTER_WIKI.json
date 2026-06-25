@@ -1,0 +1,2522 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-06-25",
+  "title": "ID Agents Control Center Wiki",
+  "description": "Editable schematic for the Control Center UI. The desktop app reads this file through the main-process bridge, renders it in the Wiki page, and uses page nav metadata for sidebar labels, icons, order, and visibility.",
+  "editContract": {
+    "hotReload": "The desktop app polls this file while running. Local edits to nav labels, icons, order, visibility, page descriptions, tabs, tiles, fields, dropdowns, controls, displays, and routing notes appear in the UI without a rebuild.",
+    "pathOverride": "Set IDCTL_WIKI_PATH=/absolute/path/to/CONTROL_CENTER_WIKI.json to drive the UI from a different local schematic file.",
+    "safeToEdit": [
+      "title",
+      "description",
+      "pages[].nav",
+      "pages[].purpose",
+      "pages[].scope",
+      "pages[].tabs",
+      "pages[].tiles",
+      "pages[].fields",
+      "pages[].dropdowns",
+      "pages[].controls",
+      "pages[].displays",
+      "pages[].routing",
+      "pages[].notes"
+    ],
+    "doNotEditUnlessAddingCode": [
+      "pages[].id",
+      "pages[].route",
+      "pages[].component",
+      "pages[].sourceFiles"
+    ],
+    "routeRule": "A page only becomes navigable if its route is implemented in idctl-desktop/src/renderer/App.tsx. Unknown routes are shown in the Wiki but skipped by the sidebar."
+  },
+  "global": {
+    "shell": "Electron desktop app. Renderer calls window.idagents.call(method, ...args); preload sends IPC to main; main either handles app-local methods or forwards manager methods through bridge.ts and ManagerClient.",
+    "state": "useFleet in src/renderer/store.ts keeps the live snapshot: connection, manager URL, active team, coordinator, agents, teams, events, inbox, unread chat count, all-team agents, and refresh functions.",
+    "routing": [
+      {
+        "surface": "Sidebar",
+        "source": "pages[].nav for known routes",
+        "routesInto": "Router in src/renderer/App.tsx"
+      },
+      {
+        "surface": "Manager API",
+        "source": "src/main/bridge.ts",
+        "routesInto": "id-agents manager daemon, default http://127.0.0.1:4100"
+      },
+      {
+        "surface": "App-local stores and OS integrations",
+        "source": "src/main/main.ts",
+        "routesInto": "settings, chat, plans, projects, questions, dreams, loops, images, updater, subscriptions, Computer Use broker"
+      },
+      {
+        "surface": "Wiki schema",
+        "source": "docs/CONTROL_CENTER_WIKI.json",
+        "routesInto": "wiki:get app-local IPC method, Wiki page, sidebar metadata"
+      }
+    ],
+    "footer": {
+      "display": "Connection pill, manager URL, active running-agent count, running-team count, and offline errors.",
+      "routesInto": [
+        "work:teamLeads",
+        "store.connection",
+        "store.managerUrl",
+        "store.lastError"
+      ]
+    },
+    "toasts": {
+      "display": "Global progress/result/error notices for long-running operations.",
+      "routesInto": [
+        "ToastProvider",
+        "renderer/components/toast.tsx"
+      ]
+    },
+    "promptModal": {
+      "display": "In-app prompt replacement for Electron where browser prompt is unavailable.",
+      "routesInto": [
+        "PromptProvider",
+        "renderer/components/prompt.tsx"
+      ]
+    }
+  },
+  "pages": [
+    {
+      "id": "dashboard",
+      "route": "dashboard",
+      "component": "Dashboard",
+      "nav": {
+        "label": "Dashboard",
+        "icon": "▦",
+        "order": 10,
+        "visible": true
+      },
+      "sourceFiles": [
+        "idctl-desktop/src/renderer/views/Dashboard.tsx",
+        "idctl-desktop/src/renderer/views/Chat.tsx",
+        "idctl-desktop/src/renderer/store.ts"
+      ],
+      "purpose": "Operator home: pick a running team, talk to that team's lead, watch cross-team coordination, and read the live activity feed.",
+      "scope": "All-team observation with a selected chat team. The embedded chat dispatches to the chosen team's lead; the activity feed merges events across teams.",
+      "tiles": [
+        {
+          "id": "lead-chat",
+          "label": "Lead Chat",
+          "description": "Embedded Chat page locked to the selected team's coordinator/lead.",
+          "routesInto": [
+            "dispatch:start",
+            "query:poll",
+            "activity:get",
+            "chats:*"
+          ]
+        },
+        {
+          "id": "coordination-tree",
+          "label": "Live coordination",
+          "description": "Shows primary lead, secondary leads, team leads, workers, current task state, and 24h token spend.",
+          "routesInto": [
+            "org:hierarchy",
+            "tasks:allTeams",
+            "usage"
+          ]
+        },
+        {
+          "id": "activity",
+          "label": "Activity",
+          "description": "Cross-team event stream with topic chips, readable event text, and relative age.",
+          "routesInto": [
+            "events:multi"
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "id": "chat-composer",
+          "label": "Chat composer",
+          "type": "textarea",
+          "description": "Message body for the selected lead. Enter sends, Shift+Enter inserts a newline.",
+          "routesInto": [
+            "dispatch:start"
+          ]
+        }
+      ],
+      "dropdowns": [
+        {
+          "id": "talk-to-team",
+          "label": "talk to",
+          "description": "Selects the team whose lead receives the embedded chat.",
+          "optionsSource": "store.teams filtered to teams with running agents",
+          "routesInto": [
+            "Chat teamOverride",
+            "resolveCoordinator"
+          ]
+        },
+        {
+          "id": "chat-project-focus",
+          "label": "Focus project",
+          "description": "Optional project scope inside the embedded chat.",
+          "optionsSource": "projects:list",
+          "routesInto": [
+            "projects:list",
+            "project:openFolder"
+          ]
+        }
+      ],
+      "controls": [
+        {
+          "id": "send",
+          "label": "Send",
+          "type": "button",
+          "description": "Dispatches the composer text to the locked lead and starts query polling.",
+          "routesInto": [
+            "dispatch:start",
+            "query:poll"
+          ]
+        },
+        {
+          "id": "attach",
+          "label": "paperclip",
+          "type": "button",
+          "description": "Adds files to the chat session; files are copied into the project upload folder or agent workspace.",
+          "routesInto": [
+            "chat:pickFiles",
+            "chat:saveFiles",
+            "chat:savePasted"
+          ]
+        }
+      ],
+      "displays": [
+        {
+          "id": "lead-state",
+          "label": "Lead state",
+          "description": "Uses agent status plus task ownership to show working, idle, stopped, or not deployed."
+        },
+        {
+          "id": "event-row",
+          "label": "Event rows",
+          "description": "Topic, team tag, human-readable description, and age."
+        }
+      ],
+      "routing": {
+        "managerMethods": [
+          "events:multi",
+          "org:hierarchy",
+          "tasks:allTeams",
+          "usage",
+          "dispatch:start",
+          "query:poll",
+          "activity:get"
+        ],
+        "remoteCommands": [
+          "/ask <lead> <message>"
+        ],
+        "localStores": [
+          "chats:*",
+          "projects:list"
+        ]
+      },
+      "notes": [
+        "The older static product spec described a dashboard agent grid; in current source that fleet grid lives on Health through AgentTable."
+      ]
+    },
+    {
+      "id": "chat",
+      "route": "chat",
+      "component": "Chat",
+      "nav": {
+        "label": "Chat",
+        "icon": "✦",
+        "order": 20,
+        "visible": true
+      },
+      "sourceFiles": [
+        "idctl-desktop/src/renderer/views/Chat.tsx",
+        "idctl-desktop/src/main/chatstore.ts",
+        "idctl-desktop/src/main/chatfiles.ts",
+        "idctl-desktop/src/main/images.ts"
+      ],
+      "purpose": "Full chat workspace for sessions, agent targeting, project focus, file attachments, generated images, resumable dispatches, and live behind-the-scenes activity.",
+      "scope": "Active team by default. Embedded callers can pin a specific team or lock a target.",
+      "tiles": [
+        {
+          "id": "session-list",
+          "label": "Sessions",
+          "description": "Saved chat list with unread dots, rename/delete, new chat, and session restore.",
+          "routesInto": [
+            "chats:list",
+            "chats:get",
+            "chats:save",
+            "chats:patch",
+            "chats:rename",
+            "chats:remove"
+          ]
+        },
+        {
+          "id": "messages",
+          "label": "Messages",
+          "description": "Conversation transcript with system, user, agent, file, image, pending, and persisted trace messages.",
+          "routesInto": [
+            "chats:get",
+            "chats:save",
+            "query:poll"
+          ]
+        },
+        {
+          "id": "activity-trace",
+          "label": "Behind the scenes",
+          "description": "Live tool/file/delegation stream while an agent reply is running.",
+          "routesInto": [
+            "activity:get",
+            "events"
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "id": "session-title",
+          "label": "Chat title",
+          "type": "text",
+          "description": "Rename the open session.",
+          "routesInto": [
+            "chats:rename",
+            "chats:patch"
+          ]
+        },
+        {
+          "id": "composer",
+          "label": "Composer",
+          "type": "textarea",
+          "description": "Main message entry. It also routes image and plan-like requests through local heuristics.",
+          "routesInto": [
+            "dispatch:start",
+            "image:generate",
+            "plans:save"
+          ]
+        }
+      ],
+      "dropdowns": [
+        {
+          "id": "session",
+          "label": "Session picker",
+          "description": "Opens a saved chat session for the active team.",
+          "optionsSource": "chats:list",
+          "routesInto": [
+            "chats:get",
+            "chats:markRead"
+          ]
+        },
+        {
+          "id": "project-focus",
+          "label": "Focus project",
+          "description": "Adds a project context line and directs attachments to that project.",
+          "optionsSource": "projects:list",
+          "routesInto": [
+            "projects:list",
+            "project:openFolder"
+          ]
+        },
+        {
+          "id": "target-agent",
+          "label": "Target agent",
+          "description": "Chooses the agent that receives /ask dispatches; coordinator is ordered first.",
+          "optionsSource": "store.agents",
+          "routesInto": [
+            "dispatch:start"
+          ]
+        }
+      ],
+      "controls": [
+        {
+          "id": "new-chat",
+          "label": "New",
+          "type": "button",
+          "description": "Creates a blank local chat session.",
+          "routesInto": [
+            "chats:save"
+          ]
+        },
+        {
+          "id": "send",
+          "label": "Send",
+          "type": "button",
+          "description": "Starts a manager query and persists the inflight marker so replies survive navigation and app restarts.",
+          "routesInto": [
+            "dispatch:start",
+            "query:poll",
+            "chats:patch"
+          ]
+        },
+        {
+          "id": "attach",
+          "label": "Attach files",
+          "type": "button/drop/paste",
+          "description": "Select, paste, or drop files into the active chat.",
+          "routesInto": [
+            "chat:pickFiles",
+            "chat:saveFiles",
+            "chat:savePasted"
+          ]
+        },
+        {
+          "id": "generate-image",
+          "label": "Image request",
+          "type": "implicit action",
+          "description": "If the composer clearly asks for an image, generates an image instead of dispatching chat.",
+          "routesInto": [
+            "image:models",
+            "image:generate",
+            "image:read"
+          ]
+        }
+      ],
+      "displays": [
+        {
+          "id": "unread-badge",
+          "label": "Unread badge",
+          "description": "Sidebar and session-list badge from chats:unreadCount and unread flags."
+        },
+        {
+          "id": "inline-image",
+          "label": "Generated image",
+          "description": "Cached local image rendered through a data URL because file:// is blocked by CSP."
+        }
+      ],
+      "routing": {
+        "managerMethods": [
+          "dispatch:start",
+          "query:poll",
+          "activity:get",
+          "events"
+        ],
+        "localStores": [
+          "chats:*",
+          "chat:*",
+          "projects:list",
+          "plans:save",
+          "image:*"
+        ],
+        "remoteCommands": [
+          "/ask <agent> <message>"
+        ]
+      }
+    },
+    {
+      "id": "inbox",
+      "route": "inbox",
+      "component": "Inbox",
+      "nav": {
+        "label": "Inbox",
+        "icon": "✉",
+        "order": 30,
+        "visible": true
+      },
+      "sourceFiles": [
+        "idctl-desktop/src/renderer/views/Inbox.tsx",
+        "idctl-desktop/src/main/questionstore.ts"
+      ],
+      "purpose": "Operator decision queue: answer blockers surfaced by agents and manager inbox items waiting on a human reply.",
+      "scope": "Active team for blocker questions; manager inbox from store snapshot.",
+      "tiles": [
+        {
+          "id": "decisions-needed",
+          "label": "Decisions needed",
+          "description": "Questions raised from Work blockers, sorted by task dependency depth.",
+          "routesInto": [
+            "questions:list",
+            "tasks:deps"
+          ]
+        },
+        {
+          "id": "manager-inbox",
+          "label": "Manager inbox",
+          "description": "Manager pending items requiring a direct reply or dismiss.",
+          "routesInto": [
+            "inboxPending"
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "id": "decision-comment",
+          "label": "Comment",
+          "type": "textarea",
+          "description": "Custom answer to a blocker question.",
+          "routesInto": [
+            "dispatch",
+            "questions:remove"
+          ]
+        },
+        {
+          "id": "manager-reply",
+          "label": "Manager reply",
+          "type": "textarea",
+          "description": "Direct response to a pending manager inbox item. Cmd/Ctrl+Enter sends.",
+          "routesInto": [
+            "inbox:respond"
+          ]
+        }
+      ],
+      "controls": [
+        {
+          "id": "option-buttons",
+          "label": "Option buttons",
+          "type": "buttons",
+          "description": "Send one of the pre-generated choices back to the blocked agent.",
+          "routesInto": [
+            "dispatch",
+            "tasks:setReview",
+            "questions:remove"
+          ]
+        },
+        {
+          "id": "handle-manually",
+          "label": "I'll handle it",
+          "type": "button",
+          "description": "Tells the agent the user is taking ownership and clears the blocker.",
+          "routesInto": [
+            "dispatch",
+            "questions:remove"
+          ]
+        },
+        {
+          "id": "skip",
+          "label": "Skip",
+          "type": "button",
+          "description": "Dismisses a blocker question without answering and clears any review overlay.",
+          "routesInto": [
+            "tasks:setReview",
+            "questions:remove"
+          ]
+        },
+        {
+          "id": "dismiss",
+          "label": "Dismiss",
+          "type": "button",
+          "description": "Clears a manager inbox item with a dismissed marker.",
+          "routesInto": [
+            "inbox:dismiss"
+          ]
+        }
+      ],
+      "displays": [
+        {
+          "id": "awaiting-count",
+          "label": "Awaiting count",
+          "description": "Total of manager inbox items plus blocker questions."
+        }
+      ],
+      "routing": {
+        "managerMethods": [
+          "dispatch",
+          "inbox:respond",
+          "inbox:dismiss"
+        ],
+        "localStores": [
+          "questions:list",
+          "questions:remove",
+          "tasks:deps",
+          "tasks:setReview"
+        ],
+        "remoteCommands": [
+          "/ask <agent> <decision>"
+        ]
+      }
+    },
+    {
+      "id": "work",
+      "route": "tasks",
+      "component": "Tasks",
+      "nav": {
+        "label": "Work",
+        "icon": "☑",
+        "order": 40,
+        "visible": true
+      },
+      "sourceFiles": [
+        "idctl-desktop/src/renderer/views/Tasks.tsx",
+        "idctl-desktop/src/renderer/views/Plans.tsx",
+        "idctl-desktop/src/renderer/views/Schedule.tsx",
+        "idctl-desktop/src/renderer/views/Loops.tsx",
+        "idctl-desktop/src/renderer/views/Dream.tsx"
+      ],
+      "purpose": "Work operating surface: plans, live Kanban, recurring schedules, agent chains, and dreams.",
+      "scope": "All-team task view for the board; creation/assignment panels operate on the selected active team.",
+      "tabs": [
+        {
+          "id": "plans",
+          "label": "Plans",
+          "purpose": "Brain plans plus local draft plans, with AI creation, revision, status, and dispatch flows.",
+          "tiles": [
+            "Organizer/search/sort/filter",
+            "Brain plan cards",
+            "Draft plan cards",
+            "Plan detail and version history"
+          ],
+          "routesInto": [
+            "brain:plans",
+            "brain:plan",
+            "brain:setPlanStatus",
+            "brain:createPlan",
+            "plans:*",
+            "work:decompose",
+            "work:createPlan",
+            "work:fanout",
+            "dispatch"
+          ]
+        },
+        {
+          "id": "tasks",
+          "label": "Tasks",
+          "purpose": "Live Kanban board with manager status plus local lane/dependency/review overlays.",
+          "tiles": [
+            "Create work foldout",
+            "Waiting lanes: Under Review and Holding Pattern",
+            "Main Flow lanes: To Do, Doing, Done",
+            "Task cards with owner, status, dependency, token, and age data"
+          ],
+          "routesInto": [
+            "tasks:allTeams",
+            "tasks",
+            "tasks:lanes",
+            "tasks:setLane",
+            "tasks:deps",
+            "tasks:setDeps",
+            "tasks:usage",
+            "remote",
+            "work:decompose",
+            "work:createPlan",
+            "work:fanout",
+            "work:triage",
+            "questions:add",
+            "addHeartbeat",
+            "addCalendarCheckin"
+          ]
+        },
+        {
+          "id": "schedule",
+          "label": "Schedule",
+          "purpose": "Heartbeats and supervision check-ins.",
+          "tiles": [
+            "Per-agent heartbeats",
+            "Other cross-team heartbeats",
+            "Supervision check-ins"
+          ],
+          "routesInto": [
+            "schedules",
+            "schedules:allTeams",
+            "checkins",
+            "addHeartbeat",
+            "pauseSchedule",
+            "resumeSchedule",
+            "removeSchedule",
+            "checkins:close"
+          ]
+        },
+        {
+          "id": "loops",
+          "label": "Loops",
+          "purpose": "AI-drafted sequential multi-agent chains and recurring scheduled objectives.",
+          "tiles": [
+            "Saved chains",
+            "Chain builder",
+            "Step result log",
+            "Scheduled objectives"
+          ],
+          "routesInto": [
+            "loops:list",
+            "loops:get",
+            "loops:save",
+            "loops:remove",
+            "dispatch",
+            "schedules",
+            "addCalendarCheckin",
+            "pauseSchedule",
+            "resumeSchedule",
+            "removeSchedule"
+          ]
+        },
+        {
+          "id": "dream",
+          "label": "Dream",
+          "purpose": "Agent reflection/dream reports with optional nightly scheduling.",
+          "tiles": [
+            "Dream controls",
+            "Saved dream list",
+            "Dream report"
+          ],
+          "routesInto": [
+            "dreams:list",
+            "dreams:get",
+            "dreams:save",
+            "dreams:remove",
+            "dispatch",
+            "addCalendarCheckin"
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "id": "task-search",
+          "label": "search tasks",
+          "type": "text",
+          "description": "Filters task cards by title, owner, or reference."
+        },
+        {
+          "id": "new-task-title",
+          "label": "New task title",
+          "type": "prompt text",
+          "description": "Creates a manager task through /task create.",
+          "routesInto": [
+            "remote /task create"
+          ]
+        },
+        {
+          "id": "create-work-objective",
+          "label": "objective/task/message/aspiration",
+          "type": "textarea",
+          "description": "Main create-work entry; meaning changes with Plan, Assign, Schedule, Loop, or Dream mode.",
+          "routesInto": [
+            "work:decompose",
+            "work:createPlan",
+            "work:fanout",
+            "addHeartbeat",
+            "addCalendarCheckin"
+          ]
+        },
+        {
+          "id": "assignment-details",
+          "label": "details",
+          "type": "textarea",
+          "description": "Optional acceptance criteria for direct assignment.",
+          "routesInto": [
+            "work:createPlan"
+          ]
+        },
+        {
+          "id": "calendar-days",
+          "label": "when days",
+          "type": "text",
+          "description": "Calendar day expression such as mon,tue or YYYY-MM-DD.",
+          "routesInto": [
+            "addCalendarCheckin"
+          ]
+        },
+        {
+          "id": "loop-goal",
+          "label": "goal",
+          "type": "textarea",
+          "description": "Loop chain objective sent to an agent for JSON step drafting.",
+          "routesInto": [
+            "dispatch"
+          ]
+        },
+        {
+          "id": "dream-focus",
+          "label": "optional focus",
+          "type": "text",
+          "description": "Narrows the dream/reflection report.",
+          "routesInto": [
+            "dispatch"
+          ]
+        }
+      ],
+      "dropdowns": [
+        {
+          "id": "work-tabs",
+          "label": "Work tabs",
+          "description": "Plans, Tasks, Schedule, Loops, Dream.",
+          "optionsSource": "static TABS in Tasks.tsx"
+        },
+        {
+          "id": "create-work-team",
+          "label": "team",
+          "description": "Selects the team that plan/assign/schedule/loop/dream creation targets.",
+          "optionsSource": "active teams from store.allAgents"
+        },
+        {
+          "id": "lead",
+          "label": "lead",
+          "description": "Agent asked to decompose a plan objective.",
+          "optionsSource": "team agents"
+        },
+        {
+          "id": "target-agent",
+          "label": "agent",
+          "description": "Single agent for schedule, loop, or dream creation.",
+          "optionsSource": "team agents"
+        },
+        {
+          "id": "heartbeat-interval",
+          "label": "Set interval",
+          "description": "Heartbeat cadence per agent.",
+          "optionsSource": "1 min, 5 min, 15 min, 1 hour, 6 hours, 24 hours"
+        }
+      ],
+      "controls": [
+        {
+          "id": "reconcile",
+          "label": "Reconcile",
+          "type": "button",
+          "description": "Runs triage, re-dispatches stalled tasks, and surfaces blockers on demand.",
+          "routesInto": [
+            "work:triage",
+            "remote /task assign",
+            "remote /ask",
+            "questions:add"
+          ]
+        },
+        {
+          "id": "create-work",
+          "label": "Create work",
+          "type": "foldout button",
+          "description": "Opens the multi-mode work creator.",
+          "routesInto": [
+            "local React state"
+          ]
+        },
+        {
+          "id": "drag-card",
+          "label": "Drag task card",
+          "type": "drag/drop",
+          "description": "Moves cards across lanes and updates manager status when the lane maps to a different manager status.",
+          "routesInto": [
+            "tasks:setLane",
+            "remote /task status"
+          ]
+        },
+        {
+          "id": "assign-select",
+          "label": "assign...",
+          "type": "dropdown",
+          "description": "Assigns an unowned task to an agent.",
+          "routesInto": [
+            "remote /task assign"
+          ]
+        },
+        {
+          "id": "redispatch",
+          "label": "↻",
+          "type": "button",
+          "description": "Reassigns a stalled task to a live agent and asks that agent to resume it.",
+          "routesInto": [
+            "remote /task assign",
+            "remote /ask"
+          ]
+        },
+        {
+          "id": "delete-task",
+          "label": "Delete task",
+          "type": "two-click button",
+          "description": "Removes a manager task.",
+          "routesInto": [
+            "remote /task remove"
+          ]
+        }
+      ],
+      "displays": [
+        {
+          "id": "kanban-card",
+          "label": "Task card",
+          "description": "Shows title, ref, routine/team badges, dependencies, token spend, owner state, stalled/blocked status, and timestamps."
+        },
+        {
+          "id": "heartbeat-status",
+          "label": "Heartbeat status",
+          "description": "off, on, paused, missed, or last run failed."
+        },
+        {
+          "id": "checkin-row",
+          "label": "Check-in row",
+          "description": "Delegate, linked task, cadence, fire counts, next due, and close controls."
+        }
+      ],
+      "routing": {
+        "managerMethods": [
+          "tasks",
+          "tasks:allTeams",
+          "tasks:usage",
+          "remote",
+          "work:decompose",
+          "work:createPlan",
+          "work:fanout",
+          "work:triage",
+          "schedules",
+          "schedules:allTeams",
+          "checkins",
+          "addHeartbeat",
+          "addCalendarCheckin",
+          "pauseSchedule",
+          "resumeSchedule",
+          "removeSchedule",
+          "checkins:close",
+          "dispatch"
+        ],
+        "localStores": [
+          "tasks:lanes",
+          "tasks:deps",
+          "tasks:review",
+          "plans:*",
+          "brain:*",
+          "loops:*",
+          "dreams:*",
+          "questions:add"
+        ],
+        "remoteCommands": [
+          "/task create",
+          "/task status",
+          "/task assign",
+          "/task remove",
+          "/ask <agent> <message>"
+        ]
+      }
+    },
+    {
+      "id": "projects",
+      "route": "projects",
+      "component": "Projects",
+      "nav": {
+        "label": "Projects",
+        "icon": "◆",
+        "order": 50,
+        "visible": true
+      },
+      "sourceFiles": [
+        "idctl-desktop/src/renderer/views/Projects.tsx",
+        "idctl-desktop/src/main/projects.ts"
+      ],
+      "purpose": "Local project tracker with workspace discovery, metadata editing, GitHub import, git status, and git operation requests.",
+      "scope": "App-local settings store plus filesystem/git/GitHub helpers in the main process.",
+      "tiles": [
+        {
+          "id": "workspace-root",
+          "label": "Workspace root",
+          "description": "Detected projects folder plus change action.",
+          "routesInto": [
+            "projects:detectRoot",
+            "project:pickFolder"
+          ]
+        },
+        {
+          "id": "github-import",
+          "label": "Add from GitHub",
+          "description": "Clone or fork-and-clone a GitHub repo into the workspace and add a project entry.",
+          "routesInto": [
+            "project:githubMeta",
+            "project:cloneGithub",
+            "project:fork",
+            "projects:save"
+          ]
+        },
+        {
+          "id": "project-cards",
+          "label": "Project cards",
+          "description": "Status, description, team, tags, links, path, git badge, and actions.",
+          "routesInto": [
+            "projects:list",
+            "project:git"
+          ]
+        },
+        {
+          "id": "project-editor",
+          "label": "New/Edit project",
+          "description": "Metadata form for project name, path, status, description, team, tags, links, and notes.",
+          "routesInto": [
+            "projects:save"
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "id": "github-url",
+          "label": "GitHub URL",
+          "type": "text",
+          "description": "Repo URL for clone or fork-and-clone.",
+          "routesInto": [
+            "project:githubMeta",
+            "project:cloneGithub",
+            "project:fork"
+          ]
+        },
+        {
+          "id": "project-name",
+          "label": "Project name",
+          "type": "text",
+          "description": "Human project name stored in settings.",
+          "routesInto": [
+            "projects:save"
+          ]
+        },
+        {
+          "id": "project-path",
+          "label": "Project path",
+          "type": "text",
+          "description": "Local folder path; enables git tracking and README import.",
+          "routesInto": [
+            "project:pickFolder",
+            "project:readme"
+          ]
+        },
+        {
+          "id": "description",
+          "label": "Description",
+          "type": "textarea",
+          "description": "One-line summary or goal; can be refined by the lead.",
+          "routesInto": [
+            "dispatch",
+            "projects:save"
+          ]
+        },
+        {
+          "id": "tags",
+          "label": "Tags",
+          "type": "text",
+          "description": "Comma-separated tags.",
+          "routesInto": [
+            "projects:save"
+          ]
+        },
+        {
+          "id": "links",
+          "label": "Links",
+          "type": "textarea",
+          "description": "One URL per line.",
+          "routesInto": [
+            "projects:save"
+          ]
+        },
+        {
+          "id": "commit-message",
+          "label": "Commit message",
+          "type": "textarea",
+          "description": "Commit/push request message, optionally drafted by AI.",
+          "routesInto": [
+            "project:diff",
+            "dispatch",
+            "project:commit"
+          ]
+        }
+      ],
+      "dropdowns": [
+        {
+          "id": "project-status",
+          "label": "Status",
+          "description": "active, paused, blocked, done.",
+          "routesInto": [
+            "projects:save"
+          ]
+        },
+        {
+          "id": "project-team",
+          "label": "Team",
+          "description": "Owning team for project refinement and commit requests.",
+          "optionsSource": "store.teams"
+        },
+        {
+          "id": "auto-commit",
+          "label": "Auto commit",
+          "description": "Project automation mode: off, task, or plan.",
+          "routesInto": [
+            "projects:save"
+          ]
+        }
+      ],
+      "controls": [
+        {
+          "id": "sync-workspace",
+          "label": "Sync workspace",
+          "type": "button",
+          "description": "Scans the workspace root and additively tracks project folders.",
+          "routesInto": [
+            "projects:syncRoot"
+          ]
+        },
+        {
+          "id": "combine-duplicates",
+          "label": "Combine duplicates",
+          "type": "button",
+          "description": "Merges duplicate project entries that point to the same folder or repo.",
+          "routesInto": [
+            "projects:save",
+            "projects:remove"
+          ]
+        },
+        {
+          "id": "import-folder",
+          "label": "Import folder",
+          "type": "button",
+          "description": "Adds an existing local folder as a tracked project.",
+          "routesInto": [
+            "project:pickFolder",
+            "projects:save"
+          ]
+        },
+        {
+          "id": "refine-with-lead",
+          "label": "Refine with lead",
+          "type": "button",
+          "description": "Asks the team lead to improve the project description and tags.",
+          "routesInto": [
+            "dispatch"
+          ]
+        },
+        {
+          "id": "git-actions",
+          "label": "Git actions",
+          "type": "buttons",
+          "description": "Runs whitelisted git helpers such as fetch, pull, status, log, and diff.",
+          "routesInto": [
+            "project:gitRun"
+          ]
+        },
+        {
+          "id": "request-commit",
+          "label": "Request commit",
+          "type": "button",
+          "description": "Delegates commit and push work through the owning team.",
+          "routesInto": [
+            "project:commit"
+          ]
+        }
+      ],
+      "displays": [
+        {
+          "id": "git-badge",
+          "label": "Git badge",
+          "description": "Branch, ahead/behind, dirty/fork state, and remote link."
+        },
+        {
+          "id": "git-output",
+          "label": "Git output",
+          "description": "Streaming/plain preformatted command output."
+        }
+      ],
+      "routing": {
+        "appLocalMethods": [
+          "projects:list",
+          "projects:save",
+          "projects:remove",
+          "projects:detectRoot",
+          "projects:syncRoot",
+          "project:*"
+        ],
+        "managerMethods": [
+          "dispatch"
+        ],
+        "remoteCommands": [
+          "/ask <lead> <refine or commit request>"
+        ]
+      }
+    },
+    {
+      "id": "health",
+      "route": "health",
+      "component": "Health",
+      "nav": {
+        "label": "Health",
+        "icon": "✚",
+        "order": 60,
+        "visible": true
+      },
+      "sourceFiles": [
+        "idctl-desktop/src/renderer/views/Health.tsx",
+        "idctl-desktop/src/renderer/views/AgentTable.tsx"
+      ],
+      "purpose": "Fleet health, local-model token usage, liveness probes, and the full fleet roster with runtime/model/lifecycle controls.",
+      "scope": "Usage spans local-model providers; roster is holistic and grouped by team through AgentTable.",
+      "tiles": [
+        {
+          "id": "usage",
+          "label": "Local-model token usage",
+          "description": "Throughput gauge, 24h/7d usage windows, and by-model/by-agent breakdowns.",
+          "routesInto": [
+            "usage"
+          ]
+        },
+        {
+          "id": "fleet-roster",
+          "label": "Fleet",
+          "description": "AgentTable with live status, lead stars, runtime/model/effort selectors, lifecycle actions, and detail panel.",
+          "routesInto": [
+            "agents:allTeams",
+            "runtime:models",
+            "runtime:freshness",
+            "providers:list",
+            "remote",
+            "setAgentRuntime",
+            "setAgentEffort",
+            "coordinator:set"
+          ]
+        }
+      ],
+      "dropdowns": [
+        {
+          "id": "runtime",
+          "label": "Runtime",
+          "description": "Switches a local agent runtime and rebuilds.",
+          "optionsSource": "providers/runtime catalog",
+          "routesInto": [
+            "setAgentRuntime",
+            "remote /model",
+            "remote /agent rebuild"
+          ]
+        },
+        {
+          "id": "model",
+          "label": "Model",
+          "description": "Sets the agent model and rebuilds.",
+          "optionsSource": "runtime:models",
+          "routesInto": [
+            "remote /model",
+            "remote /agent rebuild"
+          ]
+        },
+        {
+          "id": "effort",
+          "label": "Effort",
+          "description": "Sets reasoning effort metadata and rebuilds.",
+          "routesInto": [
+            "setAgentEffort",
+            "remote /agent rebuild"
+          ]
+        },
+        {
+          "id": "actions",
+          "label": "Actions",
+          "description": "Start, stop, rebuild, probe, delete lifecycle actions.",
+          "routesInto": [
+            "remote",
+            "probeOne"
+          ]
+        }
+      ],
+      "controls": [
+        {
+          "id": "probe-all",
+          "label": "Probe all",
+          "type": "button",
+          "description": "Runs manager probe across agents.",
+          "routesInto": [
+            "probeAll"
+          ]
+        },
+        {
+          "id": "probe-row",
+          "label": "Probe",
+          "type": "button",
+          "description": "Probes a single agent in its own team.",
+          "routesInto": [
+            "probeOne"
+          ]
+        },
+        {
+          "id": "probe-runtimes",
+          "label": "Probe runtimes",
+          "type": "button",
+          "description": "Refreshes model lists from enabled providers.",
+          "routesInto": [
+            "runtime:probe",
+            "runtime:freshness"
+          ]
+        },
+        {
+          "id": "lead-star",
+          "label": "Lead star",
+          "type": "button",
+          "description": "Marks an agent as its team's coordinator.",
+          "routesInto": [
+            "coordinator:set"
+          ]
+        }
+      ],
+      "displays": [
+        {
+          "id": "gauge",
+          "label": "Throughput gauge",
+          "description": "Recent tok/s with 24h and 7d averages."
+        },
+        {
+          "id": "agent-detail",
+          "label": "Agent detail",
+          "description": "Selected agent status, runtime, model, port, skills, and working directory."
+        }
+      ],
+      "routing": {
+        "managerMethods": [
+          "usage",
+          "probeAll",
+          "probeOne",
+          "remote",
+          "runtime:models",
+          "runtime:probe",
+          "runtime:freshness",
+          "setAgentRuntime",
+          "setAgentEffort",
+          "coordinator:set"
+        ]
+      }
+    },
+    {
+      "id": "identity",
+      "route": "identity",
+      "component": "Identity",
+      "nav": {
+        "label": "Identity & Keys",
+        "icon": "⬡",
+        "order": 70,
+        "visible": true
+      },
+      "sourceFiles": [
+        "idctl-desktop/src/renderer/views/Identity.tsx",
+        "idctl/src/keys/mockProvider.ts"
+      ],
+      "purpose": "Manage agent onchain identity, OWS wallet, Safe-style account, and scoped session keys.",
+      "scope": "Active team agents. Key provider is currently mock unless a live provider is wired behind the same interface.",
+      "tiles": [
+        {
+          "id": "agent-list",
+          "label": "Agents",
+          "description": "Selects which active-team agent to inspect."
+        },
+        {
+          "id": "onchain-identity",
+          "label": "Onchain identity",
+          "description": "ENS/ID-chain domain and OWS wallet state.",
+          "routesInto": [
+            "identity:register",
+            "wallet:provision"
+          ]
+        },
+        {
+          "id": "safe-account",
+          "label": "Safe account",
+          "description": "Smart account deployment status, address, and owner.",
+          "routesInto": [
+            "keys:ensure",
+            "keys:deploy"
+          ]
+        },
+        {
+          "id": "session-keys",
+          "label": "Session keys",
+          "description": "Issued keys, scope, address, remaining time, status, and revoke control.",
+          "routesInto": [
+            "keys:list",
+            "keys:issue",
+            "keys:revoke"
+          ]
+        }
+      ],
+      "dropdowns": [
+        {
+          "id": "scope",
+          "label": "Scope preset",
+          "description": "Selects permission scope for a new session key.",
+          "optionsSource": "keys:presets"
+        },
+        {
+          "id": "ttl",
+          "label": "TTL preset",
+          "description": "Selects expiration for a new session key.",
+          "optionsSource": "keys:presets"
+        }
+      ],
+      "controls": [
+        {
+          "id": "register-identity",
+          "label": "Register identity",
+          "type": "button",
+          "description": "Runs manager identity registration.",
+          "routesInto": [
+            "identity:register",
+            "remote /register"
+          ]
+        },
+        {
+          "id": "provision-wallet",
+          "label": "Provision wallet",
+          "type": "button",
+          "description": "Provisions the agent OWS wallet.",
+          "routesInto": [
+            "wallet:provision",
+            "remote /agent wallet provision"
+          ]
+        },
+        {
+          "id": "create-account",
+          "label": "Create account",
+          "type": "button",
+          "description": "Ensures smart account data exists.",
+          "routesInto": [
+            "keys:ensure"
+          ]
+        },
+        {
+          "id": "deploy",
+          "label": "Deploy",
+          "type": "button",
+          "description": "Deploys account when not already deployed.",
+          "routesInto": [
+            "keys:deploy"
+          ]
+        },
+        {
+          "id": "issue-session-key",
+          "label": "Issue session key",
+          "type": "button",
+          "description": "Issues scoped key using selected scope and TTL presets.",
+          "routesInto": [
+            "keys:issue"
+          ]
+        },
+        {
+          "id": "revoke",
+          "label": "Revoke",
+          "type": "button",
+          "description": "Revokes an active session key.",
+          "routesInto": [
+            "keys:revoke"
+          ]
+        }
+      ],
+      "routing": {
+        "managerMethods": [
+          "identity:register",
+          "wallet:provision"
+        ],
+        "appLocalMethods": [
+          "keys:caps",
+          "keys:list",
+          "keys:ensure",
+          "keys:deploy",
+          "keys:issue",
+          "keys:revoke",
+          "keys:presets"
+        ],
+        "remoteCommands": [
+          "/register <agent>",
+          "/agent <agent> wallet provision"
+        ]
+      }
+    },
+    {
+      "id": "teams",
+      "route": "teams",
+      "component": "Teams",
+      "nav": {
+        "label": "HR Manager",
+        "icon": "⛌",
+        "order": 80,
+        "visible": true
+      },
+      "sourceFiles": [
+        "idctl-desktop/src/renderer/views/Teams.tsx",
+        "idctl-desktop/src/renderer/views/TeamGraph.tsx",
+        "idctl-desktop/src/main/orgSync.ts"
+      ],
+      "purpose": "Org design and fleet HR: build teams, start/stop them, edit hierarchy, agent instructions, and cross-team routing.",
+      "scope": "All teams for graph/overview; active team for routing editor and instructions unless a selected agent is explicitly scoped.",
+      "tabs": [
+        {
+          "id": "structure",
+          "label": "Structure",
+          "purpose": "Live team graph plus selected agent/team editor.",
+          "routesInto": [
+            "agents:allTeams",
+            "coordinator:hierarchy",
+            "coordinator:set",
+            "coordinator:setPrimary",
+            "agent:getInstructions",
+            "agent:setInstructions",
+            "rebuildAgent",
+            "agent:move"
+          ]
+        },
+        {
+          "id": "build",
+          "label": "Build",
+          "purpose": "AI Team Builder for new teams or adding agents to an existing active team.",
+          "routesInto": [
+            "team:designAI",
+            "libraryTeams",
+            "configs",
+            "runtime:models",
+            "librarySkills",
+            "providers:list",
+            "onboard:run",
+            "setTeamDelegates",
+            "agent:setInstructions",
+            "rebuildAgent"
+          ]
+        },
+        {
+          "id": "manage",
+          "label": "Manage",
+          "purpose": "Start/stop/probe/rebuild teams and edit agent instructions.",
+          "routesInto": [
+            "team:lifecycle",
+            "team:probe",
+            "team:delete",
+            "agent:getInstructions",
+            "agent:setInstructions",
+            "ai:draft",
+            "rebuildAgent"
+          ]
+        },
+        {
+          "id": "route",
+          "label": "Route",
+          "purpose": "Cross-team relay policies, per-agent overrides, coordinators, primary lead, and reactive org sync.",
+          "routesInto": [
+            "relay:matrix",
+            "teamConfig",
+            "setTeamDelegates",
+            "setAgentDelegates",
+            "agent:move",
+            "coordinator:hierarchy",
+            "coordinator:set",
+            "coordinator:setPrimary",
+            "org:getConfig",
+            "org:setConfig",
+            "org:sync",
+            "org:hierarchy"
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "id": "agent-instructions",
+          "label": "Goals & instructions",
+          "type": "textarea",
+          "description": "Persistent system-prompt addendum for an agent.",
+          "routesInto": [
+            "agent:setInstructions",
+            "rebuildAgent"
+          ]
+        },
+        {
+          "id": "team-spec",
+          "label": "Describe the team",
+          "type": "textarea",
+          "description": "Freeform spec parsed locally and optionally sent to AI for roster design.",
+          "routesInto": [
+            "team:designAI"
+          ]
+        },
+        {
+          "id": "new-team-name",
+          "label": "New team name",
+          "type": "text",
+          "description": "Slugged target team for Team Builder.",
+          "routesInto": [
+            "onboard:run"
+          ]
+        },
+        {
+          "id": "agent-name",
+          "label": "Agent name",
+          "type": "text",
+          "description": "Builder row agent slug.",
+          "routesInto": [
+            "onboard:run"
+          ]
+        },
+        {
+          "id": "role",
+          "label": "Role",
+          "type": "text",
+          "description": "One-line role for an agent row.",
+          "routesInto": [
+            "onboard:run"
+          ]
+        },
+        {
+          "id": "persona",
+          "label": "Description/persona",
+          "type": "textarea",
+          "description": "Agent operating instructions in the builder row.",
+          "routesInto": [
+            "onboard:run"
+          ]
+        }
+      ],
+      "dropdowns": [
+        {
+          "id": "hr-tabs",
+          "label": "HR tabs",
+          "description": "Structure, Build, Manage, Route.",
+          "optionsSource": "static tabs in Teams.tsx"
+        },
+        {
+          "id": "reassign-team",
+          "label": "reassign to",
+          "description": "Moves an agent to another team and rebuilds it there.",
+          "optionsSource": "other teams",
+          "routesInto": [
+            "agent:move"
+          ]
+        },
+        {
+          "id": "builder-source",
+          "label": "start from",
+          "description": "Prefills builder spec from blank, library template, or saved config.",
+          "optionsSource": "libraryTeams + configs"
+        },
+        {
+          "id": "builder-runtime",
+          "label": "Runtime",
+          "description": "Runtime per new agent.",
+          "optionsSource": "providers/list + runtime catalog"
+        },
+        {
+          "id": "builder-model",
+          "label": "Model",
+          "description": "Optional model per new agent.",
+          "optionsSource": "runtime:models"
+        },
+        {
+          "id": "relay-mode",
+          "label": "Relay mode",
+          "description": "Permissive, all teams, selected teams, or blocked.",
+          "routesInto": [
+            "setTeamDelegates",
+            "setAgentDelegates"
+          ]
+        },
+        {
+          "id": "coordinator",
+          "label": "Coordinator",
+          "description": "Team lead selection.",
+          "routesInto": [
+            "coordinator:set"
+          ]
+        }
+      ],
+      "controls": [
+        {
+          "id": "make-primary",
+          "label": "Make primary lead",
+          "type": "button",
+          "description": "Promotes the active team's coordinator to primary cross-team lead.",
+          "routesInto": [
+            "coordinator:setPrimary"
+          ]
+        },
+        {
+          "id": "ai-draft",
+          "label": "AI draft",
+          "type": "button",
+          "description": "Asks the coordinator to draft goals/instructions.",
+          "routesInto": [
+            "ai:draft"
+          ]
+        },
+        {
+          "id": "save-rebuild",
+          "label": "Save & rebuild",
+          "type": "button",
+          "description": "Saves instructions and rebuilds target agent.",
+          "routesInto": [
+            "agent:setInstructions",
+            "rebuildAgent"
+          ]
+        },
+        {
+          "id": "team-lifecycle",
+          "label": "Start/Stop/Probe/Rebuild all",
+          "type": "buttons",
+          "description": "Applies lifecycle operation to every agent in a team.",
+          "routesInto": [
+            "team:lifecycle",
+            "team:probe"
+          ]
+        },
+        {
+          "id": "build-with-ai",
+          "label": "Build with AI",
+          "type": "button",
+          "description": "Uses an agent to design an editable team roster.",
+          "routesInto": [
+            "team:designAI"
+          ]
+        },
+        {
+          "id": "build-team",
+          "label": "Build",
+          "type": "button",
+          "description": "Runs onboarding for each new agent, then wires coordination and relay policy.",
+          "routesInto": [
+            "onboard:run",
+            "coordinator:setPrimary",
+            "agent:setInstructions",
+            "setTeamDelegates"
+          ]
+        },
+        {
+          "id": "sync-org",
+          "label": "Sync now",
+          "type": "button",
+          "description": "Recomposes goals files from hierarchy and brain team instructions.",
+          "routesInto": [
+            "org:sync"
+          ]
+        }
+      ],
+      "displays": [
+        {
+          "id": "team-graph",
+          "label": "Team graph",
+          "description": "Active teams only, with lead-on-top hierarchy and selected node state."
+        },
+        {
+          "id": "routing-overview",
+          "label": "Routing overview",
+          "description": "Every active team's outbound relay policy and lead."
+        },
+        {
+          "id": "onboard-checklist",
+          "label": "Onboarding checklist",
+          "description": "Per-agent build status, skipped existing agents, errors, and retry controls."
+        }
+      ],
+      "routing": {
+        "managerMethods": [
+          "agents:allTeams",
+          "coordinator:*",
+          "team:*",
+          "agent:*",
+          "relay:matrix",
+          "teamConfig",
+          "setTeamDelegates",
+          "setAgentDelegates",
+          "onboard:run",
+          "org:*"
+        ],
+        "remoteCommands": [
+          "/agent <name> rebuild",
+          "team lifecycle manager routes"
+        ]
+      }
+    },
+    {
+      "id": "modules",
+      "route": "modules",
+      "component": "Modules",
+      "nav": {
+        "label": "Capabilities",
+        "icon": "◫",
+        "order": 90,
+        "visible": true
+      },
+      "sourceFiles": [
+        "idctl-desktop/src/renderer/views/Modules.tsx",
+        "idctl-desktop/src/main/mcpTest.ts"
+      ],
+      "purpose": "Capability workbench for MCP tool servers, skills, and bundled plugins.",
+      "scope": "Active team, all teams, or all leads depending on scope selector. Runtime gating excludes agents that cannot use the active capability.",
+      "tabs": [
+        {
+          "id": "mcp",
+          "label": "MCP servers",
+          "purpose": "Register/test/attach/detach MCP servers and rebuild targets.",
+          "routesInto": [
+            "mcp:list",
+            "mcp:add",
+            "mcp:remove",
+            "mcp:test",
+            "setAgentMcp",
+            "rebuildAgent"
+          ]
+        },
+        {
+          "id": "skills",
+          "label": "Skills",
+          "purpose": "Install/uninstall/create/delete skills and manage app-side auto-tags.",
+          "routesInto": [
+            "librarySkills",
+            "skills:autoTags",
+            "skills:categorize",
+            "createSkill",
+            "deleteSkill",
+            "installSkill",
+            "uninstallSkill"
+          ]
+        },
+        {
+          "id": "plugins",
+          "label": "Plugins",
+          "purpose": "Read-only plugin catalog.",
+          "routesInto": [
+            "libraryPlugins"
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "id": "catalog-mcp-name",
+          "label": "Server name",
+          "type": "text",
+          "description": "Editable catalog server name before adding.",
+          "routesInto": [
+            "mcp:add"
+          ]
+        },
+        {
+          "id": "catalog-inputs",
+          "label": "Catalog server inputs",
+          "type": "text/password",
+          "description": "Inputs required by a curated MCP server; secret-looking values are masked.",
+          "routesInto": [
+            "mcp:test",
+            "mcp:add"
+          ]
+        },
+        {
+          "id": "custom-command",
+          "label": "Command",
+          "type": "text",
+          "description": "stdio MCP command such as npx.",
+          "routesInto": [
+            "mcp:test",
+            "mcp:add"
+          ]
+        },
+        {
+          "id": "custom-args",
+          "label": "Args",
+          "type": "text",
+          "description": "Space-separated command arguments for stdio MCP.",
+          "routesInto": [
+            "mcp:test",
+            "mcp:add"
+          ]
+        },
+        {
+          "id": "custom-env",
+          "label": "Env/headers",
+          "type": "text",
+          "description": "KEY=value pairs for stdio or Authorization-style headers for http/sse.",
+          "routesInto": [
+            "mcp:test",
+            "mcp:add"
+          ]
+        },
+        {
+          "id": "skill-name",
+          "label": "Skill name",
+          "type": "text",
+          "description": "lowercase-with-hyphens name for new SKILL.md.",
+          "routesInto": [
+            "createSkill"
+          ]
+        },
+        {
+          "id": "skill-description",
+          "label": "Skill description",
+          "type": "textarea",
+          "description": "What the skill does and when to use it.",
+          "routesInto": [
+            "createSkill"
+          ]
+        },
+        {
+          "id": "skill-body",
+          "label": "Markdown body",
+          "type": "textarea",
+          "description": "Optional SKILL.md instructions; blank creates a stub.",
+          "routesInto": [
+            "createSkill"
+          ]
+        },
+        {
+          "id": "skill-search",
+          "label": "Search skills",
+          "type": "text",
+          "description": "Filters skill catalog cards."
+        }
+      ],
+      "dropdowns": [
+        {
+          "id": "scope",
+          "label": "Scope",
+          "description": "Apply to active team, all teams, or leads.",
+          "optionsSource": "team/all/leads"
+        },
+        {
+          "id": "team",
+          "label": "Team",
+          "description": "Switches active team for capability targeting.",
+          "optionsSource": "store.teams",
+          "routesInto": [
+            "setTeam"
+          ]
+        },
+        {
+          "id": "mcp-catalog",
+          "label": "Add from catalog",
+          "description": "Selects a curated MCP server profile."
+        },
+        {
+          "id": "custom-transport",
+          "label": "Transport",
+          "description": "stdio, http, or sse for custom MCP."
+        }
+      ],
+      "controls": [
+        {
+          "id": "target-chips",
+          "label": "Agent chips",
+          "type": "chips",
+          "description": "Select explicit targets; incompatible runtimes are disabled.",
+          "routesInto": [
+            "setAgentMcp",
+            "installSkill",
+            "uninstallSkill"
+          ]
+        },
+        {
+          "id": "attach-detach",
+          "label": "Attach/Detach",
+          "type": "buttons",
+          "description": "Applies MCP server list changes to selected agents.",
+          "routesInto": [
+            "setAgentMcp"
+          ]
+        },
+        {
+          "id": "test-mcp",
+          "label": "Test",
+          "type": "button",
+          "description": "Runs an MCP connectivity check without attaching.",
+          "routesInto": [
+            "mcp:test"
+          ]
+        },
+        {
+          "id": "rebuild-targets",
+          "label": "Rebuild targets",
+          "type": "button",
+          "description": "Restarts targeted agents after capability changes.",
+          "routesInto": [
+            "rebuildAgent"
+          ]
+        },
+        {
+          "id": "install-uninstall-skill",
+          "label": "Install/Uninstall",
+          "type": "buttons",
+          "description": "Adds or removes skill from selected agents.",
+          "routesInto": [
+            "installSkill",
+            "uninstallSkill"
+          ]
+        },
+        {
+          "id": "create-skill",
+          "label": "Create skill",
+          "type": "button",
+          "description": "Writes a new SKILL.md to the skill library.",
+          "routesInto": [
+            "createSkill"
+          ]
+        },
+        {
+          "id": "re-categorize",
+          "label": "re-categorize",
+          "type": "button",
+          "description": "Uses AI categorization for untagged skills and stores tags as an app overlay.",
+          "routesInto": [
+            "skills:categorize"
+          ]
+        }
+      ],
+      "displays": [
+        {
+          "id": "mcp-registry",
+          "label": "MCP registry",
+          "description": "Server, endpoint, attached count, target count, test state, and actions."
+        },
+        {
+          "id": "skill-catalog",
+          "label": "Skill catalog",
+          "description": "Skill cards with description, license, install status, tags, and actions."
+        },
+        {
+          "id": "plugin-table",
+          "label": "Plugin table",
+          "description": "Bundled plugin name, version, provider, and description."
+        }
+      ],
+      "routing": {
+        "managerMethods": [
+          "librarySkills",
+          "libraryPlugins",
+          "installSkill",
+          "uninstallSkill",
+          "createSkill",
+          "deleteSkill",
+          "setAgentMcp",
+          "rebuildAgent"
+        ],
+        "appLocalMethods": [
+          "mcp:list",
+          "mcp:add",
+          "mcp:remove",
+          "mcp:test",
+          "skills:autoTags",
+          "skills:categorize"
+        ]
+      },
+      "notes": [
+        "Interop/discovery fields should stay explicit when adding future capability manifests: MCP, OpenAPI, A2A, and signed-write discovery are separate concerns."
+      ]
+    },
+    {
+      "id": "computer",
+      "route": "computer",
+      "component": "ComputerUse",
+      "nav": {
+        "label": "Computer Use",
+        "icon": "▣",
+        "order": 100,
+        "visible": true
+      },
+      "sourceFiles": [
+        "idctl-desktop/src/renderer/views/ComputerUse.tsx",
+        "idctl-desktop/src/main/computeruse/broker.ts",
+        "idctl-desktop/src/main/computeruse/permissions.ts",
+        "idctl-desktop/resources/computeruse-mcp/server.mjs"
+      ],
+      "purpose": "Supervised local computer-control broker: bless capable agents, arm/disarm control, watch the screen, approve actions, and panic-stop.",
+      "scope": "Local machine. Requires macOS Screen Recording and Accessibility permissions; actions only run through the armed broker.",
+      "tiles": [
+        {
+          "id": "live-view",
+          "label": "Live view",
+          "description": "Primary display frames pushed from the broker.",
+          "routesInto": [
+            "cu:watch",
+            "onComputerFrame"
+          ]
+        },
+        {
+          "id": "permissions",
+          "label": "Permissions",
+          "description": "Screen Recording and Accessibility grant state and OS settings shortcuts.",
+          "routesInto": [
+            "cu:permissions",
+            "cu:openPermission",
+            "cu:relaunch"
+          ]
+        },
+        {
+          "id": "who-can-drive",
+          "label": "Who can drive",
+          "description": "Blessed capable agents; attach/detach bundled mac-control MCP and rebuild.",
+          "routesInto": [
+            "cu:attached",
+            "cu:attach",
+            "cu:detach",
+            "rebuildAgent"
+          ]
+        },
+        {
+          "id": "activity-log",
+          "label": "Activity log",
+          "description": "Last broker actions, blocked actions, details, and agent identity.",
+          "routesInto": [
+            "cu:audit"
+          ]
+        },
+        {
+          "id": "safety",
+          "label": "Safety",
+          "description": "Supervised approval mode and pending approval prompts.",
+          "routesInto": [
+            "cu:setSupervised",
+            "cu:confirm",
+            "onComputerPending"
+          ]
+        }
+      ],
+      "dropdowns": [
+        {
+          "id": "bless-agent",
+          "label": "Agent",
+          "description": "Selects an eligible agent to bless for computer use.",
+          "optionsSource": "store.agents filtered by runtime capability",
+          "routesInto": [
+            "cu:attach"
+          ]
+        }
+      ],
+      "controls": [
+        {
+          "id": "arm-disarm",
+          "label": "Arm/Disarm",
+          "type": "button",
+          "description": "Arms broker for currently blessed agents or disarms and clears frames.",
+          "routesInto": [
+            "cu:arm",
+            "cu:disarm"
+          ]
+        },
+        {
+          "id": "pause-resume",
+          "label": "Pause/Resume",
+          "type": "button",
+          "description": "Blocks or resumes agent input without disarming.",
+          "routesInto": [
+            "cu:pause"
+          ]
+        },
+        {
+          "id": "panic",
+          "label": "PANIC",
+          "type": "button/global hotkey",
+          "description": "Immediate stop for broker actions. Global hotkey is Cmd+Option+Shift+P.",
+          "routesInto": [
+            "cu:panic",
+            "onComputerPanic"
+          ]
+        },
+        {
+          "id": "bless",
+          "label": "Bless",
+          "type": "button",
+          "description": "Attaches mac-control MCP to selected capable agent and rebuilds.",
+          "routesInto": [
+            "cu:attach",
+            "rebuildAgent"
+          ]
+        },
+        {
+          "id": "remove-blessing",
+          "label": "Remove",
+          "type": "button",
+          "description": "Detaches mac-control MCP, revokes token, and rebuilds.",
+          "routesInto": [
+            "cu:detach",
+            "rebuildAgent"
+          ]
+        },
+        {
+          "id": "approve-deny",
+          "label": "Allow/Deny",
+          "type": "buttons",
+          "description": "Responds to pending supervised action requests.",
+          "routesInto": [
+            "cu:confirm"
+          ]
+        },
+        {
+          "id": "approve-every-action",
+          "label": "Approve every action",
+          "type": "checkbox",
+          "description": "Toggles supervised approval mode.",
+          "routesInto": [
+            "cu:setSupervised"
+          ]
+        }
+      ],
+      "displays": [
+        {
+          "id": "armed-pill",
+          "label": "Armed status",
+          "description": "Shows whether the broker is armed, paused, or disarmed."
+        },
+        {
+          "id": "approval-banner",
+          "label": "Approval prompt",
+          "description": "Pending action with allow/deny controls and auto-decline behavior in broker."
+        }
+      ],
+      "routing": {
+        "appLocalMethods": [
+          "cu:status",
+          "cu:arm",
+          "cu:disarm",
+          "cu:watch",
+          "cu:audit",
+          "cu:panic",
+          "cu:setSupervised",
+          "cu:pause",
+          "cu:confirm",
+          "cu:pending",
+          "cu:permissions",
+          "cu:openPermission",
+          "cu:relaunch",
+          "cu:attach",
+          "cu:detach",
+          "cu:attached"
+        ],
+        "managerMethods": [
+          "rebuildAgent",
+          "setAgentMcp"
+        ],
+        "pushEvents": [
+          "onComputerFrame",
+          "onComputerPending",
+          "onComputerPanic"
+        ]
+      }
+    },
+    {
+      "id": "settings",
+      "route": "settings",
+      "component": "Settings",
+      "nav": {
+        "label": "Settings",
+        "icon": "⚙",
+        "order": 110,
+        "visible": true
+      },
+      "sourceFiles": [
+        "idctl-desktop/src/renderer/views/Settings.tsx",
+        "idctl-desktop/src/main/system.ts",
+        "idctl-desktop/src/main/subscriptions.ts",
+        "idctl-desktop/src/main/ollama.ts",
+        "idctl-desktop/src/main/updater.ts",
+        "idctl/src/settings/store.ts"
+      ],
+      "purpose": "Infrastructure panel for host hardware, manager connection, coordinator, self-update, subscriptions, local models, image server, local stacks, and inference backends.",
+      "scope": "Local app settings plus manager-facing provider/concurrency routes.",
+      "tiles": [
+        {
+          "id": "hardware",
+          "label": "Hardware",
+          "description": "Read-only host compute summary.",
+          "routesInto": [
+            "app:hardware"
+          ]
+        },
+        {
+          "id": "connection",
+          "label": "Connection",
+          "description": "Manager URL, active team, and coordinator dropdown.",
+          "routesInto": [
+            "coordinator:set"
+          ]
+        },
+        {
+          "id": "self-update",
+          "label": "Self-update",
+          "description": "Version, staged/latest status, auto-upgrade toggle, and check now.",
+          "routesInto": [
+            "update:*"
+          ]
+        },
+        {
+          "id": "subscriptions",
+          "label": "Subscriptions",
+          "description": "Claude, ChatGPT, and Cursor CLI sign-in/install state.",
+          "routesInto": [
+            "subs:*"
+          ]
+        },
+        {
+          "id": "ollama",
+          "label": "Local models (Ollama)",
+          "description": "Concurrency, installed models, pull/remove controls, and downloadable model catalog.",
+          "routesInto": [
+            "manager:localConcurrency",
+            "manager:setLocalConcurrency",
+            "ollama:*"
+          ]
+        },
+        {
+          "id": "image-server",
+          "label": "Local image generator",
+          "description": "Configures image server URL and API style for chat image generation.",
+          "routesInto": [
+            "image:getServer",
+            "image:setServer",
+            "image:detectServer"
+          ]
+        },
+        {
+          "id": "local-stacks",
+          "label": "Local LLM stacks",
+          "description": "Catalog of install/run/uninstall commands for local inference stacks.",
+          "routesInto": [
+            "app:runInTerminal",
+            "providers:discover"
+          ]
+        },
+        {
+          "id": "providers",
+          "label": "Inference backends",
+          "description": "Provider catalog, local discovery, add/remove/default/toggle/connect/model sync.",
+          "routesInto": [
+            "providers:*"
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "id": "local-concurrency",
+          "label": "Parallel inference cap",
+          "type": "number",
+          "description": "Desired manager local-model concurrency, 1-16.",
+          "routesInto": [
+            "manager:setLocalConcurrency"
+          ]
+        },
+        {
+          "id": "ollama-model",
+          "label": "Download model",
+          "type": "text with datalist",
+          "description": "Ollama model id to pull.",
+          "routesInto": [
+            "ollama:pull"
+          ]
+        },
+        {
+          "id": "model-search",
+          "label": "search models",
+          "type": "text",
+          "description": "Filters local model catalog."
+        },
+        {
+          "id": "image-url",
+          "label": "Image URL",
+          "type": "text",
+          "description": "Local image server endpoint.",
+          "routesInto": [
+            "image:setServer",
+            "image:detectServer"
+          ]
+        },
+        {
+          "id": "provider-name",
+          "label": "Provider name",
+          "type": "text",
+          "description": "Name for a custom inference backend.",
+          "routesInto": [
+            "providers:add"
+          ]
+        },
+        {
+          "id": "provider-base-url",
+          "label": "Base URL",
+          "type": "text",
+          "description": "OpenAI-compatible or provider endpoint.",
+          "routesInto": [
+            "providers:add",
+            "providers:connect"
+          ]
+        },
+        {
+          "id": "provider-key",
+          "label": "API key",
+          "type": "password",
+          "description": "Optional key stored in local settings or resolved from env.",
+          "routesInto": [
+            "providers:add",
+            "providers:connect"
+          ]
+        }
+      ],
+      "dropdowns": [
+        {
+          "id": "coordinator",
+          "label": "Coordinator",
+          "description": "Active team's coordinator.",
+          "optionsSource": "store.agents",
+          "routesInto": [
+            "coordinator:set"
+          ]
+        },
+        {
+          "id": "image-api-style",
+          "label": "API style",
+          "description": "Automatic1111 or OpenAI Images-compatible.",
+          "routesInto": [
+            "image:setServer"
+          ]
+        },
+        {
+          "id": "provider-catalog",
+          "label": "Provider catalog",
+          "description": "Prefills kind/base URL for common backends."
+        },
+        {
+          "id": "provider-kind",
+          "label": "Provider kind",
+          "description": "Classifies backend behavior and model compatibility.",
+          "routesInto": [
+            "providers:add"
+          ]
+        }
+      ],
+      "controls": [
+        {
+          "id": "update-check",
+          "label": "Check now",
+          "type": "button",
+          "description": "Checks release manifest for updates.",
+          "routesInto": [
+            "update:check"
+          ]
+        },
+        {
+          "id": "auto-upgrade",
+          "label": "Auto-upgrade",
+          "type": "checkbox",
+          "description": "Persists self-update setting.",
+          "routesInto": [
+            "update:setSettings"
+          ]
+        },
+        {
+          "id": "subscription-signin",
+          "label": "Sign in / install / sign out",
+          "type": "buttons",
+          "description": "Manages CLI subscription auth state.",
+          "routesInto": [
+            "subs:signin",
+            "subs:install",
+            "subs:signout",
+            "subs:status"
+          ]
+        },
+        {
+          "id": "pull-remove-model",
+          "label": "Download/Remove model",
+          "type": "buttons",
+          "description": "Pulls or removes Ollama models with progress.",
+          "routesInto": [
+            "ollama:pull",
+            "ollama:remove",
+            "onOllamaPull"
+          ]
+        },
+        {
+          "id": "discover-local",
+          "label": "Scan running",
+          "type": "button",
+          "description": "Discovers local inference servers.",
+          "routesInto": [
+            "providers:discover"
+          ]
+        },
+        {
+          "id": "provider-default",
+          "label": "Default star",
+          "type": "button",
+          "description": "Sets provider default.",
+          "routesInto": [
+            "providers:setDefault"
+          ]
+        },
+        {
+          "id": "provider-toggle",
+          "label": "Enabled checkbox",
+          "type": "checkbox",
+          "description": "Enables/disables provider.",
+          "routesInto": [
+            "providers:toggle"
+          ]
+        },
+        {
+          "id": "connect-sync",
+          "label": "Connect & sync",
+          "type": "button",
+          "description": "Validates provider and syncs model list.",
+          "routesInto": [
+            "providers:connect"
+          ]
+        }
+      ],
+      "displays": [
+        {
+          "id": "hardware-summary",
+          "label": "Hardware summary",
+          "description": "Chip, cores, GPU, memory, disk, and fit warnings used in model catalog."
+        },
+        {
+          "id": "provider-row",
+          "label": "Provider row",
+          "description": "Default, enabled, key source, status, last sync, model count, expanded model list, connect/remove controls."
+        },
+        {
+          "id": "subscription-row",
+          "label": "Subscription row",
+          "description": "Provider installed/signed-in state and detail."
+        }
+      ],
+      "routing": {
+        "appLocalMethods": [
+          "app:hardware",
+          "update:*",
+          "subs:*",
+          "ollama:*",
+          "image:*",
+          "app:runInTerminal"
+        ],
+        "managerMethods": [
+          "coordinator:set",
+          "manager:localConcurrency",
+          "manager:setLocalConcurrency",
+          "providers:*"
+        ]
+      }
+    },
+    {
+      "id": "wiki",
+      "route": "wiki",
+      "component": "Wiki",
+      "nav": {
+        "label": "Wiki",
+        "icon": "▤",
+        "order": 120,
+        "visible": true
+      },
+      "sourceFiles": [
+        "docs/CONTROL_CENTER_WIKI.json",
+        "idctl-desktop/src/main/wiki.ts",
+        "idctl-desktop/src/renderer/App.tsx",
+        "idctl-desktop/src/renderer/views/Wiki.tsx"
+      ],
+      "purpose": "Live documentation and editable UI schematic for the Control Center itself.",
+      "scope": "Reads this JSON file through app-local IPC. Does not touch manager state.",
+      "fields": [
+        {
+          "id": "search",
+          "label": "Search",
+          "type": "text",
+          "description": "Filters pages, controls, fields, dropdowns, displays, and routes in the wiki UI."
+        }
+      ],
+      "dropdowns": [
+        {
+          "id": "page-picker",
+          "label": "Page list",
+          "description": "Selects which schematic page to inspect.",
+          "optionsSource": "pages[] from this file"
+        }
+      ],
+      "controls": [
+        {
+          "id": "sidebar-nav-schema",
+          "label": "Sidebar schema",
+          "type": "local file metadata",
+          "description": "Changing pages[].nav.label/icon/order/visible updates the app sidebar for implemented routes.",
+          "routesInto": [
+            "wiki:get",
+            "App nav derivation"
+          ]
+        }
+      ],
+      "displays": [
+        {
+          "id": "source-path",
+          "label": "Source path",
+          "description": "Shows the loaded file path and modification time so operators know what file is driving the page."
+        }
+      ],
+      "routing": {
+        "appLocalMethods": [
+          "wiki:get"
+        ]
+      }
+    }
+  ]
+}

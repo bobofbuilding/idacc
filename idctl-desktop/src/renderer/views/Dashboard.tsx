@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { call, resolveCoordinator, type FleetStore, type TeamEvent } from '../store.ts';
 import { Chat } from './Chat.tsx';
+import type { InboxItem, NewsItem, Task } from '../../../../idctl/src/api/types.ts';
 
 /**
  * Dashboard = talk to a team lead + watch the fleet. The main panel is a chat locked to a
@@ -72,6 +73,52 @@ function topicClass(t: string): string {
   if (/due|pending/.test(t)) return 'warn';
   return 'accent';
 }
+function toMs(ts?: number | null): number {
+  if (!ts) return 0;
+  return ts < 10_000_000_000 ? ts * 1000 : ts;
+}
+function taskRef(t: Task): string {
+  return t.shortId || t.name || t.uuid || '';
+}
+function taskTime(t: Task): number {
+  return toMs(t.completedAt ?? t.updatedAt ?? t.createdAt);
+}
+function taskClass(status: string): string {
+  if (DONE_RE.test(status)) return 'ok';
+  if (/block|fail|error|stuck|cancel/i.test(status)) return 'err';
+  if (/todo|open|queue|new|backlog|pending/i.test(status)) return 'warn';
+  return 'accent';
+}
+function taskVerb(status: string): string {
+  if (DONE_RE.test(status)) return 'completed';
+  if (DOING_RE.test(status)) return 'working';
+  if (/todo|open|queue|new|backlog|pending/i.test(status)) return 'queued';
+  return status || 'task';
+}
+function newsActor(n: DashboardNews): string {
+  const d = n.data ?? {};
+  const from = str(d.from) || str(d.sender) || str(d.agent) || str(d.source);
+  const to = str(d.to) || str(d.target) || str(d.recipient);
+  if (from && to) return `${from} → ${to}`;
+  return from || to;
+}
+function newsClass(n: DashboardNews): string {
+  const text = `${n.type} ${n.message ?? ''}`;
+  if (/fail|error|denied|timeout|exception/i.test(text)) return 'err';
+  if (/reply|complete|delivered|response/i.test(text)) return 'ok';
+  if (/pending|received|message|notify|outbound/i.test(text)) return 'warn';
+  return 'accent';
+}
+function newsDesc(n: DashboardNews): string {
+  const actor = newsActor(n);
+  const preview = clip(n.message || previewOf(n.data ?? {}) || n.type, 120);
+  return [actor, preview].filter(Boolean).join(' — ');
+}
+function inboxDesc(i: InboxItem): string {
+  const from = i.from || 'manager';
+  const preview = clip(i.message || i.prompt || i.query_id, 120);
+  return `${from} needs reply — ${preview}`;
+}
 
 type OrgHier = {
   primary: { team: string; agent: string } | null;
@@ -80,6 +127,16 @@ type OrgHier = {
   teams: string[];
 };
 type LiteTask = { ownerName?: string | null; status: string; title?: string; shortId?: string };
+type DashboardNews = NewsItem & { teamName?: string };
+type ActivityFeedItem = {
+  key: string;
+  topic: string;
+  className: string;
+  desc: string;
+  team?: string;
+  at: number;
+  title: string;
+};
 const DOING_RE = /doing|progress|active|start|claim/i;
 const DONE_RE = /done|complete/i;
 
@@ -191,17 +248,86 @@ export function Dashboard({ store }: { store: FleetStore }) {
   // back to the role heuristic (lead/manager → first agent).
   const lead = resolveCoordinator(teamAgents, chatTeam === store.team ? store.coordinator : undefined) ?? 'lead';
 
-  // Holistic activity feed: recent events across EVERY team (newest first).
+  // Holistic activity feed: recent events plus durable task/comms state across
+  // EVERY team (newest first). Events alone are lossy: a task/news row can exist
+  // without a retained event, so the tile merges all sources before sorting.
   const [events, setEvents] = useState<TeamEvent[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [news, setNews] = useState<DashboardNews[]>([]);
   useEffect(() => {
     let live = true;
-    const load = () => call<TeamEvent[]>('events:multi', 80).then((r) => { if (live) setEvents(r); }).catch(() => {});
+    const load = async () => {
+      const [evs, ts, ns] = await Promise.all([
+        call<TeamEvent[]>('events:multi', 80).catch(() => [] as TeamEvent[]),
+        call<Task[]>('tasks:allTeams').catch(() => [] as Task[]),
+        call<DashboardNews[]>('news:allTeams', 80).catch(() => [] as DashboardNews[]),
+      ]);
+      if (!live) return;
+      setEvents(evs);
+      setTasks(ts);
+      setNews(ns);
+    };
     void load();
     const iv = setInterval(load, 4000);
     return () => { live = false; clearInterval(iv); };
   }, []);
   const agentById = useMemo(() => new Map(store.allAgents.map((a) => [a.id, a.name] as const)), [store.allAgents]);
-  const resolveAgent = (id: string) => agentLabel(id, agentById);
+  const feedItems = useMemo<ActivityFeedItem[]>(() => {
+    const name = (id: string) => agentLabel(id, agentById);
+    const items: ActivityFeedItem[] = [];
+    for (const e of events) {
+      const at = toMs(e.timestamp ?? e.occurred_at);
+      items.push({
+        key: `event:${e.team ?? ''}:${e.seq}`,
+        topic: e.topic.split(':')[0] || 'event',
+        className: topicClass(e.topic),
+        desc: describe(e, name),
+        team: e.team,
+        at,
+        title: e.topic,
+      });
+    }
+    for (const t of tasks) {
+      const ref = taskRef(t);
+      const owner = t.ownerName ? `${t.ownerName} · ` : '';
+      const at = taskTime(t);
+      items.push({
+        key: `task:${t.teamName ?? ''}:${ref || `${t.title}:${at}`}`,
+        topic: 'task',
+        className: taskClass(t.status),
+        desc: `${owner}${taskVerb(t.status)}${ref ? ` · ${ref}` : ''} · ${clip(t.title, 110)}`,
+        team: t.teamName,
+        at,
+        title: `${t.status}${t.description ? ` — ${t.description}` : ''}`,
+      });
+    }
+    for (const n of news) {
+      items.push({
+        key: `comms:${n.teamName ?? ''}:${n.id ?? `${n.timestamp}:${n.type}:${n.message ?? ''}`}`,
+        topic: 'comms',
+        className: newsClass(n),
+        desc: newsDesc(n),
+        team: n.teamName,
+        at: toMs(n.timestamp),
+        title: n.type,
+      });
+    }
+    for (const i of store.inbox) {
+      items.push({
+        key: `inbox:${i.query_id}`,
+        topic: 'inbox',
+        className: 'warn',
+        desc: inboxDesc(i),
+        team: store.team,
+        at: toMs(i.timestamp),
+        title: i.query_id,
+      });
+    }
+    return items
+      .filter((i) => i.desc)
+      .sort((a, b) => b.at - a.at)
+      .slice(0, 80);
+  }, [agentById, events, tasks, news, store.inbox, store.team]);
 
   return (
     <div className="view" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -230,16 +356,18 @@ export function Dashboard({ store }: { store: FleetStore }) {
         {/* marginTop offsets the chat's control row so the tile top squares with the chat card
             top (when no project is focused; a focused project's banner adds a little extra). */}
         <aside className="card" style={{ width: 560, flexShrink: 0, marginTop: 38, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <h3 style={{ marginTop: 0 }}>Activity <span className="muted small">· all teams{events.length ? ` (${events.length})` : ''}</span></h3>
+          <h3 style={{ marginTop: 0 }}>
+            Activity <span className="muted small">· all teams{feedItems.length ? ` (${feedItems.length})` : ''} · {tasks.length} tasks · {news.length + store.inbox.length} comms</span>
+          </h3>
           <div className="feed-list" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-            {[...events].reverse().slice(0, 80).map((e) => (
-              <div className="feed-row" key={`${e.team ?? ''}-${e.seq}`} title={e.topic}>
-                <span className={`topic ${topicClass(e.topic)}`}>{e.topic.split(':')[0]}</span>
-                <span className="desc">{e.team ? <span className="muted" style={{ marginRight: 4 }}>[{e.team}]</span> : null}{describe(e, resolveAgent)}</span>
-                {e.timestamp ? <span className="muted t">{ago(e.timestamp)}</span> : null}
+            {feedItems.map((item) => (
+              <div className="feed-row" key={item.key} title={item.title}>
+                <span className={`topic ${item.className}`}>{item.topic}</span>
+                <span className="desc">{item.team ? <span className="muted" style={{ marginRight: 4 }}>[{item.team}]</span> : null}{item.desc}</span>
+                {item.at ? <span className="muted t">{ago(item.at)}</span> : null}
               </div>
             ))}
-            {events.length === 0 ? <div className="muted">waiting for events…</div> : null}
+            {feedItems.length === 0 ? <div className="muted">waiting for activity…</div> : null}
           </div>
         </aside>
       </div>

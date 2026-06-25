@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.180] — 2026-06-25
+- Control Center Wiki view + unified cross-team activity feed
+- In-app schema-driven Wiki (docs/CONTROL_CENTER_WIKI.json) covering pages/tabs/controls/endpoints, with a resilient loader (env/appPath/resources/cwd fallbacks) and a build copy into out/docs for packaging.
+- Dashboard activity tile merges events, tasks, cross-team news/comms, and pending inbox into one timestamp-sorted feed (news:allTeams bridge source; NewsItem id for clean dedupe).
+- Ignore runtime uploads/ (transient chat-composer attachments).
+
 ## [0.1.179] — 2026-06-25
 - **Capabilities:** markdown links in skill & plugin descriptions now render as clickable external links in the Modules view (a new `LinkedDescription` renderer), instead of showing raw `[label](url)` text.
 

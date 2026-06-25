@@ -13,21 +13,48 @@ import { Modules } from './views/Modules.tsx';
 import { Projects } from './views/Projects.tsx';
 import { ComputerUse } from './views/ComputerUse.tsx';
 import { Settings } from './views/Settings.tsx';
+import { Wiki, type ControlCenterWiki, type WikiPayload } from './views/Wiki.tsx';
 
-type ViewId = 'dashboard' | 'chat' | 'inbox' | 'tasks' | 'projects' | 'health' | 'identity' | 'schedule' | 'teams' | 'modules' | 'computer' | 'settings';
+type ViewId = 'dashboard' | 'chat' | 'inbox' | 'tasks' | 'projects' | 'health' | 'identity' | 'schedule' | 'teams' | 'modules' | 'computer' | 'settings' | 'wiki';
 
-const NAV: { id: ViewId; label: string; icon: string }[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: '▦' },
-  { id: 'inbox', label: 'Inbox', icon: '✉' },
-  { id: 'tasks', label: 'Work', icon: '☑' },
-  { id: 'projects', label: 'Projects', icon: '◆' },
-  { id: 'health', label: 'Health', icon: '✚' },
-  { id: 'identity', label: 'Identity & Keys', icon: '⬡' },
-  { id: 'teams', label: 'HR Manager', icon: '⛌' },
-  { id: 'modules', label: 'Capabilities', icon: '◫' },
-  { id: 'computer', label: 'Computer Use', icon: '🖥' },
-  { id: 'settings', label: 'Settings', icon: '⚙' },
+const DEFAULT_NAV: { id: ViewId; label: string; icon: string; order: number }[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: '▦', order: 10 },
+  { id: 'chat', label: 'Chat', icon: '✦', order: 20 },
+  { id: 'inbox', label: 'Inbox', icon: '✉', order: 30 },
+  { id: 'tasks', label: 'Work', icon: '☑', order: 40 },
+  { id: 'projects', label: 'Projects', icon: '◆', order: 50 },
+  { id: 'health', label: 'Health', icon: '✚', order: 60 },
+  { id: 'identity', label: 'Identity & Keys', icon: '⬡', order: 70 },
+  { id: 'teams', label: 'HR Manager', icon: '⛌', order: 80 },
+  { id: 'modules', label: 'Capabilities', icon: '◫', order: 90 },
+  { id: 'computer', label: 'Computer Use', icon: '🖥', order: 100 },
+  { id: 'settings', label: 'Settings', icon: '⚙', order: 110 },
+  { id: 'wiki', label: 'Wiki', icon: '▤', order: 120 },
 ];
+const IMPLEMENTED_VIEWS = new Set<ViewId>([...DEFAULT_NAV.map((n) => n.id), 'schedule']);
+
+function isViewId(id: string | null | undefined): id is ViewId {
+  return !!id && IMPLEMENTED_VIEWS.has(id as ViewId);
+}
+
+function navFromWiki(doc?: ControlCenterWiki | null): typeof DEFAULT_NAV {
+  const defaults = new Map(DEFAULT_NAV.map((n) => [n.id, n]));
+  const pages = doc?.pages ?? [];
+  const nav = pages
+    .filter((p) => isViewId(p.route) && p.nav?.visible !== false)
+    .map((p) => {
+      const id = p.route as ViewId;
+      const base = defaults.get(id);
+      return {
+        id,
+        label: p.nav?.label ?? base?.label ?? id,
+        icon: p.nav?.icon ?? base?.icon ?? '•',
+        order: p.nav?.order ?? base?.order ?? 999,
+      };
+    })
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+  return nav.length ? nav : DEFAULT_NAV;
+}
 
 interface UpdateStatus {
   current: string;
@@ -43,19 +70,23 @@ export function App() {
   const store = useFleet();
   const [view, setView] = useState<ViewId>(() => {
     // 'schedule' is a Tasks tab now (not in NAV) but still a valid deep-link target.
-    const valid = (id: string | null): id is ViewId => !!id && (NAV.some((n) => n.id === id) || id === 'schedule');
     const v = new URLSearchParams(window.location.search).get('view');
-    if (valid(v)) return v;
+    if (isViewId(v)) return v;
     // Otherwise reopen on the view the user last had — e.g. after a self-update relaunch.
     let saved: string | null = null;
     try { saved = localStorage.getItem('idctl.view'); } catch { /* no storage */ }
-    return valid(saved) ? saved : 'dashboard';
+    return isViewId(saved) ? saved : 'dashboard';
   });
   useEffect(() => { try { localStorage.setItem('idctl.view', view); } catch { /* no storage */ } }, [view]);
   const [version, setVersion] = useState<string>('');
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [applying, setApplying] = useState(false);
   const [dismissed, setDismissed] = useState<string>(''); // latest version the user said "Later" to
+  const [wiki, setWiki] = useState<WikiPayload | null>(null);
+  const [wikiError, setWikiError] = useState<string>();
+  const [wikiQuery, setWikiQuery] = useState('');
+  const [wikiPageId, setWikiPageId] = useState('');
+  const nav = navFromWiki(wiki?.doc);
 
   useEffect(() => {
     call<string>('app:version').then(setVersion).catch(() => {});
@@ -64,6 +95,25 @@ export function App() {
     const idagents = (window as { idagents?: { onUpdateStatus?: (cb: (s: unknown) => void) => () => void } }).idagents;
     const off = idagents?.onUpdateStatus?.((s) => setUpdate(s as UpdateStatus));
     return () => off?.();
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      try {
+        const next = await call<WikiPayload>('wiki:get');
+        if (!live) return;
+        setWiki((prev) => (prev?.path === next.path && prev.mtimeMs === next.mtimeMs ? prev : next));
+        setWikiError(undefined);
+      } catch (err) {
+        if (live) setWikiError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (live) timer = setTimeout(load, 1500);
+      }
+    };
+    void load();
+    return () => { live = false; clearTimeout(timer); };
   }, []);
 
   async function applyUpdate() {
@@ -84,7 +134,7 @@ export function App() {
       </div>
       <div className="body">
         <nav className="sidebar">
-          {NAV.map((n) => (
+          {nav.map((n) => (
             <button
               key={n.id}
               className={`nav-item${view === n.id ? ' active' : ''}`}
@@ -112,7 +162,16 @@ export function App() {
         </nav>
 
         <main className="content">
-          <Router view={view} store={store} />
+          <Router
+            view={view}
+            store={store}
+            wiki={wiki}
+            wikiError={wikiError}
+            wikiQuery={wikiQuery}
+            setWikiQuery={setWikiQuery}
+            wikiPageId={wikiPageId}
+            setWikiPageId={setWikiPageId}
+          />
           <StatusBar store={store} />
         </main>
       </div>
@@ -122,7 +181,16 @@ export function App() {
   );
 }
 
-function Router({ view, store }: { view: ViewId; store: ReturnType<typeof useFleet> }) {
+function Router({ view, store, wiki, wikiError, wikiQuery, setWikiQuery, wikiPageId, setWikiPageId }: {
+  view: ViewId;
+  store: ReturnType<typeof useFleet>;
+  wiki: WikiPayload | null;
+  wikiError?: string;
+  wikiQuery: string;
+  setWikiQuery: (q: string) => void;
+  wikiPageId: string;
+  setWikiPageId: (id: string) => void;
+}) {
   switch (view) {
     case 'dashboard':
       return <Dashboard store={store} />;
@@ -148,6 +216,8 @@ function Router({ view, store }: { view: ViewId; store: ReturnType<typeof useFle
       return <Projects store={store} />;
     case 'settings':
       return <Settings store={store} />;
+    case 'wiki':
+      return <Wiki store={store} wiki={wiki} error={wikiError} query={wikiQuery} setQuery={setWikiQuery} pageId={wikiPageId} setPageId={setWikiPageId} />;
     default:
       return <Dashboard store={store} />;
   }
