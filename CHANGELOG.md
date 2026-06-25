@@ -8,6 +8,13 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.172] — 2026-06-25
+- **Phase 4: live coordination tree on the Dashboard.** A real-time mirror of *who's driving what* —
+  primary lead → secondary leads (researcher / coder) → team leads → workers — each with a live state
+  dot (working / idle / stopped / not-deployed), its current task, and per-team worker counts
+  (N working · N live). This is the live display of the agent-driven coordination: the agents
+  orchestrate, the Dashboard shows it. Polls every 5s alongside the activity feed.
+
 ## [0.1.171] — 2026-06-25
 - **Phase 3 of the CC refactor: the lead drives, the app stops.** Working a plan (the ▶ Work button)
   now **hands the plan to the primary lead** to decompose, **prune already-done work**, and delegate

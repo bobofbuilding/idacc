@@ -67,6 +67,87 @@ function topicClass(t: string): string {
   return 'accent';
 }
 
+type OrgHier = {
+  primary: { team: string; agent: string } | null;
+  secondaries: { agent: string; team: string; leadsTeams: string[] }[];
+  coordinators: Record<string, string>;
+  teams: string[];
+};
+type LiteTask = { ownerName?: string | null; status: string; title?: string; shortId?: string };
+const DOING_RE = /doing|progress|active|start|claim/i;
+const DONE_RE = /done|complete/i;
+
+/**
+ * Live coordination tree — a real-time mirror of who's driving what: primary lead → secondary
+ * leads → team leads → workers, each with its live state (working / idle / stopped) and current
+ * task. The observation half of the CC refactor (Phase 4): the agents orchestrate, this just shows it.
+ */
+function CoordinationTree({ store }: { store: FleetStore }) {
+  const [hier, setHier] = useState<OrgHier>({ primary: null, secondaries: [], coordinators: {}, teams: [] });
+  const [tasks, setTasks] = useState<LiteTask[]>([]);
+  useEffect(() => {
+    let live = true;
+    const load = () => {
+      void call<OrgHier>('org:hierarchy').then((h) => { if (live && h) setHier(h); }).catch(() => {});
+      void call<LiteTask[]>('tasks:allTeams').then((t) => { if (live) setTasks(Array.isArray(t) ? t : []); }).catch(() => {});
+    };
+    load();
+    const iv = setInterval(load, 5000);
+    return () => { live = false; clearInterval(iv); };
+  }, []);
+
+  const taskOf = (name?: string) => (name ? tasks.find((t) => t.ownerName === name && DOING_RE.test(t.status) && !DONE_RE.test(t.status)) : undefined);
+  const node = (name: string, role: string) => {
+    const a = store.allAgents.find((x) => x.name === name);
+    const present = !!a;
+    const isLive = present && isActive(a?.status);
+    const task = taskOf(name);
+    const color = !present ? '#6b6b6b' : task ? '#3ccb78' : isLive ? '#c98a3c' : '#777';
+    const state = !present ? 'not deployed' : task ? 'working' : isLive ? 'idle' : 'stopped';
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
+        <b style={{ fontSize: 13 }}>{name}</b>
+        <span className="muted small">{role}</span>
+        <span className="muted small" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={task?.title}>
+          · {task ? `${task.shortId ?? ''} ${clip(String(task.title ?? ''), 30)}` : state}
+        </span>
+      </span>
+    );
+  };
+
+  const primary = hier.primary?.agent;
+  if (!primary) return null; // nothing to show until a primary lead is designated (HR Manager)
+
+  return (
+    <section className="card" style={{ marginBottom: 12, flexShrink: 0 }}>
+      <h3 style={{ marginTop: 0 }}>Live coordination <span className="muted small">· who's driving what, right now</span></h3>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div>{node(primary, 'primary lead')}</div>
+        {hier.secondaries.map((s) => (
+          <div key={s.agent} style={{ paddingLeft: 16, borderLeft: '1px solid var(--border, #2a2a2a)' }}>
+            <div style={{ marginBottom: 4 }}>↳ {node(s.agent, 'secondary')}</div>
+            <div style={{ paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {s.leadsTeams.length ? s.leadsTeams.map((tm) => {
+                const tl = hier.coordinators[tm];
+                const workers = store.allAgents.filter((a) => a.team === tm && a.name !== tl);
+                const working = workers.filter((w) => taskOf(w.name)).length;
+                const liveW = workers.filter((w) => isActive(w.status)).length;
+                return (
+                  <div key={tm} style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                    {tl ? node(tl, tm) : <span className="muted small">{tm} · no lead</span>}
+                    <span className="muted small" style={{ whiteSpace: 'nowrap' }}>— {workers.length} workers · {working} working · {liveW} live</span>
+                  </div>
+                );
+              }) : <span className="muted small">no teams assigned</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function Dashboard({ store }: { store: FleetStore }) {
   // Teams that currently have ≥1 running agent (idle teams hidden from the picker).
   const activeTeams = useMemo(
@@ -115,6 +196,8 @@ export function Dashboard({ store }: { store: FleetStore }) {
           </select>
         </label>
       </header>
+
+      <CoordinationTree store={store} />
 
       {/* Explicit flex row so the chat fills the left and the activity tile always shows on the right. */}
       <div style={{ display: 'flex', gap: 14, flex: 1, minHeight: 0, alignItems: 'stretch' }}>
