@@ -9,7 +9,17 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, chmodSync, renameSync, unlinkSync } from 'node:fs';
 import { resolveConfigPath, configDir } from './paths.ts';
-import { emptyConfig, defaultUpdateSettings, DEFAULT_TEAM, type IdctlConfig, type ImageServerConfig, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderProfile, type ProviderSync, type UpdateSettings } from './schema.ts';
+import { emptyConfig, defaultUpdateSettings, DEFAULT_TEAM, type GoalDriverSettings, type IdctlConfig, type ImageServerConfig, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderProfile, type ProviderSync, type UpdateSettings } from './schema.ts';
+
+function normalizeGoalDriver(input: unknown): GoalDriverSettings | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = input as Record<string, unknown>;
+  const out: GoalDriverSettings = {};
+  if (typeof raw.enabled === 'boolean') out.enabled = raw.enabled;
+  if (typeof raw.cadenceMs === 'number' && Number.isFinite(raw.cadenceMs) && raw.cadenceMs > 0) out.cadenceMs = Math.floor(raw.cadenceMs);
+  if (typeof raw.maxOpenTasksPerGoal === 'number' && Number.isFinite(raw.maxOpenTasksPerGoal) && raw.maxOpenTasksPerGoal > 0) out.maxOpenTasksPerGoal = Math.floor(raw.maxOpenTasksPerGoal);
+  return out;
+}
 
 export function loadSettings(file = resolveConfigPath()): IdctlConfig {
   if (!existsSync(file)) return emptyConfig();
@@ -39,6 +49,7 @@ export function loadSettings(file = resolveConfigPath()): IdctlConfig {
       update: { ...defaultUpdateSettings(), ...(raw.update ?? {}) },
       coordinators: raw.coordinators ?? {},
       primaryCoordinator: raw.primaryCoordinator,
+      goalDriver: normalizeGoalDriver(raw.goalDriver),
       defaultTeam: raw.defaultTeam ?? DEFAULT_TEAM,
       // Absent → scope to just the default team (the shipped behaviour). An
       // explicit null/[] means "show all teams" (filtering disabled).
@@ -214,6 +225,13 @@ export function recordProviderSync(name: string, sync: ProviderSync, file = reso
 export function setUpdateSettings(partial: Partial<UpdateSettings>, file = resolveConfigPath()): IdctlConfig {
   const cfg = loadSettings(file);
   cfg.update = { ...defaultUpdateSettings(), ...(cfg.update ?? {}), ...partial };
+  saveSettings(cfg, file);
+  return cfg;
+}
+
+export function setGoalDriver(partial: Partial<GoalDriverSettings>, file = resolveConfigPath()): IdctlConfig {
+  const cfg = loadSettings(file);
+  cfg.goalDriver = normalizeGoalDriver({ ...(cfg.goalDriver ?? {}), ...(partial ?? {}) });
   saveSettings(cfg, file);
   return cfg;
 }

@@ -34,6 +34,7 @@ import {
   setTaskLane,
   setTaskDeps,
   setTaskReview,
+  setGoalDriver,
 } from '../../../idctl/src/settings/store.ts';
 import { detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { realpathSync } from 'node:fs';
@@ -44,6 +45,7 @@ import { kindNeedsKey, type ProviderProfile, type McpServerProfile, type Project
 import { buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import { testMcpServer } from './mcpTest.ts';
 import { decomposeWork, createAndDispatchPlan, fanOutObjective, teamLeads, triageUnassigned, type SubTask } from './work.ts';
+import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, type GoalDriverConfig } from './goaldriver.ts';
 import { buildOrgHierarchy, syncOrg, startOrgSyncLoop } from './orgSync.ts';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -188,6 +190,10 @@ const CU_MCP_ALIASES = ['mac-control', 'computer-use'];
 let cfg: Config = loadConfig({ team: 'default', admin: true });
 let client = new ManagerClient(cfg);
 const keys = getKeyProvider();
+
+function goalDriverConfig(): GoalDriverConfig {
+  return normalizeGoalDriverConfig(loadSettings().goalDriver);
+}
 
 const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // fleet
@@ -368,6 +374,12 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     fanOutObjective(client, String(objective), Array.isArray(teams) ? teams.map(String) : []),
   // Lead triages unassigned To-Do tasks: assign each to the best active agent + dispatch.
   'work:triage': (lead: string, team?: string) => triageUnassigned(team ? client.withTeam(String(team)) : client, String(lead)),
+  'goalDriver:getConfig': async () => goalDriverConfig(),
+  'goalDriver:setConfig': async (partial: Partial<GoalDriverConfig>) => {
+    setGoalDriver(normalizeGoalDriverConfig({ ...goalDriverConfig(), ...(partial ?? {}) }));
+    return goalDriverConfig();
+  },
+  'goalDriver:runOnce': async () => runGoalDriverOnce(() => client, goalDriverConfig()),
   // Per-task token spend (keyed by task shortId) for the board cards.
   'tasks:usage': (team?: string) => (team ? client.withTeam(String(team)) : client).usageByTask(),
   // Control Center capability discovery (feature-detect CC-only manager routes).
@@ -758,6 +770,11 @@ export function info() {
 /** Start the reactive org-sync loop, always reading the live (possibly-reassigned) client. */
 export function startOrgSync(): () => void {
   return startOrgSyncLoop(() => client);
+}
+
+/** Start the disabled-by-default goal driver loop against the live manager client. */
+export function startGoalDriver(): () => void {
+  return startGoalDriverLoop(() => client, goalDriverConfig);
 }
 
 /**

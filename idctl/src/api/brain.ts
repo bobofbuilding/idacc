@@ -18,7 +18,7 @@
  *   POST /entities           { id, type, name, source, status, tags, data }
  *   POST /facts/bulk         { facts: [{ entity_id, field, value, source }] }
  *   POST /text-units/ingest  { source_kind, source_id, title, content, metadata, process_config }
- *   POST /memory/:agentId    { key, content, tags, shared? }
+ *   POST /memory/:agentId    { key, content, tags, shared?, project? }
  *   GET  /memory/:agentId/:key        -> { memory: { content } }
  *   GET  /memory/shared?tag=&project= -> { memories: [{ content, id, agent_id, mem_key }] }
  */
@@ -178,12 +178,13 @@ export class BrainClient {
   }
 
   /** Upsert keyed memory for an agent id (e.g. 'control-center' / 'team-instructions'). */
-  async memory(agentId: string, input: { key: string; content: string; tags?: string[]; shared?: boolean }): Promise<boolean> {
+  async memory(agentId: string, input: { key: string; content: string; tags?: string[]; shared?: boolean; project?: string }): Promise<boolean> {
     const r = await this.req('POST', `/memory/${encodeURIComponent(agentId)}`, {
       key: input.key,
       content: input.content,
       tags: input.tags ?? [],
       ...(input.shared ? { shared: true } : {}),
+      ...(input.project ? { project: input.project } : {}),
     });
     return r !== null;
   }

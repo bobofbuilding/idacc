@@ -10,12 +10,22 @@ import { call, resolveCoordinator, type FleetStore } from '../store.ts';
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 interface Goal {
   id: string; title: string; idea: string; agent?: string; team: string;
-  status: GoalStatus; content: string; createdAt: number; updatedAt: number;
+  status: GoalStatus; autopilot?: boolean; content: string;
+  driver?: { lastRunAt?: number; taskRefs?: string[]; note?: string };
+  createdAt: number; updatedAt: number;
 }
-type GoalSummary = { id: string; title: string; status: GoalStatus; agent?: string; team: string; updatedAt: number };
+type GoalSummary = { id: string; title: string; status: GoalStatus; agent?: string; team: string; updatedAt: number; autopilot?: boolean };
+interface GoalDriverConfig { enabled: boolean; cadenceMs: number; maxOpenTasksPerGoal: number }
+interface GoalDriverSummary { enabled: boolean; consideredGoals: number; drivenGoals: number; tasksSpawned: number; teamsSynced: number; errors: string[] }
 
 const STATUSES: GoalStatus[] = ['draft', 'active', 'done', 'archived'];
 const STATUS_CLASS: Record<GoalStatus, string> = { draft: 'st-paused', active: 'st-active', done: 'st-done', archived: 'st-blocked' };
+const DRIVER_DEFAULTS: GoalDriverConfig = { enabled: false, cadenceMs: 30 * 60 * 1000, maxOpenTasksPerGoal: 3 };
+const CADENCES = [
+  { label: '15m', value: 15 * 60 * 1000 },
+  { label: '30m', value: 30 * 60 * 1000 },
+  { label: '1h', value: 60 * 60 * 1000 },
+];
 
 function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
 function clip(s: string, n: number): string { const t = s.replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; }
@@ -36,6 +46,8 @@ export function Goals({ store }: { store: FleetStore }) {
   const [goals, setGoals] = useState<GoalSummary[]>([]);
   const [detail, setDetail] = useState<Goal | null>(null);
   const [busy, setBusy] = useState(false);
+  const [driverBusy, setDriverBusy] = useState(false);
+  const [driverCfg, setDriverCfg] = useState<GoalDriverConfig>(DRIVER_DEFAULTS);
   const [msg, setMsg] = useState('');
   const [showNew, setShowNew] = useState(false);
   // new-goal form
@@ -57,6 +69,11 @@ export function Goals({ store }: { store: FleetStore }) {
 
   async function reload() { setGoals(await call<GoalSummary[]>('goals:list', team).catch(() => [])); }
   useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [team, store.lastUpdated]);
+  async function loadDriver() {
+    const cfg = await call<GoalDriverConfig>('goalDriver:getConfig').catch(() => DRIVER_DEFAULTS);
+    if (aliveRef.current) setDriverCfg({ ...DRIVER_DEFAULTS, ...(cfg ?? {}) });
+  }
+  useEffect(() => { void loadDriver(); }, []);
 
   async function open(id: string) {
     if (detail?.id === id) { setDetail(null); return; } // toggle closed
@@ -92,7 +109,7 @@ export function Goals({ store }: { store: FleetStore }) {
     const now = Date.now();
     const goal: Goal = {
       id: newId(), title: (title.trim() || clip(content, 60)), idea: idea.trim(), agent: genAgent, team,
-      status: 'draft', content, createdAt: now, updatedAt: now,
+      status: 'draft', autopilot: false, content, createdAt: now, updatedAt: now,
     };
     await call('goals:save', goal);
     if (!aliveRef.current) return;
@@ -134,6 +151,34 @@ export function Goals({ store }: { store: FleetStore }) {
     await call('goals:save', next).catch(() => {});
     if (aliveRef.current) await reload();
   }
+  async function patchDriver(p: Partial<GoalDriverConfig>) {
+    setDriverBusy(true);
+    try {
+      const next = await call<GoalDriverConfig>('goalDriver:setConfig', { ...driverCfg, ...p });
+      if (!aliveRef.current) return;
+      setDriverCfg({ ...DRIVER_DEFAULTS, ...(next ?? {}) });
+      setMsg('goal driver settings saved');
+    } catch (err) {
+      if (aliveRef.current) setMsg(`goal driver settings failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (aliveRef.current) setDriverBusy(false);
+    }
+  }
+  async function runDriverNow() {
+    setDriverBusy(true);
+    setMsg('running goal driver...');
+    try {
+      const r = await call<GoalDriverSummary>('goalDriver:runOnce');
+      if (!aliveRef.current) return;
+      setMsg(r.enabled ? `goal driver ran: ${r.tasksSpawned} task(s), ${r.teamsSynced} team instruction(s)` : 'goal driver is off');
+      await reload();
+      if (detail) setDetail(await call<Goal | null>('goals:get', detail.id).catch(() => detail));
+    } catch (err) {
+      if (aliveRef.current) setMsg(`goal driver failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (aliveRef.current) setDriverBusy(false);
+    }
+  }
   async function remove() {
     if (!detail) return;
     await call('goals:remove', detail.id).catch(() => {});
@@ -150,6 +195,28 @@ export function Goals({ store }: { store: FleetStore }) {
         {busy ? <button className="btn" onClick={cancel}>Cancel</button> : null}
         <button className="btn primary" disabled={busy} onClick={() => setShowNew((v) => !v)}>{showNew ? '− Cancel' : '+ New goal'}</button>
       </div>
+
+      <section className="card" style={{ marginBottom: 10 }}>
+        <div className="row-actions" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <input type="checkbox" checked={driverCfg.enabled} disabled={driverBusy} onChange={(e) => void patchDriver({ enabled: e.target.checked })} />
+            <b>Autopilot master</b>
+          </label>
+          <span className="muted small">Runs only for active goals with Autopilot on.</span>
+          <span className="grow" />
+          <label className="small muted" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            cadence
+            <select className="cell-select small" value={driverCfg.cadenceMs} disabled={driverBusy} onChange={(e) => void patchDriver({ cadenceMs: Number(e.target.value) })}>
+              {CADENCES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+          </label>
+          <label className="small muted" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            cap
+            <input className="chat-title" style={{ width: 54 }} type="number" min={1} max={12} value={driverCfg.maxOpenTasksPerGoal} disabled={driverBusy} onChange={(e) => void patchDriver({ maxOpenTasksPerGoal: Number(e.target.value) })} />
+          </label>
+          <button className="btn" disabled={driverBusy} onClick={() => void runDriverNow()}>{driverBusy ? 'Running...' : 'Run now'}</button>
+        </div>
+      </section>
 
       {showNew ? (
         <section className="card">
@@ -197,6 +264,10 @@ export function Goals({ store }: { store: FleetStore }) {
                     <select className="cell-select small" value={detail.status} disabled={busy} onChange={(e) => void patchGoal({ status: e.target.value as GoalStatus })}>
                       {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
+                    <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <input type="checkbox" checked={!!detail.autopilot} disabled={busy || detail.status !== 'active'} onChange={(e) => void patchGoal({ autopilot: e.target.checked })} />
+                      Autopilot
+                    </label>
                     <span className="grow" />
                     {confirmDel ? (
                       <>
@@ -209,6 +280,14 @@ export function Goals({ store }: { store: FleetStore }) {
                   </div>
 
                   <textarea className="plan-content" style={{ width: '100%', minHeight: 120 }} value={detail.content} disabled={busy} onChange={(e) => setDetail({ ...detail, content: e.target.value })} onBlur={(e) => void patchGoal({ content: e.target.value })} />
+
+                  {detail.driver ? (
+                    <div className="muted small" style={{ marginTop: 6 }}>
+                      driver: {detail.driver.note ?? 'no note'}
+                      {detail.driver.lastRunAt ? ` · ${ago(detail.driver.lastRunAt)}` : ''}
+                      {detail.driver.taskRefs?.length ? ` · ${detail.driver.taskRefs.length} task(s)` : ''}
+                    </div>
+                  ) : null}
 
                   <div className="row-actions" style={{ gap: 6, marginTop: 8, alignItems: 'flex-start' }}>
                     <textarea style={{ flex: 1, minHeight: 38 }} placeholder="refine with AI — e.g. “make the success criteria measurable” or “tighten to one sentence”" value={refineInstr} disabled={busy} onChange={(e) => setRefineInstr(e.target.value)} />

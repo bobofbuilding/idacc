@@ -6,7 +6,7 @@
 import { app, BrowserWindow, ipcMain, shell, Menu, MenuItem, globalShortcut, screen } from 'electron';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { call, startOrgSync, startModelRefreshLoop } from './bridge.ts';
+import { call, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
 import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
 import { subsStatus, subsSignin, subsSignout, subsInstall, type SubProvider } from './subscriptions.ts';
@@ -33,6 +33,7 @@ import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 declare const __dirname: string;
 
 let win: BrowserWindow | null = null;
+let stopGoalDriver: (() => void) | null = null;
 
 // --- window state: reopen the app where/how the user left it ---
 interface WinState { x?: number; y?: number; width: number; height: number; fullScreen?: boolean }
@@ -470,6 +471,8 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     try { startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }
     // Keep each runtime's model list current: re-probe backing providers on boot + every 6h.
     try { startModelRefreshLoop(); } catch (e) { console.warn('[model-refresh] failed to start:', e); }
+    // Disabled by default: when enabled, active+autopilot goals gap-fill fleet tasks.
+    try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
     // Computer Use broker: loopback controller + live frame pump + approval prompts → the renderer.
     void startBroker(
       (frame) => { try { win?.webContents.send('computeruse:frame', frame); } catch { /* window gone */ } },
@@ -492,6 +495,7 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
 
 app.on('will-quit', stopUpdater);
 app.on('will-quit', stopBroker);
+app.on('will-quit', () => { try { stopGoalDriver?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* */ } });
 
 app.on('window-all-closed', () => {

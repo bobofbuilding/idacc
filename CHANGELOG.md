@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.185] — 2026-06-26
+- feat(goal-driver): autonomous, OFF-by-default driver that turns active+autopilot Goals into fleet tasks (dedup/cap/gap-fill) and weaves them into team org-sync instructions
+
 ## [0.1.184] — 2026-06-26
 - Automated release of outstanding ID Agents Control Center code.
 

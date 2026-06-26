@@ -28,11 +28,17 @@ export interface Goal {
   agent?: string;        // which agent helped write/last-refined it
   team: string;
   status: GoalStatus;
+  autopilot?: boolean;   // opt-in: eligible for the disabled-by-default goal driver
   content: string;       // the goal statement (markdown)
+  driver?: {
+    lastRunAt?: number;
+    taskRefs?: string[];
+    note?: string;
+  };
   createdAt: number;
   updatedAt: number;
 }
-export interface GoalSummary { id: string; title: string; status: GoalStatus; agent?: string; team: string; updatedAt: number }
+export interface GoalSummary { id: string; title: string; status: GoalStatus; agent?: string; team: string; updatedAt: number; autopilot?: boolean }
 
 function fileFor(id: string): string {
   const safe = String(id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
@@ -48,7 +54,7 @@ export function listGoals(team?: string): GoalSummary[] {
     try {
       const g = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Goal;
       if (team && g.team !== team) continue;
-      out.push({ id: g.id, title: g.title || '(untitled goal)', status: g.status ?? 'draft', agent: g.agent, team: g.team, updatedAt: g.updatedAt || 0 });
+      out.push({ id: g.id, title: g.title || '(untitled goal)', status: g.status ?? 'draft', agent: g.agent, team: g.team, updatedAt: g.updatedAt || 0, autopilot: !!g.autopilot });
     } catch { /* skip corrupt */ }
   }
   return out.sort((a, b) => b.updatedAt - a.updatedAt);

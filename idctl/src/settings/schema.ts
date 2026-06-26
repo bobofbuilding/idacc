@@ -50,6 +50,11 @@ export interface IdctlConfig {
    */
   orgSync?: { enabled?: boolean; autoRebuild?: boolean };
   /**
+   * Disabled-by-default background goal driver. When enabled, only active goals whose own
+   * autopilot flag is true can spawn gap-fill tasks and publish team instructions.
+   */
+  goalDriver?: GoalDriverSettings;
+  /**
    * The team idctl scopes to on startup (the repo's shipped team). Defaults to
    * "default" — the canonical id-agents team (configs/default.yaml).
    */
@@ -155,6 +160,12 @@ export interface UpdateSettings {
   updateManifestUrl?: string;
   /** Hours between background checks. Default 12. */
   checkIntervalHours: number;
+}
+
+export interface GoalDriverSettings {
+  enabled?: boolean;
+  cadenceMs?: number;
+  maxOpenTasksPerGoal?: number;
 }
 
 export function defaultUpdateSettings(): UpdateSettings {
