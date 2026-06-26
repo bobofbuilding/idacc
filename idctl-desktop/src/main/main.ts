@@ -33,6 +33,7 @@ import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 declare const __dirname: string;
 
 let win: BrowserWindow | null = null;
+let brainGraphWin: BrowserWindow | null = null;
 let stopGoalDriver: (() => void) | null = null;
 
 // --- window state: reopen the app where/how the user left it ---
@@ -217,7 +218,21 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'app:hardware':
       return getHardware();
     case 'brain:openGraph':
-      await shell.openExternal('http://127.0.0.1:4200/dashboard/graph');
+      if (brainGraphWin && !brainGraphWin.isDestroyed()) {
+        brainGraphWin.show();
+        brainGraphWin.focus();
+      } else {
+        brainGraphWin = new BrowserWindow({
+          width: 1100,
+          height: 800,
+          title: 'Brain Graph',
+          webPreferences: {
+            contextIsolation: true,
+          },
+        });
+        brainGraphWin.on('closed', () => { brainGraphWin = null; });
+        await brainGraphWin.loadURL('http://127.0.0.1:4200/dashboard/graph');
+      }
       return { ok: true };
     case 'project:pickFolder':
       return pickProjectFolder(args[0] as string | undefined);

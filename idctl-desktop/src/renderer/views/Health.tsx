@@ -82,14 +82,6 @@ export function Health({ store }: { store: FleetStore }) {
       void loadUsage(); // refresh throughput after exercising agents
     }
   }
-  async function openBrainGraph() {
-    try {
-      await call('brain:openGraph');
-    } catch (err) {
-      window.alert(`couldn't open brain graph: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
   // Gauge reads the most recent live throughput, falling back to the 24h average.
   const gaugeVal = usage ? (usage.recent?.tps ?? usage.day.avgTps ?? 0) : 0;
   const gaugeMax = usage ? niceMax(Math.max(gaugeVal, usage.day.avgTps, usage.week.avgTps)) : 100;
@@ -100,9 +92,6 @@ export function Health({ store }: { store: FleetStore }) {
     <div className="view">
       <header className="view-head">
         <h1>Health &amp; Probes</h1>
-        <button className="btn" onClick={() => void openBrainGraph()} title="Open the local Brain graph visual at http://127.0.0.1:4200/dashboard/graph">
-          Brain graph
-        </button>
         <button className="btn primary" disabled={!!probing} onClick={() => void probe('all')}>
           {probing === 'all' ? 'Probing…' : 'Probe all'}
         </button>

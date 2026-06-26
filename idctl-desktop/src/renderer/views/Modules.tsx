@@ -46,11 +46,17 @@ function LinkedDescription({ text }: { text?: string | null }) {
   while ((match = linkRe.exec(text)) !== null) {
     if (match.index > last) parts.push(<Fragment key={`t-${last}`}>{text.slice(last, match.index)}</Fragment>);
     const [, label, href] = match;
-    parts.push(
+    const url = new URL(href);
+    const isBrainGraph = url.host === '127.0.0.1:4200' && url.pathname.endsWith('/dashboard/graph');
+    parts.push(isBrainGraph ? (
+      <a key={`a-${match.index}`} className="ext-link" href="#" onClick={(e) => { e.preventDefault(); void call('brain:openGraph'); }}>
+        {label}
+      </a>
+    ) : (
       <a key={`a-${match.index}`} className="ext-link" href={href} target="_blank" rel="noreferrer">
         {label}
-      </a>,
-    );
+      </a>
+    ));
     last = match.index + match[0].length;
   }
   if (last < text.length) parts.push(<Fragment key={`t-${last}`}>{text.slice(last)}</Fragment>);
