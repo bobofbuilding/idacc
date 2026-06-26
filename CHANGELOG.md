@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.182] — 2026-06-26
+- Chat: add genReason (per-message reasoning). Dashboard: command palette + control drawer + mirror successful control actions to the self-learning brain (controlLog); org-sync + styling refinements.
+
 ## [0.1.181] — 2026-06-26
 - Dashboard: scope the Activity tile to active teams and agents — hide rows from idle/stopped teams and known-but-stopped fleet agents; keep system/manager and unattributed rows. Also persist chat composer drafts.
 
