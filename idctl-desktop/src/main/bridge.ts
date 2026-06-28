@@ -619,8 +619,11 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     client.parseTeamSpecAI(String(spec), { agent: getCoordinator(client.team ?? 'default') ?? undefined }),
   // AI-assisted FULL team design → { team, agents[] } with per-agent runtime/model/skills/lead.
   // The renderer passes its available runtimes/models/skills so the model picks valid choices.
-  'team:designAI': (spec: string, ctx?: { runtimes?: string[]; models?: Record<string, string[]>; skills?: string[] }) =>
-    client.designTeamAI(String(spec), { ...(ctx ?? {}), agent: getCoordinator(client.team ?? 'default') ?? undefined }),
+  'team:designAI': (
+    spec: string,
+    ctx?: { runtimes?: string[]; models?: Record<string, string[]>; skills?: string[]; agent?: string; fleetRoster?: string },
+  ) =>
+    client.designTeamAI(String(spec), { ...(ctx ?? {}), agent: ctx?.agent ?? getCoordinator(client.team ?? 'default') ?? undefined }),
 
   // team relay (cross-team delegation allow-list) + per-agent override
   teamConfig: (name: string) => client.teamConfig(String(name)),

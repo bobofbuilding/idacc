@@ -629,6 +629,7 @@ export class ManagerClient {
    * in the current team. Returns undefined when there's none to ask.
    */
   private async resolveHelperAgent(preferred?: string): Promise<string | undefined> {
+    if (preferred && preferred.includes('/')) return preferred;
     const agents = await this.agents().catch(() => []);
     // Liveness check mirrors the Health view's isUp() (status OR health).
     const running = agents.filter((a) => /running|online|ready|healthy/i.test(`${a.status ?? ''} ${a.health ?? ''}`) || !a.status);
@@ -708,6 +709,7 @@ export class ManagerClient {
       onTick?: (status: string) => void;
       signal?: AbortSignal;
       agent?: string;
+      fleetRoster?: string;
     } = {},
   ): Promise<DesignedTeam> {
     const runtimes = (opts.runtimes ?? []).filter(Boolean);
@@ -727,7 +729,13 @@ export class ManagerClient {
       'Models available per runtime (pick one for the chosen runtime, or leave empty for the default):\n' +
       (modelLines || '  (none)') + '\n' +
       'Choose skills ONLY from this library (or none): ' + (skills.join(', ') || '(none)') + '. ' +
-      'Mark exactly one agent as the lead (the coordinator).\n\nDESCRIPTION:\n' + spec;
+      'Mark exactly one agent as the lead (the coordinator). ' +
+      (opts.fleetRoster
+        ? 'Use this current fleet roster as context, including inactive teams and stopped agents. ' +
+          'Do not duplicate an existing agent unless the user explicitly asks for another copy; prefer adding missing complementary agents to the requested team.\n\n' +
+          'CURRENT FLEET ROSTER:\n' + opts.fleetRoster + '\n\n'
+        : '') +
+      'DESCRIPTION:\n' + spec;
     const agent = await this.resolveHelperAgent(opts.agent);
     if (!agent) throw new ManagerError('No running agent is available to design the team. Onboard at least one agent first, or fill the team in by hand.');
     // /ask dispatches to an AGENT and polls for its reply (NOT /talk, which parks
