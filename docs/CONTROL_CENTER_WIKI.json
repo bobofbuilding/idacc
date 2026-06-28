@@ -1153,7 +1153,8 @@
       },
       "sourceFiles": [
         "idctl-desktop/src/renderer/views/Health.tsx",
-        "idctl-desktop/src/renderer/views/AgentTable.tsx"
+        "idctl-desktop/src/renderer/views/AgentTable.tsx",
+        "idctl-desktop/src/main/headroom.ts"
       ],
       "purpose": "Fleet health, local-model token usage, liveness probes, and the full fleet roster with runtime/model/lifecycle controls.",
       "scope": "Usage spans local-model providers; roster is holistic and grouped by team through AgentTable.",
@@ -1164,6 +1165,14 @@
           "description": "Throughput gauge, 24h/7d usage windows, and by-model/by-agent breakdowns.",
           "routesInto": [
             "usage"
+          ]
+        },
+        {
+          "id": "headroom-pilot",
+          "label": "Headroom pilot",
+          "description": "Read-only local Headroom CLI/proxy status and passthrough guidance for the optional compression pilot.",
+          "routesInto": [
+            "headroom:status"
           ]
         },
         {
@@ -1253,6 +1262,15 @@
           ]
         },
         {
+          "id": "headroom-refresh",
+          "label": "Refresh",
+          "type": "button",
+          "description": "Refreshes local Headroom CLI and proxy status without starting or installing Headroom.",
+          "routesInto": [
+            "headroom:status"
+          ]
+        },
+        {
           "id": "lead-star",
           "label": "Lead star",
           "type": "button",
@@ -1272,6 +1290,11 @@
           "id": "agent-detail",
           "label": "Agent detail",
           "description": "Selected agent status, runtime, model, port, skills, and working directory."
+        },
+        {
+          "id": "headroom-status",
+          "label": "Headroom status",
+          "description": "CLI installed/not installed, proxy reachable/passthrough state, MCP preset pointer, and pilot policy reminders."
         }
       ],
       "routing": {
@@ -1283,12 +1306,13 @@
           "runtime:models",
           "runtime:probe",
           "runtime:freshness",
+          "headroom:status",
           "setAgentRuntime",
           "setAgentEffort",
           "coordinator:set"
         ]
       },
-      "body": "# Health\n\nHealth is the live fleet and usage view. It shows running state, token and model usage, provider activity, and the full agent roster through AgentTable.\n\n## Use it for\n\n- Confirm which agents are running, stopped, busy, or missing from the active fleet.\n- Probe agent liveness, start or stop workers, rebuild where supported, and inspect team membership.\n- Compare current token usage and model/runtime behavior before changing staffing or routing.\n\n## Boundary\n\nHealth is optimized for operational status from the store snapshot and all-team aggregate poll. It is the current home for the roster grid that older specs placed on Dashboard, but it is not a long-term analytics warehouse."
+      "body": "# Health\n\nHealth is the live fleet and usage view. It shows running state, token and model usage, provider activity, optional Headroom pilot readiness, and the full agent roster through AgentTable.\n\n## Use it for\n\n- Confirm which agents are running, stopped, busy, or missing from the active fleet.\n- Probe agent liveness, start or stop workers, rebuild where supported, and inspect team membership.\n- Compare current token usage and model/runtime behavior before changing staffing or routing.\n- Check whether the optional local Headroom CLI/proxy is ready before attaching the Headroom MCP preset or routing selected agents through the local proxy.\n\n## Boundary\n\nHealth is optimized for operational status from the store snapshot and all-team aggregate poll. It is the current home for the roster grid that older specs placed on Dashboard, but it is not a long-term analytics warehouse. The Headroom card is read-only and does not install Headroom, start a proxy, attach MCP servers, wrap agents, or promote compressed summaries into Brain facts."
     },
     {
       "id": "identity",

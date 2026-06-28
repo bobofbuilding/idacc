@@ -33,6 +33,7 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   { id: 'llamacpp', name: 'llama.cpp server (local)', kind: 'openai-compatible', baseUrl: 'http://127.0.0.1:8080/v1', needsKey: false, local: true },
   { id: 'localai', name: 'LocalAI (local)', kind: 'openai-compatible', baseUrl: 'http://127.0.0.1:8080/v1', needsKey: false, local: true },
   { id: 'jan', name: 'Jan (local)', kind: 'openai-compatible', baseUrl: 'http://127.0.0.1:1337/v1', needsKey: false, local: true },
+  { id: 'headroom-proxy', name: 'Headroom proxy (local)', kind: 'openai-compatible', baseUrl: 'http://127.0.0.1:8787/v1', needsKey: false, local: true, notes: 'Optional canary route for selected agents. Start Headroom separately and keep a direct-provider fallback.' },
 
   // ---- Cloud — first-party kinds ---------------------------------------
   { id: 'openai', name: 'OpenAI', kind: 'openai', baseUrl: 'https://api.openai.com/v1', needsKey: true },

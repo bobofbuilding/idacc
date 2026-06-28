@@ -64,6 +64,13 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     baseArgs: ['-y', '@modelcontextprotocol/server-everything'],
   },
   {
+    id: 'headroom',
+    name: 'Headroom (context compression)',
+    description: 'Optional local context compression tools with reversible retrieval handles. Requires the Headroom CLI; test before attaching.',
+    command: 'headroom',
+    baseArgs: ['mcp', 'serve'],
+  },
+  {
     id: 'github',
     name: 'GitHub',
     description: 'Repos, issues, PRs, search. Needs a GitHub personal access token.',

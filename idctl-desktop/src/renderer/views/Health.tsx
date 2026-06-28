@@ -3,6 +3,11 @@ import { call, type FleetStore } from '../store.ts';
 import type { UsageReport, UsageWindow } from '../../../../idctl/src/api/client.ts';
 import { AgentTable } from './AgentTable.tsx';
 
+type HeadroomStatus = {
+  cli: { found: boolean; version?: string; error?: string };
+  proxy: { url: string; reachable: boolean; httpStatus?: number; error?: string };
+};
+
 /** Compact number: 1234 → "1.2k", 2_500_000 → "2.5M". */
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -47,6 +52,7 @@ function WindowCard({ title, w }: { title: string; w: UsageWindow }) {
 export function Health({ store }: { store: FleetStore }) {
   const [probing, setProbing] = useState<string | null>(null);
   const [usage, setUsage] = useState<UsageReport | null | undefined>(undefined); // undefined = loading
+  const [headroom, setHeadroom] = useState<HeadroomStatus | null | undefined>(undefined);
   const [usageAt, setUsageAt] = useState<number>(0); // when usage was last refreshed
   const [, setTick] = useState(0); // 1 Hz re-render so "updated Ns ago" stays live
 
@@ -61,6 +67,16 @@ export function Health({ store }: { store: FleetStore }) {
   // Auto-refresh: on the fleet poll AND on a 15s timer, so new agents/models (and fresh
   // generations) show up on their own — no manual refresh needed.
   useEffect(() => { void loadUsage(); }, [loadUsage, store.lastUpdated]);
+
+  const loadHeadroom = useCallback(async () => {
+    try {
+      setHeadroom(await call<HeadroomStatus>('headroom:status'));
+    } catch {
+      setHeadroom(null);
+    }
+  }, []);
+  useEffect(() => { void loadHeadroom(); }, [loadHeadroom, store.lastUpdated]);
+
   useEffect(() => {
     const iv = setInterval(() => void loadUsage(), 15000);
     const t = setInterval(() => setTick((n) => n + 1), 1000);
@@ -148,6 +164,35 @@ export function Health({ store }: { store: FleetStore }) {
                 ))}
               </div>
             ) : null}
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <div className="row-actions" style={{ alignItems: 'baseline' }}>
+          <h3 className="grow">Headroom pilot</h3>
+          <button className="btn small" onClick={() => void loadHeadroom()}>Refresh</button>
+        </div>
+        {headroom === undefined ? (
+          <p className="muted small">Checking local Headroom status…</p>
+        ) : headroom === null ? (
+          <p className="muted small">Headroom status is unavailable in this build.</p>
+        ) : (
+          <div className="kv" style={{ gridTemplateColumns: '130px 1fr', gap: '5px 12px' }}>
+            <span>CLI</span>
+            <b className={headroom.cli.found ? 'ok-text' : 'muted'}>
+              {headroom.cli.found ? `installed${headroom.cli.version ? ` · ${headroom.cli.version}` : ''}` : 'not installed'}
+            </b>
+            <span>MCP preset</span>
+            <b className="muted small">Capabilities → MCP servers → Headroom (context compression)</b>
+            <span>proxy</span>
+            <b className={headroom.proxy.reachable ? 'ok-text' : 'muted'}>
+              {headroom.proxy.reachable
+                ? `reachable · ${headroom.proxy.url}${headroom.proxy.httpStatus ? ` · HTTP ${headroom.proxy.httpStatus}` : ''}`
+                : `passthrough recommended · ${headroom.proxy.url}`}
+            </b>
+            <span>policy</span>
+            <b className="muted small">Optional only. Keep source-code, secrets, policy text, and validator evidence on direct routes unless a task explicitly opts in.</b>
           </div>
         )}
       </section>

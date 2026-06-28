@@ -273,6 +273,10 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   remote: (cmd: string, agent?: string) => client.remote(String(cmd), agent),
   probeAll: () => client.probeAll(),
   probeOne: (n: string) => client.probeOne(String(n)),
+  'headroom:status': async () => ({
+    cli: { found: false, error: 'Headroom status requires the Electron main process.' },
+    proxy: { url: 'http://127.0.0.1:8787/mcp', reachable: false, error: 'not checked in this shell' },
+  }),
   checkins: () => client.checkins(),
   schedules: () => client.schedules(),
   addHeartbeat: (agent: string, seconds: number, message: string, delivery?: 'internal' | 'talk') => client.addHeartbeat(String(agent), Number(seconds), String(message), delivery),

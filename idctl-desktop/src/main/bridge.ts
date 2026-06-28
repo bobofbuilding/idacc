@@ -45,6 +45,7 @@ import { discoverLocalServers, type DiscoveredServer } from '../../../idctl/src/
 import { kindNeedsKey, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
 import { buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import { testMcpServer } from './mcpTest.ts';
+import { headroomStatus } from './headroom.ts';
 import { decomposeWork, createAndDispatchPlan, fanOutObjective, teamLeads, triageUnassigned, type SubTask } from './work.ts';
 import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, type GoalDriverConfig } from './goaldriver.ts';
 import { buildOrgHierarchy, syncOrg, startOrgSyncLoop } from './orgSync.ts';
@@ -556,6 +557,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // health probes
   probeAll: () => client.probeAll(),
   probeOne: (name: string, team?: string) => (team ? client.withTeam(String(team)) : client).probeOne(String(name)),
+  'headroom:status': () => headroomStatus(),
 
   // scheduling
   checkins: () => client.checkins(),
