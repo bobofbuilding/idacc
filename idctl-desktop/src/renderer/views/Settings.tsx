@@ -8,6 +8,8 @@ import { TOP_LOCAL_MODEL_CATALOG, type ModelCapability, type LocalModelEntry } f
 import { TOP_LOCAL_STACKS, type LocalStackEntry } from '../../../../idctl/src/settings/localStacks.ts';
 
 const MODEL_CAPS: ModelCapability[] = ['general', 'tools', 'reasoning', 'coding', 'vision', 'embedding', 'fast'];
+const STARTER_LOCAL_MODEL_ID = 'qwen3:1.7b';
+const LOCAL_FIRST_PROVIDER = findProvider('ollama');
 
 /** Hardware of the machine the control center commands (the manager host; localhost here). */
 type HardwareInfo = { platform: string; arch: string; appleSilicon: boolean; cpu: string; cpuCores: number; gpu?: string; gpuCores?: number; totalRamGB: number; freeDiskGB: number | null; totalDiskGB: number | null };
@@ -76,10 +78,10 @@ export function Settings({ store }: { store: FleetStore }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // add-provider form
-  const [catalogId, setCatalogId] = useState<string>('groq');
-  const [kind, setKind] = useState<ProviderKind>('openai-compatible');
-  const [name, setName] = useState('groq');
-  const [baseUrl, setBaseUrl] = useState('https://api.groq.com/openai/v1');
+  const [catalogId, setCatalogId] = useState<string>(LOCAL_FIRST_PROVIDER?.id ?? 'ollama');
+  const [kind, setKind] = useState<ProviderKind>(LOCAL_FIRST_PROVIDER?.kind ?? 'ollama');
+  const [name, setName] = useState(LOCAL_FIRST_PROVIDER?.id ?? 'ollama');
+  const [baseUrl, setBaseUrl] = useState(LOCAL_FIRST_PROVIDER?.baseUrl ?? defaultBaseUrl('ollama'));
   const [apiKey, setApiKey] = useState('');
   const [replaceProviderArmed, setReplaceProviderArmed] = useState(false);
   const [providerMsg, setProviderMsg] = useState('');
@@ -540,7 +542,7 @@ export function Settings({ store }: { store: FleetStore }) {
   // Local models (Ollama): list installed + download a new one (streamed progress).
   const POPULAR = TOP_LOCAL_MODEL_CATALOG.map((m) => m.id);
   const [ollamaModels, setOllamaModels] = useState<{ name: string; size?: number; parameterSize?: string }[]>([]);
-  const [pullName, setPullName] = useState('llama3.2:1b');
+  const [pullName, setPullName] = useState(STARTER_LOCAL_MODEL_ID);
   const [pulling, setPulling] = useState(false);
   const [pullMsg, setPullMsg] = useState('');
   // catalog browsers: model filters + stacks filter + copy feedback
@@ -689,6 +691,12 @@ export function Settings({ store }: { store: FleetStore }) {
   const runningPorts = new Set((discovered ?? []).map((d) => d.port));
   const addProviderName = name.trim() || kind;
   const replaceCandidate = findProviderRow(providers, addProviderName);
+  const defaultProvider = providers.find((p) => p.default);
+  const enabledProviders = providers.filter((p) => p.enabled !== false);
+  const localProviders = providers.filter((p) => p.kind === 'ollama' || p.kind === 'lmstudio' || (p.baseUrl || '').includes('127.0.0.1') || (p.baseUrl || '').includes('localhost'));
+  const syncedProviders = providers.filter((p) => p.lastSync?.status === 'live' || p.lastSync?.status === 'preset');
+  const localBackendReady = localProviders.some((p) => p.enabled !== false);
+  const starterModel = TOP_LOCAL_MODEL_CATALOG.find((m) => m.id === STARTER_LOCAL_MODEL_ID) ?? TOP_LOCAL_MODEL_CATALOG[0];
 
   function providerPort(p: ProviderRow): number | null {
     try { const x = new URL(p.baseUrl).port; return x ? Number(x) : null; } catch { return null; }
@@ -946,6 +954,28 @@ export function Settings({ store }: { store: FleetStore }) {
         <p className="muted small" style={{ marginTop: -4 }}>
           Download a model to run locally via Ollama (<span className="mono">127.0.0.1:11434</span>) — these power the <span className="mono">ollama</span> runtime with no API key, fully offline. Size warnings are checked against your hardware (shown at the top).
         </p>
+        <div className="row-actions" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+          <span className={ollamaModels.length ? 'ok-text small' : 'warn-text small'}>
+            model: {ollamaModels.length ? `${ollamaModels.length} installed` : 'none installed'}
+          </span>
+          <span className={localBackendReady ? 'ok-text small' : 'warn-text small'}>
+            local backend: {localBackendReady ? localProviders.map((p) => p.name).join(', ') : 'not added'}
+          </span>
+          <span className={defaultProvider ? 'ok-text small' : 'warn-text small'}>
+            default: {defaultProvider?.name ?? 'none'}
+          </span>
+          <span className="muted small">
+            synced: {syncedProviders.length}/{providers.length} · enabled: {enabledProviders.length}
+          </span>
+          {!modelInstalled(STARTER_LOCAL_MODEL_ID) && starterModel ? (
+            <button className="btn small primary" disabled={pulling} title={`Download ${STARTER_LOCAL_MODEL_ID}`} onClick={() => void pull(STARTER_LOCAL_MODEL_ID)}>
+              Download starter
+            </button>
+          ) : null}
+          <button className="btn small" disabled={discovering} onClick={() => void runDiscover()}>
+            {discovering ? 'Scanning…' : 'Scan running'}
+          </button>
+        </div>
         <div className="row-actions" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
           <span className="muted small">parallel local inferences:</span>
           <input type="number" min={1} max={16} style={{ width: 64 }} value={concInput} disabled={concBusy || !localConc}
