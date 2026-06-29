@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.256] — 2026-06-29
+- Projects: move auto-commit behind Automation disclosure
+
 ## [0.1.255] — 2026-06-29
 - Wiki: document manager keepalive guard
 

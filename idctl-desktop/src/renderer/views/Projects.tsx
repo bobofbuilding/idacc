@@ -6,6 +6,8 @@ import type { ProjectEntry, ProjectStatus } from '../../../../idctl/src/settings
 const STATUSES: ProjectStatus[] = ['active', 'paused', 'blocked', 'done'];
 const STATUS_LABEL: Record<ProjectStatus, string> = { active: 'active', paused: 'paused', blocked: 'blocked', done: 'done' };
 const STATUS_CLASS: Record<ProjectStatus, string> = { active: 'st-active', paused: 'st-paused', blocked: 'st-blocked', done: 'st-done' };
+type AutoCommitMode = 'off' | 'task' | 'plan';
+const AUTO_COMMIT_LABEL: Record<AutoCommitMode, string> = { off: 'off', task: 'any task done', plan: 'plan validation' };
 const GIT_ACTIONS = [
   { id: 'fetch', label: '⤓ Fetch', title: 'git fetch --all --prune — download new commits/branches from GitHub WITHOUT changing your files or branch' },
   { id: 'pull', label: '⇩ Pull', title: 'Resilient pull: fetch + fast-forward to GitHub. Self-heals a stranded repo — if your branch is an orphaned/merged-and-deleted PR branch, it switches back to the default branch and fast-forwards. Never force-pushes or auto-merges.' },
@@ -116,6 +118,9 @@ function autoCommitBlockers(g: GitInfo | null | undefined, d: ProjectDiff | null
   else if (!d.stat && !d.diff && !d.untracked.length) out.push('no working changes');
   return out;
 }
+function autoCommitMode(p: ProjectEntry): AutoCommitMode {
+  return p.autoCommit === 'task' || p.autoCommit === 'plan' ? p.autoCommit : 'off';
+}
 function projectStamp(p: ProjectEntry): string {
   return JSON.stringify({
     id: p.id,
@@ -179,6 +184,7 @@ export function Projects({ store }: { store: FleetStore }) {
   const [repoPrivate, setRepoPrivate] = useState(true);
   const [linkFor, setLinkFor] = useState<string | null>(null);    // project whose "link existing repo" form is open
   const [linkUrl, setLinkUrl] = useState('');
+  const [automationFor, setAutomationFor] = useState<string | null>(null);
 
   const lead = resolveCoordinator(store.agents, store.coordinator);
   // New projects default to the DEFAULT team, which delegates git work to the
@@ -661,7 +667,7 @@ export function Projects({ store }: { store: FleetStore }) {
   }
   // Set a project's checkpoint auto-commit mode; resets its baseline so we don't
   // immediately fire on tasks that were already complete.
-  async function setAutoCommitMode(p: ProjectEntry, val: 'off' | 'task' | 'plan') {
+  async function setAutoCommitMode(p: ProjectEntry, val: AutoCommitMode) {
     const fresh = await ensureProjectFresh(p, 'changing auto-commit');
     if (!fresh) return;
     if (val !== 'off' && val !== (fresh.autoCommit ?? 'off')) {
@@ -675,7 +681,7 @@ export function Projects({ store }: { store: FleetStore }) {
   }
   // Fire a checkpoint commit: AI-draft a message from the diff (best-effort), then
   // route the commit & push via the owning team → git-manager (normal request flow).
-  async function autoCommitNow(p: ProjectEntry, triggerRef: string, kind: 'task' | 'plan') {
+  async function autoCommitNow(p: ProjectEntry, triggerRef: string, kind: Exclude<AutoCommitMode, 'off'>) {
     const fresh = await ensureProjectFresh(p, 'auto-commit checkpoint', { quiet: true });
     if (!fresh?.path) {
       toast({ kind: 'info', text: `Auto-commit skipped for “${p.name}”: project changed before the checkpoint.`, durationMs: 10000 });
@@ -909,18 +915,33 @@ export function Projects({ store }: { store: FleetStore }) {
                     <button className="btn small" title="Open folder" onClick={() => void openProjectFolder(p)}>open ↗</button>
                   </div>
                   <div className="muted small mono project-path" title={p.path}>{p.path}</div>
-                  <div className="muted small" style={{ marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                  <div className="project-automation-summary muted small"
                     title={p.team
-                      ? `Checkpoint commits: when a ${p.autoCommit === 'plan' ? 'plan-validation ' : ''}task completes in team “${p.team}” and this repo has uncommitted changes, the app requests a commit & push only if the branch is exactly in sync with its remote (AI-drafted, throttled to once / 10 min).`
-                      : 'Set a team on this project (Edit) to enable checkpoint auto-commit.'}>
-                    ⟳ Auto-commit:
-                    <select className="cell-select small" value={p.autoCommit ?? 'off'} disabled={busy || !p.team} onChange={(e) => void setAutoCommitMode(p, e.target.value as 'off' | 'task' | 'plan')}>
-                      <option value="off">off</option>
-                      <option value="task">on any task done</option>
-                      <option value="plan">on plan validation</option>
-                    </select>
-                    {!p.team ? <span className="muted">(needs a team)</span> : null}
+                      ? `Checkpoint commits: team ${p.team}; branch must be exactly in sync with its remote.`
+                      : 'Set a team on this project before enabling checkpoint auto-commit.'}>
+                    <span className={`chip tag${autoCommitMode(p) !== 'off' ? ' on' : ''}`}>Auto-commit: {AUTO_COMMIT_LABEL[autoCommitMode(p)]}</span>
+                    {!p.team ? <span className="muted">(needs team)</span> : null}
+                    <button className="btn small" disabled={busy} onClick={() => setAutomationFor(automationFor === p.id ? null : p.id)}>
+                      {automationFor === p.id ? 'Close automation' : 'Automation'}
+                    </button>
                   </div>
+
+                  {automationFor === p.id ? (
+                    <div className="project-automation-panel">
+                      <span className="muted small">Checkpoint mode</span>
+                      <select
+                        className="cell-select small"
+                        value={autoCommitMode(p)}
+                        disabled={busy || !p.team}
+                        onChange={(e) => void setAutoCommitMode(p, e.target.value as AutoCommitMode)}
+                      >
+                        <option value="off">off</option>
+                        <option value="task">on any task done</option>
+                        <option value="plan">on plan validation</option>
+                      </select>
+                      {!p.team ? <span className="warn-text small">Team required</span> : null}
+                    </div>
+                  ) : null}
 
                   {linkFor === p.id ? (
                     <div className="row-actions" style={{ gap: 8, marginTop: 6, flexWrap: 'wrap', alignItems: 'center', border: '1px solid var(--border, #2a2a2a)', borderRadius: 6, padding: 8 }}>
