@@ -65,7 +65,7 @@ function imageServerStamp(server: { url: string; type: string; model?: string } 
   return server ? JSON.stringify({ url: server.url.replace(/\/+$/, ''), type: server.type, model: server.model ?? '' }) : '';
 }
 
-export function Settings({ store }: { store: FleetStore }) {
+export function Settings({ store, navigate }: { store: FleetStore; navigate?: (view: string) => void }) {
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [evmRpcs, setEvmRpcs] = useState<EvmRpcRow[]>([]);
   const [rpcNetwork, setRpcNetwork] = useState('Ethereum mainnet');
@@ -269,11 +269,6 @@ export function Settings({ store }: { store: FleetStore }) {
     } finally {
       setBusy(false);
     }
-  }
-  async function chooseCoordinator(n: string) {
-    const label = n || '(auto: lead/first)';
-    if (!window.confirm(`Set ${store.team ?? 'default'} coordinator to ${label}?\n\nNew drafts, routing, and manager-assist actions will use this coordinator immediately.`)) return;
-    await store.setCoordinator(n);
   }
   async function setDefault(n: string) {
     const fresh = await ensureProviderFresh(n, 'Set default backend');
@@ -909,19 +904,12 @@ export function Settings({ store }: { store: FleetStore }) {
           <span>team</span>
           <b>{store.team ?? 'default'}</b>
           <span>coordinator</span>
-          <b>
-            <select
-              value={store.coordinator ?? ''}
-              onChange={(e) => void chooseCoordinator(e.target.value)}
-            >
-              <option value="">(auto: lead/first)</option>
-              {store.agents.map((a) => (
-                <option key={a.id} value={a.name}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-          </b>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <b>{store.coordinator || '(auto: lead/first)'}</b>
+            <button className="btn small" type="button" onClick={() => navigate?.('teams')} title="Open HR Manager Route to change team coordinators with a fresh hierarchy preview">
+              Open HR Manager
+            </button>
+          </div>
         </div>
       </section>
 

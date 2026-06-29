@@ -176,6 +176,7 @@ export function App() {
           <Router
             view={view}
             store={store}
+            navigate={(v) => setView(v)}
             wiki={wiki}
             wikiError={wikiError}
             wikiQuery={wikiQuery}
@@ -200,9 +201,10 @@ export function App() {
   );
 }
 
-function Router({ view, store, wiki, wikiError, wikiQuery, setWikiQuery, wikiPageId, setWikiPageId }: {
+function Router({ view, store, navigate, wiki, wikiError, wikiQuery, setWikiQuery, wikiPageId, setWikiPageId }: {
   view: ViewId;
   store: ReturnType<typeof useFleet>;
+  navigate: (view: ViewId) => void;
   wiki: WikiPayload | null;
   wikiError?: string;
   wikiQuery: string;
@@ -232,7 +234,7 @@ function Router({ view, store, wiki, wikiError, wikiQuery, setWikiQuery, wikiPag
     case 'projects':
       return <Projects store={store} />;
     case 'settings':
-      return <Settings store={store} />;
+      return <Settings store={store} navigate={(v) => { if (isViewId(v)) navigate(v); }} />;
     case 'wiki':
       return <Wiki store={store} wiki={wiki} error={wikiError} query={wikiQuery} setQuery={setWikiQuery} pageId={wikiPageId} setPageId={setWikiPageId} />;
     default:
