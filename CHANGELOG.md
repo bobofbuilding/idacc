@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.246] — 2026-06-29
+- Capabilities: sync skill catalog to Brain graph
+
 ## [0.1.245] — 2026-06-29
 - Settings: clarify local model stack install paths
 

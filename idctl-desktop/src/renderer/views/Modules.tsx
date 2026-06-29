@@ -25,6 +25,19 @@ const TRANSPORTS: McpTransport[] = ['stdio', 'http', 'sse'];
 interface TestResult { ok?: boolean; tools?: string[]; error?: string; testing?: boolean }
 type TargetAgent = Agent & { team?: string };
 type TeamAgentsGroup = { team: string; agents: Agent[] };
+type BrainSkillStats = { totalSkills?: number; chainable?: number; domains?: number; tags?: number; maxUseCount?: number };
+type BrainSkillSummary = {
+  summary?: BrainSkillStats;
+  meta?: { generatedAt?: string };
+} | null;
+type BrainSkillSyncResult = {
+  ok: boolean;
+  total: number;
+  count: number;
+  memory: boolean;
+  summary?: BrainSkillStats | null;
+  generatedAt?: string;
+};
 
 /** Strip the registry-only `enabled` flag to get the on-the-wire spec. */
 function toSpec(p: McpServerProfile): McpServerSpec {
@@ -124,6 +137,8 @@ export function Modules({ store }: { store: FleetStore }) {
   // the catalog display + tag search for skills whose SKILL.md has no tags).
   const [autoTags, setAutoTags] = useState<Record<string, string[]>>({});
   const [categorizing, setCategorizing] = useState(false);
+  const [brainSkills, setBrainSkills] = useState<BrainSkillSummary>(null);
+  const [brainSyncing, setBrainSyncing] = useState(false);
   const [plugins, setPlugins] = useState<LibraryPluginEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string>('');
@@ -237,6 +252,7 @@ export function Modules({ store }: { store: FleetStore }) {
     setSkills(await call<LibrarySkillEntry[]>('librarySkills').catch(() => []));
     setPlugins(await call<LibraryPluginEntry[]>('libraryPlugins').catch(() => []));
     setAutoTags(await call<Record<string, string[]>>('skills:autoTags').catch(() => ({})));
+    setBrainSkills(await call<BrainSkillSummary>('skills:brainSummary').catch(() => null));
   }
   useEffect(() => {
     reload();
@@ -265,6 +281,23 @@ export function Modules({ store }: { store: FleetStore }) {
     try { setAutoTags(await call<Record<string, string[]>>('skills:categorize', true)); }
     catch (e) { setNote(`categorize failed: ${e instanceof Error ? e.message : String(e)}`); }
     finally { setCategorizing(false); }
+  }
+  async function syncSkillsToBrain() {
+    if (!skills.length) {
+      setNote('nothing to sync — no library skills found');
+      return;
+    }
+    setBrainSyncing(true);
+    setNote('syncing skill catalog to Brain…');
+    try {
+      const r = await call<BrainSkillSyncResult>('skills:syncBrain');
+      setBrainSkills({ summary: r.summary ?? undefined, meta: { generatedAt: r.generatedAt } });
+      setNote(`synced ${r.count}/${r.total} skills to Brain${r.memory ? ' · shared memory ✓' : ''}`);
+    } catch (e) {
+      setNote(`Brain skill sync failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBrainSyncing(false);
+    }
   }
   useEffect(() => {
     pickCatalog(MCP_CATALOG[0]?.id ?? '');
@@ -713,6 +746,13 @@ export function Modules({ store }: { store: FleetStore }) {
       <section className="card grow">
         <div className="row-actions" style={{ alignItems: 'baseline' }}>
           <h3 className="grow">Skill catalog — know-how for the agent</h3>
+          <span className={`chip ${brainSkills?.summary ? 'tag' : ''}`} title={brainSkills?.meta?.generatedAt ? `Brain index generated ${brainSkills.meta.generatedAt}` : 'Brain skill index unavailable'}>
+            Brain {brainSkills?.summary?.totalSkills ?? '—'}
+          </span>
+          <button className="btn small" disabled={brainSyncing || skills.length === 0} title="Upsert the local skill catalog into Brain /skills/index" onClick={() => void syncSkillsToBrain()}>
+            {brainSyncing ? 'Syncing…' : 'Sync Brain'}
+          </button>
+          <button className="btn small" title="Open the Brain graph dashboard" onClick={() => void call('brain:openGraph')}>Graph</button>
           <button className="btn primary small" onClick={() => setShowCreate((s) => !s)}>
             {showCreate ? '− Cancel' : '+ Create skill'}
           </button>

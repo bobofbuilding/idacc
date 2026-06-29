@@ -1874,7 +1874,11 @@
       },
       "sourceFiles": [
         "idctl-desktop/src/renderer/views/Modules.tsx",
-        "idctl-desktop/src/main/mcpTest.ts"
+        "idctl-desktop/src/main/mcpTest.ts",
+        "idctl-desktop/src/main/bridge.ts",
+        "idctl-desktop/src/main/controlLog.ts",
+        "idctl-desktop/src/shared/syncDomains.ts",
+        "idctl/src/api/brain.ts"
       ],
       "purpose": "Capability workbench for MCP tool servers, skills, and bundled plugins.",
       "scope": "Active team, all teams, or all leads depending on scope selector. Runtime gating excludes agents that cannot use the active capability.",
@@ -1895,7 +1899,7 @@
         {
           "id": "skills",
           "label": "Skills",
-          "purpose": "Install/uninstall/create/delete skills and manage app-side auto-tags.",
+          "purpose": "Install/uninstall/create/delete skills, manage app-side auto-tags, and explicitly sync the local SKILL.md catalog into Brain.",
           "routesInto": [
             "librarySkills",
             "skills:autoTags",
@@ -1903,7 +1907,9 @@
             "createSkill",
             "deleteSkill",
             "installSkill",
-            "uninstallSkill"
+            "uninstallSkill",
+            "skills:brainSummary",
+            "skills:syncBrain"
           ]
         },
         {
@@ -1920,7 +1926,7 @@
           "id": "catalog-mcp-name",
           "label": "Server name",
           "type": "text",
-                    "description": "Editable catalog server name before adding. If it matches an existing registry name, Add becomes an explicit replace confirmation.",
+          "description": "Editable catalog server name before adding. If it matches an existing registry name, Add becomes an explicit replace confirmation.",
           "routesInto": [
             "mcp:add"
           ]
@@ -2031,7 +2037,7 @@
           "id": "target-chips",
           "label": "Agent chips",
           "type": "chips",
-                    "description": "Select explicit targets; incompatible runtimes are disabled. Apply actions fresh-read the selected targets before and after the confirmation prompt.",
+          "description": "Select explicit targets; incompatible runtimes are disabled. Apply actions fresh-read the selected targets before and after the confirmation prompt.",
           "routesInto": [
             "setAgentMcp",
             "installSkill",
@@ -2042,7 +2048,7 @@
           "id": "attach-detach",
           "label": "Attach/Detach",
           "type": "buttons",
-                    "description": "Fresh-reads selected agents before and after confirmation, then applies MCP server list changes using each target's current metadata and explicit team.",
+          "description": "Fresh-reads selected agents before and after confirmation, then applies MCP server list changes using each target's current metadata and explicit team.",
           "routesInto": [
             "setAgentMcp"
           ]
@@ -2060,7 +2066,7 @@
           "id": "rebuild-targets",
           "label": "Rebuild targets",
           "type": "button",
-                    "description": "Fresh-reads targeted agents before and after confirmation, then restarts each current team/agent explicitly.",
+          "description": "Fresh-reads targeted agents before and after confirmation, then restarts each current team/agent explicitly.",
           "routesInto": [
             "rebuildAgent"
           ]
@@ -2069,7 +2075,7 @@
           "id": "install-uninstall-skill",
           "label": "Install/Uninstall",
           "type": "buttons",
-                    "description": "Fresh-reads targeted agents before and after confirmation, then installs or uninstalls the skill against each current team/agent explicitly.",
+          "description": "Fresh-reads targeted agents before and after confirmation, then installs or uninstalls the skill against each current team/agent explicitly.",
           "routesInto": [
             "installSkill",
             "uninstallSkill"
@@ -2092,6 +2098,15 @@
           "routesInto": [
             "skills:categorize"
           ]
+        },
+        {
+          "id": "sync-skills-brain",
+          "label": "Sync Brain",
+          "type": "button",
+          "description": "Additively upserts the current local skill catalog into Brain /skills/index and writes a shared catalog memory; it does not delete Brain-only skill nodes.",
+          "routesInto": [
+            "skills:syncBrain"
+          ]
         }
       ],
       "displays": [
@@ -2103,12 +2118,17 @@
         {
           "id": "skill-catalog",
           "label": "Skill catalog",
-          "description": "Skill cards with description, license, install status, tags, and actions."
+          "description": "Skill cards with description, license, install status, tags, Brain skill-count status, and actions."
         },
         {
           "id": "plugin-table",
           "label": "Plugin table",
           "description": "Bundled plugin name, version, provider, and description."
+        },
+        {
+          "id": "brain-skill-status",
+          "label": "Brain skill status",
+          "description": "Shows the current Brain /skills/index total when available so local catalog drift is visible before syncing."
         }
       ],
       "routing": {
@@ -2128,13 +2148,15 @@
           "mcp:remove",
           "mcp:test",
           "skills:autoTags",
-          "skills:categorize"
+          "skills:categorize",
+          "skills:brainSummary",
+          "skills:syncBrain"
         ]
       },
       "notes": [
         "Interop/discovery fields should stay explicit when adding future capability manifests: MCP, OpenAPI, A2A, and signed-write discovery are separate concerns."
       ],
-            "body": "# Capabilities\n\nCapabilities manages the extension surface available to teams and agents: MCP servers, skills, and plugins. It answers whether the fleet has the tools and instructions needed for a request before work is assigned.\n\n## Use it for\n\n- Inspect installed MCP servers, skills, and bundled plugins.\n- Attach or review capabilities for the selected team scope.\n- Confirm tool availability before assigning work that depends on a connector, library-specific instruction, or specialist workflow.\n\n## Current guardrails\n\nMCP attach/detach, skill install/uninstall, and target rebuild now fresh-read every selected target before the confirmation prompt and again immediately before writing. The guard compares team, name, runtime, status, health, MCP metadata, and skill metadata, blocks stale or moved agents, excludes newly incompatible runtimes, and passes each resolved target's team explicitly so all-team or team-scoped actions cannot drift through the active manager team. MCP attach/detach still builds the replacement MCP list from the fresh metadata row, so a stale UI cannot erase another page's server attachment.\n\nMCP registry Add fresh-reads the registry and treats same-name adds as an explicit replace with before/after endpoint details. MCP registry removal fresh-reads before delete, and library skill delete fresh-reads the current skill catalog before removing a skill folder. Skill creation still relies on manager-side validation and conflict rejection.\n\n## Scope note\n\nTeam scoping happens inside this page rather than only through the global footer selector. Keep interop fields explicit: MCP, OpenAPI, A2A, and signed-write discovery are separate concerns and should not be collapsed into one generic capability claim."
+      "body": "# Capabilities\n\nCapabilities manages the extension surface available to teams, agents, and the Brain skill graph: MCP servers, skills, and plugins. It answers whether the fleet has the tools and instructions needed for a request before work is assigned.\n\n## Use it for\n\n- Inspect installed MCP servers, skills, bundled plugins, and Brain skill-catalog freshness.\n- Attach or review capabilities for the selected team scope.\n- Sync the local SKILL.md catalog into Brain so Brain dashboard Skills/Graph views can reason over the same skill definitions.\n- Confirm tool availability before assigning work that depends on a connector, library-specific instruction, or specialist workflow.\n\n## Current guardrails\n\nMCP attach/detach, skill install/uninstall, and target rebuild now fresh-read every selected target before the confirmation prompt and again immediately before writing. The guard compares team, name, runtime, status, health, MCP metadata, and skill metadata, blocks stale or moved agents, excludes newly incompatible runtimes, and passes each resolved target's team explicitly so all-team or team-scoped actions cannot drift through the active manager team. MCP attach/detach still builds the replacement MCP list from the fresh metadata row, so a stale UI cannot erase another page's server attachment.\n\nMCP registry Add fresh-reads the registry and treats same-name adds as an explicit replace with before/after endpoint details. MCP registry removal fresh-reads before delete, and library skill delete fresh-reads the current skill catalog before removing a skill folder. Skill creation still relies on manager-side validation and conflict rejection.\n\nThe Skills tab now displays Brain's current skill graph count when available and provides an explicit Sync Brain action. Sync Brain additively upserts local library skills into Brain's /skills/index graph and writes a shared catalog memory, but it does not delete Brain-only skill nodes or change which agents have a skill installed.\n\n## Scope note\n\nTeam scoping happens inside this page rather than only through the global footer selector. Keep interop fields explicit: MCP, OpenAPI, A2A, and signed-write discovery are separate concerns and should not be collapsed into one generic capability claim."
     },
     {
       "id": "computer",
@@ -2660,10 +2682,13 @@
         "idctl-desktop/src/renderer/views/Modules.tsx",
         "idctl-desktop/src/renderer/views/ComputerUse.tsx",
         "idctl-desktop/src/main/computeruse/broker.ts",
-        "idctl-desktop/src/renderer/views/Settings.tsx"
+        "idctl-desktop/src/renderer/views/Settings.tsx",
+        "idctl/src/api/brain.ts",
+        "idctl-desktop/src/main/controlLog.ts",
+        "idctl-desktop/src/shared/syncDomains.ts"
       ],
       "purpose": "Current audit record for controls that can rewrite live agent, task, project, capability, identity, or provider state and therefore need review, confirmation, or stronger state synchronization.",
-      "scope": "Documentation and implementation record for the current modified build. It records the first full dashboard-page audit, twenty-seven conservative guardrail implementation passes, and the policy decisions still needed before more disruptive UX simplification.",
+      "scope": "Documentation and implementation record for the current modified build. It records the first full dashboard-page audit, twenty-eight conservative guardrail implementation passes, and the policy decisions still needed before more disruptive UX simplification.",
       "tabs": [
         {
           "id": "dashboard",
@@ -2698,7 +2723,7 @@
         {
           "id": "capabilities",
           "label": "Capabilities",
-          "description": "MCP attach/detach, skill install/uninstall, and rebuild fresh-read selected targets before and after confirmation; registry add/remove and skill delete fresh-read current catalogs before replacing or removing records."
+          "description": "MCP attach/detach, skill install/uninstall, and rebuild fresh-read selected targets before and after confirmation; registry add/remove and skill delete fresh-read current catalogs before replacing or removing records. The Skills tab now shows Brain skill-index status and has an explicit additive Sync Brain action for local SKILL.md catalog drift."
         },
         {
           "id": "computer-use",
@@ -2825,6 +2850,12 @@
           "label": "Observe-first Dashboard",
           "type": "UX simplification",
           "description": "Keep Dashboard focused on observe, talk, refresh, and status. Move high-impact mutators such as primary-lead changes and org sync to HR Manager or require an explicit confirmation flow."
+        },
+        {
+          "id": "fresh-brain-catalog-sync",
+          "label": "Additive Brain catalog sync",
+          "type": "guardrail pattern",
+          "description": "Use when an IDACC catalog feeds a Brain dashboard graph. Show the Brain count, make sync explicit, upsert current local definitions, and avoid deleting Brain-only learned nodes during refresh."
         }
       ],
       "routing": {
@@ -3025,10 +3056,11 @@
         "Twenty-fifth guardrail pass locks HR Manager fleet-primary promotion to the default team and changes Team Builder post-build wiring to set only the target team's coordinator.",
         "Twenty-sixth guardrail pass updates HR Manager Team Builder coordinator presets so completed work returns through default/coder and default/researcher validation before default/lead receives final findings.",
         "Twenty-seventh guardrail pass makes Settings local-model stack installation easier to reason about by prioritizing starter paths, labeling install effort, and surfacing Terminal fallback status.",
+        "Twenty-eighth guardrail pass makes the Capabilities Skills tab a Brain-aware skill catalog with a visible Brain graph count and an explicit additive Sync Brain action.",
         "The guardrail passes favor confirmation prompts over moving controls; the open UX decision is whether to replace confirmed shortcuts with preview-and-apply flows.",
         "Most important simplification: separate status/observation pages from mutation/control surfaces wherever possible."
       ],
-      "body": "# Sync & Guardrails Audit\n\nThis page records the full pass over the dashboard pages in order: Dashboard, Work, Projects, Health, Identity & Keys, HR Manager, Capabilities, Computer Use, and Settings. It now documents the audit findings plus twenty-seven conservative guardrail implementation passes.\n\n## Current build state\n\nThe dashboard family is sync-bus aware: dashboard, work, projects, health, brain-backed plans/goals/loops/schedules/dreams, agent capability changes, and org sync emit coarse domain invalidations so mounted pages refresh together after relevant mutations. The guardrail layer now reduces stale task-card writes, stale plan status/dispatch writes, stale goal edits, stale loop chain writes, stale schedule/check-in writes, stale project tracker writes, stale Health fleet-row writes, stale Identity selected-agent/session writes, stale HR roster/hierarchy/relay/instruction/org-sync writes, stale Capabilities target/catalog writes, stale Computer Use arm/bless/remove/approval writes, stale Settings provider/RPC/concurrency/image-server writes, surprise mutations, same-name cross-team authority collisions, hidden legacy authority artifacts, unreviewed org-sync sidecar/rebuild changes, unreviewed repository mutations, opaque hierarchy/routing edits, staged Health config drift, Dashboard shortcut mutations, unsafe background auto-commit states, Brain-dashboard cached fleet drift, non-default HR primary-lead overwrites, stale team-lead coordinator presets, and flat local-model install choices without removing the existing owner-page workflows.\n\n## Implemented guardrails\n\n- Dashboard is observe-first by default: command-palette project/org sync entries open Projects or HR Manager, the shortcuts drawer shows observe actions and owner-page handoffs first, direct project/org shortcuts live behind Advanced, direct org sync previews affected agents/goals/brain/rebuilds before apply, and primary-lead changes now belong to HR Manager's routing diff preview.\n- Brain dashboard fleet and agents tabs now treat the live manager as authoritative for current status: /fleet-report follows IDACC's all-team polling shape, reports source/live-vs-cache drift, and labels Brain entity cache fallback instead of presenting stale memory as current fleet state.\n- Work confirms task status writes, owner reassignment, reconcile, redispatch, plan work/status writes, goal autopilot, recurring schedules, loops, and dreams. Task lane, owner, and re-dispatch actions fresh-read live task status, owner, team, and lane before writing. Plan work, blocker scan, dispatch, status, update, promote, and delete paths fresh-read live brain/draft plan state before writing, with backend stale-snapshot rejection for brain-plan status writes. Goal edit/refine/delete paths fresh-read the saved goal updatedAt marker before writing, and goal-driver metadata saves merge onto the latest goal record. Saved loop chain save/run/schedule/delete paths block stale opened or listed loop records before writing or dispatching. Schedule heartbeat/check-in actions fresh-read rows before update/pause/remove/close, and Dream blocks duplicate nightly schedules plus stale report deletes.\n- Projects no longer silently syncs the workspace on first open. Pull and manual commit/push now preview folder, branch, remote, compare target, ahead/behind state, dirty state, tracked diff stats, untracked files, and commit subject where relevant. Project metadata save, status, delete, duplicate combine, repo create/link metadata, git actions, open-folder, and auto-commit mode changes fresh-read the tracker row before writing or using its path. Enabling auto-commit remains explicit per project; background auto-commit now preflights the current project row, git status, and diff, and skips to manual review unless the row is unchanged, the repo has a remote, known compare state, no upstream-gone branch, zero ahead commits, zero behind commits, and working changes.\n- Health stages runtime/model/effort/speed changes locally, applies them only after a combined diff prompt, verifies the live row still matches the staged name/status/runtime/model/effort/speed baseline before and after confirmation, blocks stale drafts, and rebuilds each touched agent once. Team lead, start, reset session, stop, rebuild, probe, and delete actions fresh-read the current all-team fleet row before changing live routing, context, process state, or liveness state. Headroom pilot policy edits are staged locally and written only through Apply policy after a diff prompt. Tauri all-team roster actions preserve the selected row's team for remote, probe, runtime, effort, and speed calls.\n- Identity & Keys now keys renderer selection, controller proof cache, backend account IDs, Safe/session actions, and Tauri mock key state by team/name, with controller proof gates and capped finite session-key enforcement still in place. Controller challenge/verify, wallet provisioning, identity registration, account creation/deploy, and session issue fresh-read the selected all-team agent row before acting; revoke also fresh-reads the latest session row before disabling a grant. Old bare-name mock accounts and sessions now appear in a Legacy Authority Review card instead of being silently promoted or hidden.\n- HR Manager now fresh-reads before staffing, routing, instruction, lifecycle, rebuild, Team Builder post-build, and org-sync writes. Coordinator and default-only primary changes check current hierarchy and agent existence before previewing diffs; non-default teams can set coordinators but cannot promote themselves into fleet-primary authority. Team and per-agent relay writes check current relay policy or override before saving; instruction Save & rebuild checks current agent state and saved instruction text; team lifecycle Start/Stop/Rebuild shows fresh running/total counts; Team Builder checks the target roster before onboarding, rechecks hierarchy/relay stamps before team-coordinator auto-wiring, and writes coordinator presets that return completed work through default/coder and default/researcher validation before default/lead gets final findings; org sync checks org config and hierarchy before preview and blocks apply if either changed after preview.\n- Capabilities now fresh-reads every selected target before and after MCP attach/detach, skill install/uninstall, and target rebuild confirmation; moved agents, newly incompatible runtimes, or changed MCP/skill metadata block the write. MCP attach/detach still constructs replacement MCP lists from fresh metadata and routes each action to the resolved team. MCP registry Add now confirms same-name replacement after a fresh registry read, and registry removal plus library skill delete fresh-read current catalogs before removing records.\n- Computer Use now fresh-reads broker status and attached-agent state before and after Arm confirmation; Bless/Remove fresh-read the selected roster or attached row before and after confirmation; Allow/Deny fresh-read pending approvals before releasing an action; supervised-mode changes fresh-read broker mode before writing. Pause, Disarm, and PANIC remain immediate stop paths during long attach/rebuild work. Old bare-name per-agent tokens still appear as blocked legacy authority review evidence near Who can drive.\n- Settings now fresh-reads provider rows before default/toggle/remove/connect/add replacement writes, blocks last-enabled-backend loss using the fresh list, rechecks discovered local servers before bulk add, fresh-reads EVM RPC rows before save/replace/remove/check, and guards local concurrency plus image-server preference writes against stale settings. Local stack choices now put starter-friendly options first, label install effort, keep reviewed Terminal commands explicit, and surface clipboard fallback when Terminal automation is blocked.\n\n## Remaining hard guardrail candidates\n\n- Projects auto-commit should either remain an explicit per-project feature or be removed from the UI.\n- Settings same-name inference provider replacement should either remain allowed with explicit before/after confirmation or require unique backend names.\n- Computer Use Arm with no blessed agents should either remain allowed after confirmation for live-view testing or become blocked until at least one agent is blessed.\n- Legacy bare-name Identity accounts and Computer Use tokens are now surfaced; decide whether they should stay manual-review only or get a migration assistant.\n- If stable immutable cross-team IDs become available everywhere, Identity and Computer Use should consider upgrading authority keys from team/name to team/id.\n\n## UX simplification target\n\nDashboard should stay mostly observe, talk, and refresh. Work should stage or preview bulk redistribution and recurring behavior. Projects should separate tracker edits from repository-changing operations. HR Manager should own hierarchy and org-sync controls, with default-team primary authority kept distinct from per-team coordinator choice. Capabilities should make bulk scope obvious before applying tools across teams. Computer Use should reserve friction for privilege expansion and stale approval risk while keeping stop controls immediate. Settings should keep first-run model setup legible by separating starter local stacks from advanced serving engines while confirming infrastructure-routing changes and blocking impossible-to-run configurations.\n\n## Open operator decisions\n\n- Should Capabilities allow same-name MCP registry replacement with explicit confirmation, or block replacement and require a new server name?\n- Should Settings allow same-name inference provider replacement with explicit before/after confirmation, or block replacement and require a new backend name?\n- Should HR Manager keep guarded Team Builder team-coordinator auto-wiring, move all coordinator wiring to a manual post-build step, or disable builder-driven routing changes entirely?\n- Should HR Manager keep stamped org-sync auto-rebuild, make org sync write goals only with manual rebuilds, or disable org sync until manually re-enabled?\n- Should Projects keep auto-commit as a feature if it is explicit, reviewed, and per-project, or should it be removed from the UI?\n- Should Computer Use allow Arm with no blessed agents for live-view permission testing, or block Arm until at least one current agent is blessed?\n- Should legacy bare-name Identity accounts and Computer Use tokens stay review-only, or should IDACC offer an explicit copy/archive/revoke/delete migration flow?"
+      "body": "# Sync & Guardrails Audit\n\nThis page records the full pass over the dashboard pages in order: Dashboard, Work, Projects, Health, Identity & Keys, HR Manager, Capabilities, Computer Use, and Settings. It now documents the audit findings plus twenty-eight conservative guardrail implementation passes.\n\n## Current build state\n\nThe dashboard family is sync-bus aware: dashboard, work, projects, health, brain-backed plans/goals/loops/schedules/dreams, agent capability changes, and org sync emit coarse domain invalidations so mounted pages refresh together after relevant mutations. The guardrail layer now reduces stale task-card writes, stale plan status/dispatch writes, stale goal edits, stale loop chain writes, stale schedule/check-in writes, stale project tracker writes, stale Health fleet-row writes, stale Identity selected-agent/session writes, stale HR roster/hierarchy/relay/instruction/org-sync writes, stale Capabilities target/catalog writes, stale Computer Use arm/bless/remove/approval writes, stale Settings provider/RPC/concurrency/image-server writes, surprise mutations, same-name cross-team authority collisions, hidden legacy authority artifacts, unreviewed org-sync sidecar/rebuild changes, unreviewed repository mutations, opaque hierarchy/routing edits, staged Health config drift, Dashboard shortcut mutations, unsafe background auto-commit states, Brain-dashboard cached fleet drift, non-default HR primary-lead overwrites, stale team-lead coordinator presets, flat local-model install choices, and stale IDACC-to-Brain skill catalog drift without removing the existing owner-page workflows.\n\n## Implemented guardrails\n\n- Dashboard is observe-first by default: command-palette project/org sync entries open Projects or HR Manager, the shortcuts drawer shows observe actions and owner-page handoffs first, direct project/org shortcuts live behind Advanced, direct org sync previews affected agents/goals/brain/rebuilds before apply, and primary-lead changes now belong to HR Manager's routing diff preview.\n- Brain dashboard fleet and agents tabs now treat the live manager as authoritative for current status: /fleet-report follows IDACC's all-team polling shape, reports source/live-vs-cache drift, and labels Brain entity cache fallback instead of presenting stale memory as current fleet state.\n- Work confirms task status writes, owner reassignment, reconcile, redispatch, plan work/status writes, goal autopilot, recurring schedules, loops, and dreams. Task lane, owner, and re-dispatch actions fresh-read live task status, owner, team, and lane before writing. Plan work, blocker scan, dispatch, status, update, promote, and delete paths fresh-read live brain/draft plan state before writing, with backend stale-snapshot rejection for brain-plan status writes. Goal edit/refine/delete paths fresh-read the saved goal updatedAt marker before writing, and goal-driver metadata saves merge onto the latest goal record. Saved loop chain save/run/schedule/delete paths block stale opened or listed loop records before writing or dispatching. Schedule heartbeat/check-in actions fresh-read rows before update/pause/remove/close, and Dream blocks duplicate nightly schedules plus stale report deletes.\n- Projects no longer silently syncs the workspace on first open. Pull and manual commit/push now preview folder, branch, remote, compare target, ahead/behind state, dirty state, tracked diff stats, untracked files, and commit subject where relevant. Project metadata save, status, delete, duplicate combine, repo create/link metadata, git actions, open-folder, and auto-commit mode changes fresh-read the tracker row before writing or using its path. Enabling auto-commit remains explicit per project; background auto-commit now preflights the current project row, git status, and diff, and skips to manual review unless the row is unchanged, the repo has a remote, known compare state, no upstream-gone branch, zero ahead commits, zero behind commits, and working changes.\n- Health stages runtime/model/effort/speed changes locally, applies them only after a combined diff prompt, verifies the live row still matches the staged name/status/runtime/model/effort/speed baseline before and after confirmation, blocks stale drafts, and rebuilds each touched agent once. Team lead, start, reset session, stop, rebuild, probe, and delete actions fresh-read the current all-team fleet row before changing live routing, context, process state, or liveness state. Headroom pilot policy edits are staged locally and written only through Apply policy after a diff prompt. Tauri all-team roster actions preserve the selected row's team for remote, probe, runtime, effort, and speed calls.\n- Identity & Keys now keys renderer selection, controller proof cache, backend account IDs, Safe/session actions, and Tauri mock key state by team/name, with controller proof gates and capped finite session-key enforcement still in place. Controller challenge/verify, wallet provisioning, identity registration, account creation/deploy, and session issue fresh-read the selected all-team agent row before acting; revoke also fresh-reads the latest session row before disabling a grant. Old bare-name mock accounts and sessions now appear in a Legacy Authority Review card instead of being silently promoted or hidden.\n- HR Manager now fresh-reads before staffing, routing, instruction, lifecycle, rebuild, Team Builder post-build, and org-sync writes. Coordinator and default-only primary changes check current hierarchy and agent existence before previewing diffs; non-default teams can set coordinators but cannot promote themselves into fleet-primary authority. Team and per-agent relay writes check current relay policy or override before saving; instruction Save & rebuild checks current agent state and saved instruction text; team lifecycle Start/Stop/Rebuild shows fresh running/total counts; Team Builder checks the target roster before onboarding, rechecks hierarchy/relay stamps before team-coordinator auto-wiring, and writes coordinator presets that return completed work through default/coder and default/researcher validation before default/lead gets final findings; org sync checks org config and hierarchy before preview and blocks apply if either changed after preview.\n- Capabilities now fresh-reads every selected target before and after MCP attach/detach, skill install/uninstall, and target rebuild confirmation; moved agents, newly incompatible runtimes, or changed MCP/skill metadata block the write. MCP attach/detach still constructs replacement MCP lists from fresh metadata and routes each action to the resolved team. MCP registry Add now confirms same-name replacement after a fresh registry read, and registry removal plus library skill delete fresh-read current catalogs before removing records. The Skills tab now shows Brain /skills/index status and can explicitly sync the local SKILL.md catalog into Brain with additive graph upserts and a shared memory summary.\n- Computer Use now fresh-reads broker status and attached-agent state before and after Arm confirmation; Bless/Remove fresh-read the selected roster or attached row before and after confirmation; Allow/Deny fresh-read pending approvals before releasing an action; supervised-mode changes fresh-read broker mode before writing. Pause, Disarm, and PANIC remain immediate stop paths during long attach/rebuild work. Old bare-name per-agent tokens still appear as blocked legacy authority review evidence near Who can drive.\n- Settings now fresh-reads provider rows before default/toggle/remove/connect/add replacement writes, blocks last-enabled-backend loss using the fresh list, rechecks discovered local servers before bulk add, fresh-reads EVM RPC rows before save/replace/remove/check, and guards local concurrency plus image-server preference writes against stale settings. Local stack choices now put starter-friendly options first, label install effort, keep reviewed Terminal commands explicit, and surface clipboard fallback when Terminal automation is blocked.\n\n## Remaining hard guardrail candidates\n\n- Projects auto-commit should either remain an explicit per-project feature or be removed from the UI.\n- Settings same-name inference provider replacement should either remain allowed with explicit before/after confirmation or require unique backend names.\n- Computer Use Arm with no blessed agents should either remain allowed after confirmation for live-view testing or become blocked until at least one agent is blessed.\n- Legacy bare-name Identity accounts and Computer Use tokens are now surfaced; decide whether they should stay manual-review only or get a migration assistant.\n- If stable immutable cross-team IDs become available everywhere, Identity and Computer Use should consider upgrading authority keys from team/name to team/id.\n\n## UX simplification target\n\nDashboard should stay mostly observe, talk, and refresh. Work should stage or preview bulk redistribution and recurring behavior. Projects should separate tracker edits from repository-changing operations. HR Manager should own hierarchy and org-sync controls, with default-team primary authority kept distinct from per-team coordinator choice. Capabilities should make bulk scope obvious before applying tools across teams and keep Brain catalog sync explicit/additive. Computer Use should reserve friction for privilege expansion and stale approval risk while keeping stop controls immediate. Settings should keep first-run model setup legible by separating starter local stacks from advanced serving engines while confirming infrastructure-routing changes and blocking impossible-to-run configurations.\n\n## Open operator decisions\n\n- Should Capabilities allow same-name MCP registry replacement with explicit confirmation, or block replacement and require a new server name?\n- Should Capabilities Sync Brain remain explicit-only, or should create/delete skill actions offer an optional follow-up prompt to refresh Brain immediately?\n- Should Settings allow same-name inference provider replacement with explicit before/after confirmation, or block replacement and require a new backend name?\n- Should HR Manager keep guarded Team Builder team-coordinator auto-wiring, move all coordinator wiring to a manual post-build step, or disable builder-driven routing changes entirely?\n- Should HR Manager keep stamped org-sync auto-rebuild, make org sync write goals only with manual rebuilds, or disable org sync until manually re-enabled?\n- Should Projects keep auto-commit as a feature if it is explicit, reviewed, and per-project, or should it be removed from the UI?\n- Should Computer Use allow Arm with no blessed agents for live-view permission testing, or block Arm until at least one current agent is blessed?\n- Should legacy bare-name Identity accounts and Computer Use tokens stay review-only, or should IDACC offer an explicit copy/archive/revoke/delete migration flow?"
     },
     {
       "id": "wiki",
@@ -3091,5 +3123,5 @@
       "body": "# Wiki\n\nWiki is both the human documentation page and the editable schematic for the Control Center UI. Each article explains the operator purpose of a page; the structured sections below preserve tabs, tiles, fields, controls, displays, routes, and source files for implementation detail.\n\n## Use it for\n\n- Search pages, controls, routes, source files, and notes from inside the desktop app.\n- Confirm how a UI surface is intended to behave before editing code or filing follow-up work.\n- Keep app navigation metadata and human documentation in one reviewed JSON artifact.\n\n## Editing rule\n\nThe desktop app hot-reload polls CONTROL_CENTER_WIKI.json through the main-process wiki bridge. Sidebar labels, icons, order, and visibility still come from pages[].nav for implemented routes, so documentation edits must preserve that metadata and keep every page.body non-empty."
     }
   ],
-  "appVersion": "0.1.245"
+  "appVersion": "0.1.246"
 }

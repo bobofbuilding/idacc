@@ -69,6 +69,26 @@ export interface BrainFact {
   value: unknown;
   source?: string;
 }
+export interface BrainSkillNode {
+  skillId: number;
+  name: string;
+  description?: string;
+  domain?: string;
+  tags?: string[];
+  computeCost?: number;
+  chainable?: boolean;
+}
+export interface BrainSkillIndex {
+  summary?: {
+    totalSkills?: number;
+    chainable?: number;
+    nonChainable?: number;
+    domains?: number;
+    tags?: number;
+    maxUseCount?: number;
+  };
+  meta?: { generatedAt?: string };
+}
 export interface SharedMemory {
   content?: string;
   id?: number;
@@ -175,6 +195,19 @@ export class BrainClient {
       process_config: { strategy: 'heuristic', chunk_size: 3000, chunk_overlap: 250 },
     });
     return r !== null;
+  }
+
+  /** Additively upsert skill catalog rows into the brain's skill graph. */
+  async syncSkillNodes(nodes: BrainSkillNode[]): Promise<{ ok?: boolean; count?: number } | null> {
+    const clean = nodes.filter((node) => Number.isInteger(node.skillId) && !!node.name?.trim());
+    if (!clean.length) return { ok: true, count: 0 };
+    return this.req('POST', '/graph/nodes/bulk', { nodes: clean });
+  }
+
+  /** Read the brain's skill index summary for catalog freshness/status UI. */
+  async skillIndex(): Promise<BrainSkillIndex | null> {
+    const r = await this.req<{ data?: BrainSkillIndex }>('GET', '/skills/index?limit=1&sort=popular');
+    return r?.data ?? null;
   }
 
   /** Upsert keyed memory for an agent id (e.g. 'control-center' / 'team-instructions'). */

@@ -7,6 +7,8 @@
 
 import { ManagerClient } from '../../../idctl/src/api/client.ts';
 import type { Agent } from '../../../idctl/src/api/types.ts';
+import { brain } from '../../../idctl/src/api/brain.ts';
+import type { BrainSkillIndex, BrainSkillNode } from '../../../idctl/src/api/brain.ts';
 import { runOnboarding, type OnboardPlan } from '../../../idctl/src/api/onboard.ts';
 import { loadConfig, type Config } from '../../../idctl/src/config.ts';
 import { getKeyProvider, legacyMockAuthorityReport } from '../../../idctl/src/keys/mockProvider.ts';
@@ -369,7 +371,55 @@ function keySourceOf(p: ProviderProfile): 'config' | 'env' | 'none' {
 function listProvidersEnriched(): (ProviderProfile & { keySource: 'config' | 'env' | 'none'; needsKey: boolean })[] {
   return loadSettings().providers.map((p) => ({ ...p, keySource: keySourceOf(p), needsKey: kindNeedsKey(p.kind) }));
 }
-import type { McpServerSpec, CreateSkillInput } from '../../../idctl/src/api/client.ts';
+
+function skillGraphId(name: string): number {
+  const h = createHash('sha256').update(`idacc-skill:${name.trim().toLowerCase()}`).digest('hex');
+  return 1_000_000_000_000 + (Number.parseInt(h.slice(0, 10), 16) % 900_000_000_000);
+}
+
+function uniqueTags(values: unknown[]): string[] {
+  return [...new Set(values.map((v) => String(v ?? '').trim()).filter(Boolean))]
+    .map((tag) => tag.slice(0, 80));
+}
+
+function skillDomain(tags: string[]): string {
+  return tags.find((tag) => !/^(idacc|control-center|skill|skills|skill-catalog)$/i.test(tag)) ?? 'idacc-library';
+}
+
+function brainSkillNodes(skills: LibrarySkillEntry[], autoTags: Record<string, string[]>): BrainSkillNode[] {
+  return skills
+    .filter((skill) => skill.name?.trim())
+    .map((skill) => {
+      const tags = uniqueTags([...(skill.tags ?? []), ...(autoTags[skill.name] ?? []), 'idacc', 'skill-catalog']);
+      return {
+        skillId: skillGraphId(skill.name),
+        name: skill.name,
+        description: skill.description ?? '',
+        domain: skillDomain(tags),
+        tags,
+        computeCost: 0,
+        chainable: true,
+      };
+    });
+}
+
+function skillCatalogMemory(skills: LibrarySkillEntry[], nodes: BrainSkillNode[]): string {
+  const byName = new Map(nodes.map((node) => [node.name, node]));
+  return [
+    '# IDACC skill catalog',
+    '',
+    `Synced skills: ${nodes.length}`,
+    `Updated: ${new Date().toISOString()}`,
+    '',
+    ...skills.slice(0, 200).map((skill) => {
+      const node = byName.get(skill.name);
+      const tags = node?.tags?.filter((tag) => !['idacc', 'skill-catalog'].includes(tag)).join(', ') || 'untagged';
+      const desc = String(skill.description ?? '').replace(/\s+/g, ' ').trim();
+      return `- ${skill.name} [${node?.skillId ?? 'unmapped'}] (${tags})${desc ? `: ${desc.slice(0, 220)}` : ''}`;
+    }),
+  ].join('\n');
+}
+import type { LibrarySkillEntry, McpServerSpec, CreateSkillInput } from '../../../idctl/src/api/client.ts';
 import { brokerServerPath, mintAgentToken, revokeAgentToken, brokerUrl } from './computeruse/broker.ts';
 // The Computer Use MCP server name. NEVER "computer-use" — Claude Code reserves that
 // name and rejects the entire MCP config, breaking every dispatch. CU_MCP_ALIASES
@@ -743,6 +793,29 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const derived = await client.categorizeSkillsAI(targets.map((s) => ({ name: s.name, description: s.description })));
     setSkillTags(derived);
     return loadSettings().skillTags ?? {};
+  },
+  'skills:brainSummary': async (): Promise<BrainSkillIndex | null> => brain.skillIndex(),
+  'skills:syncBrain': async () => {
+    const skills = await client.librarySkills();
+    const nodes = brainSkillNodes(skills, loadSettings().skillTags ?? {});
+    const synced = await brain.syncSkillNodes(nodes);
+    if (!synced?.ok) throw new Error('Brain skill graph sync failed or Brain is offline.');
+    const memory = await brain.memory('control-center', {
+      key: 'skills:catalog',
+      content: skillCatalogMemory(skills, nodes),
+      tags: ['dashboard-state', 'skills', 'skill-catalog'],
+      shared: true,
+      project: 'capabilities',
+    });
+    const index = await brain.skillIndex();
+    return {
+      ok: true,
+      total: skills.length,
+      count: Number(synced.count ?? nodes.length),
+      memory,
+      summary: index?.summary ?? null,
+      generatedAt: index?.meta?.generatedAt ?? new Date().toISOString(),
+    };
   },
   installSkill: (skill: string, agent: string, team?: string) => (team ? client.withTeam(String(team)) : client).installSkill(String(skill), String(agent)),
   createSkill: (input: CreateSkillInput) => client.createSkill(input),

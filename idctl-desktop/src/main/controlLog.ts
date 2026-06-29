@@ -79,6 +79,7 @@ const ACTIONS: Record<string, (args: unknown[], result: unknown) => Summary> = {
   uninstallSkill: (a) => ({ subject: `skill removed: ${s(a[0])} ✗ ${s(a[1])}`, data: { skill: s(a[0]), agent: s(a[1]), team: s(a[2]) }, tags: ['capability'] }),
   createSkill: (a) => ({ subject: 'skill created', data: obj(a[0]), tags: ['capability'] }),
   deleteSkill: (a) => ({ subject: `skill deleted: ${s(a[0])}`, data: { name: s(a[0]) }, tags: ['capability'] }),
+  'skills:syncBrain': (_a, r) => ({ subject: 'skill catalog synced to brain', data: obj(r), tags: ['capability', 'brain'] }),
   'cu:attach': (a) => ({ subject: `computer-use attached: ${s(a[1]) || s(a[0])}`, data: { agent: s(a[1]) || s(a[0]) }, tags: ['capability', 'computer-use'] }),
   'cu:detach': (a) => ({ subject: `computer-use detached: ${s(a[1]) || s(a[0])}`, data: { agent: s(a[1]) || s(a[0]) }, tags: ['capability', 'computer-use'] }),
 
