@@ -22,6 +22,7 @@ type HrHierarchy = { primary: { team: string; agent: string } | null; coordinato
 type OrgCfg = { enabled?: boolean; autoRebuild?: boolean };
 type TeamBlueprint = { id: string; team: string; label: string; description: string; spec: string };
 type BlueprintCoverage = TeamBlueprint & { present: number; total: number; missing: string[]; complete: boolean };
+type HrFocus = 'route-hierarchy';
 type LeadershipBackbone = {
   ready: boolean;
   missingAgents: string[];
@@ -326,7 +327,7 @@ ${VALIDATION_RETURN_PATH}
 ${COORDINATION_TAIL}`;
 }
 
-export function Teams({ store }: { store: FleetStore }) {
+export function Teams({ store, focus, onFocusHandled }: { store: FleetStore; focus?: HrFocus; onFocusHandled?: () => void }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string>('');
   const hrOwner = useMemo(() => resolveHrManagerAgent(store), [store.allAgents, store.agents, store.team]);
@@ -337,6 +338,14 @@ export function Teams({ store }: { store: FleetStore }) {
   const [routePane, setRoutePane] = useState<'overview' | 'relay' | 'hierarchy'>('overview');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [graphGroups, setGraphGroups] = useState<{ team: string; agents: Agent[] }[]>([]);
+  useEffect(() => {
+    if (!focus) return;
+    if (focus === 'route-hierarchy') {
+      setTab('route');
+      setRoutePane('hierarchy');
+    }
+    onFocusHandled?.();
+  }, [focus, onFocusHandled]);
   useEffect(() => {
     // Prefer the store's live all-teams poll (holistic view) so the graph reacts in lock-step
     // with the rest of the app; fall back to a direct fetch when that isn't populated.

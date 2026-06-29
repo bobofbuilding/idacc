@@ -1106,7 +1106,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
             </div>
           ))}
           <p className="muted small" style={{ marginTop: 8 }}>★ = coordinator. Change leads in HR Manager.</p>
-          {navigate ? <button className="btn small" type="button" onClick={() => navigate('teams')}>Open HR Manager</button> : null}
+          {navigate ? <button className="btn small" type="button" onClick={() => navigate('teams:route')}>Open HR Route</button> : null}
         </aside>
         ) : null}
       </div>

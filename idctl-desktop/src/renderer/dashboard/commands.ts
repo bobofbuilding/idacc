@@ -144,7 +144,7 @@ export function buildCommands(store: FleetStore): Command[] {
     group: 'Org',
     keywords: 'hierarchy leads instructions rebuild brain',
     hint: 'preview',
-    run: (c) => c.navigate('teams'),
+    run: (c) => c.navigate('teams:route'),
   });
   cmds.push({
     id: 'fleet.probe',

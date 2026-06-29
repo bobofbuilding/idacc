@@ -906,8 +906,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           <span>coordinator</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <b>{store.coordinator || '(auto: lead/first)'}</b>
-            <button className="btn small" type="button" onClick={() => navigate?.('teams')} title="Open HR Manager Route to change team coordinators with a fresh hierarchy preview">
-              Open HR Manager
+            <button className="btn small" type="button" onClick={() => navigate?.('teams:route')} title="Open HR Manager Route → Hierarchy & sync to change team coordinators with a fresh hierarchy preview">
+              Open HR Route
             </button>
           </div>
         </div>

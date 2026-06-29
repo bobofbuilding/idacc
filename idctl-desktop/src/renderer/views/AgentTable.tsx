@@ -612,7 +612,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
           <button className="btn small" onClick={() => setShowModels((v) => !v)} title="Show each runtime's model list, where it comes from, and when it was last refreshed">
             {showModels ? 'Hide models' : `Models${freshness.length ? ` (${freshness.filter((f) => f.count).length})` : ''}`}
           </button>
-          {navigate ? <button className="btn small" onClick={() => navigate('teams')} title="Change team coordinators and primary routing in HR Manager">Open HR Manager</button> : null}
+          {navigate ? <button className="btn small" onClick={() => navigate('teams:route')} title="Change team coordinators and primary routing in HR Manager Route → Hierarchy & sync">Open HR Route</button> : null}
           <button className="btn" disabled={!!busy} onClick={() => void probeRuntimes()} title="Probe each runtime's backing inference provider for its newest available models (also auto-refreshes every 6h)">Probe runtimes</button>
         </div>
         {showModels ? (

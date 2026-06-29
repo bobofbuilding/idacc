@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useFleet, call } from './store.ts';
 import { PromptProvider } from './components/prompt.tsx';
 import { ToastProvider } from './components/toast.tsx';
@@ -17,6 +17,7 @@ import { CommandPalette } from './views/dashboard/CommandPalette.tsx';
 import { ControlDrawer } from './views/dashboard/ControlDrawer.tsx';
 
 type ViewId = 'dashboard' | 'inbox' | 'tasks' | 'projects' | 'health' | 'identity' | 'schedule' | 'teams' | 'modules' | 'computer' | 'settings' | 'wiki';
+type TeamsFocus = 'route-hierarchy';
 
 const DEFAULT_NAV: { id: ViewId; label: string; icon: string; order: number }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦', order: 10 },
@@ -77,6 +78,7 @@ export function App() {
     try { saved = localStorage.getItem('idctl.view'); } catch { /* no storage */ }
     return isViewId(saved) ? saved : 'dashboard';
   });
+  const [teamsFocus, setTeamsFocus] = useState<TeamsFocus | undefined>();
   useEffect(() => { try { localStorage.setItem('idctl.view', view); } catch { /* no storage */ } }, [view]);
   const [version, setVersion] = useState<string>('');
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
@@ -90,6 +92,18 @@ export function App() {
   // ⌘K command palette + right-side control drawer — the "drive everything" surface.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerPanel, setDrawerPanel] = useState<string | null>(null);
+  const navigateTo = useCallback((target: string) => {
+    if (target === 'teams:route') {
+      setTeamsFocus('route-hierarchy');
+      setView('teams');
+      return;
+    }
+    if (isViewId(target)) {
+      setTeamsFocus(undefined);
+      setView(target);
+    }
+  }, []);
+  const clearTeamsFocus = useCallback(() => setTeamsFocus(undefined), []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); setPaletteOpen((o) => !o); }
@@ -149,7 +163,7 @@ export function App() {
             <button
               key={n.id}
               className={`nav-item${view === n.id ? ' active' : ''}`}
-              onClick={() => setView(n.id)}
+              onClick={() => navigateTo(n.id)}
             >
               <span className="nav-icon">{n.icon}</span>
               <span className="nav-label">{n.label}</span>
@@ -176,7 +190,9 @@ export function App() {
           <Router
             view={view}
             store={store}
-            navigate={(v) => setView(v)}
+            navigate={navigateTo}
+            teamsFocus={teamsFocus}
+            onTeamsFocusHandled={clearTeamsFocus}
             wiki={wiki}
             wikiError={wikiError}
             wikiQuery={wikiQuery}
@@ -191,20 +207,22 @@ export function App() {
         store={store}
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
-        navigate={(v) => setView(v as ViewId)}
+        navigate={navigateTo}
         openDrawer={(id) => setDrawerPanel(id)}
       />
-      <ControlDrawer store={store} panel={drawerPanel} onClose={() => setDrawerPanel(null)} navigate={(v) => setView(v as ViewId)} />
+      <ControlDrawer store={store} panel={drawerPanel} onClose={() => setDrawerPanel(null)} navigate={navigateTo} />
     </div>
     </PromptProvider>
     </ToastProvider>
   );
 }
 
-function Router({ view, store, navigate, wiki, wikiError, wikiQuery, setWikiQuery, wikiPageId, setWikiPageId }: {
+function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled, wiki, wikiError, wikiQuery, setWikiQuery, wikiPageId, setWikiPageId }: {
   view: ViewId;
   store: ReturnType<typeof useFleet>;
-  navigate: (view: ViewId) => void;
+  navigate: (target: string) => void;
+  teamsFocus?: TeamsFocus;
+  onTeamsFocusHandled: () => void;
   wiki: WikiPayload | null;
   wikiError?: string;
   wikiQuery: string;
@@ -216,13 +234,13 @@ function Router({ view, store, navigate, wiki, wikiError, wikiQuery, setWikiQuer
     case 'dashboard':
       return <Dashboard store={store} />;
     case 'teams':
-      return <Teams store={store} />;
+      return <Teams store={store} focus={teamsFocus} onFocusHandled={onTeamsFocusHandled} />;
     case 'inbox':
       return <Inbox store={store} />;
     case 'tasks':
       return <Tasks store={store} />;
     case 'health':
-      return <Health store={store} navigate={(v) => { if (isViewId(v)) navigate(v); }} />;
+      return <Health store={store} navigate={navigate} />;
     case 'identity':
       return <Identity store={store} />;
     case 'schedule':
@@ -234,7 +252,7 @@ function Router({ view, store, navigate, wiki, wikiError, wikiQuery, setWikiQuer
     case 'projects':
       return <Projects store={store} />;
     case 'settings':
-      return <Settings store={store} navigate={(v) => { if (isViewId(v)) navigate(v); }} />;
+      return <Settings store={store} navigate={navigate} />;
     case 'wiki':
       return <Wiki store={store} wiki={wiki} error={wikiError} query={wikiQuery} setQuery={setWikiQuery} pageId={wikiPageId} setPageId={setWikiPageId} />;
     default:

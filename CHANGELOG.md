@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.278] — 2026-06-29
+- Focused HR routing handoffs
+
 ## [0.1.277] — 2026-06-29
 - Health lead marker HR handoff
 
