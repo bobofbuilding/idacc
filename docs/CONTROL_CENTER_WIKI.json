@@ -1919,7 +1919,7 @@
           "id": "catalog-mcp-name",
           "label": "Server name",
           "type": "text",
-          "description": "Editable catalog server name before adding.",
+                    "description": "Editable catalog server name before adding. If it matches an existing registry name, Add becomes an explicit replace confirmation.",
           "routesInto": [
             "mcp:add"
           ]
@@ -2030,7 +2030,7 @@
           "id": "target-chips",
           "label": "Agent chips",
           "type": "chips",
-          "description": "Select explicit targets; incompatible runtimes are disabled.",
+                    "description": "Select explicit targets; incompatible runtimes are disabled. Apply actions fresh-read the selected targets before and after the confirmation prompt.",
           "routesInto": [
             "setAgentMcp",
             "installSkill",
@@ -2041,7 +2041,7 @@
           "id": "attach-detach",
           "label": "Attach/Detach",
           "type": "buttons",
-          "description": "Applies MCP server list changes to selected agents.",
+                    "description": "Fresh-reads selected agents before and after confirmation, then applies MCP server list changes using each target's current metadata and explicit team.",
           "routesInto": [
             "setAgentMcp"
           ]
@@ -2059,7 +2059,7 @@
           "id": "rebuild-targets",
           "label": "Rebuild targets",
           "type": "button",
-          "description": "Restarts targeted agents after capability changes.",
+                    "description": "Fresh-reads targeted agents before and after confirmation, then restarts each current team/agent explicitly.",
           "routesInto": [
             "rebuildAgent"
           ]
@@ -2068,7 +2068,7 @@
           "id": "install-uninstall-skill",
           "label": "Install/Uninstall",
           "type": "buttons",
-          "description": "Adds or removes skill from selected agents.",
+                    "description": "Fresh-reads targeted agents before and after confirmation, then installs or uninstalls the skill against each current team/agent explicitly.",
           "routesInto": [
             "installSkill",
             "uninstallSkill"
@@ -2133,7 +2133,7 @@
       "notes": [
         "Interop/discovery fields should stay explicit when adding future capability manifests: MCP, OpenAPI, A2A, and signed-write discovery are separate concerns."
       ],
-      "body": "# Capabilities\n\nCapabilities manages the extension surface available to teams and agents: MCP servers, skills, and plugins. It answers whether the fleet has the tools and instructions needed for a request before work is assigned.\n\n## Use it for\n\n- Inspect installed MCP servers, skills, and bundled plugins.\n- Attach or review capabilities for the selected team scope.\n- Confirm tool availability before assigning work that depends on a connector, library-specific instruction, or specialist workflow.\n\n## Scope note\n\nTeam scoping happens inside this page rather than only through the global footer selector. Keep interop fields explicit: MCP, OpenAPI, A2A, and signed-write discovery are separate concerns and should not be collapsed into one generic capability claim."
+            "body": "# Capabilities\n\nCapabilities manages the extension surface available to teams and agents: MCP servers, skills, and plugins. It answers whether the fleet has the tools and instructions needed for a request before work is assigned.\n\n## Use it for\n\n- Inspect installed MCP servers, skills, and bundled plugins.\n- Attach or review capabilities for the selected team scope.\n- Confirm tool availability before assigning work that depends on a connector, library-specific instruction, or specialist workflow.\n\n## Current guardrails\n\nMCP attach/detach, skill install/uninstall, and target rebuild now fresh-read every selected target before the confirmation prompt and again immediately before writing. The guard compares team, name, runtime, status, health, MCP metadata, and skill metadata, blocks stale or moved agents, excludes newly incompatible runtimes, and passes each resolved target's team explicitly so all-team or team-scoped actions cannot drift through the active manager team. MCP attach/detach still builds the replacement MCP list from the fresh metadata row, so a stale UI cannot erase another page's server attachment.\n\nMCP registry Add fresh-reads the registry and treats same-name adds as an explicit replace with before/after endpoint details. MCP registry removal fresh-reads before delete, and library skill delete fresh-reads the current skill catalog before removing a skill folder. Skill creation still relies on manager-side validation and conflict rejection.\n\n## Scope note\n\nTeam scoping happens inside this page rather than only through the global footer selector. Keep interop fields explicit: MCP, OpenAPI, A2A, and signed-write discovery are separate concerns and should not be collapsed into one generic capability claim."
     },
     {
       "id": "computer",
@@ -2662,7 +2662,7 @@
         "idctl-desktop/src/renderer/views/Settings.tsx"
       ],
       "purpose": "Current audit record for controls that can rewrite live agent, task, project, capability, identity, or provider state and therefore need review, confirmation, or stronger state synchronization.",
-      "scope": "Documentation and implementation record for the current modified build. It records the first full dashboard-page audit, twenty conservative guardrail implementation passes, and the policy decisions still needed before more disruptive UX simplification.",
+      "scope": "Documentation and implementation record for the current modified build. It records the first full dashboard-page audit, twenty-one conservative guardrail implementation passes, and the policy decisions still needed before more disruptive UX simplification.",
       "tabs": [
         {
           "id": "dashboard",
@@ -2697,7 +2697,7 @@
         {
           "id": "capabilities",
           "label": "Capabilities",
-          "description": "Bulk skill/MCP apply now defaults to the active team, confirms multi-agent or cross-team applies, and MCP attach/detach refetches current agent metadata before replacing the full server list."
+          "description": "MCP attach/detach, skill install/uninstall, and rebuild fresh-read selected targets before and after confirmation; registry add/remove and skill delete fresh-read current catalogs before replacing or removing records."
         },
         {
           "id": "computer-use",
@@ -2778,6 +2778,12 @@
           "description": "Use for HR Manager staffing and routing writes. Refetch the target roster, hierarchy, relay policy, org config, or instruction text before coordinator/primary changes, relay overrides, instruction save+rebuild, team lifecycle, Team Builder post-build wiring, empty-team delete, and org sync apply."
         },
         {
+          "id": "fresh-capability-preflight",
+          "label": "Fresh capability preflight",
+          "type": "guardrail pattern",
+          "description": "Use for Capabilities target writes. Refetch every selected team/agent before and after confirmation, block moved or newly incompatible agents, compare current MCP/skill metadata, and pass each resolved target team explicitly before MCP, skill, or rebuild writes."
+        },
+        {
           "id": "fresh-read-before-wholesale-write",
           "label": "Fresh read before full-list write",
           "type": "guardrail pattern",
@@ -2809,7 +2815,7 @@
         }
       ],
       "routing": {
-        "decisionStatus": "The audit findings are surfaced. Twenty conservative guardrail passes are implemented; remaining simplification and legacy-authority migration should wait for operator policy.",
+        "decisionStatus": "The audit findings are surfaced. Twenty-one conservative guardrail passes are implemented; remaining simplification and legacy-authority migration should wait for operator policy.",
         "implementedFirstPass": [
           "Projects: stopped silent first-run workspace sync; commit/push, git pull, and enabling auto-commit now require explicit confirmation.",
           "Projects: auto-commit remains opt-in per project and the automated checkpoint path reuses the reviewed enablement guardrail instead of prompting mid-background run.",
@@ -2927,12 +2933,19 @@
           "HR Manager: Team Builder fresh-reads the target team roster before onboarding and rechecks hierarchy/relay stamps before post-build coordinator or relay auto-wiring.",
           "HR Manager: org auto-sync toggles and Preview & sync fresh-read org config and hierarchy; sync apply blocks if org state changed after preview."
         ],
+        "implementedTwentyFirstPass": [
+          "Capabilities: MCP attach/detach, skill install/uninstall, and target rebuild now fresh-read every selected target before the confirmation prompt and again immediately before writing.",
+          "Capabilities: target preflight blocks moved agents, newly incompatible runtimes, and stale MCP/skill metadata, then passes each resolved target team explicitly to manager methods.",
+          "Capabilities: MCP attach/detach still constructs the replacement MCP server list from the fresh metadata row so wholesale MCP writes cannot erase newer attachments.",
+          "Capabilities: adding an MCP profile with an existing name now fresh-reads the registry and requires an explicit replace confirmation with before/after endpoint details.",
+          "Capabilities: MCP registry removal and library skill deletion fresh-read current catalogs before removing records."
+        ],
         "recommendedFirstPass": [
           "Projects: decide whether auto-commit should remain as an explicit per-project feature or be removed from the UI.",
           "Identity and Computer Use: decide whether legacy bare-name accounts/tokens should stay manual-review only or get an explicit migration assistant.",
           "Identity and Computer Use: consider upgrading from team/name authority to immutable team/id authority if the manager exposes stable cross-team IDs for every shell."
         ],
-        "releaseState": "This wiki page documents the current twentieth guardrail pass and should ship with the next IDACC release after typecheck and wiki validation pass."
+        "releaseState": "This wiki page documents the current twenty-first guardrail pass and should ship with the next IDACC release after typecheck and wiki validation pass."
       },
       "notes": [
         "Existing protections already found: delete task, delete project, combine duplicate projects, sign out, RPC removal, model removal, stack install/uninstall, team stop/rebuild, empty-team delete, Identity privileged actions, and Computer Use broker actions have confirmations or gates.",
@@ -2956,6 +2969,7 @@
         "Eighteenth guardrail pass fresh-reads Health fleet rows before staged config, lifecycle, lead, probe, and delete actions.",
         "Nineteenth guardrail pass fresh-reads Identity selected-agent and session-key rows before controller, wallet, account, deploy, issue, and revoke actions.",
         "Twentieth guardrail pass fresh-reads HR Manager roster, hierarchy, relay, instruction, org config, and builder target state before staffing, routing, lifecycle, rebuild, and org-sync writes.",
+        "Twenty-first guardrail pass fresh-reads Capabilities targets and catalogs before MCP, skill, rebuild, registry replace, registry remove, and skill delete actions.",
         "The guardrail passes favor confirmation prompts over moving controls; the open UX decision is whether to replace confirmed shortcuts with preview-and-apply flows.",
         "Most important simplification: separate status/observation pages from mutation/control surfaces wherever possible."
       ],

@@ -92,6 +92,30 @@ function parseKV(s: string): Record<string, string> | undefined {
   }
   return Object.keys(out).length ? out : undefined;
 }
+function sortedKey(values: string[]): string {
+  return [...new Set(values.map(String).filter(Boolean))].sort().join('|');
+}
+function mcpKey(a: { metadata?: unknown }): string {
+  const servers = (((a.metadata as any)?.mcpServers ?? []) as McpServerSpec[])
+    .map((s) => JSON.stringify({ name: s.name, transport: s.transport, command: s.command, args: s.args ?? [], url: s.url ?? '', env: s.env ?? {}, headers: s.headers ?? {} }))
+    .sort();
+  return servers.join('|');
+}
+function skillsKey(a: { metadata?: unknown }): string {
+  return sortedKey((((a.metadata as any)?.skills ?? []) as string[]).map(String));
+}
+function capabilityAgentStamp(a: TargetAgent, fallbackTeam: string): string {
+  return JSON.stringify({
+    id: a.id,
+    name: a.name,
+    team: a.team ?? fallbackTeam,
+    runtime: agentRuntime(a) ?? '',
+    status: a.status ?? '',
+    health: a.health ?? '',
+    mcp: mcpKey(a),
+    skills: skillsKey(a),
+  });
+}
 
 export function Modules({ store }: { store: FleetStore }) {
   const [mcp, setMcp] = useState<McpServerProfile[]>([]);
@@ -127,7 +151,7 @@ export function Modules({ store }: { store: FleetStore }) {
     scope === 'team' ? store.agents : scope === 'leads' ? store.allAgents.filter((a) => coords[a.team ?? ''] === a.name) : store.allAgents;
   const eligibleAgents = baseAgents.filter(agentSupports);
   const incompatAgents = baseAgents.filter((a) => !agentSupports(a));
-  const teamOf = (a: { team?: string }) => (scope === 'team' ? undefined : a.team);
+  const targetTeamOf = (a: { team?: string }) => a.team ?? activeTeam;
 
   const [touched, setTouched] = useState(false);
   const [explicit, setExplicit] = useState<Set<string>>(new Set());
@@ -259,26 +283,81 @@ export function Modules({ store }: { store: FleetStore }) {
   async function addProfile(profile: McpServerProfile | null, after: () => void) {
     if (!profile) return;
     setBusy(true);
+    setNote(`checking MCP registry for ${profile.name}…`);
     try {
+      const latest = await call<McpServerProfile[]>('mcp:list').catch(() => mcp);
+      const existing = latest.find((p) => p.name === profile.name);
+      if (existing) {
+        const before = existing.transport === 'stdio' ? [existing.command, ...(existing.args ?? [])].filter(Boolean).join(' ') : existing.url;
+        const next = profile.transport === 'stdio' ? [profile.command, ...(profile.args ?? [])].filter(Boolean).join(' ') : profile.url;
+        if (!window.confirm(`Replace MCP server "${profile.name}" in the registry?\n\nBefore: ${before ?? '(none)'}\nAfter:  ${next ?? '(none)'}\n\nAgents already attached keep their current copy until you attach/rebuild again.`)) return;
+      }
       setMcp(await call<McpServerProfile[]>('mcp:add', profile));
+      setNote(existing ? `replaced MCP server ${profile.name} ✓` : `added MCP server ${profile.name} ✓`);
       after();
     } finally {
       setBusy(false);
     }
   }
 
-  // Apply an action to every selected agent (sequentially, in the active team).
+  async function freshGroups(): Promise<TeamAgentsGroup[]> {
+    return call<TeamAgentsGroup[]>('agents:allTeams').catch(() => []);
+  }
+  function findFreshTarget(groups: TeamAgentsGroup[], rendered: TargetAgent): TargetAgent | null {
+    const expectedTeam = targetTeamOf(rendered);
+    const agents = groups.find((g) => g.team === expectedTeam)?.agents ?? [];
+    const found = agents.find((a) => a.id === rendered.id) ?? agents.find((a) => a.name === rendered.name);
+    return found ? { ...found, team: expectedTeam } : null;
+  }
+  function describeTargets(agents: TargetAgent[]): string {
+    const labels = agents.map((a) => `${targetTeamOf(a)}/${a.name}`);
+    if (labels.length <= 6) return labels.join(', ');
+    return `${labels.slice(0, 6).join(', ')}, ...and ${labels.length - 6} more`;
+  }
+  async function freshCapabilityTargets(label: string): Promise<TargetAgent[] | null> {
+    const groups = await freshGroups();
+    const fresh: TargetAgent[] = [];
+    for (const rendered of targetAgents) {
+      const expectedTeam = targetTeamOf(rendered);
+      const current = findFreshTarget(groups, rendered);
+      if (!current) {
+        setNote(`${label} blocked: ${expectedTeam}/${rendered.name} is no longer in the current roster. Refreshed; review targets and try again.`);
+        store.refresh();
+        return null;
+      }
+      if (!agentSupports(current)) {
+        setNote(`${label} blocked: ${expectedTeam}/${current.name} no longer supports ${tab === 'mcp' ? 'MCP' : tab}. Refreshed; review targets and try again.`);
+        store.refresh();
+        return null;
+      }
+      if (capabilityAgentStamp(current, expectedTeam) !== capabilityAgentStamp({ ...rendered, team: expectedTeam }, expectedTeam)) {
+        setNote(`${label} blocked: ${expectedTeam}/${rendered.name} capability state changed. Refreshed; review the current row before applying.`);
+        store.refresh();
+        return null;
+      }
+      fresh.push(current);
+    }
+    return fresh;
+  }
+  // Apply an action to every selected agent after fresh target validation.
   async function applyToTargets(label: string, fn: (a: TargetAgent) => Promise<unknown>) {
     if (targetCount === 0) {
       setNote('select at least one agent above');
       return;
     }
-    if ((scope !== 'team' || targetCount > 1) && !window.confirm(`Apply "${label}" to ${targetLabel}?\n\nScope: ${scope === 'team' ? `team ${activeTeam}` : scope === 'leads' ? 'all team leads' : 'all teams'}. This can change agent capabilities or rebuild running agents.`)) return;
     setBusy(true);
-    setNote(`${label} · ${targetCount} agent${targetCount > 1 ? 's' : ''}…`);
+    setNote(`checking ${label} targets…`);
     try {
-      for (const a of targetAgents) await fn(a);
-      setNote(`${label} ✓ (${targetCount})`);
+      const freshTargets = await freshCapabilityTargets(label);
+      if (!freshTargets) return;
+      const scopeLabel = scope === 'team' ? `team ${activeTeam}` : scope === 'leads' ? 'all team leads' : 'all teams';
+      if (!window.confirm(`Apply "${label}" to ${freshTargets.length} current target${freshTargets.length === 1 ? '' : 's'}?\n\nScope: ${scopeLabel}\nTargets: ${describeTargets(freshTargets)}\n\nThis can change agent capabilities or rebuild running agents.`)) return;
+      setNote(`rechecking ${label} targets…`);
+      const latestTargets = await freshCapabilityTargets(label);
+      if (!latestTargets) return;
+      setNote(`${label} · ${latestTargets.length} agent${latestTargets.length > 1 ? 's' : ''}…`);
+      for (const a of latestTargets) await fn(a);
+      setNote(`${label} ✓ (${latestTargets.length})`);
       store.refresh();
     } catch (err) {
       setNote(`${label} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -289,54 +368,57 @@ export function Modules({ store }: { store: FleetStore }) {
   function curMcp(a: { metadata?: unknown }): McpServerSpec[] {
     return ((a.metadata as any)?.mcpServers ?? []) as McpServerSpec[];
   }
-  async function freshAgent(a: TargetAgent): Promise<TargetAgent | null> {
-    const groups = await call<TeamAgentsGroup[]>('agents:allTeams').catch(() => []);
-    for (const g of groups) {
-      const found = g.agents.find((x) => x.id === a.id || (x.name === a.name && (!a.team || g.team === a.team)));
-      if (found) return { ...found, team: g.team };
-    }
-    return null;
-  }
   async function attachServer(p: McpServerProfile) {
     await applyToTargets(`attach ${p.name}`, async (a) => {
-      const fresh = await freshAgent(a);
-      if (!fresh) throw new Error(`agent not found: ${a.name}`);
-      const next = [...curMcp(fresh).filter((s) => s.name !== p.name), toSpec(p)];
-      await call<SetMcpResult>('setAgentMcp', fresh.id, next, teamOf(fresh));
+      const next = [...curMcp(a).filter((s) => s.name !== p.name), toSpec(p)];
+      await call<SetMcpResult>('setAgentMcp', a.id, next, targetTeamOf(a));
     });
   }
   async function detachServer(p: McpServerProfile) {
     await applyToTargets(`detach ${p.name}`, async (a) => {
-      const fresh = await freshAgent(a);
-      if (!fresh) throw new Error(`agent not found: ${a.name}`);
-      await call<SetMcpResult>('setAgentMcp', fresh.id, curMcp(fresh).filter((s) => s.name !== p.name), teamOf(fresh));
+      await call<SetMcpResult>('setAgentMcp', a.id, curMcp(a).filter((s) => s.name !== p.name), targetTeamOf(a));
     });
   }
   async function removeMcpProfile(name: string) {
-    if (!window.confirm(`Remove MCP server "${name}" from the registry?\n\nThis does not detach it from agents that already have it, but it will no longer be available to attach from this catalog.`)) return;
     setBusy(true);
+    setNote(`checking MCP registry for ${name}…`);
     try {
+      const latest = await call<McpServerProfile[]>('mcp:list').catch(() => []);
+      if (!latest.some((p) => p.name === name)) {
+        setNote(`remove blocked: MCP server "${name}" is no longer in the registry.`);
+        setMcp(latest);
+        return;
+      }
+      if (!window.confirm(`Remove MCP server "${name}" from the current registry?\n\nThis does not detach it from agents that already have it, but it will no longer be available to attach from this catalog.`)) return;
       setMcp(await call<McpServerProfile[]>('mcp:remove', name));
+      setNote(`removed MCP server ${name} ✓`);
     } finally {
       setBusy(false);
     }
   }
   async function rebuildTargets() {
-    await applyToTargets('rebuild', (a) => call('rebuildAgent', a.name, teamOf(a)));
+    await applyToTargets('rebuild', (a) => call('rebuildAgent', a.name, targetTeamOf(a)));
   }
   async function installSkillAll(skill: string) {
-    await applyToTargets(`install ${skill}`, (a) => call('installSkill', skill, a.name, teamOf(a)));
+    await applyToTargets(`install ${skill}`, (a) => call('installSkill', skill, a.name, targetTeamOf(a)));
   }
   async function uninstallSkillAll(skill: string) {
-    await applyToTargets(`uninstall ${skill}`, (a) => call('uninstallSkill', skill, a.name, teamOf(a)));
+    await applyToTargets(`uninstall ${skill}`, (a) => call('uninstallSkill', skill, a.name, targetTeamOf(a)));
   }
   // Two-step confirm for the destructive library delete (window.confirm is not
   // reliable in Electron, and a single misclick must not nuke a skill).
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   async function removeSkill(name: string) {
     setBusy(true);
-    setNote(`deleting ${name}…`);
+    setNote(`checking skill ${name}…`);
     try {
+      const latest = await call<LibrarySkillEntry[]>('librarySkills').catch(() => []);
+      if (!latest.some((s) => s.name === name)) {
+        setNote(`delete blocked: skill ${name} is no longer in the library.`);
+        setSkills(latest);
+        setConfirmDel(null);
+        return;
+      }
       await call('deleteSkill', name);
       setNote(`deleted skill ${name} ✓`);
       setConfirmDel(null);
