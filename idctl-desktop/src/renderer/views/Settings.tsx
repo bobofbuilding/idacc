@@ -275,9 +275,20 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     if (!fresh) return;
     const p = fresh.current;
     if (p.default) { setProviders(fresh.list); return; }
+    if (!providerRouteReady(p)) {
+      setProviders(fresh.list);
+      window.alert(`Set default backend blocked: "${p.name}" is not route-ready.\n\n${providerDefaultBlockReason(p)}\n\nRun Connect & sync first, or choose a backend with a live/preset model list.`);
+      return;
+    }
     if (!window.confirm(`Set "${p.name}" as the default inference backend?\n\nAgents without an explicit backend can start using this provider on their next run or rebuild.`)) return;
     const latest = await recheckProviderBeforeWrite(n, p, 'Set default backend');
     if (!latest) return;
+    const still = findProviderRow(latest, n);
+    if (!still || !providerRouteReady(still)) {
+      setProviders(latest);
+      window.alert(`Set default backend blocked: "${n}" is no longer route-ready. Run Connect & sync, then try again.`);
+      return;
+    }
     setProviders(await call<ProviderRow[]>('providers:setDefault', n));
   }
   async function toggle(n: string) {
@@ -747,6 +758,12 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   function providerRouteReady(p: ProviderRow): boolean {
     return p.enabled !== false && providerKeyReady(p) && (providerStatus(p) === 'live' || p.lastSync?.status === 'preset' || providerModelReady(p));
   }
+  function providerDefaultBlockReason(p: ProviderRow): string {
+    if (p.enabled === false) return 'The backend is disabled.';
+    if (!providerKeyReady(p)) return 'The backend is missing a required API key.';
+    if (!providerModelReady(p)) return 'The backend has no synced/preset model list yet.';
+    return `Current status is ${providerStatus(p) ?? 'not synced'}.`;
+  }
   function isLocalProvider(p: ProviderRow): boolean {
     return p.kind === 'ollama' || p.kind === 'lmstudio' || (p.baseUrl || '').includes('127.0.0.1') || (p.baseUrl || '').includes('localhost');
   }
@@ -1056,10 +1073,10 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             model: {ollamaModels.length ? `${ollamaModels.length} installed` : 'none installed'}
           </span>
           <span className={localBackendReady ? 'ok-text small' : 'warn-text small'}>
-            local backend: {localBackendReady ? localProviders.map((p) => p.name).join(', ') : 'not added'}
+            local backend: {localBackendReady ? localRouteReadyProviders.map((p) => p.name).join(', ') : localBackendConfigured ? 'needs model/sync' : 'not added'}
           </span>
-          <span className={defaultProvider ? 'ok-text small' : 'warn-text small'}>
-            default: {defaultProvider?.name ?? 'none'}
+          <span className={defaultRouteReady ? 'ok-text small' : 'warn-text small'}>
+            default: {defaultProvider ? `${defaultProvider.name}${defaultRouteReady ? '' : ' needs sync'}` : 'none'}
           </span>
           <span className="muted small">
             synced: {syncedProviders.length}/{providers.length} · enabled: {enabledProviders.length}
@@ -1371,7 +1388,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                 : sync
                   ? `${sync.status === 'live' ? `synced · ${sync.modelCount} models` : sync.status} · ${timeAgo(sync.at)}`
                   : 'not synced';
-              const statusOk = (o?.status ?? sync?.status) === 'live';
+              const readyForDefault = providerRouteReady(p);
+              const statusOk = readyForDefault;
               const statusWarn = (o?.status ?? sync?.status) === 'auth-error';
               const keyBadge = !p.needsKey
                 ? null
@@ -1385,7 +1403,12 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                 <Fragment key={p.name}>
                   <tr>
                     <td>
-                      <button className={`star${p.default ? ' on' : ''}`} title="Set as default backend" onClick={() => void setDefault(p.name)}>
+                      <button
+                        className={`star${p.default ? ' on' : ''}`}
+                        disabled={busy || (!p.default && !readyForDefault)}
+                        title={p.default ? 'Default backend' : readyForDefault ? 'Set as default backend' : `Connect & sync before setting default: ${providerDefaultBlockReason(p)}`}
+                        onClick={() => void setDefault(p.name)}
+                      >
                         {p.default ? '★' : '☆'}
                       </button>
                     </td>
