@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.348] — 2026-06-30
+- Resolve Dashboard chat targets through org hierarchy
+
 ## [0.1.347] — 2026-06-30
 - Tighten default-primary starter lead routing
 

@@ -289,6 +289,14 @@ function CoordinationTree({ store, events, activeTeams }: { store: FleetStore; e
 
 export function Dashboard({ store }: { store: FleetStore }) {
   const activitySyncVersion = useSyncVersion(['dashboard', 'tasks', 'work', 'inbox', 'chats']);
+  const hierarchySyncVersion = useSyncVersion(['org', 'agents', 'dashboard']);
+  const [hier, setHier] = useState<OrgHier>({ primary: null, secondaries: [], coordinators: {}, teams: [] });
+  const hierarchyLiveRef = useRef(true);
+  useEffect(() => () => { hierarchyLiveRef.current = false; }, []);
+  const loadHierarchy = useCallback(() => {
+    void call<OrgHier>('org:hierarchy').then((h) => { if (hierarchyLiveRef.current && h) setHier(h); }).catch(() => {});
+  }, []);
+  useEffect(() => { loadHierarchy(); }, [loadHierarchy, store.lastUpdated, hierarchySyncVersion]);
   // Teams that currently have ≥1 running agent (idle teams hidden from the picker).
   const activeTeams = useMemo(
     () => store.teams.map((t) => t.name).filter((n) => store.allAgents.some((a) => a.team === n && isAgentLive(a.status))),
@@ -306,9 +314,12 @@ export function Dashboard({ store }: { store: FleetStore }) {
   }, [activeTeams, store.team]);
 
   const teamAgents = useMemo(() => store.allAgents.filter((a) => a.team === chatTeam), [store.allAgents, chatTeam]);
-  // For the active team we honor the user's ★ coordinator; for any other team fall
-  // back to the role heuristic (lead/manager → first agent).
-  const lead = resolveCoordinator(teamAgents, chatTeam === store.team ? store.coordinator : undefined) ?? 'lead';
+  const leadForTeam = useCallback((team: string) => {
+    const agents = store.allAgents.filter((a) => a.team === team);
+    const configured = hier.coordinators[team] || (team === store.team ? store.coordinator : undefined);
+    return resolveCoordinator(agents, configured) ?? 'lead';
+  }, [hier.coordinators, store.allAgents, store.coordinator, store.team]);
+  const lead = leadForTeam(chatTeam);
 
   // Holistic activity feed: recent events plus durable task/comms state across
   // EVERY team (newest first). Events alone are lossy: a task/news row can exist
@@ -418,7 +429,7 @@ export function Dashboard({ store }: { store: FleetStore }) {
           talk to
           <select value={chatTeam} onChange={(e) => setChatTeam(e.target.value)} style={{ maxWidth: 260 }}>
             {(activeTeams.length ? activeTeams : [chatTeam].filter(Boolean)).map((t) => {
-              const tl = resolveCoordinator(store.allAgents.filter((a) => a.team === t), t === store.team ? store.coordinator : undefined) ?? 'lead';
+              const tl = leadForTeam(t);
               return <option key={t} value={t}>{t}{t === store.team ? ' (active)' : ''} · {tl}</option>;
             })}
           </select>
