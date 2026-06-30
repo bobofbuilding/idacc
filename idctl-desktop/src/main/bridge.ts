@@ -1228,7 +1228,10 @@ async function callRaw(method: string, args: unknown[] = []): Promise<unknown> {
   }
   if (method === 'coordinator:hierarchy') {
     const s = loadSettings();
-    return { primary: s.primaryCoordinator ?? null, coordinators: s.coordinators ?? {} };
+    return {
+      primary: { team: PRIMARY_TEAM, agent: DEFAULT_PRIMARY_AGENT },
+      coordinators: { ...(s.coordinators ?? {}), [PRIMARY_TEAM]: DEFAULT_PRIMARY_AGENT },
+    };
   }
   // ---- Org sync (reactive goals & instructions) ----
   if (method === 'org:hierarchy') return buildOrgHierarchy(client);

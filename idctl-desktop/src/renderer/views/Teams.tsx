@@ -1525,10 +1525,14 @@ export function Teams({ store, focus, onFocusHandled }: { store: FleetStore; foc
                 </select>
                 {primaryIsLockedLead ? (
                   <span className="ok-text small">⭑ primary</span>
+                ) : t.name !== PRIMARY_TEAM ? (
+                  <span className="muted small" title={`${t.name}/${coord || 'lead'} can be a team coordinator; fleet primary stays ${PRIMARY_TEAM}/${DEFAULT_LEAD}`}>
+                    default/lead
+                  </span>
                 ) : (
                   <button className="btn small" disabled={busy || !canMakePrimary}
-                    title={t.name !== PRIMARY_TEAM ? `Primary is locked to ${PRIMARY_TEAM}; ${t.name}/${coord || 'lead'} can remain a team coordinator` : canMakePrimary ? `Make ${t.name}/${defaultLeadName} the primary cross-team lead` : `Primary is locked to ${PRIMARY_TEAM}/${DEFAULT_LEAD}`}
-                    onClick={() => void makePrimaryFor(t.name, defaultLeadName)}>{t.name === PRIMARY_TEAM ? 'make primary' : 'default only'}</button>
+                    title={canMakePrimary ? `Make ${t.name}/${defaultLeadName} the primary cross-team lead` : `Primary is locked to ${PRIMARY_TEAM}/${DEFAULT_LEAD}`}
+                    onClick={() => void makePrimaryFor(t.name, defaultLeadName)}>make primary</button>
                 )}
               </Fragment>
             );

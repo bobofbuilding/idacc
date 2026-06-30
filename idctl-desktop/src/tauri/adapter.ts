@@ -636,8 +636,8 @@ export async function tauriCall(method: string, args: unknown[] = []): Promise<{
       return {
         ok: true,
         result: {
-          primary: lsGet<{ team: string; agent: string } | null>('idctl.primaryCoordinator', null),
-          coordinators: lsGet<Record<string, string>>('idctl.coordinators', {}),
+          primary: { team: PRIMARY_TEAM, agent: DEFAULT_PRIMARY_AGENT },
+          coordinators: { ...lsGet<Record<string, string>>('idctl.coordinators', {}), [PRIMARY_TEAM]: DEFAULT_PRIMARY_AGENT },
         },
       };
     }
