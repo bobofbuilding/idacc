@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.344] — 2026-06-30
+- Settings local discovery guardrails
+
 ## [0.1.343] — 2026-06-30
 - Goal Autopilot stale-snapshot guard
 

@@ -16,6 +16,7 @@ import {
 const MODEL_CAPS: ModelCapability[] = ['general', 'tools', 'reasoning', 'coding', 'vision', 'embedding', 'fast'];
 const STARTER_LOCAL_MODEL_ID = 'qwen3:1.7b';
 const LOCAL_FIRST_PROVIDER = findProvider('ollama');
+const DISCOVERY_MAX_AGE_MS = 2 * 60 * 1000;
 
 /** Hardware of the machine the control center commands (the manager host; localhost here). */
 type HardwareInfo = { platform: string; arch: string; appleSilicon: boolean; cpu: string; cpuCores: number; gpu?: string; gpuCores?: number; totalRamGB: number; freeDiskGB: number | null; totalDiskGB: number | null };
@@ -64,6 +65,15 @@ function providerListStamp(list: ProviderRow[]): string {
 function providerEndpoint(p: ProviderProfile): string {
   return `${p.kind} · ${p.baseUrl}`;
 }
+function discoveredStamp(s: DiscoveredServer): string {
+  return JSON.stringify({
+    id: s.id,
+    kind: s.kind,
+    baseUrl: s.baseUrl,
+    status: s.status,
+    models: sortedKey(s.models),
+  });
+}
 function rpcStamp(rpc: EvmRpcRow): string {
   return JSON.stringify({
     id: rpc.id,
@@ -100,6 +110,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   // local LLM discovery (scan localhost for running servers)
   const [discovering, setDiscovering] = useState(false);
   const [discovered, setDiscovered] = useState<Discovered[] | null>(null);
+  const [discoveredAt, setDiscoveredAt] = useState<number | null>(null);
   function resetProviderAddReview() {
     setReplaceProviderArmed(false);
     setProviderMsg('');
@@ -475,10 +486,13 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   }
 
   // Local LLM discovery: scan localhost for running servers, then one-click add.
-  async function runDiscover() {
+  async function runDiscover(): Promise<Discovered[]> {
     setDiscovering(true);
     try {
-      setDiscovered(await call<Discovered[]>('providers:discover').catch(() => []));
+      const found = await call<Discovered[]>('providers:discover').catch(() => []);
+      setDiscovered(found);
+      setDiscoveredAt(Date.now());
+      return found;
     } finally {
       setDiscovering(false);
     }
@@ -510,6 +524,22 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         : {}),
     };
   }
+  function findDiscoveredMatch(list: Discovered[], s: Discovered): Discovered | undefined {
+    return list.find((x) => x.id === s.id && x.kind === s.kind && normUrl(x.baseUrl) === normUrl(s.baseUrl));
+  }
+  async function freshDiscoveredBeforeAdd(s: Discovered): Promise<Discovered | null> {
+    const fresh = await runDiscover();
+    const current = findDiscoveredMatch(fresh, s);
+    if (!current) {
+      window.alert(`${s.name} is no longer answering on ${s.baseUrl}. Refreshed the discovered server list; start the server and scan again before adding it.`);
+      return null;
+    }
+    if (discoveredStamp(current) !== discoveredStamp(s)) {
+      window.alert(`${s.name} changed since this scan. Refreshed the discovered server list; review its current model/status row before adding it.`);
+      return null;
+    }
+    return current;
+  }
   async function addDiscovered(s: Discovered) {
     setBusy(true);
     try {
@@ -520,8 +550,20 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         window.alert(`${s.name} is already configured as an inference backend. Refreshed the discovered server list.`);
         return;
       }
-      const providerName = uniqueProviderName(s.id, new Set(latest.map((p) => p.name)));
-      await addProviderProfile(discoveredToProfile(s, providerName));
+      const current = await freshDiscoveredBeforeAdd(s);
+      if (!current) {
+        setProviders(await freshProviders());
+        return;
+      }
+      const latestAfterScan = await freshProviders();
+      if (latestAfterScan.some((p) => normUrl(p.baseUrl) === normUrl(current.baseUrl))) {
+        setProviders(latestAfterScan);
+        await runDiscover();
+        window.alert(`${current.name} was configured while the scan refreshed. Review the current backend row before changing routing.`);
+        return;
+      }
+      const providerName = uniqueProviderName(current.id, new Set(latestAfterScan.map((p) => p.name)));
+      await addProviderProfile(discoveredToProfile(current, providerName));
       await reload();
       await runDiscover(); // refresh the alreadyAdded flags
     } finally {
@@ -533,8 +575,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     try {
       const latest = await freshProviders();
       const latestByUrl = new Set(latest.map((p) => normUrl(p.baseUrl)));
-      const freshDiscovered = await call<Discovered[]>('providers:discover').catch(() => discovered ?? []);
-      setDiscovered(freshDiscovered);
+      const freshDiscovered = await runDiscover();
       const list = freshDiscovered.filter((s) => s.status === 'live' && !latestByUrl.has(normUrl(s.baseUrl)));
       if (!list.length) {
         setProviders(latest);
@@ -726,6 +767,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi) || a.localeCompare(b);
   });
   const filteredStacks = stackTag === 'all' ? TOP_LOCAL_STACKS : TOP_LOCAL_STACKS.filter((s) => (s.tags ?? []).includes(stackTag));
+  const discoveryStale = discoveredAt != null && Date.now() - discoveredAt > DISCOVERY_MAX_AGE_MS;
   const runningPorts = new Set((discovered ?? []).map((d) => d.port));
   const addProviderName = name.trim() || kind;
   const replaceCandidate = findProviderRow(providers, addProviderName);
@@ -901,14 +943,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     return 'Review command';
   }
   function stackInstallCmd(s: LocalStackEntry): string | null { const c = stackCmd(s); return c && RUNNABLE_RE.test(c) ? c : null; }
-  function stackUninstallCmd(s: LocalStackEntry): string | null {
-    const c = stackCmd(s); let m: RegExpMatchArray | null;
-    if ((m = c.match(/^brew install --cask (\S+)/))) return `brew uninstall --cask ${m[1]}`;
-    if ((m = c.match(/^brew install (\S+)/))) return `brew uninstall ${m[1]}`;
-    if ((m = c.match(/^pipx install (\S+)/))) return `pipx uninstall ${m[1]}`;
-    if ((m = c.match(/^pip install (\S+)/))) return `pip uninstall -y ${m[1]}`;
-    return null;
-  }
   async function runStackCmd(cmd: string) {
     setStackConfirm(null);
     const r = await call<{ ran: boolean }>('app:runInTerminal', cmd).catch(() => ({ ran: false }));
@@ -933,10 +967,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     }
     return null;
   }
-  function stackInstalled(s: LocalStackEntry): boolean {
+  function stackConfigured(s: LocalStackEntry): boolean {
     const apiBase = s.apiBase ? normUrl(s.apiBase) : null;
-    return providers.some((p) => apiBase && normUrl(p.baseUrl) === apiBase)
-      || (discovered ?? []).some((d) => d.id === s.id || (apiBase && normUrl(d.baseUrl) === apiBase));
+    return providers.some((p) => apiBase && normUrl(p.baseUrl) === apiBase);
   }
   useEffect(() => {
     void loadOllama();
@@ -1384,6 +1417,11 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             ))}
           </span>
           <button className="btn small" disabled={discovering} onClick={() => void runDiscover()}>{discovering ? 'Scanning…' : '⟳ Scan running'}</button>
+          {discoveredAt ? (
+            <span className={`small ${discoveryStale ? 'warn-text' : 'muted'}`}>
+              scan: {timeAgo(discoveredAt)}{discoveryStale ? ' · refresh before add/routing decisions' : ''}
+            </span>
+          ) : null}
           {stackMsg ? <span className="muted small">{stackMsg}</span> : null}
         </div>
         <div className="stack-list">
@@ -1391,7 +1429,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             const running = s.defaultPort != null && runningPorts.has(s.defaultPort);
             const pw = stackPortWarn(s);
             const ic = stackInstallCmd(s);
-            const uc = stackInstalled(s) ? stackUninstallCmd(s) : null;
+            const configured = stackConfigured(s);
             return (
               <div className="stack-row" key={s.id}>
                 <div className="stack-head">
@@ -1400,7 +1438,12 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                   <span className="muted small">{s.openaiCompatible ? 'OpenAI-compatible' : s.apiKind}</span>
                   {stackEaseLabel(s) ? <span className="chip tag" title={s.installNote}>{stackEaseLabel(s)}</span> : null}
                   {s.appleSilicon ? <span className="chip tag" title="Apple-Silicon native">Apple Silicon</span> : null}
-                  {running ? <span className="ok-text small" title="Detected running by the last scan">● running</span> : null}
+                  {running ? (
+                    <span className={`small ${discoveryStale ? 'warn-text' : 'ok-text'}`} title={`Detected by scan ${discoveredAt ? timeAgo(discoveredAt) : 'recently'}`}>
+                      {discoveryStale ? 'last scan running' : '● running'}
+                    </span>
+                  ) : null}
+                  {configured ? <span className="chip tag" title="A matching inference backend is configured below">backend configured</span> : null}
                   {pw ? <span className={`small ${pw.level === 'error' ? 'status-error' : 'warn-text'}`} title="Port-conflict risk if you run this on its default port">⚠ {pw.msg}</span> : null}
                   <span className="grow" />
                   <a className="ext-link small" href={s.homepage} target="_blank" rel="noreferrer">docs ↗</a>
@@ -1421,17 +1464,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                   ) : (
                     <a className="btn small" href={s.homepage} target="_blank" rel="noreferrer" title="No CLI install — opens the download page">Get ↗</a>
                   )}
-                  {uc ? (
-                    stackConfirm === `u:${s.id}` ? (
-                      <>
-                        <code className="mono">{uc}</code>
-                        <button className="btn small icon-danger" title="Runs in your Terminal" onClick={() => void runStackCmd(uc)}>Run in Terminal</button>
-                        <button className="btn small" onClick={() => setStackConfirm(null)}>Cancel</button>
-                      </>
-                    ) : (
-                      <button className="btn small" onClick={() => setStackConfirm(`u:${s.id}`)}>Uninstall</button>
-                    )
-                  ) : null}
                 </div>
               </div>
             );
@@ -1449,6 +1481,11 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
               {discovering ? 'Scanning…' : '⟳ Discover local servers'}
             </button>
           </div>
+          {discoveredAt ? (
+            <p className={`small ${discoveryStale ? 'warn-text' : 'muted'}`} style={{ marginTop: 6 }}>
+              Scan snapshot: {timeAgo(discoveredAt)}. Add re-checks the server before writing a backend; refresh before making routing decisions from this list.
+            </p>
+          ) : null}
           {discovered ? (
             discovered.length === 0 ? (
               <p className="muted small" style={{ marginTop: 6 }}>
