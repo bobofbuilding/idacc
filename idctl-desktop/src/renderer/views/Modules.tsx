@@ -121,6 +121,7 @@ type BrainDashboardTabSpec = {
     confirm: string;
   };
 };
+type LiveFleetTotals = { total: number; running: number };
 
 const BRAIN_DASHBOARD_TABS: BrainDashboardTabSpec[] = [
   { tab: 'fleet', label: 'Fleet', path: '/dashboard' },
@@ -211,6 +212,21 @@ function brainFleetReviewDetail(report: BrainFleetReport): string {
   }
   if ((fleet.warnings ?? []).length) return (fleet.warnings ?? []).join(' ');
   return 'Brain Fleet authority is live.';
+}
+
+function agentStatusIsRunning(status?: string): boolean {
+  return !!status && !/stop|offline|dead|exit|error|crash|down|disabled|sleep/i.test(status);
+}
+
+function brainFleetMismatchDetail(report: BrainFleetReport, live: LiveFleetTotals): string | null {
+  const fleet = report?.fleet;
+  if (!fleet || live.total <= 0) return null;
+  const brainRunning = typeof fleet.running === 'number' ? fleet.running : null;
+  const brainTotal = typeof fleet.total === 'number' ? fleet.total : null;
+  const runningMismatch = brainRunning !== null && brainRunning !== live.running;
+  const totalMismatch = brainTotal !== null && brainTotal !== live.total;
+  if (!runningMismatch && !totalMismatch) return null;
+  return `IDACC live fleet sees ${live.running}/${live.total}, but Brain /fleet-report reports ${brainRunning ?? '?'}/${brainTotal ?? '?'}. Restart or redeploy Brain, or review manager URL/team scope, before trusting Brain Fleet, Health, or Agents counts.`;
 }
 
 function brainCoreNeedsReview(report: BrainCoreHealthReport): boolean {
@@ -1108,14 +1124,21 @@ export function Modules({ store }: { store: FleetStore }) {
         : brainMissingLocal
           ? `Local catalog has ${skills.length} skills while Brain reports ${brainTotal ?? 'unknown'}. Sync Brain to upsert current local definitions.`
           : brainSkillContractDetail(brainSkills);
+  const idaccFleetTotals = useMemo<LiveFleetTotals>(() => ({
+    total: store.allAgents.length,
+    running: store.allAgents.filter((a) => agentStatusIsRunning(a.status)).length,
+  }), [store.allAgents]);
   const brainCoreNeedsOperatorReview = brainCoreNeedsReview(brainCore);
   const brainCoreStatus = brainCoreStatusLabel(brainCore);
   const brainCoreTitle = brainCoreStatusTitle(brainCore);
   const brainCoreDetail = brainCoreReviewDetail(brainCore);
-  const brainFleetNeedsReview = brainFleetReviewNeeded(brainFleet);
-  const brainFleetStatus = brainFleetStatusLabel(brainFleet);
-  const brainFleetTitle = brainFleetStatusTitle(brainFleet);
-  const brainFleetDetail = brainFleetReviewDetail(brainFleet);
+  const brainFleetMismatch = brainFleetMismatchDetail(brainFleet, idaccFleetTotals);
+  const brainFleetNeedsReview = brainFleetReviewNeeded(brainFleet) || !!brainFleetMismatch;
+  const brainFleetStatus = brainFleetMismatch
+    ? `Fleet ${brainFleet?.fleet?.running ?? '?'}/${brainFleet?.fleet?.total ?? '?'} drift`
+    : brainFleetStatusLabel(brainFleet);
+  const brainFleetTitle = [brainFleetStatusTitle(brainFleet), brainFleetMismatch].filter(Boolean).join('\n');
+  const brainFleetDetail = brainFleetMismatch ?? brainFleetReviewDetail(brainFleet);
   const brainAgentsNeedOperatorReview = brainAgentsNeedsReview(brainAgents);
   const brainAgentsStatus = brainAgentsStatusLabel(brainAgents);
   const brainAgentsTitle = brainAgentsStatusTitle(brainAgents);
