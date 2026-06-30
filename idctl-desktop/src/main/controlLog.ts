@@ -109,12 +109,77 @@ const ACTIONS: Record<string, (args: unknown[], result: unknown) => Summary> = {
   'brain:setPlanStatus': (a, r) => ({ subject: `plan ${s(a[0])} → ${s(a[1])}`, data: { file: s(a[0]), ...obj(r) }, tags: ['brain-plan'] }),
   'dreams:save': (a) => { const d = obj(a[0]); return { subject: `dream saved: ${clip(d.title, 80)}`, data: { id: d.id, agent: d.agent, team: d.team, focus: d.focus }, tags: ['dream'] }; },
   'questions:add': (a) => { const q = obj(a[0]); return { subject: `blocker question: ${clip(q.question, 80)}`, data: { id: q.id, agent: q.agent, taskRef: q.taskRef, options: q.options, team: q.team }, tags: ['decision'] }; },
+  'materials:save': (_a, r) => { const m = obj(r); return { subject: `learn material saved: ${clip(m.title, 80)}`, data: { id: m.id, kind: m.kind, priority: m.priority, status: m.status, stage: m.stage, source: m.source }, tags: ['learn', 'material'] }; },
+  'materials:importFiles': (_a, r) => ({ subject: 'learn material files imported', data: { count: Array.isArray(r) ? r.length : 0 }, tags: ['learn', 'material'] }),
+  'materials:priority': (_a, r) => { const m = obj(r); return { subject: `learn material priority: ${clip(m.title, 80)}`, data: { id: m.id, priority: m.priority, prioritized: m.prioritized }, tags: ['learn', 'material'] }; },
+  'materials:process': (_a, r) => { const m = obj(r); return { subject: `learn material processed: ${clip(m.title, 80)}`, data: { id: m.id, kind: m.kind, status: m.status, stage: m.stage, teams: obj(m.classification).routedTeams }, tags: ['learn', 'material'] }; },
+  'materials:processNext': (_a, r) => { const m = obj(r); return { subject: m.id ? `learn material processed: ${clip(m.title, 80)}` : 'learn processor found no queued material', data: { id: m.id, kind: m.kind, status: m.status, stage: m.stage, teams: obj(m.classification).routedTeams }, tags: ['learn', 'material'] }; },
+  'materials:markRecommendation': (a, r) => { const m = obj(r); return { subject: `learn recommendation ${s(a[2])}: ${clip(m.title, 80)}`, data: { materialId: s(a[0]), recommendationId: s(a[1]), state: s(a[2]) }, tags: ['learn', 'review'] }; },
+  'materials:remove': (a) => ({ subject: `learn material removed: ${s(a[0])}`, data: { id: s(a[0]) }, tags: ['learn', 'material'] }),
 };
 
 const keyPart = (v: unknown): string => (s(v) || 'default').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'default';
 
+function recordLearnMaterial(value: unknown): void {
+  const m = obj(value);
+  if (!m.id) return;
+  const id = `learn:${s(m.id)}`;
+  const title = s(m.title) || s(m.id);
+  const status = s(m.status) || 'queued';
+  const classification = obj(m.classification);
+  const routedTeams = Array.isArray(classification.routedTeams) ? classification.routedTeams.map(String) : [];
+  void brain.entity({
+    id,
+    type: 'learn-material',
+    name: title,
+    status,
+    tags: ['learn', 'material', 'dashboard-state', s(m.kind) || 'unknown'],
+    data: {
+      kind: m.kind,
+      priority: m.priority,
+      prioritized: !!m.prioritized,
+      stage: m.stage,
+      source: m.source,
+      teams: routedTeams,
+      topics: Array.isArray(classification.topics) ? classification.topics : [],
+      recommendations: Array.isArray(m.recommendations) ? m.recommendations.length : 0,
+    },
+  });
+  void brain.memory('control-center', {
+    key: id,
+    content: [
+      `# Learn material: ${title}`,
+      `Status: ${status}`,
+      `Stage: ${s(m.stage) || 'submitted'}`,
+      `Priority: ${s(m.priority) || 'normal'}${m.prioritized ? ' (pinned)' : ''}`,
+      s(m.source) ? `Source: ${s(m.source)}` : '',
+      routedTeams.length ? `Teams: ${routedTeams.join(', ')}` : '',
+      '',
+      s(m.summary).slice(0, 12000),
+      '',
+      s(m.comparison).slice(0, 8000),
+    ].filter(Boolean).join('\n'),
+    tags: ['dashboard-state', 'learn', 'material'],
+    shared: true,
+    project: routedTeams[0] ?? 'default',
+  });
+}
+
 /** Actions that ALSO warrant a richer write (entity upsert / text ingest) beyond the timeline. */
 const EXTRAS: Record<string, (args: unknown[], result: unknown) => void> = {
+  'materials:save': (_a, r) => recordLearnMaterial(r),
+  'materials:priority': (_a, r) => recordLearnMaterial(r),
+  'materials:process': (_a, r) => recordLearnMaterial(r),
+  'materials:processNext': (_a, r) => recordLearnMaterial(r),
+  'materials:markRecommendation': (_a, r) => recordLearnMaterial(r),
+  'materials:importFiles': (_a, r) => {
+    if (Array.isArray(r)) for (const material of r) recordLearnMaterial(material);
+  },
+  'materials:remove': (a) => {
+    const id = s(a[0]);
+    if (!id) return;
+    void brain.entity({ id: `learn:${id}`, type: 'learn-material', name: id, status: 'removed', tags: ['learn', 'removed', 'dashboard-state'] });
+  },
   'plans:save': (a) => {
     const p = obj(a[0]);
     if (!p.id) return;

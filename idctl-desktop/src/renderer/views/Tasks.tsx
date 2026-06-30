@@ -9,6 +9,7 @@ import { Loops } from './Loops.tsx';
 import { Plans } from './Plans.tsx';
 import { Dream } from './Dream.tsx';
 import { Goals } from './Goals.tsx';
+import { Learn } from './Learn.tsx';
 
 // Auto-decompose IPC shapes (mirror main/work.ts).
 type SubTask = { title: string; description: string; agent: string; dependsOn: number[] };
@@ -29,11 +30,12 @@ type WorkOrgHierarchy = {
   teams: string[];
 };
 
-type Tab = 'tasks' | 'goals' | 'plans' | 'schedule' | 'loops' | 'dream';
+type Tab = 'tasks' | 'goals' | 'plans' | 'learn' | 'schedule' | 'loops' | 'dream';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'goals', label: 'Goals' },
   { id: 'plans', label: 'Plans' },
   { id: 'tasks', label: 'Tasks' },
+  { id: 'learn', label: 'Learn' },
   { id: 'schedule', label: 'Schedule' },
   { id: 'loops', label: 'Loops' },
   { id: 'dream', label: 'Dream' },
@@ -144,6 +146,7 @@ export function Tasks({ store, initialTab }: { store: FleetStore; initialTab?: T
       {tab === 'tasks' ? <TasksPanel store={store} /> : null}
       {tab === 'goals' ? <Goals store={store} /> : null}
       {tab === 'plans' ? <Plans store={store} /> : null}
+      {tab === 'learn' ? <Learn store={store} /> : null}
       {tab === 'schedule' ? <Schedule store={store} /> : null}
       {tab === 'loops' ? <Loops store={store} /> : null}
       {tab === 'dream' ? <Dream store={store} /> : null}

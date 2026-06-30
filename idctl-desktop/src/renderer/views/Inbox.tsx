@@ -28,14 +28,13 @@ function orderByDeps(qs: BlockerQuestion[], deps: Record<string, string[]>): Blo
 
 export function Inbox({ store }: { store: FleetStore }) {
   const syncVersion = useSyncVersion(['questions', 'inbox', 'tasks', 'work']);
-  const team = store.team ?? 'default';
   const [questions, setQuestions] = useState<BlockerQuestion[]>([]);
   const [deps, setDeps] = useState<Record<string, string[]>>({});
   async function reloadQuestions() {
-    setQuestions(await call<BlockerQuestion[]>('questions:list', team).catch(() => []));
+    setQuestions(await call<BlockerQuestion[]>('questions:list').catch(() => []));
     setDeps(await call<Record<string, string[]>>('tasks:deps').catch(() => ({})));
   }
-  useEffect(() => { void reloadQuestions(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [team, store.lastUpdated, syncVersion]);
+  useEffect(() => { void reloadQuestions(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [store.lastUpdated, syncVersion]);
   const ordered = useMemo(() => orderByDeps(questions, deps), [questions, deps]);
 
   const total = store.inbox.length + questions.length;
@@ -74,6 +73,8 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
   const [comment, setComment] = useState('');
   const [showComment, setShowComment] = useState(false);
   const subject = q.taskTitle ?? q.taskRef ?? '';
+  const isLearnQuestion = q.taskRef?.startsWith('learn:') ?? false;
+  const from = q.agent || (isLearnQuestion ? 'review gate' : 'agent');
 
   // Deliver a response to the blocked agent (best-effort, async) and clear the item.
   // A response moves the task into the board's "Under Review" lane (the block is being
@@ -81,8 +82,8 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
   async function deliver(answer: string) {
     setBusy(true); setErr('');
     try {
-      if (q.agent && answer) void call('dispatch', `/ask ${q.agent} ${qArg(answer)}`).catch(() => {});
-      if (q.taskRef) void call('tasks:setReview', q.taskRef, 'under-review').catch(() => {});
+      if (q.agent && !isLearnQuestion && answer) void call('dispatch', `/ask ${q.agent} ${qArg(answer)}`).catch(() => {});
+      if (q.taskRef && !isLearnQuestion) void call('tasks:setReview', q.taskRef, 'under-review').catch(() => {});
       await call('questions:remove', q.id);
       onDone();
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
@@ -93,14 +94,14 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
   async function skip() {
     setBusy(true); setErr('');
     try {
-      if (q.taskRef) void call('tasks:setReview', q.taskRef, '').catch(() => {}); // dismissing clears the adjustment state
+      if (q.taskRef && !isLearnQuestion) void call('tasks:setReview', q.taskRef, '').catch(() => {}); // dismissing clears the adjustment state
       await call('questions:remove', q.id); onDone();
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
   }
 
   return (
     <div className="inbox-row">
-      <div className="inbox-from">{q.agent || 'agent'}{subject ? ` · ${subject}` : ''}</div>
+      <div className="inbox-from">{q.team ? `${q.team} · ` : ''}{from}{subject ? ` · ${subject}` : ''}</div>
       <div className="inbox-msg b">{q.question}</div>
       {/* Options stacked top-to-bottom, hugging the left. */}
       {q.options.length ? (

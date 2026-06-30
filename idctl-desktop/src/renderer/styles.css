@@ -98,6 +98,9 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 .cols { display: flex; gap: 14px; align-items: stretch; }
 .cols .grow { flex: 1.7; }
 .feed { flex: 1; max-width: 340px; }
+.stack { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.split { display: grid; grid-template-columns: minmax(360px, 1fr) minmax(420px, 1.2fr); gap: 14px; align-items: start; min-height: 0; }
+@media (max-width: 980px) { .split { grid-template-columns: 1fr; } }
 
 /* Dashboard: top row fills the window height; activity stretches with it. */
 .dash-top { flex: 1 1 auto; min-height: 0; }

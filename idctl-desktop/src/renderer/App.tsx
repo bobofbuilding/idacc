@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useFleet, call } from './store.ts';
+import { useFleet, call, useSyncVersion } from './store.ts';
 import { PromptProvider } from './components/prompt.tsx';
 import { ToastProvider } from './components/toast.tsx';
 import { Dashboard } from './views/Dashboard.tsx';
@@ -21,6 +21,7 @@ type TeamsFocus = 'route-hierarchy';
 
 const DEFAULT_NAV: { id: ViewId; label: string; icon: string; order: number }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: '▦', order: 10 },
+  { id: 'inbox', label: 'Inbox', icon: '□', order: 20 },
   { id: 'tasks', label: 'Work', icon: '☑', order: 40 },
   { id: 'projects', label: 'Projects', icon: '◆', order: 50 },
   { id: 'health', label: 'Health', icon: '✚', order: 60 },
@@ -42,7 +43,6 @@ function navFromWiki(doc?: ControlCenterWiki | null): typeof DEFAULT_NAV {
   const pages = doc?.pages ?? [];
   const nav = pages
     .filter((p) => isViewId(p.route) && p.nav?.visible !== false)
-    .filter((p) => p.route !== 'inbox')
     .map((p) => {
       const id = p.route as ViewId;
       const base = defaults.get(id);
@@ -88,6 +88,8 @@ export function App() {
   const [wikiError, setWikiError] = useState<string>();
   const [wikiQuery, setWikiQuery] = useState('');
   const [wikiPageId, setWikiPageId] = useState('');
+  const [questionCount, setQuestionCount] = useState(0);
+  const inboxSyncVersion = useSyncVersion(['questions', 'inbox']);
   const nav = navFromWiki(wiki?.doc);
   // ⌘K command palette + right-side control drawer — the "drive everything" surface.
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -120,6 +122,12 @@ export function App() {
     const off = idagents?.onUpdateStatus?.((s) => setUpdate(s as UpdateStatus));
     return () => off?.();
   }, []);
+
+  useEffect(() => {
+    let live = true;
+    call<{ id: string }[]>('questions:list').then((qs) => { if (live) setQuestionCount(qs.length); }).catch(() => { if (live) setQuestionCount(0); });
+    return () => { live = false; };
+  }, [store.lastUpdated, inboxSyncVersion]);
 
   useEffect(() => {
     let live = true;
@@ -167,8 +175,8 @@ export function App() {
             >
               <span className="nav-icon">{n.icon}</span>
               <span className="nav-label">{n.label}</span>
-              {n.id === 'inbox' && store.inbox.length > 0 ? (
-                <span className="nav-badge" title={`${store.inbox.length} pending message${store.inbox.length === 1 ? '' : 's'}`}>{store.inbox.length}</span>
+              {n.id === 'inbox' && store.inbox.length + questionCount > 0 ? (
+                <span className="nav-badge" title={`${store.inbox.length + questionCount} pending inbox item${store.inbox.length + questionCount === 1 ? '' : 's'}`}>{store.inbox.length + questionCount}</span>
               ) : null}
               {n.id === 'dashboard' && store.chatUnread > 0 ? (
                 <span className="nav-badge" title={`${store.chatUnread} chat${store.chatUnread === 1 ? '' : 's'} with new replies`}>{store.chatUnread}</span>

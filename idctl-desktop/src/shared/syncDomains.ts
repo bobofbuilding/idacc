@@ -18,7 +18,7 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^goalDriver:(setConfig|runOnce)$/, ['goals', 'tasks', 'work', 'brain']],
   [/^loops:(save|remove)$/, ['loops', 'work', 'brain']],
   [/^dreams:(save|remove)$/, ['dreams', 'work', 'brain']],
-  [/^materials:(save|remove|importFiles)$/, ['materials', 'work', 'brain']],
+  [/^materials:(save|remove|importFiles|priority|process|processNext|markRecommendation)$/, ['materials', 'work', 'brain', 'inbox']],
   [/^questions:(add|remove)$/, ['questions', 'inbox', 'tasks', 'work', 'brain']],
   [/^inbox:(respond|dismiss)$/, ['inbox', 'tasks', 'dashboard', 'brain']],
   [/^tasks:set(Lane|Deps|Review)$/, ['tasks', 'work', 'brain']],

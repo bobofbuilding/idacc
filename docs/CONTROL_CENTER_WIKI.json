@@ -467,20 +467,21 @@
       "nav": {
         "label": "Inbox",
         "icon": "✉",
-        "order": 30,
+        "order": 20,
         "visible": true
       },
       "sourceFiles": [
         "idctl-desktop/src/renderer/views/Inbox.tsx",
-        "idctl-desktop/src/main/questionstore.ts"
+        "idctl-desktop/src/main/questionstore.ts",
+        "idctl-desktop/src/renderer/App.tsx"
       ],
-      "purpose": "Operator decision queue: answer blockers surfaced by agents and manager inbox items waiting on a human reply.",
-      "scope": "Active team for blocker questions; manager inbox from store snapshot.",
+      "purpose": "Operator decision queue: answer blockers surfaced by agents, Work Learn review gates, and manager inbox items waiting on a human reply.",
+      "scope": "All local blocker questions across teams plus manager inbox from the live store snapshot.",
       "tiles": [
         {
           "id": "decisions-needed",
           "label": "Decisions needed",
-          "description": "Questions raised from Work blockers, sorted by task dependency depth.",
+          "description": "Questions raised from Work blockers and Learn review gates, sorted by task dependency depth when a task reference exists.",
           "routesInto": [
             "questions:list",
             "tasks:deps"
@@ -562,7 +563,7 @@
         {
           "id": "awaiting-count",
           "label": "Awaiting count",
-          "description": "Total of manager inbox items plus blocker questions."
+          "description": "Total of manager inbox items plus all local blocker/review questions; the sidebar badge uses the same combined count."
         }
       ],
       "routing": {
@@ -581,7 +582,7 @@
           "/ask <agent> <decision>"
         ]
       },
-      "body": "# Inbox\n\nInbox is the operator decision queue. It separates direct blocker questions and manager inbox items from the general event feed so work that needs a human answer is visible and actionable.\n\n## Use it for\n\n- Answer option questions surfaced by agents or Work blocker scans.\n- Reply to manager inbox items that are explicitly waiting on the operator.\n- Dismiss stale prompts after deciding they no longer need a response.\n\n## Operating rule\n\nUse Inbox to resolve blockers, then return to Chat or Work for continued execution. It is intentionally narrower than a conversation view: the goal is to clear pending decisions and update the linked task state where the manager provides a task reference."
+      "body": "# Inbox\n\nInbox is the top-level operator decision queue under Dashboard. It separates blocker questions, Learn review-gate questions, and manager inbox items from the general event feed so work that needs a human answer is visible and actionable.\n\n## Use it for\n\n- Answer option questions surfaced by agents, Work blocker scans, or Learn material ingestion.\n- Reply to manager inbox items that are explicitly waiting on the operator.\n- Dismiss stale prompts after deciding they no longer need a response.\n\n## Current behavior\n\nThe sidebar shows Inbox directly under Dashboard and badges the combined count of manager inbox items plus local questions. Local questions are listed across teams so Learn-generated blockers do not disappear when the active team changes. Answering a linked task question can still move that task into Under Review; accepting Learn recommendations happens from Work > Learn and creates only drafts or Inbox questions."
     },
     {
       "id": "work",
@@ -598,11 +599,34 @@
         "idctl-desktop/src/renderer/views/Plans.tsx",
         "idctl-desktop/src/renderer/views/Schedule.tsx",
         "idctl-desktop/src/renderer/views/Loops.tsx",
-        "idctl-desktop/src/renderer/views/Dream.tsx"
+        "idctl-desktop/src/renderer/views/Dream.tsx",
+        "idctl-desktop/src/renderer/views/Goals.tsx",
+        "idctl-desktop/src/renderer/views/Learn.tsx",
+        "idctl-desktop/src/main/materialstore.ts",
+        "idctl-desktop/src/shared/syncDomains.ts",
+        "idctl-desktop/src/main/controlLog.ts"
       ],
-      "purpose": "Work operating surface: plans, live Kanban, recurring schedules, agent chains, and dreams.",
+      "purpose": "Work operating surface: goals, plans, Learn material ingestion, live Kanban, recurring schedules, agent chains, and dreams.",
       "scope": "All-team task view for the board; creation and assignment panels can target the selected team, selected teams, team leads, or every active agent depending on assignment scope.",
       "tabs": [
+        {
+          "id": "goals",
+          "label": "Goals",
+          "purpose": "Draft, activate, refine, archive, and sync Work goals into team instruction sidecars.",
+          "tiles": [
+            "Goal list",
+            "Goal editor",
+            "Goal Autopilot controls"
+          ],
+          "routesInto": [
+            "goals:list",
+            "goals:get",
+            "goals:save",
+            "goals:remove",
+            "goals:syncInstructions",
+            "goalDriver:*"
+          ]
+        },
         {
           "id": "plans",
           "label": "Plans",
@@ -651,6 +675,30 @@
             "questions:add",
             "addHeartbeat",
             "addCalendarCheckin"
+          ]
+        },
+        {
+          "id": "learn",
+          "label": "Learn",
+          "purpose": "Queue GitHub links, folders, site snapshots, and imported PDFs for guarded material digestion against active goals.",
+          "tiles": [
+            "Learn intake",
+            "Prioritized queue",
+            "Review details",
+            "Recommendations",
+            "Routing and progress"
+          ],
+          "routesInto": [
+            "materials:list",
+            "materials:save",
+            "materials:importFiles",
+            "materials:priority",
+            "materials:processNext",
+            "materials:process",
+            "materials:markRecommendation",
+            "questions:add",
+            "goals:save",
+            "plans:save"
           ]
         },
         {
@@ -970,7 +1018,7 @@
           "/ask <hierarchy-resolved agent or team lead> <message>"
         ]
       },
-      "body": "# Work\n\nWork is the execution surface for plans, task cards, schedules, loops, and dream review. It turns operator intent into tracked manager work and gives the team a place to move items through planning, assignment, review, and completion.\n\n## Start here when\n\n- A request needs to become tasks, not just a chat reply.\n- You need to triage unassigned work, assign a fleet objective, or surface blockers for a human decision.\n- You want scheduled follow-up, recurring loops, or reviewed idea drafts.\n\n## Tab guide\n\nWork goal saves/removes now close the instruction-file sync gap: after `goals:save` or `goals:remove`, the main process syncs all active Work goals into Brain `team-instruction` memory under `goals:active:<team>`, then runs Org Sync with auto-rebuild disabled so each agent sidecar receives the updated active-goal block without surprise restarts. Draft, done, and archived goals remain Work records until activated, so rough or closed goals do not steer agents.\n\n- Goals: objective capture, status, AI refinement, and guarded Autopilot.\n- Plans: structured plans and dispatch handoff.\n- Tasks: Kanban execution, review lanes, scoped assignment, and blocker surfacing.\n- Schedule: team-aware heartbeats and supervision reminders.\n- Loops: recurring objectives.\n- Dream: proposed ideas or simulations that require review before action.\n\nDragging cards now fresh-reads the task, lane overlay, and dependency overlay before it writes a review lane or mapped manager status. Assignment and re-dispatch also fresh-read live status, owner, and team before overwriting ownership or sending another background request. Plans now fresh-read live brain-plan title/status/mtime before status writes, blocker questions, or dispatch, and draft-plan update/promote/delete paths block if the opened draft changed. Plan dispatch resolves the primary lead by team/name, hands remaining objectives directly to team leads, and keeps default/coder plus default/researcher as return-path validators rather than execution routers. Goals now fresh-read the opened goal before field edits, AI refine saves, and delete; the goal driver merges metadata into the latest saved goal, activity-increasing driver changes preview the global active Autopilot goals in scope, and driver change/run prompts recheck config plus active goals after confirmation before saving or spawning work. Loops now keep a baseline for saved chains and block stale save, run, schedule, or delete actions before overwriting a newer chain. Schedule now fresh-reads heartbeat and check-in rows before update, pause, remove, close, or bulk cleanup. Dream prevents duplicate nightly schedules for the same team/agent and fresh-checks reports before delete. Create Work now rechecks proposed plan owners, direct assignment targets, fan-out team leads, hierarchy-resolved active-team coordinators, and heartbeat replacement routes against live all-team state around confirmation; interval Schedule, Loop, and Dream shortcuts disclose any existing heartbeat route for the target and block if that route changes during confirmation. Assignment can dispatch to one team, selected teams, team leads, or every active agent, grouping manager plan creation by target team so owners stay scoped correctly. The team-leads scope and Reconcile triage now resolve coordinators through `org:hierarchy` for every team, so non-active teams do not receive work through stale bare `lead` guesses. Schedule heartbeats use team-qualified targets, so cross-team agents and manager-level heartbeats remain visible and editable from the Schedule tab."
+      "body": "# Work\n\nWork is the operating surface for goals, plans, Learn material ingestion, live tasks, schedules, loops, and dreams. It is where user intent becomes reviewed goals, draft plans, assigned work, recurring check-ins, and reusable learning context.\n\n## Current tabs\n\nGoals owns active-goal state and now syncs active Work goals into Brain team-instruction memory plus no-rebuild Org Sync after every save/remove. Plans owns Brain plans and local drafts. Tasks owns the live Kanban overlays and guarded Create Work dispatches. Learn owns submitted materials: GitHub links, folders, site links, and PDFs. Schedule owns all-team heartbeats and check-ins. Loops owns chained agent work. Dream owns reflection reports.\n\n## Learn pipeline\n\nLearn material processing is one-at-a-time and ordered by submission, with optional Top pinning plus urgent/high/normal priority. Site and GitHub links are fetched once and stored as snapshots; PDFs are copied into IDACC storage; folders are read recursively within text, file-count, byte, symlink, and generated-folder guardrails. Extracted source is treated as untrusted data and scanned for instruction-like prompt-injection text before downstream routing.\n\nEach processed material advances through submitted -> extracted -> summarized -> classified -> researched -> compared -> recommendations. Classification routes through the default team for primary oversight plus the best matched team leads. Comparison uses active Work goals only. Deep research is recommended only after the first summary/classification pass indicates active-goal fit or novelty/security/research signal. If extraction is weak or source text looks instruction-like, Learn generates a blocking Inbox question and holds downstream routing. Otherwise it can send a no-mutation digest packet to active team leads; creating goals, task plans, feature update plans, or blocker questions remains review-gated from the recommendations list.\n\n## Guardrails\n\nWork mutating controls continue to fresh-read relevant task, plan, goal, schedule, agent, team, and hierarchy state before writes. Learn recommendations never create live manager tasks directly: accepted task or feature recommendations become draft local plans, accepted goal recommendations become draft goals with Autopilot off, and accepted question recommendations enter Inbox. Material saves, imports, priority changes, processing, and recommendation review states publish through the materials sync domain and are mirrored to the Brain timeline/memory so the dashboard and Brain stay aware of Learn state."
     },
     {
       "id": "projects",
@@ -2890,10 +2938,12 @@
         "idctl/src/api/brain.ts",
         "idctl-desktop/src/main/controlLog.ts",
         "idctl-desktop/src/shared/syncDomains.ts",
-        "idctl-desktop/src/renderer/App.tsx"
+        "idctl-desktop/src/renderer/App.tsx",
+        "idctl-desktop/src/renderer/views/Learn.tsx",
+        "idctl-desktop/src/main/materialstore.ts"
       ],
       "purpose": "Current audit record for controls that can rewrite live agent, task, project, capability, identity, or provider state and therefore need review, confirmation, or stronger state synchronization.",
-      "scope": "Documentation and implementation record for the current modified build. It records the first full dashboard-page audit, one hundred thirty-six conservative guardrail implementation passes, and the policy decisions still needed before more disruptive UX simplification.",
+      "scope": "Documentation and implementation record for the current modified build. It records the first full dashboard-page audit, one hundred forty-five conservative guardrail implementation passes, and the policy decisions still needed before more disruptive UX simplification.",
       "tabs": [
         {
           "id": "dashboard",
@@ -2903,7 +2953,7 @@
         {
           "id": "work",
           "label": "Work",
-          "description": "Task status, owner, redispatch, reconcile, create-work dispatch, plan status/dispatch, goal/loop/schedule/dream writes fresh-read live state before mutating. Create Work rechecks plan owners, direct assignment targets, fan-out team leads, and heartbeat replacement routes around confirmation. Plan dispatch now resolves the team-scoped primary lead and instructs that lead to delegate to team leads directly while coder/researcher validate completed work on return."
+          "description": "Task status, owner, redispatch, reconcile, create-work dispatch, plan status/dispatch, goal/loop/schedule/dream writes fresh-read live state before mutating. Learn now adds a one-at-a-time material ingestion queue for GitHub links, folders, site snapshots, and imported PDFs; it snapshots or imports sources into IDACC storage, scans extracted text as untrusted content, compares only against active goals, blocks injection/weak-extraction cases into Inbox questions, routes safe digest packets to active team leads without creating live tasks, and review-gates draft goals, draft task plans, feature update plans, and questions."
         },
         {
           "id": "projects",
@@ -3928,7 +3978,7 @@
         "One-hundred-forty-first guardrail pass aligns Brain Agents with exact-running lifecycle proof and fresh no-store evidence reads.",
         "One-hundred-forty-second guardrail pass adds stale-snapshot confirmations and exact-running overlay language to Brain Graph."
       ],
-      "body": "# Sync & Guardrails Audit\n\nThis page records the ongoing pass over Dashboard, Work, Projects, Health, Identity & Keys, HR Manager, Capabilities, Computer Use, Settings, and the Brain dashboard tabs. It now documents one hundred forty-four conservative guardrail implementation passes.\n\n## Current build state\n\nIDACC is sync-bus aware across dashboard, work, projects, health, plans, goals, loops, schedules, dreams, agent capability changes, and org sync. The guardrail layer favors fresh reads, preview prompts, scoped team/name authority, owner-page handoffs, locked default leadership roles, team-scoped org-instruction authority, effective-primary HR routing, route-ready backend defaults, bridge-stamped provider sync writes, explicit local image-server clear writes, Tauri/Electron team-scoped Capabilities actions, Computer Use unavailable-state guardrails outside Electron, manager-extension feature and route compatibility checks with a copyable report, first-run docs that tell operators to verify that contract, HR routing that labels stale/non-running coordinators and only promotes running agents, two-sided Brain skill sync stamps, main-process-authoritative Computer Use arming, exact-row Computer Use attach/detach, stamped armed-list refreshes, broker-acknowledged Computer Use approvals, exact-agent Computer Use rebuilds, Health all-team probe previews, post-confirm Health lifecycle/pilot checks, post-confirm Work create-dispatch checks, Work Goal Autopilot background rechecks, active Work goal sidecar sync, Projects workspace-sync previews, post-confirm Projects git/diff stamps, post-confirm Identity account/session stamps, Identity account-creation proof gates, Identity wallet-provision stale-button lockouts, Identity reviewed session-key scope/TTL snapshots, HR Manager lifecycle-only Manage, offline-visible HR Structure, Work-shared per-agent HR goals, guarded HR team rename/merge maintenance, editable secondary-validator coverage, HR Manager Route post-confirm authority rechecks, exact-roster Team ops, Capabilities implicit target-scope rechecks, Brain Fleet team-list authority, Brain Fleet exact-running status totals, Brain Fleet cached-record display guardrails, IDACC-side Brain Fleet count-drift review, Brain fallback-team partial authority, review-aware Brain dashboard launchers, Brain-side Health/Learning nav confirmations, Brain dashboard no-store cache headers, IDACC-verified Brain cache headers, documented Brain Fleet env defaults, full Brain Health approval stamps, backend-enforced Brain Health approval stamps, Brain Skills stat-boundary labels, Brain Skills graph-vs-local catalog labels, Brain Skills API authority/freshness contracts, confirmed Brain Learning replay, Brain Learning replay sample stamps, unknown-safe Brain Agents controller evidence, Brain Agents exact-running status labels, synced Brain Graph filter/export/popout links plus snapshot-age warnings, Brain Graph stale export/popout confirmations, workspace agent instruction parity, worker completion-packet discipline, preloaded starter/onchain coordination templates, team-qualified first-run default-primary routing targets, default-team secondary-validator self-descriptions, HR Manager owner-pane routing cleanup, starter-first local stack setup, exact local-stack install identity, Brain-aware skill catalog summary/delete guardrails, Capabilities Brain Skills contract write block, Capabilities catalog-delete rechecks, Settings local-discovery post-review re-probe writes, Settings image-server post-review routing checks, stack catalog install-state truth, and an observe-only Dashboard drawer before mutation, and hierarchy-resolved Dashboard lead chat across all teams, and hierarchy-resolved Work cross-team dispatch/triage targets, hierarchy-resolved Projects AI helper routing plus truthful direct-commit labels, and Health default-backbone delete lockouts.\n\nThe latest pass closes the Work goal instruction-sync gap. Work `goals:save` and `goals:remove` now sync active Work goals into Brain team-instruction memory and immediately run no-rebuild Org Sync, so agent `.id-instructions.md` sidecars update when goals are added, updated, activated, deactivated, or removed from Work.\n\n## Boundaries\n\nDashboard stays observe, talk, and refresh, with talk targets resolved through the same hierarchy source HR Manager owns. Work owns plans, goals, tasks, loops, schedules, dreams, guarded Autopilot driver actions, and hierarchy-resolved cross-team work dispatch. Projects owns workspace tracking, repo links, reviewed git actions, and guarded direct commits. Health owns fleet observation, probe/lifecycle actions, runtime draft application, and Headroom pilot policy, but it cannot delete the locked default leadership backbone or edit routing. HR Manager owns hierarchy, relay policy, selected-agent instructions, team lifecycle, org sync, and first-run lead-routing presets; Manage is lifecycle-only, while Route writes recheck hierarchy, roster, relay policy, and org config after confirmation. Capabilities owns MCP, skills, plugins, additive Brain catalog sync guarded by safe Brain core health plus current Skills contract, read-only Brain contract chips, safe Brain Core health, Brain Agents authority review, Brain Fleet count-drift and partial-authority review, exact team-scoped capability writes, implicit all-team/all-lead target-set rechecks, in-use skill delete lockouts, and guarded Brain dashboard handoffs. Identity owns local controller proof, wallet provisioning, scoped key actions, legacy authority review, reviewed session-key presets, and read-only Brain /controllers comparison. Computer Use owns the Electron local broker, blessed-agent attachment, broker-acknowledged approval flow, immediate stop controls, and unavailable-state disclosure in shells without the native broker. Settings owns local model/backend setup, local image generator routing, and read-only manager-extension compatibility checks, but keeps coordinator/routing edits handed to HR Manager; local discovery rows are snapshots and stack configured/running badges are not package install authority. Brain Fleet, Health, Skills, Learning, Agents, and Graph remain status surfaces; cached Brain Fleet rows and additive Brain skill graph nodes are diagnostic records, not live lifecycle or local-catalog authority, unless a future write flow receives its own guarded preview-and-apply path.\n\n## Open decisions\n\nDecide whether to add pure-read Brain Health/Learning summary endpoints, or keep the guarded IDACC confirmations while report routes continue to reconcile stale eval fixtures. Decide separately whether IDACC should remain pure-client with guided manager instructions, open a reviewed Terminal manager updater, or bundle a compatible manager.",
+      "body": "# Sync & Guardrails Audit\n\nThis page records the ongoing pass over Dashboard, Work, Projects, Health, Identity & Keys, HR Manager, Capabilities, Computer Use, Settings, and the Brain dashboard tabs. It now documents one hundred forty-five conservative guardrail implementation passes.\n\n## Current build state\n\nIDACC is sync-bus aware across dashboard, work, projects, health, plans, goals, loops, schedules, dreams, agent capability changes, and org sync. The guardrail layer favors fresh reads, preview prompts, scoped team/name authority, owner-page handoffs, locked default leadership roles, team-scoped org-instruction authority, effective-primary HR routing, route-ready backend defaults, bridge-stamped provider sync writes, explicit local image-server clear writes, Tauri/Electron team-scoped Capabilities actions, Computer Use unavailable-state guardrails outside Electron, manager-extension feature and route compatibility checks with a copyable report, first-run docs that tell operators to verify that contract, HR routing that labels stale/non-running coordinators and only promotes running agents, two-sided Brain skill sync stamps, main-process-authoritative Computer Use arming, exact-row Computer Use attach/detach, stamped armed-list refreshes, broker-acknowledged Computer Use approvals, exact-agent Computer Use rebuilds, Health all-team probe previews, post-confirm Health lifecycle/pilot checks, post-confirm Work create-dispatch checks, Work Goal Autopilot background rechecks, active Work goal sidecar sync, Projects workspace-sync previews, post-confirm Projects git/diff stamps, post-confirm Identity account/session stamps, Identity account-creation proof gates, Identity wallet-provision stale-button lockouts, Identity reviewed session-key scope/TTL snapshots, HR Manager lifecycle-only Manage, offline-visible HR Structure, Work-shared per-agent HR goals, guarded HR team rename/merge maintenance, editable secondary-validator coverage, HR Manager Route post-confirm authority rechecks, exact-roster Team ops, Capabilities implicit target-scope rechecks, Brain Fleet team-list authority, Brain Fleet exact-running status totals, Brain Fleet cached-record display guardrails, IDACC-side Brain Fleet count-drift review, Brain fallback-team partial authority, review-aware Brain dashboard launchers, Brain-side Health/Learning nav confirmations, Brain dashboard no-store cache headers, IDACC-verified Brain cache headers, documented Brain Fleet env defaults, full Brain Health approval stamps, backend-enforced Brain Health approval stamps, Brain Skills stat-boundary labels, Brain Skills graph-vs-local catalog labels, Brain Skills API authority/freshness contracts, confirmed Brain Learning replay, Brain Learning replay sample stamps, unknown-safe Brain Agents controller evidence, Brain Agents exact-running status labels, synced Brain Graph filter/export/popout links plus snapshot-age warnings, Brain Graph stale export/popout confirmations, workspace agent instruction parity, worker completion-packet discipline, preloaded starter/onchain coordination templates, team-qualified first-run default-primary routing targets, default-team secondary-validator self-descriptions, HR Manager owner-pane routing cleanup, starter-first local stack setup, exact local-stack install identity, Brain-aware skill catalog summary/delete guardrails, Capabilities Brain Skills contract write block, Capabilities catalog-delete rechecks, Settings local-discovery post-review re-probe writes, Settings image-server post-review routing checks, stack catalog install-state truth, and an observe-only Dashboard drawer before mutation, and hierarchy-resolved Dashboard lead chat across all teams, and hierarchy-resolved Work cross-team dispatch/triage targets, hierarchy-resolved Projects AI helper routing plus truthful direct-commit labels, and Health default-backbone delete lockouts.\n\nThe latest pass adds Work > Learn material ingestion plus restores Inbox as a top-level decision queue. Learn stores submitted GitHub/site snapshots, imported PDFs, and guarded folder extracts in IDACC storage, compares only against active goals, mirrors material state to Brain timeline/memory, routes safe digest packets to active team leads, and keeps tasks, goals, feature updates, and blocker questions behind review gates.\n\nThe previous pass closed the Work goal instruction-sync gap. Work `goals:save` and `goals:remove` now sync active Work goals into Brain team-instruction memory and immediately run no-rebuild Org Sync, so agent `.id-instructions.md` sidecars update when goals are added, updated, activated, deactivated, or removed from Work.\n\n## Boundaries\n\nDashboard stays observe, talk, and refresh, with talk targets resolved through the same hierarchy source HR Manager owns. Work owns plans, goals, tasks, loops, schedules, dreams, guarded Autopilot driver actions, and hierarchy-resolved cross-team work dispatch. Projects owns workspace tracking, repo links, reviewed git actions, and guarded direct commits. Health owns fleet observation, probe/lifecycle actions, runtime draft application, and Headroom pilot policy, but it cannot delete the locked default leadership backbone or edit routing. HR Manager owns hierarchy, relay policy, selected-agent instructions, team lifecycle, org sync, and first-run lead-routing presets; Manage is lifecycle-only, while Route writes recheck hierarchy, roster, relay policy, and org config after confirmation. Capabilities owns MCP, skills, plugins, additive Brain catalog sync guarded by safe Brain core health plus current Skills contract, read-only Brain contract chips, safe Brain Core health, Brain Agents authority review, Brain Fleet count-drift and partial-authority review, exact team-scoped capability writes, implicit all-team/all-lead target-set rechecks, in-use skill delete lockouts, and guarded Brain dashboard handoffs. Identity owns local controller proof, wallet provisioning, scoped key actions, legacy authority review, reviewed session-key presets, and read-only Brain /controllers comparison. Computer Use owns the Electron local broker, blessed-agent attachment, broker-acknowledged approval flow, immediate stop controls, and unavailable-state disclosure in shells without the native broker. Settings owns local model/backend setup, local image generator routing, and read-only manager-extension compatibility checks, but keeps coordinator/routing edits handed to HR Manager; local discovery rows are snapshots and stack configured/running badges are not package install authority. Brain Fleet, Health, Skills, Learning, Agents, and Graph remain status surfaces; cached Brain Fleet rows and additive Brain skill graph nodes are diagnostic records, not live lifecycle or local-catalog authority, unless a future write flow receives its own guarded preview-and-apply path.\n\n## Open decisions\n\nDecide whether to add pure-read Brain Health/Learning summary endpoints, or keep the guarded IDACC confirmations while report routes continue to reconcile stale eval fixtures. Decide separately whether IDACC should remain pure-client with guided manager instructions, open a reviewed Terminal manager updater, or bundle a compatible manager.",
       "implementedOneHundredTwentyFifthPass": [
         "HR Manager Manage: removed the duplicate Instructions mode so Manage is lifecycle-only Team ops for start/stop/probe/rebuild/delete.",
         "HR Manager Structure/Route: added explicit Manage handoffs to Structure for selected-agent instruction edits and Route for hierarchy/org sync, keeping prompt writes and lifecycle actions on separate owner panes.",
@@ -4060,6 +4110,17 @@
         "Org sync: after goal-memory sync, IDACC runs no-rebuild Org Sync so agent .id-instructions.md sidecars receive active-goal additions, edits, status removals, and deletes without surprise restarts.",
         "Boundary: draft, done, and archived goals remain in Work but are not inserted into agent instructions until they are active.",
         "Validation: npm run typecheck passed in idctl-desktop after the Work goal instruction-sync gap fix."
+      ],
+      "implementedOneHundredFortyFifthPass": [
+        "Work: added a Learn tab for GitHub links, folders, site snapshots, and imported PDFs with submitted -> extracted -> summarized -> classified -> researched -> compared -> recommendations pipeline state.",
+        "Learn store: snapshots web pages once, copies PDFs into IDACC storage, recursively reads folders within file/byte/symlink/generated-folder guardrails, scans extracted text for instruction-like prompt-injection patterns, and compares material only against active Work goals.",
+        "Learn routing: automatically routes non-blocked digest packets to active team leads without creating live tasks; weak extraction or injection warnings create blocking review questions instead.",
+        "Review gates: accepted Learn questions go to Inbox, accepted goal recommendations create draft goals with Autopilot off, and accepted task/feature recommendations create draft local plans rather than live manager tasks.",
+        "Inbox: restored as a top-level nav item under Dashboard, badges manager plus local question count, and lists local questions across teams so Learn blockers stay visible.",
+        "Validation: npm run typecheck passed in idctl-desktop after the Learn/InBox sync pass."
+      ],
+      "implemented": [
+        "One-hundred-forty-fifth guardrail pass adds Work Learn material ingestion with active-goal-only comparison, untrusted-source blocks, review-gated outputs, Brain material memory, and top-level Inbox visibility."
       ]
     },
     {
@@ -4123,5 +4184,5 @@
       "body": "# Wiki\n\nWiki is both the human documentation page and the editable schematic for the Control Center UI. Each article explains the operator purpose of a page; the structured sections below preserve tabs, tiles, fields, controls, displays, routes, and source files for implementation detail.\n\n## Use it for\n\n- Search pages, controls, routes, source files, and notes from inside the desktop app.\n- Confirm how a UI surface is intended to behave before editing code or filing follow-up work.\n- Keep app navigation metadata and human documentation in one reviewed JSON artifact.\n\n## Editing rule\n\nThe desktop app hot-reload polls CONTROL_CENTER_WIKI.json through the main-process wiki bridge. Sidebar labels, icons, order, and visibility still come from pages[].nav for implemented routes, so documentation edits must preserve that metadata and keep every page.body non-empty."
     }
   ],
-  "appVersion": "0.1.364"
+  "appVersion": "0.1.365"
 }

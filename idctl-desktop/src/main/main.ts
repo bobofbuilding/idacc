@@ -21,6 +21,7 @@ import { listLoops, getLoop, saveLoop, removeLoop, type Loop } from './loopstore
 import { listGoals, getGoal, saveGoal, removeGoal, type Goal } from './goalstore.ts';
 import { listDreams, getDream, saveDream, removeDream, type Dream } from './dreamstore.ts';
 import { listQuestions, addQuestion, removeQuestion, type BlockerQuestion } from './questionstore.ts';
+import { getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, removeMaterial, saveMaterial, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
 import { generateImage, readImage, imageModels, getImageServer, detectImageServer } from './images.ts';
 import { readWiki } from './wiki.ts';
 import { loadSettings, removeEvmRpc, saveSettings, setUpdateSettings, setImageServer, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
@@ -638,6 +639,32 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return addQuestion(args[0] as BlockerQuestion);
     case 'questions:remove':
       return removeQuestion(args[0] as string);
+    // Learn materials: Work > Learn queue, guarded extraction, active-goal comparison, review gates.
+    case 'materials:list':
+      return listMaterials();
+    case 'materials:get':
+      return getMaterial(args[0] as string);
+    case 'materials:save':
+      return saveMaterial(args[0] as CreateMaterialInput | LearnMaterial);
+    case 'materials:remove':
+      return removeMaterial(args[0] as string);
+    case 'materials:pickFiles':
+      return pickMaterialFiles();
+    case 'materials:pickFolder':
+      return pickMaterialFolder();
+    case 'materials:importFiles':
+      return importMaterialFiles(
+        Array.isArray(args[0]) ? args[0].map(String) : [],
+        (args[1] as { priority?: LearnPriority; prioritized?: boolean } | undefined) ?? {},
+      );
+    case 'materials:priority':
+      return updateMaterialPriority(args[0] as string, args[1] as LearnPriority, args[2] as boolean | undefined);
+    case 'materials:processNext':
+      return processNextMaterial((args[0] as ProcessMaterialContext | undefined) ?? {});
+    case 'materials:process':
+      return processMaterial(args[0] as string, (args[1] as ProcessMaterialContext | undefined) ?? {});
+    case 'materials:markRecommendation':
+      return markRecommendation(args[0] as string, args[1] as string, args[2] as LearnReviewState);
     case 'image:generate':
       return generateImage(args[0] as string, args[1] as string | undefined);
     case 'image:read':

@@ -1,0 +1,441 @@
+import { useEffect, useMemo, useState } from 'react';
+import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
+import type {
+  LearnMaterial,
+  LearnMaterialKind,
+  LearnPriority,
+  LearnRecommendation,
+  LearnReviewState,
+} from '../../main/materialstore.ts';
+
+type PlanStatus = 'draft' | 'active' | 'done' | 'archived';
+interface PlanRevision { version: number; at: number; note: string; content: string }
+interface Plan {
+  id: string;
+  title: string;
+  request: string;
+  agent?: string;
+  team: string;
+  status: PlanStatus;
+  content: string;
+  version: number;
+  revisions: PlanRevision[];
+  tags?: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
+interface Goal {
+  id: string;
+  title: string;
+  idea: string;
+  agent?: string;
+  team: string;
+  status: GoalStatus;
+  autopilot?: boolean;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const PRIORITIES: LearnPriority[] = ['urgent', 'high', 'normal'];
+const KIND_LABEL: Record<LearnMaterialKind, string> = { github: 'GitHub', folder: 'Folder', site: 'Site', pdf: 'PDF' };
+const STATUS_CLASS: Record<string, string> = {
+  queued: 'st-paused',
+  processing: 'st-active',
+  ready: 'st-done',
+  blocked: 'st-blocked',
+  failed: 'st-blocked',
+};
+
+function newId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function ago(ts: number): string {
+  if (!ts) return '-';
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+function clip(s: string, n: number): string {
+  const t = String(s || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? `${t.slice(0, n)}...` : t;
+}
+
+function sourceKind(source: string, picked: 'auto' | LearnMaterialKind): LearnMaterialKind | undefined {
+  if (picked !== 'auto') return picked;
+  try {
+    const u = new URL(source);
+    return /(^|\.)github\.com$|(^|\.)githubusercontent\.com$/i.test(u.hostname) ? 'github' : 'site';
+  } catch {
+    return undefined;
+  }
+}
+
+export function Learn({ store }: { store: FleetStore }) {
+  const syncVersion = useSyncVersion(['materials', 'work', 'brain', 'inbox']);
+  const [materials, setMaterials] = useState<LearnMaterial[]>([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const [source, setSource] = useState('');
+  const [title, setTitle] = useState('');
+  const [kind, setKind] = useState<'auto' | LearnMaterialKind>('auto');
+  const [priority, setPriority] = useState<LearnPriority>('normal');
+  const [pinTop, setPinTop] = useState(false);
+  const coordinator = resolveCoordinator(store.agents, store.coordinator) ?? store.agents[0]?.name ?? '';
+
+  async function reload() {
+    const list = await call<LearnMaterial[]>('materials:list').catch(() => []);
+    setMaterials(list);
+    setSelectedId((cur) => (cur && list.some((m) => m.id === cur) ? cur : (list[0]?.id ?? '')));
+  }
+
+  useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [syncVersion, store.lastUpdated]);
+
+  const selected = useMemo(() => materials.find((m) => m.id === selectedId) ?? materials[0] ?? null, [materials, selectedId]);
+  const processing = materials.find((m) => m.status === 'processing');
+  const context = {
+    knownTeams: store.teams.map((t) => t.name).filter(Boolean),
+    defaultTeam: store.team ?? 'default',
+  };
+
+  async function addUrl() {
+    const src = source.trim();
+    if (!src) { setNote('add a source first'); return; }
+    setBusy(true); setNote('');
+    try {
+      const material = await call<LearnMaterial>('materials:save', {
+        title: title.trim() || undefined,
+        source: src,
+        kind: sourceKind(src, kind),
+        priority,
+        prioritized: pinTop,
+      });
+      setSource(''); setTitle(''); setSelectedId(material.id); setNote('material added');
+      await reload();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addFolder() {
+    setBusy(true); setNote('');
+    try {
+      const folder = await call<string | null>('materials:pickFolder');
+      if (!folder) return;
+      const material = await call<LearnMaterial>('materials:save', { source: folder, kind: 'folder', priority, prioritized: pinTop });
+      setSelectedId(material.id); setNote('folder added');
+      await reload();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importPdfs() {
+    setBusy(true); setNote('');
+    try {
+      const picked = await call<{ path: string }[]>('materials:pickFiles');
+      if (!picked.length) return;
+      const imported = await call<LearnMaterial[]>('materials:importFiles', picked.map((p) => p.path), { priority, prioritized: pinTop });
+      setSelectedId(imported[0]?.id ?? selectedId);
+      setNote(`${imported.length} material${imported.length === 1 ? '' : 's'} imported`);
+      await reload();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setMaterialPriority(m: LearnMaterial, p: LearnPriority, pinned = m.prioritized) {
+    setBusy(true); setNote('');
+    try {
+      const updated = await call<LearnMaterial>('materials:priority', m.id, p, pinned);
+      setSelectedId(updated.id);
+      await reload();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function processNext() {
+    if (processing) { setSelectedId(processing.id); setNote('a material is already processing'); return; }
+    setBusy(true); setNote('processing next material...');
+    try {
+      const material = await call<LearnMaterial | null>('materials:processNext', context);
+      setNote(material ? `processed ${material.title}` : 'queue is empty');
+      if (material) setSelectedId(material.id);
+      await reload();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function processSelected() {
+    if (!selected) return;
+    if (processing && processing.id !== selected.id) { setSelectedId(processing.id); setNote('a material is already processing'); return; }
+    setBusy(true); setNote(`processing ${selected.title}...`);
+    try {
+      const material = await call<LearnMaterial>('materials:process', selected.id, context);
+      setNote(`processed ${material.title}`);
+      setSelectedId(material.id);
+      await reload();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSelected() {
+    if (!selected) return;
+    if (!window.confirm(`Remove Learn material "${selected.title}"?`)) return;
+    setBusy(true); setNote('');
+    try {
+      await call('materials:remove', selected.id);
+      setSelectedId('');
+      await reload();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function markRecommendation(rec: LearnRecommendation, state: LearnReviewState) {
+    if (!selected) return;
+    const updated = await call<LearnMaterial>('materials:markRecommendation', selected.id, rec.id, state);
+    setSelectedId(updated.id);
+    await reload();
+  }
+
+  async function acceptRecommendation(rec: LearnRecommendation) {
+    if (!selected) return;
+    const team = rec.team || selected.classification?.routedTeams?.[0] || store.team || 'default';
+    const now = Date.now();
+    try {
+      if (rec.type === 'question') {
+        await call('questions:add', {
+          question: rec.body || rec.title,
+          options: rec.options?.length ? rec.options : ['Approve', 'Hold off'],
+          agent: '',
+          taskRef: `learn:${selected.id}`,
+          taskTitle: selected.title,
+          team,
+        });
+      } else if (rec.type === 'goal') {
+        if (!window.confirm(`Create a draft goal from "${rec.title}"?`)) return;
+        const goal: Goal = {
+          id: newId('goal'),
+          title: rec.title,
+          idea: rec.body,
+          agent: coordinator,
+          team,
+          status: 'draft',
+          autopilot: false,
+          content: rec.body,
+          createdAt: now,
+          updatedAt: now,
+        };
+        await call('goals:save', goal);
+      } else if (rec.type === 'task' || rec.type === 'feature') {
+        if (!window.confirm(`Create a draft ${rec.type === 'feature' ? 'feature update plan' : 'task plan'} from "${rec.title}"?`)) return;
+        const plan: Plan = {
+          id: newId('plan'),
+          title: rec.title,
+          request: rec.body,
+          agent: coordinator,
+          team,
+          status: 'draft',
+          content: rec.body,
+          version: 1,
+          revisions: [{ version: 1, at: now, note: `Drafted from Learn material ${selected.title}`, content: rec.body }],
+          tags: ['learn', rec.type === 'feature' ? 'feature-update' : 'draft-task', selected.kind],
+          createdAt: now,
+          updatedAt: now,
+        };
+        await call('plans:save', plan);
+      }
+      await markRecommendation(rec, 'accepted');
+      setNote(`accepted ${rec.type} recommendation`);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return (
+    <div className="stack">
+      <section className="card">
+        <h3>Learn intake</h3>
+        <div className="kv" style={{ gridTemplateColumns: '90px 1fr 86px 112px 74px auto auto', gap: 8, alignItems: 'center' }}>
+          <span className="muted small">Source</span>
+          <input value={source} disabled={busy} placeholder="GitHub URL or site URL" onChange={(e) => setSource(e.target.value)} />
+          <select className="cell-select" value={kind} disabled={busy} onChange={(e) => setKind(e.target.value as 'auto' | LearnMaterialKind)}>
+            <option value="auto">auto</option>
+            <option value="github">GitHub</option>
+            <option value="site">Site</option>
+          </select>
+          <select className="cell-select" value={priority} disabled={busy} onChange={(e) => setPriority(e.target.value as LearnPriority)}>
+            {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <label className="small"><input type="checkbox" checked={pinTop} disabled={busy} onChange={(e) => setPinTop(e.target.checked)} /> top</label>
+          <button className="btn primary" disabled={busy || !source.trim()} onClick={() => void addUrl()}>Add</button>
+          <button className="btn" disabled={busy} onClick={() => void addFolder()}>Folder</button>
+          <span className="muted small">Title</span>
+          <input style={{ gridColumn: 'span 3' }} value={title} disabled={busy} placeholder="optional title" onChange={(e) => setTitle(e.target.value)} />
+          <button className="btn" disabled={busy} onClick={() => void importPdfs()}>Import PDF</button>
+          <button className="btn" disabled={busy} onClick={() => void processNext()}>{busy ? 'Working...' : 'Process next'}</button>
+          <span className="muted small">{note}</span>
+        </div>
+      </section>
+
+      <div className="split">
+        <section className="card grow">
+          <h3>Queue <span className="muted small">- {materials.length} material{materials.length === 1 ? '' : 's'}</span></h3>
+          {materials.length ? (
+            <table className="grid">
+              <thead>
+                <tr>
+                  <th>Material</th>
+                  <th>Priority</th>
+                  <th>Stage</th>
+                  <th>Route</th>
+                  <th>Submitted</th>
+                </tr>
+              </thead>
+              <tbody>
+                {materials.map((m) => (
+                  <tr key={m.id} className={selected?.id === m.id ? 'sel' : ''} onClick={() => setSelectedId(m.id)}>
+                    <td>
+                      <b>{m.prioritized ? 'Top - ' : ''}{m.title}</b>
+                      <div className="muted small">{KIND_LABEL[m.kind]} - {clip(m.source, 70)}</div>
+                    </td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <select className="cell-select small" value={m.priority} disabled={busy} onChange={(e) => void setMaterialPriority(m, e.target.value as LearnPriority)}>
+                        {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+                      </select>{' '}
+                      <button className="btn small" disabled={busy} title={m.prioritized ? 'Remove top priority pin' : 'Prioritize to top'} onClick={() => void setMaterialPriority(m, m.priority, !m.prioritized)}>{m.prioritized ? 'Unpin' : 'Top'}</button>
+                    </td>
+                    <td><span className={`status ${STATUS_CLASS[m.status] ?? ''}`}>{m.status}</span><div className="muted small">{m.processingTag || m.stage}</div></td>
+                    <td className="small">{m.classification?.routedTeams?.join(', ') || '-'}</td>
+                    <td className="muted small" title={new Date(m.createdAt).toLocaleString()}>{ago(m.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="muted center pad">No Learn materials yet.</div>
+          )}
+        </section>
+
+        <section className="card grow">
+          <h3>Review <span className="muted small">{selected ? `- ${selected.title}` : ''}</span></h3>
+          {selected ? (
+            <div className="stack">
+              <div className="row-actions" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn primary" disabled={busy || selected.status === 'processing'} onClick={() => void processSelected()}>
+                  {selected.status === 'queued' || selected.status === 'failed' ? 'Process selected' : 'Reprocess'}
+                </button>
+                <button className="btn" disabled={busy} onClick={() => void removeSelected()}>Remove</button>
+                {selected.snapshotPath ? <span className="muted small">snapshot: {selected.snapshotPath}</span> : null}
+              </div>
+              <div className="kv" style={{ gridTemplateColumns: '92px 1fr', gap: '6px 12px' }}>
+                <span className="muted small">Status</span><b>{selected.status} / {selected.stage} {selected.processingTag ? `- ${selected.processingTag}` : ''}</b>
+                <span className="muted small">Topics</span><span>{selected.classification?.topics?.join(', ') || '-'}</span>
+                <span className="muted small">Teams</span><span>{selected.classification?.routedTeams?.join(', ') || '-'}</span>
+                <span className="muted small">Goals</span><span>{selected.activeGoalMatches?.length ? selected.activeGoalMatches.map((g) => `${g.team}/${g.title}`).join(', ') : '-'}</span>
+              </div>
+
+              {selected.injectionWarnings?.length || selected.extractionWarnings?.length ? (
+                <div className="status-error small">
+                  {[...(selected.injectionWarnings ?? []), ...(selected.extractionWarnings ?? [])].slice(0, 8).map((w) => <div key={w}>{w}</div>)}
+                </div>
+              ) : null}
+
+              {selected.summary ? (
+                <pre className="plan-content" style={{ whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto' }}>{selected.summary}</pre>
+              ) : null}
+              {selected.comparison ? (
+                <pre className="plan-content" style={{ whiteSpace: 'pre-wrap', maxHeight: 160, overflow: 'auto' }}>{selected.comparison}</pre>
+              ) : null}
+
+              <div>
+                <h3>Recommendations</h3>
+                {selected.recommendations?.length ? selected.recommendations.map((rec) => (
+                  <RecommendationRow
+                    key={rec.id}
+                    rec={rec}
+                    disabled={busy}
+                    onAccept={() => void acceptRecommendation(rec)}
+                    onDismiss={() => void markRecommendation(rec, 'dismissed')}
+                  />
+                )) : <div className="muted small">No recommendations yet.</div>}
+              </div>
+
+              {selected.routing?.length ? (
+                <div>
+                  <h3>Routing</h3>
+                  {selected.routing.map((r) => (
+                    <div className="small" key={`${r.team}-${r.lead ?? r.status}`}>
+                      <b>{r.team}</b> - {r.status}{r.lead ? ` via ${r.lead}` : ''}{r.queryId ? ` - ${r.queryId}` : ''}{r.detail ? ` - ${r.detail}` : ''}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <div>
+                <h3>Progress</h3>
+                {(selected.progress ?? []).slice().reverse().slice(0, 12).map((p) => (
+                  <div className="small" key={`${p.at}-${p.stage}-${p.note}`}>
+                    <span className="muted">{new Date(p.at).toLocaleTimeString()} - {p.stage} - </span>{p.note}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="muted center pad">Select a material.</div>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function RecommendationRow({ rec, disabled, onAccept, onDismiss }: {
+  rec: LearnRecommendation;
+  disabled: boolean;
+  onAccept: () => void;
+  onDismiss: () => void;
+}) {
+  const stateClass = rec.reviewState === 'accepted' ? 'st-done' : rec.reviewState === 'dismissed' ? 'st-blocked' : rec.blocking ? 'st-blocked' : 'st-paused';
+  return (
+    <div className="inbox-row">
+      <div className="row-actions" style={{ justifyContent: 'space-between', gap: 10 }}>
+        <div>
+          <div className="inbox-from">{rec.type}{rec.team ? ` - ${rec.team}` : ''}</div>
+          <div className="inbox-msg b">{rec.title}</div>
+        </div>
+        <span className={`status ${stateClass}`}>{rec.reviewState}{rec.blocking ? ' / blocks' : ''}</span>
+      </div>
+      <div className="small" style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{rec.body}</div>
+      {rec.options?.length ? <div className="muted small" style={{ marginTop: 6 }}>{rec.options.join(' / ')}</div> : null}
+      <div className="row-actions" style={{ marginTop: 8, gap: 6 }}>
+        <button className="btn small primary" disabled={disabled || rec.reviewState !== 'draft'} onClick={onAccept}>Accept</button>
+        <button className="btn small" disabled={disabled || rec.reviewState !== 'draft'} onClick={onDismiss}>Dismiss</button>
+      </div>
+    </div>
+  );
+}
