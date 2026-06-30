@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.368] — 2026-06-30
+- Refactor Health token throughput and Headroom readiness
+
 ## [0.1.367] — 2026-06-30
 - Add Inbox blocker duplicate guards with scoped fingerprint folding
 

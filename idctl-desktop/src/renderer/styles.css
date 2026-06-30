@@ -374,8 +374,17 @@ button.chip.incompat:hover { border-color: var(--line); }
   .wiki-index { position: static; max-height: none; }
 }
 
-/* Health → local-model token usage (gauge + window cards) */
-.usage-grid { display: flex; flex-wrap: wrap; gap: 14px; align-items: stretch; margin-top: 6px; }
+/* Health -> token throughput + Headroom pilot */
+.health-section { display: flex; flex-direction: column; gap: 12px; }
+.health-section-head { align-items: baseline; flex-wrap: wrap; }
+.health-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.health-metric { border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; background: var(--bg-2); min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.health-metric.primary { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: color-mix(in srgb, var(--accent) 8%, var(--bg-2)); }
+.health-metric span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.health-metric b { font-size: 18px; color: var(--text); overflow-wrap: anywhere; }
+.health-metric small { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.usage-grid { display: flex; flex-wrap: wrap; gap: 14px; align-items: stretch; margin-top: 0; }
+.usage-breakdown { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
 .gauge-wrap { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 190px; }
 .gauge { width: 180px; height: 98px; }
 .gauge-track { fill: none; stroke: var(--bg-3); stroke-width: 12; stroke-linecap: round; }
@@ -384,14 +393,35 @@ button.chip.incompat:hover { border-color: var(--line); }
 .gauge-unit { fill: var(--muted); font-size: 11px; }
 .gauge-cap { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .usage-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; background: var(--bg-2); min-width: 150px; display: flex; flex-direction: column; gap: 4px; }
+.usage-list { min-width: 0; }
 .usage-card-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .usage-stat { display: flex; align-items: baseline; gap: 6px; }
 .usage-stat b { font-size: 22px; }
 .usage-agent-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.usage-agent-row .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.headroom-grid { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(320px, 1.2fr); gap: 14px; align-items: start; }
+.headroom-readiness { border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px; background: var(--bg-2); display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.headroom-readiness.ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.headroom-readiness.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.headroom-readiness b { font-size: 18px; color: var(--text); }
+.headroom-readiness small { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.headroom-checks { display: flex; flex-wrap: wrap; gap: 6px; }
+.headroom-check { border: 1px solid var(--line); border-radius: 999px; padding: 3px 7px; color: var(--muted); font-size: 11px; max-width: 100%; overflow-wrap: anywhere; }
+.headroom-check.ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); color: var(--ok); }
+.headroom-check.warn { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); color: var(--warn); }
+.headroom-check b { font-size: 11px; color: inherit; }
+.headroom-status-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.headroom-status-strip span { border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; color: var(--muted); font-size: 12px; }
+.headroom-policy { grid-template-columns: 110px 1fr; gap: 8px 12px; }
 .headroom-advanced { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
 .headroom-advanced summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 600; }
 .headroom-advanced .kv { align-items: start; }
 .headroom-trust-detail { display: flex; flex-direction: column; gap: 7px; align-items: flex-start; }
+
+@media (max-width: 860px) {
+  .headroom-grid { grid-template-columns: 1fr; }
+  .usage-agent-row { align-items: flex-start; flex-wrap: wrap; }
+}
 
 /* Cross-team relay mode picker */
 .relay-modes { display: flex; flex-wrap: wrap; gap: 8px; }

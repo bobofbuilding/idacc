@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { call, type FleetStore } from '../store.ts';
-import type { UsageReport, UsageWindow } from '../../../../idctl/src/api/client.ts';
+import type { UsageAgent, UsageModel, UsageReport, UsageWindow } from '../../../../idctl/src/api/client.ts';
 import type { HeadroomPilotSettings } from '../../../../idctl/src/settings/schema.ts';
 import { AgentTable } from './AgentTable.tsx';
 
@@ -9,6 +9,14 @@ type HeadroomStatus = {
   proxy: { url: string; reachable: boolean; httpStatus?: number; error?: string };
 };
 type ProbeTarget = { id?: string; name: string; team: string; status?: string };
+type UsageRow = UsageAgent | UsageModel;
+type HeadroomTone = 'ok' | 'warn' | 'muted';
+type HeadroomReadiness = {
+  tone: HeadroomTone;
+  label: string;
+  detail: string;
+  checks: Array<{ label: string; value: string; tone: HeadroomTone }>;
+};
 
 const HEADROOM_ROUTE_LABEL: Record<HeadroomPilotSettings['mode'], string> = {
   off: 'Off',
@@ -32,10 +40,34 @@ function fmt(n: number): string {
 function fmtTps(n: number): string {
   return n >= 100 ? String(Math.round(n)) : n.toFixed(1);
 }
+function fmtPct(n: number): string {
+  return `${clampInt(n, 0, 100)}%`;
+}
 function niceMax(v: number): number {
   const m = Math.max(v, 10);
   for (const c of [25, 50, 100, 200, 300, 500, 1000]) if (m <= c) return c;
   return Math.ceil(m / 500) * 500;
+}
+function ageLabel(ms: number | null | undefined): string {
+  if (!ms) return '';
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
+}
+function epochMs(value: number | null | undefined): number | null {
+  if (!value || !Number.isFinite(value)) return null;
+  return value < 10_000_000_000 ? value * 1000 : value;
+}
+function totalTokens(row: UsageRow): number {
+  return row.total ?? row.output ?? 0;
+}
+function rowName(row: UsageRow): string {
+  return 'model' in row ? row.model : row.agent;
+}
+function topUsage<T extends UsageRow>(rows?: T[]): T | undefined {
+  return [...(rows ?? [])].sort((a, b) => totalTokens(b) - totalTokens(a))[0];
+}
+function sortedUsage<T extends UsageRow>(rows?: T[]): T[] {
+  return [...(rows ?? [])].sort((a, b) => totalTokens(b) - totalTokens(a));
 }
 
 /** Semicircular throughput gauge (SVG; fill grows left→right via dash offset). */
@@ -105,6 +137,64 @@ function normalizePilot(next: HeadroomPilotSettings): HeadroomPilotSettings {
 function pilotRouteLabel(pilot: HeadroomPilotSettings): string {
   return pilot.enabled ? HEADROOM_ROUTE_LABEL[pilot.mode] : HEADROOM_ROUTE_LABEL.off;
 }
+function pilotNeedsCli(pilot: HeadroomPilotSettings): boolean {
+  return pilot.enabled && (pilot.mode === 'mcp' || pilot.mode === 'mcp-and-proxy');
+}
+function pilotNeedsProxy(pilot: HeadroomPilotSettings): boolean {
+  return pilot.enabled && (pilot.mode === 'proxy' || pilot.mode === 'mcp-and-proxy');
+}
+function headroomReadiness(status: HeadroomStatus | null | undefined, pilot: HeadroomPilotSettings | null): HeadroomReadiness {
+  const checks: HeadroomReadiness['checks'] = [
+    {
+      label: 'CLI',
+      value: status === undefined ? 'checking' : status?.cli.found ? (status.cli.version || 'installed') : 'not found',
+      tone: status?.cli.found ? 'ok' : status === undefined ? 'muted' : 'warn',
+    },
+    {
+      label: 'Proxy',
+      value: status === undefined ? 'checking' : status?.proxy.reachable ? `reachable${status.proxy.httpStatus ? ` HTTP ${status.proxy.httpStatus}` : ''}` : 'not reachable',
+      tone: status?.proxy.reachable ? 'ok' : status === undefined ? 'muted' : 'warn',
+    },
+    {
+      label: 'Safety',
+      value: pilot ? HEADROOM_SAFETY_LABEL[pilot.telemetry] : 'policy unavailable',
+      tone: pilot?.telemetry === 'on' ? 'ok' : pilot ? 'muted' : 'warn',
+    },
+  ];
+  if (!pilot || !pilot.enabled || pilot.mode === 'off') {
+    return {
+      tone: 'muted',
+      label: 'Direct route',
+      detail: 'Pilot routing is off; agents keep using their configured model routes.',
+      checks,
+    };
+  }
+  if (!status) {
+    return {
+      tone: 'warn',
+      label: 'Cannot verify Headroom',
+      detail: 'Refresh Headroom status before relying on this pilot route.',
+      checks,
+    };
+  }
+  const missing: string[] = [];
+  if (pilotNeedsCli(pilot) && !status.cli.found) missing.push('CLI');
+  if (pilotNeedsProxy(pilot) && !status.proxy.reachable) missing.push('proxy');
+  if (missing.length) {
+    return {
+      tone: 'warn',
+      label: 'Pilot not ready',
+      detail: `${pilotRouteLabel(pilot)} needs ${missing.join(' and ')} before canary routing should be trusted.`,
+      checks,
+    };
+  }
+  return {
+    tone: 'ok',
+    label: 'Pilot ready',
+    detail: `${pilotRouteLabel(pilot)} can be used as a staged route with ${fmtPct(pilot.canaryPercent)} canary and ${fmtPct(pilot.holdoutPercent)} holdout.`,
+    checks,
+  };
+}
 function describePilotChanges(before: HeadroomPilotSettings, afterDraft: HeadroomPilotSettings): string[] {
   const after = normalizePilot(afterDraft);
   const rows: string[] = [];
@@ -134,27 +224,299 @@ function probeTargetStamp(targets: ProbeTarget[]): string {
     .join('|');
 }
 
+function UsageList({ title, rows, empty }: { title: string; rows: UsageRow[]; empty: string }) {
+  const shown = sortedUsage(rows).slice(0, 8);
+  return (
+    <div className="usage-card usage-list">
+      <div className="usage-card-title">{title}</div>
+      {shown.length ? shown.map((row) => (
+        <div className="usage-agent-row" key={rowName(row)}>
+          <span className="b mono">{rowName(row)}</span>
+          <span className="muted small grow">{fmt(totalTokens(row))} tokens · {row.count}q</span>
+          <span className="ok-text small" title="average output throughput rate">{fmtTps(row.avgTps)} tok/s</span>
+        </div>
+      )) : <span className="muted small">{empty}</span>}
+    </div>
+  );
+}
+
+function UsageSection({
+  usage,
+  usageAt,
+  error,
+  onRefresh,
+}: {
+  usage: UsageReport | null | undefined;
+  usageAt: number;
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  const gaugeVal = usage ? (usage.recent?.tps ?? usage.day.avgTps ?? 0) : 0;
+  const gaugeMax = usage ? niceMax(Math.max(gaugeVal, usage.day.avgTps, usage.week.avgTps)) : 100;
+  const localAgents = usage?.day.agents ?? [];
+  const localModels = usage?.day.models ?? [];
+  const topAgent = topUsage(localAgents);
+  const topModel = topUsage(localModels);
+  const recentAt = epochMs(usage?.recent?.at);
+  const throughputLabel = usage?.recent?.tps != null ? 'Recent sample' : '24h average';
+
+  return (
+    <section className="card health-section">
+      <div className="row-actions health-section-head">
+        <h3 className="grow">Token throughput</h3>
+        <span className="muted small" title="auto-refreshes every 15s and after probes">{usageAt ? `updated ${ageLabel(usageAt)}` : usage === undefined ? 'loading...' : ''}</span>
+        <button className="btn small" onClick={onRefresh}>Refresh</button>
+      </div>
+      {usage === undefined ? (
+        <p className="muted small">Loading local-model usage...</p>
+      ) : usage === null ? (
+        <p className="muted small">
+          {error
+            ? `Token usage refresh failed: ${error}`
+            : <>Token usage is not available on this manager (no <span className="mono">/usage</span> route).</>}
+        </p>
+      ) : usage.week.count === 0 ? (
+        <p className="muted small">
+          No local-model activity recorded yet. Probe or message a local-model agent and Health will start tracking throughput. Cloud API runtimes are excluded.
+        </p>
+      ) : (
+        <>
+          <div className="health-metrics">
+            <div className="health-metric primary">
+              <span>{throughputLabel}</span>
+              <b>{fmtTps(gaugeVal)} tok/s</b>
+              <small>{usage.recent ? `${usage.recent.agent} · ${usage.recent.model}${recentAt ? ` · ${ageLabel(recentAt)}` : ''}` : 'fallback from 24h average'}</small>
+            </div>
+            <div className="health-metric">
+              <span>24h tokens</span>
+              <b>{fmt(usage.day.total)}</b>
+              <small>{usage.day.count} turns · {fmt(usage.day.avgPerQuery)}/turn</small>
+            </div>
+            <div className="health-metric">
+              <span>7d tokens</span>
+              <b>{fmt(usage.week.total)}</b>
+              <small>{usage.week.count} turns · {fmtTps(usage.week.avgTps)} tok/s avg</small>
+            </div>
+            <div className="health-metric">
+              <span>Top spender</span>
+              <b>{topAgent ? rowName(topAgent) : 'none'}</b>
+              <small>{topAgent ? `${fmt(totalTokens(topAgent))} tokens` : 'no 24h agent data'}</small>
+            </div>
+            <div className="health-metric">
+              <span>Top model</span>
+              <b>{topModel ? rowName(topModel) : 'none'}</b>
+              <small>{topModel ? `${fmt(totalTokens(topModel))} tokens` : 'no 24h model data'}</small>
+            </div>
+          </div>
+          <div className="usage-grid">
+            <div className="gauge-wrap">
+              <Gauge value={gaugeVal} max={gaugeMax} />
+              <div className="gauge-cap">throughput</div>
+              <div className="muted small" style={{ textAlign: 'center' }}>
+                24h avg {fmtTps(usage.day.avgTps)} · 7d avg {fmtTps(usage.week.avgTps)} tok/s
+              </div>
+            </div>
+            <WindowCard title="Last 24 hours" w={usage.day} />
+            <WindowCard title="Last 7 days" w={usage.week} />
+          </div>
+          <div className="usage-breakdown">
+            <UsageList title="By model - 24h" rows={localModels} empty="No model breakdown from this manager yet." />
+            <UsageList title="By agent - 24h" rows={localAgents} empty="No agent breakdown from this manager yet." />
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function HeadroomSection({
+  headroom,
+  headroomAt,
+  pilot,
+  draft,
+  pilotDirty,
+  pilotChanges,
+  pilotSaving,
+  onDraft,
+  onApply,
+  onRevert,
+  onRefresh,
+}: {
+  headroom: HeadroomStatus | null | undefined;
+  headroomAt: number;
+  pilot: HeadroomPilotSettings | null | undefined;
+  draft: HeadroomPilotSettings | null;
+  pilotDirty: boolean;
+  pilotChanges: string[];
+  pilotSaving: boolean;
+  onDraft: (partial: Partial<HeadroomPilotSettings>) => void;
+  onApply: () => void;
+  onRevert: () => void;
+  onRefresh: () => void;
+}) {
+  const readiness = headroomReadiness(headroom, draft);
+  const pilotRoute = draft?.enabled ? draft.mode : 'off';
+  return (
+    <section className="card health-section">
+      <div className="row-actions health-section-head">
+        <h3 className="grow">Headroom pilot</h3>
+        <span className="muted small">{headroomAt ? `updated ${ageLabel(headroomAt)}` : headroom === undefined ? 'checking...' : ''}</span>
+        {draft?.enabled ? <button className="btn small" disabled={pilotSaving} onClick={() => onDraft({ mode: 'off', enabled: false })}>Disable pilot</button> : null}
+        {pilotDirty ? (
+          <>
+            <button className="btn small" disabled={pilotSaving} onClick={onRevert}>Revert</button>
+            <button className="btn primary small" disabled={pilotSaving} onClick={onApply}>{pilotSaving ? 'Saving...' : 'Apply policy'}</button>
+          </>
+        ) : null}
+        <button className="btn small" onClick={onRefresh}>Refresh</button>
+      </div>
+      <div className="headroom-grid">
+        <div className={`headroom-readiness ${readiness.tone}`}>
+          <span className="usage-card-title">Pilot readiness</span>
+          <b>{readiness.label}</b>
+          <small>{readiness.detail}</small>
+          <div className="headroom-checks">
+            {readiness.checks.map((check) => (
+              <span className={`headroom-check ${check.tone}`} key={check.label}>
+                {check.label}: <b>{check.value}</b>
+              </span>
+            ))}
+          </div>
+        </div>
+        <div>
+          {headroom === undefined ? (
+            <p className="muted small">Checking local Headroom status...</p>
+          ) : headroom === null ? (
+            <p className="muted small">Headroom status is unavailable in this build.</p>
+          ) : (
+            <div className="headroom-status-strip">
+              <span>CLI <b className={headroom.cli.found ? 'ok-text' : 'warn-text'}>{headroom.cli.found ? (headroom.cli.version || 'installed') : 'not installed'}</b></span>
+              <span>Proxy <b className={headroom.proxy.reachable ? 'ok-text' : 'muted'}>{headroom.proxy.reachable ? `reachable${headroom.proxy.httpStatus ? ` HTTP ${headroom.proxy.httpStatus}` : ''}` : 'direct fallback'}</b></span>
+            </div>
+          )}
+          {pilot && draft ? (
+            <>
+              <div className="kv headroom-policy">
+                <span>Route</span>
+                <b className="row-actions" style={{ justifyContent: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+                  <select
+                    className="cell-select"
+                    value={pilotRoute}
+                    disabled={pilotSaving}
+                    onChange={(e) => {
+                      const mode = e.target.value as HeadroomPilotSettings['mode'];
+                      onDraft({ mode, enabled: mode !== 'off' });
+                    }}
+                  >
+                    <option value="off">off</option>
+                    <option value="mcp">MCP tools only</option>
+                    <option value="proxy">local proxy route</option>
+                    <option value="mcp-and-proxy">MCP + proxy</option>
+                  </select>
+                  <span className={draft.enabled ? 'ok-text small' : 'muted small'}>
+                    {draft.enabled ? HEADROOM_ROUTE_LABEL[draft.mode] : 'direct route'}
+                  </span>
+                </b>
+                <span>Rollout</span>
+                <b className="row-actions" style={{ justifyContent: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+                  <label className="muted small">canary <input type="number" min={0} max={100} style={{ width: 58 }} value={draft.canaryPercent} disabled={pilotSaving} onChange={(e) => onDraft({ canaryPercent: Number(e.target.value) })} />%</label>
+                  <label className="muted small">holdout <input type="number" min={0} max={100} style={{ width: 58 }} value={draft.holdoutPercent} disabled={pilotSaving} onChange={(e) => onDraft({ holdoutPercent: Number(e.target.value) })} />%</label>
+                  <label className="muted small">min context <input type="number" min={1000} step={1000} style={{ width: 84 }} value={draft.minContextTokens} disabled={pilotSaving} onChange={(e) => onDraft({ minContextTokens: Number(e.target.value) })} /> tokens</label>
+                </b>
+                <span>State</span>
+                <b className="row-actions" style={{ justifyContent: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+                  <select
+                    className="cell-select"
+                    value={draft.stateIsolation}
+                    disabled={pilotSaving}
+                    onChange={(e) => onDraft({ stateIsolation: e.target.value as HeadroomPilotSettings['stateIsolation'] })}
+                  >
+                    <option value="per-agent">per agent</option>
+                    <option value="per-team">per team</option>
+                  </select>
+                  <span className="muted small">{draft.stateIsolation === 'per-agent' ? 'separate state per agent' : 'shared within each team'}</span>
+                </b>
+                <span>Guardrails</span>
+                <b className="muted small">
+                  {protectedCategorySummary(draft.passthroughContent)} · {draft.validationGates.length} gates · direct fallback
+                </b>
+              </div>
+              <details className="headroom-advanced">
+                <summary>Advanced policy</summary>
+                <div className="kv" style={{ gridTemplateColumns: '150px 1fr', gap: '7px 12px', marginTop: 10 }}>
+                  <span>MCP route</span>
+                  <b className="muted small">Capabilities &gt; MCP servers &gt; Headroom (context compression)</b>
+                  <span>Raw proxy URL</span>
+                  <b className="muted small mono">{headroom?.proxy.url ?? 'unavailable'}</b>
+                  <span>Workspace state path</span>
+                  <b>
+                    <input
+                      style={{ width: '100%' }}
+                      placeholder="optional state root, e.g. ~/.headroom/idacc"
+                      value={draft.stateRoot ?? ''}
+                      disabled={pilotSaving}
+                      onChange={(e) => onDraft({ stateRoot: e.target.value })}
+                    />
+                  </b>
+                  <span>Safety mode</span>
+                  <b className="row-actions" style={{ justifyContent: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+                    <select
+                      className="cell-select"
+                      value={draft.telemetry}
+                      disabled={pilotSaving}
+                      style={{ minWidth: 150 }}
+                      onChange={(e) => onDraft({ telemetry: e.target.value as HeadroomPilotSettings['telemetry'] })}
+                    >
+                      <option value="verify-before-pilot">verify build first</option>
+                      <option value="off">force off</option>
+                      <option value="on">operator enabled</option>
+                    </select>
+                    <span className="muted small">{HEADROOM_SAFETY_LABEL[draft.telemetry]}</span>
+                  </b>
+                  <span>Protected content</span>
+                  <b className="headroom-trust-detail">
+                    <span className="muted small">Protected content stays on direct routes unless a task explicitly opts in.</span>
+                    <span className="chips">{draft.passthroughContent.map((x) => <span className="chip tag" key={x}>{x}</span>)}</span>
+                    <span className="muted small">Validation gates: {draft.validationGates.join(' · ')}</span>
+                  </b>
+                </div>
+              </details>
+              {pilotDirty ? <p className="muted small">Unsaved pilot policy changes: {pilotChanges.length}</p> : null}
+              {pilotSaving ? <p className="muted small">Saving pilot policy...</p> : null}
+            </>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function Health({ store, navigate }: { store: FleetStore; navigate?: (view: string) => void }) {
   const [probing, setProbing] = useState<string | null>(null);
   const [usage, setUsage] = useState<UsageReport | null | undefined>(undefined); // undefined = loading
+  const [usageError, setUsageError] = useState<string | null>(null);
   const [headroom, setHeadroom] = useState<HeadroomStatus | null | undefined>(undefined);
   const [pilot, setPilot] = useState<HeadroomPilotSettings | null | undefined>(undefined);
   const [pilotDraft, setPilotDraft] = useState<HeadroomPilotSettings | null>(null);
   const [pilotSaving, setPilotSaving] = useState(false);
   const [usageAt, setUsageAt] = useState<number>(0); // when usage was last refreshed
+  const [headroomAt, setHeadroomAt] = useState<number>(0);
   const [, setTick] = useState(0); // 1 Hz re-render so "updated Ns ago" stays live
 
   const loadUsage = useCallback(async () => {
     try {
       setUsage(await call<UsageReport | null>('usage'));
+      setUsageError(null);
       setUsageAt(Date.now());
-    } catch {
+    } catch (err) {
       setUsage(null);
+      setUsageError(err instanceof Error ? err.message : String(err));
+      setUsageAt(Date.now());
     }
   }, []);
-  // Auto-refresh: on the fleet poll AND on a 15s timer, so new agents/models (and fresh
-  // generations) show up on their own — no manual refresh needed.
-  useEffect(() => { void loadUsage(); }, [loadUsage, store.lastUpdated]);
+  // Auto-refresh usage on open/manager reconnect and every 15s. Avoid tying this
+  // to the 3s fleet poll; throughput is its own observability stream.
+  useEffect(() => { void loadUsage(); }, [loadUsage, store.connection, store.managerUrl]);
 
   const loadHeadroom = useCallback(async () => {
     try {
@@ -165,20 +527,24 @@ export function Health({ store, navigate }: { store: FleetStore; navigate?: (vie
       setHeadroom(status);
       setPilot(policy);
       setPilotDraft(policy);
+      setHeadroomAt(Date.now());
     } catch {
       setHeadroom(null);
       setPilot(null);
       setPilotDraft(null);
+      setHeadroomAt(Date.now());
     }
   }, []);
-  useEffect(() => { void loadHeadroom(); }, [loadHeadroom, store.lastUpdated]);
+  // Headroom policy is local settings, not fleet liveness. Refresh on open or
+  // manager context changes, and manually from the panel; do not wipe staged edits
+  // on the normal fleet poll.
+  useEffect(() => { void loadHeadroom(); }, [loadHeadroom, store.connection, store.managerUrl]);
 
   useEffect(() => {
     const iv = setInterval(() => void loadUsage(), 15000);
     const t = setInterval(() => setTick((n) => n + 1), 1000);
     return () => { clearInterval(iv); clearInterval(t); };
   }, [loadUsage]);
-  const agoStr = (ms: number) => { if (!ms) return ''; const s = Math.max(0, Math.round((Date.now() - ms) / 1000)); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
 
   // The fleet roster is the shared, live AgentTable below. Probing routes to the agent's
   // own team (holistic) or the active team — it exercises the dispatch path; the agent's
@@ -242,6 +608,10 @@ export function Health({ store, navigate }: { store: FleetStore; navigate?: (vie
     const next = normalizePilot(pilotDraft);
     const changes = describePilotChanges(pilot, next);
     if (!changes.length) return;
+    const reviewedStatus = await call<HeadroomStatus>('headroom:status').catch(() => headroom ?? null);
+    setHeadroom(reviewedStatus);
+    setHeadroomAt(Date.now());
+    const readiness = headroomReadiness(reviewedStatus, next);
     const reviewedPilot = await call<HeadroomPilotSettings>('headroom:pilot').catch(() => null);
     if (!reviewedPilot) {
       window.alert('Could not verify the current Headroom pilot policy before applying. Refresh Health and try again.');
@@ -255,6 +625,9 @@ export function Health({ store, navigate }: { store: FleetStore; navigate?: (vie
     }
     const ok = window.confirm([
       'Apply Headroom pilot policy?',
+      '',
+      `Readiness: ${readiness.label}`,
+      readiness.detail,
       '',
       'Changes:',
       ...changes.map((row) => `- ${row}`),
@@ -284,15 +657,9 @@ export function Health({ store, navigate }: { store: FleetStore; navigate?: (vie
       setPilotSaving(false);
     }
   }
-  // Gauge reads the most recent live throughput, falling back to the 24h average.
-  const gaugeVal = usage ? (usage.recent?.tps ?? usage.day.avgTps ?? 0) : 0;
-  const gaugeMax = usage ? niceMax(Math.max(gaugeVal, usage.day.avgTps, usage.week.avgTps)) : 100;
-  const localAgents = usage?.day.agents ?? [];
-  const localModels = usage?.day.models ?? [];
   const draft = pilotDraft ?? pilot ?? null;
   const pilotChanges = pilot && draft ? describePilotChanges(pilot, draft) : [];
   const pilotDirty = pilotChanges.length > 0;
-  const pilotRoute = draft?.enabled ? draft.mode : 'off';
   async function refreshHeadroom() {
     if (pilotDirty && !window.confirm('Discard unsaved Headroom pilot edits and refresh status?')) return;
     await loadHeadroom();
@@ -307,182 +674,21 @@ export function Health({ store, navigate }: { store: FleetStore; navigate?: (vie
         </button>
       </header>
 
-      <section className="card">
-        <div className="row-actions" style={{ alignItems: 'baseline' }}>
-          <h3 className="grow">Local-model token usage <span className="muted small">· all local models (Ollama · LM Studio · OpenAI-compatible)</span></h3>
-          <span className="muted small" title="auto-refreshes on the fleet poll + every 15s">{usageAt ? `updated ${agoStr(usageAt)}` : usage === undefined ? 'loading…' : ''}</span>
-        </div>
-        {usage === undefined ? (
-          <p className="muted small">Loading…</p>
-        ) : usage === null ? (
-          <p className="muted small">Token usage isn't available on this manager (no <span className="mono">/usage</span> route).</p>
-        ) : usage.week.count === 0 ? (
-          <p className="muted small">
-            No local-model activity recorded yet. Token usage is captured from every <b>local-model</b> agent (Ollama, LM Studio, or any OpenAI-compatible local server) — probe or message one and this fills in. (Cloud API runtimes are intentionally excluded.)
-          </p>
-        ) : (
-          <div className="usage-grid">
-            <div className="gauge-wrap">
-              <Gauge value={gaugeVal} max={gaugeMax} />
-              <div className="gauge-cap">
-                throughput <span className="muted small">(rate)</span>
-                {usage.recent ? <span className="muted small"> · last run: {usage.recent.agent}</span> : null}
-              </div>
-              <div className="muted small" style={{ textAlign: 'center' }}>
-                24h avg {fmtTps(usage.day.avgTps)} · 7d avg {fmtTps(usage.week.avgTps)} tok/s
-              </div>
-            </div>
-            <WindowCard title="Last 24 hours" w={usage.day} />
-            <WindowCard title="Last 7 days" w={usage.week} />
-            {localModels.length > 0 ? (
-              <div className="usage-card grow">
-                <div className="usage-card-title">By model · 24h <span className="muted small">(total tokens · rate)</span></div>
-                {localModels.slice(0, 8).map((m) => (
-                  <div className="usage-agent-row" key={m.model}>
-                    <span className="b mono">{m.model}</span>
-                    <span className="muted small grow">{fmt(m.total ?? m.output)} tokens · {m.count}q</span>
-                    <span className="ok-text small" title="average throughput rate (not a total)">{fmtTps(m.avgTps)} tok/s avg</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-            {localAgents.length > 0 ? (
-              <div className="usage-card grow">
-                <div className="usage-card-title">By agent · 24h <span className="muted small">(total tokens · rate)</span></div>
-                {localAgents.slice(0, 8).map((a) => (
-                  <div className="usage-agent-row" key={a.agent}>
-                    <span className="b">{a.agent}</span>
-                    <span className="muted small grow">{fmt(a.total ?? a.output)} tokens · {a.count}q</span>
-                    <span className="ok-text small" title="average throughput rate (not a total)">{fmtTps(a.avgTps)} tok/s avg</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        )}
-      </section>
+      <UsageSection usage={usage} usageAt={usageAt} error={usageError} onRefresh={() => void loadUsage()} />
 
-      <section className="card">
-        <div className="row-actions" style={{ alignItems: 'baseline' }}>
-          <h3 className="grow">Headroom pilot</h3>
-          {pilotDirty ? (
-            <>
-              <button className="btn small" disabled={pilotSaving} onClick={() => setPilotDraft(pilot ?? null)}>Revert</button>
-              <button className="btn primary small" disabled={pilotSaving} onClick={() => void applyPilotPolicy()}>{pilotSaving ? 'Saving…' : 'Apply policy'}</button>
-            </>
-          ) : null}
-          <button className="btn small" onClick={() => void refreshHeadroom()}>Refresh</button>
-        </div>
-        {headroom === undefined ? (
-          <p className="muted small">Checking local Headroom status…</p>
-        ) : headroom === null ? (
-          <p className="muted small">Headroom status is unavailable in this build.</p>
-        ) : (
-          <div className="kv" style={{ gridTemplateColumns: '130px 1fr', gap: '5px 12px' }}>
-            <span>CLI</span>
-            <b className={headroom.cli.found ? 'ok-text' : 'muted'}>
-              {headroom.cli.found ? `installed${headroom.cli.version ? ` · ${headroom.cli.version}` : ''}` : 'not installed'}
-            </b>
-            <span>Proxy</span>
-            <b className={headroom.proxy.reachable ? 'ok-text' : 'muted'}>
-              {headroom.proxy.reachable
-                ? `reachable${headroom.proxy.httpStatus ? ` · HTTP ${headroom.proxy.httpStatus}` : ''}`
-                : 'passthrough recommended'}
-            </b>
-          </div>
-        )}
-        {pilot && draft ? (
-          <>
-            <div className="kv" style={{ gridTemplateColumns: '150px 1fr', gap: '7px 12px', marginTop: 12 }}>
-              <span>Enable pilot</span>
-              <b className="row-actions" style={{ justifyContent: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
-                <select
-                  className="cell-select"
-                  value={pilotRoute}
-                  disabled={pilotSaving}
-                  onChange={(e) => {
-                    const mode = e.target.value as HeadroomPilotSettings['mode'];
-                    updatePilotDraft({ mode, enabled: mode !== 'off' });
-                  }}
-                >
-                  <option value="off">off</option>
-                  <option value="mcp">MCP tools only</option>
-                  <option value="proxy">local proxy route</option>
-                  <option value="mcp-and-proxy">MCP + proxy</option>
-                </select>
-                <span className={draft.enabled ? 'ok-text small' : 'muted small'}>
-                  {draft.enabled ? `enabled: ${HEADROOM_ROUTE_LABEL[draft.mode]}` : 'disabled by default'}
-                </span>
-              </b>
-              <span>Sampling</span>
-              <b className="row-actions" style={{ justifyContent: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
-                <label className="muted small">canary <input type="number" min={0} max={100} style={{ width: 58 }} value={draft.canaryPercent} disabled={pilotSaving} onChange={(e) => updatePilotDraft({ canaryPercent: Number(e.target.value) })} />%</label>
-                <label className="muted small">holdout <input type="number" min={0} max={100} style={{ width: 58 }} value={draft.holdoutPercent} disabled={pilotSaving} onChange={(e) => updatePilotDraft({ holdoutPercent: Number(e.target.value) })} />%</label>
-                <label className="muted small">min context <input type="number" min={1000} step={1000} style={{ width: 84 }} value={draft.minContextTokens} disabled={pilotSaving} onChange={(e) => updatePilotDraft({ minContextTokens: Number(e.target.value) })} /> tokens</label>
-              </b>
-              <span>Workspace state</span>
-              <b className="row-actions" style={{ justifyContent: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
-                <select
-                  className="cell-select"
-                  value={draft.stateIsolation}
-                  disabled={pilotSaving}
-                  onChange={(e) => updatePilotDraft({ stateIsolation: e.target.value as HeadroomPilotSettings['stateIsolation'] })}
-                >
-                  <option value="per-agent">per agent</option>
-                  <option value="per-team">per team</option>
-                </select>
-                <span className="muted small">{draft.stateIsolation === 'per-agent' ? 'separate state per agent' : 'shared within each team'}</span>
-              </b>
-              <span>Trust &amp; routing</span>
-              <b className="muted small">
-                {protectedCategorySummary(draft.passthroughContent)} · {draft.validationGates.length} validation gates · direct fallback
-              </b>
-            </div>
-            <details className="headroom-advanced">
-              <summary>Advanced</summary>
-              <div className="kv" style={{ gridTemplateColumns: '150px 1fr', gap: '7px 12px', marginTop: 10 }}>
-                <span>Route</span>
-                <b className="muted small">Capabilities &gt; MCP servers &gt; Headroom (context compression)</b>
-                <span>Raw proxy URL</span>
-                <b className="muted small mono">{headroom?.proxy.url ?? 'unavailable'}</b>
-                <span>Workspace state path</span>
-                <b>
-                  <input
-                    style={{ width: '100%' }}
-                    placeholder="optional state root, e.g. ~/.headroom/idacc"
-                    value={draft.stateRoot ?? ''}
-                    disabled={pilotSaving}
-                    onChange={(e) => updatePilotDraft({ stateRoot: e.target.value })}
-                  />
-                </b>
-                <span>Safety mode</span>
-                <b className="row-actions" style={{ justifyContent: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
-                  <select
-                    className="cell-select"
-                    value={draft.telemetry}
-                    disabled={pilotSaving}
-                    style={{ minWidth: 150 }}
-                    onChange={(e) => updatePilotDraft({ telemetry: e.target.value as HeadroomPilotSettings['telemetry'] })}
-                  >
-                    <option value="verify-before-pilot">verify build first</option>
-                    <option value="off">force off</option>
-                    <option value="on">operator enabled</option>
-                  </select>
-                  <span className="muted small">{HEADROOM_SAFETY_LABEL[draft.telemetry]}</span>
-                </b>
-                <span>Trust &amp; routing</span>
-                <b className="headroom-trust-detail">
-                  <span className="muted small">Optional only. Keep protected content on direct routes unless a task explicitly opts in.</span>
-                  <span className="chips">{draft.passthroughContent.map((x) => <span className="chip tag" key={x}>{x}</span>)}</span>
-                  <span className="muted small">Validation gates: {draft.validationGates.join(' · ')}</span>
-                </b>
-              </div>
-            </details>
-            {pilotDirty ? <p className="muted small">Unsaved pilot policy changes: {pilotChanges.length}</p> : null}
-            {pilotSaving ? <p className="muted small">Saving pilot policy…</p> : null}
-          </>
-        ) : null}
-      </section>
+      <HeadroomSection
+        headroom={headroom}
+        headroomAt={headroomAt}
+        pilot={pilot}
+        draft={draft}
+        pilotDirty={pilotDirty}
+        pilotChanges={pilotChanges}
+        pilotSaving={pilotSaving}
+        onDraft={updatePilotDraft}
+        onApply={() => void applyPilotPolicy()}
+        onRevert={() => setPilotDraft(pilot ?? null)}
+        onRefresh={() => void refreshHeadroom()}
+      />
 
       {/* The fleet roster is the shared AgentTable — runtime/model dropdowns + lifecycle
           actions + per-row Probe, live & holistic (all teams grouped in "All teams" view). */}
