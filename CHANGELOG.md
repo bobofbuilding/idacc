@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.310] — 2026-06-30
+- HR Manager routing owner panes
+
 ## [0.1.309] — 2026-06-30
 - Default team validator role wording
 

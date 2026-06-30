@@ -885,32 +885,6 @@ export function Teams({ store, focus, onFocusHandled }: { store: FleetStore; foc
     }
     return fresh;
   }
-  async function makePrimary() {
-    const team = store.team ?? 'default';
-    if (team !== PRIMARY_TEAM) {
-      setMsg(`Make primary blocked: the fleet primary is locked to the ${PRIMARY_TEAM} team. Set ${team}'s coordinator here, then use relay/org sync so default/lead can delegate to it.`);
-      return;
-    }
-    const freshHier = await ensureHierarchyFresh('Make primary');
-    if (!freshHier) return;
-    const teamAgents = agentsForTeam(await freshHrGroups(), team);
-    const agent = teamAgents.find((a) => isDefaultLead(team, a.name))?.name ?? '';
-    if (!agent) { setMsg(`Make primary blocked: ${team}/${DEFAULT_LEAD} is missing. Build or restore the default leadership team first.`); return; }
-    const freshAgent = await ensureHierarchyAgent('Make primary', team, agent);
-    if (!freshAgent) return;
-    const beforeCoord = freshHier.coordinators[team] ?? '(none)';
-    const preview = [
-      `Make ${team}/${freshAgent.name} the primary cross-team lead?`,
-      '',
-      `Primary: ${primaryLabel(freshHier.primary)} -> ${team}/${freshAgent.name}`,
-      `Coordinator for ${team}: ${beforeCoord} -> ${freshAgent.name}`,
-      '',
-      'This changes fleet hierarchy routing. Run Org sync afterward to push the hierarchy into agent goals and the brain.',
-    ].join('\n');
-    if (!window.confirm(preview)) return;
-    await call('coordinator:setPrimary', team, freshAgent.name);
-    await loadHier();
-  }
   /** Set (or change) a team's coordinator — the lead the rest of the team reports to. */
   async function setTeamCoordinator(team: string, agent: string) {
     if (!agent) return;
@@ -1129,8 +1103,8 @@ export function Teams({ store, focus, onFocusHandled }: { store: FleetStore; foc
         <section className="card">
           <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
             <h3 style={{ margin: 0 }}>Team structure — live</h3>
-            <button className="btn" disabled={busy || activeTeam !== PRIMARY_TEAM} onClick={() => void makePrimary()} title={activeTeam === PRIMARY_TEAM ? 'Lock default/lead as the fleet primary and default coordinator' : 'The fleet primary is locked to the default team'}>
-              ⭑ Set default/lead primary
+            <button className="btn" disabled={busy} onClick={() => { setTab('route'); setRoutePane('hierarchy'); }} title="Open Route > Hierarchy & sync to review primary and coordinator changes">
+              Open hierarchy
             </button>
           </div>
           <p className="muted small" style={{ marginTop: -2 }}>
@@ -1156,8 +1130,8 @@ export function Teams({ store, focus, onFocusHandled }: { store: FleetStore; foc
                     const leadLocked = selectedAgent.team === PRIMARY_TEAM && !isDefaultLead(selectedAgent.team, selectedAgent.agent.name);
                     return (
                       <button className={`star${isLead ? ' on' : ''}`} disabled={busy || isLead || leadLocked}
-                        title={leadLocked ? `${PRIMARY_TEAM} coordinator is locked to ${PRIMARY_TEAM}/${DEFAULT_LEAD}` : isLead ? `${selectedAgent.agent.name} is ${selectedAgent.team}'s lead (coordinator)` : `Make ${selectedAgent.agent.name} the lead of ${selectedAgent.team}`}
-                        onClick={() => void setTeamCoordinator(selectedAgent!.team, selectedAgent!.agent.name)}>{isLead ? '★ lead' : '☆ make lead'}</button>
+                        title={leadLocked ? `${PRIMARY_TEAM} coordinator is locked to ${PRIMARY_TEAM}/${DEFAULT_LEAD}` : isLead ? `${selectedAgent.agent.name} is ${selectedAgent.team}'s lead (coordinator)` : `Open Route > Hierarchy & sync to set ${selectedAgent.agent.name} as ${selectedAgent.team}'s lead`}
+                        onClick={() => { setTab('route'); setRoutePane('hierarchy'); }}>{isLead ? '★ lead' : '☆ set in Route'}</button>
                     );
                   })()}
                   <select className="cell-select" disabled={busy || selectedAgentLocked || selectedAgent.reassignTargets.length === 0} value="" title={selectedAgentLocked ? 'Locked default leadership roles cannot be moved out of default' : 'Reassign to another team'}
@@ -1421,19 +1395,6 @@ export function Teams({ store, focus, onFocusHandled }: { store: FleetStore; foc
                       <button className="btn" onClick={() => setAgentEditing(null)}>Cancel</button>
                     </div>
                   ) : null}
-                </span>
-                <span>team</span>
-                <span>
-                  <select
-                    className="cell-select"
-                    disabled={busy || roleLocked || otherTeams.length === 0}
-                    value=""
-                    title={roleLocked ? 'Locked default leadership roles cannot be moved out of default' : otherTeams.length === 0 ? 'No other teams to move to' : `Reassign ${a.name} to another team (rebuilds it there)`}
-                    onChange={(e) => { const to = e.target.value; e.currentTarget.value = ''; void moveAgentToTeam(a.id, a.name, activeTeam, to); }}
-                  >
-                    <option value="">{roleLocked ? 'locked role' : otherTeams.length === 0 ? 'no other teams' : 'reassign to…'}</option>
-                    {otherTeams.map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
                 </span>
               </div>
             );
