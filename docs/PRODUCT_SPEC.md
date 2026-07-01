@@ -491,9 +491,8 @@ Manager; this is the plumbing.)
   CLIs,
   and keep managed account launches inside the Settings row even when the vendor CLI owns the final
   TUI/device-flow prompt. Sign out is shown only for installed/linked providers with a reviewed
-  logout command. Perplexity appears as an account-backed API shortcut that opens its API settings
-  and selects the Perplexity Inference backend preset; the browser chat session is not treated as a
-  routable CLI runtime.
+  logout command. API-key and metered-provider accounts, including Perplexity, stay under
+  **Inference backends** rather than the subscription sign-in card.
   Agent Harness pickers only offer runtimes that Settings can currently prove through sign-in,
   install, route-ready API backend, or synced local-backend evidence; existing assigned runtimes
   remain visible as the current value for review. API/cloud provider lanes remain visible in Health

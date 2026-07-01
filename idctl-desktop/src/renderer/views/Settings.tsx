@@ -190,9 +190,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     { key: 'kiro-cli', label: 'Kiro CLI', runtime: 'kiro-cli' },
     { key: 'q', label: 'Amazon Q CLI (legacy)', runtime: 'q' },
   ];
-  const subscriptionApiRows = [
-    { providerId: 'perplexity', label: 'Perplexity', runtime: 'api/perplexity', env: 'PERPLEXITY_API_KEY' },
-  ];
   const [subs, setSubs] = useState<Record<SubKey, Sub> | null>(null);
   const [subsBusy, setSubsBusy] = useState(false);
   const [subBusy, setSubBusy] = useState<string | null>(null);
@@ -312,16 +309,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     } finally {
       setSubBusy(null);
     }
-  }
-  function configureSubscriptionApiProvider(providerId: string) {
-    const entry = findProvider(providerId);
-    if (!entry) return;
-    pickProvider(providerId);
-    setProviderMsg(`${entry.name} selected below. Paste the API key or set PERPLEXITY_API_KEY, then Add and Connect & sync.`);
-    setSubNotice(`${entry.name} uses the API backend path for IDACC routing. Your Perplexity web account can generate the key, but the browser session itself is not a CLI runtime.`);
-    window.setTimeout(() => {
-      document.getElementById('inference-backends')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 0);
   }
   async function saveUpdate(partial: Record<string, unknown>) {
     const u = await call<typeof upd>('update:setSettings', partial);
@@ -1583,7 +1570,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       <section className="card">
         <h3>Managed subscription sign-ins</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Local CLI sign-ins and subscription-backed runtimes are launched and tracked from IDACC. Signed in means live CLI status; account linked means safe local account evidence. Account-backed API shortcuts route into <b>Inference backends</b>. Account status and model freshness auto-check on open, focus, and every 5 minutes.
+          Local CLI sign-ins and subscription-backed runtimes are launched and tracked from IDACC. Signed in means live CLI status; account linked means safe local account evidence. API-key providers are configured under <b>Inference backends</b>. Account status and model freshness auto-check on open, focus, and every 5 minutes.
         </p>
         {visibleManagedSubRows.map(({ key, label, runtime }) => {
           const s = subs?.[key];
@@ -1623,33 +1610,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                     ) : null}
                   </span>
                 ) : null}
-              </b>
-            </div>
-          );
-        })}
-        {subscriptionApiRows.map(({ providerId, label, runtime, env }) => {
-          const entry = findProvider(providerId);
-          const configured = entry ? providers.find((p) => p.name === entry.id || normUrl(p.baseUrl) === normUrl(entry.baseUrl)) : undefined;
-          const ready = configured ? providerRouteReady(configured) : false;
-          const keyReady = configured ? providerKeyReady(configured) : false;
-          return (
-            <div className="kv" key={providerId} style={{ marginBottom: 8 }}>
-              <span>{label}</span>
-              <b>
-                <span className={ready ? 'ok-text' : configured ? keyReady ? 'warn-text' : 'warn-text' : 'muted'}>
-                  {ready ? '● API backend ready' : configured ? keyReady ? '○ connect & sync needed' : '○ API key needed' : '○ API account setup'}
-                </span>
-                <span className="muted small" style={{ marginLeft: 8 }} title={`Use ${env} or paste a key into Inference backends`}>
-                  <span className="mono">{runtime}</span>
-                </span>
-                <span className="row-actions" style={{ display: 'inline-flex', marginLeft: 12 }}>
-                  <button className="btn" onClick={() => configureSubscriptionApiProvider(providerId)}>
-                    {configured ? 'Review backend' : 'Configure API backend'}
-                  </button>
-                  <a className="btn" href="https://www.perplexity.ai/settings/api" target="_blank" rel="noreferrer">
-                    API settings
-                  </a>
-                </span>
               </b>
             </div>
           );
