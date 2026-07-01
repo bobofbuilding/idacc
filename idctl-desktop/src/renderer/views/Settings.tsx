@@ -140,7 +140,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [updStatus, setUpdStatus] = useState<{ latest?: string; available?: boolean; staged?: boolean; checking?: boolean; error?: string; lastChecked?: number } | null>(null);
   const [managerCaps, setManagerCaps] = useState<ManagerCapabilities | undefined>(undefined);
   const [managerReportCopied, setManagerReportCopied] = useState(false);
-  // subscriptions (runtime OAuth: Claude / ChatGPT)
+  // managed subscription OAuth runtimes
   type Sub = { provider: string; loggedIn: boolean; installed?: boolean; plan?: string; email?: string; method?: string; detail?: string };
   type SubKey = 'claude' | 'chatgpt' | 'cursor';
   const [subs, setSubs] = useState<{ claude: Sub; chatgpt: Sub; cursor: Sub } | null>(null);
@@ -1348,9 +1348,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       </section>
 
       <section className="card">
-        <h3>Subscriptions (Claude · ChatGPT · Cursor)</h3>
+        <h3>Managed subscription sign-ins</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Sign in with your subscription — these power the <span className="mono">claude-*</span>, <span className="mono">codex</span> and <span className="mono">cursor-cli</span> runtimes via OAuth (no API key, no metering). Separate from the metered API backends below.
+          CLI OAuth that IDACC can inspect and launch today: <span className="mono">claude-*</span>, <span className="mono">codex</span>, and <span className="mono">cursor-cli</span>. Other paid/API provider accounts are configured under <b>Inference backends</b>.
         </p>
         {([
           ['claude', 'Claude (Anthropic)', subs?.claude],
@@ -1386,7 +1386,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           </div>
         ))}
         <div className="row-actions" style={{ marginTop: 6 }}>
-          <span className="muted small grow">Sign-in opens your browser to complete OAuth; status refreshes after.</span>
+          <span className="muted small grow">This is not the full provider universe; it only shows subscription CLIs with managed sign-in/status support.</span>
           <button className="btn" disabled={subsBusy} onClick={() => void recheckSubs()}>{subsBusy ? 'Checking…' : 'Re-check'}</button>
         </div>
       </section>

@@ -1,10 +1,11 @@
 /**
- * Subscription auth for the Claude / ChatGPT runtimes. These use the CLIs'
- * OAuth login (claude.ai / ChatGPT), NOT the metered API — so an agent on the
- * claude-* or codex runtime runs on the user's subscription with no API key.
+ * Managed subscription auth for the CLI runtimes IDACC can operate today. These
+ * use the CLIs' OAuth login, NOT metered API keys — so an agent on the matching
+ * runtime runs on the user's subscription with no key stored in IDACC.
  *
  *   claude auth status | login | logout   → Claude (claude.ai) subscription
  *   codex  login status | login | logout  → ChatGPT subscription
+ *   cursor-agent status | login | logout  → Cursor subscription
  *
  * status is read-only; signin spawns the CLI which opens the browser for the
  * user to authenticate (we never handle credentials ourselves).
