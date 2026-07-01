@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.394] — 2026-07-01
+- Simplify Settings first-run readiness actions
+
 ## [0.1.393] — 2026-07-01
 - Make Settings readiness default backend picker neutral
 

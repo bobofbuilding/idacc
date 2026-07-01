@@ -839,7 +839,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           ? `${STARTER_LOCAL_MODEL_ID} is installed; add the Ollama backend so agents can route to it.`
           : `Download ${STARTER_LOCAL_MODEL_ID}; IDACC will add Ollama after the pull succeeds.`;
   const providersNeedingKeys = enabledProviders.filter((p) => providerNeedsKey(p) && !providerKeyReady(p)).length;
-  const syncCandidate = defaultProvider && !defaultRouteReady ? defaultProvider : enabledProviders.find((p) => providerKeyReady(p) && !providerRouteReady(p));
   const textRuntimeReady = store.connection === 'online' && (defaultRouteReady || routeReadyProviders.length > 0);
   const managerFeatureSet = new Set(managerCaps?.features ?? []);
   const managerRouteSet = new Set((managerCaps?.routes ?? []).map(controlCenterRouteKey));
@@ -894,6 +893,26 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         ? 'ready'
         : 'needs backend';
   const readinessTone = store.connection !== 'online' || managerExtensionTone === 'err' ? 'err' : textRuntimeReady && managerExtensionReady ? 'ok' : 'warn';
+  const readinessNeedsBackend = store.connection === 'online' && managerExtensionReady && !textRuntimeReady;
+  const readinessSyncCandidate = !defaultRouteReady && defaultProvider && providerKeyReady(defaultProvider)
+    ? defaultProvider
+    : readinessNeedsBackend
+      ? enabledProviders.find((p) => providerKeyReady(p) && !providerRouteReady(p))
+      : undefined;
+  const showReadinessStarterDownload = readinessNeedsBackend && providers.length === 0 && !starterInstalled && !!starterModel;
+  const showReadinessAddOllama = readinessNeedsBackend && providers.length === 0 && starterInstalled && !localBackendConfigured;
+  const showReadinessScan = readinessNeedsBackend && providers.length === 0 && !readinessSyncCandidate && !showReadinessStarterDownload && !showReadinessAddOllama;
+  const showReadinessManagerCheck = managerCaps === undefined || !managerExtensionReady;
+  const showReadinessManagerReport = managerCaps !== undefined && !managerExtensionReady;
+  const readinessHint = !managerExtensionReady
+    ? 'Resolve manager compatibility first; diagnostics appear only while this checkpoint is not green.'
+    : textRuntimeReady
+      ? explicitDefaultNeeded
+        ? 'Ready. Pin a default backend only if you want deterministic routing.'
+        : 'Ready. Detailed provider tools stay in their sections below.'
+      : providers.length
+        ? 'Add missing keys or sync a backend in Inference backends below.'
+        : 'Add a backend below, or use the starter local path if you want offline inference.';
   const managerCompatibilityReport = [
     'IDACC manager compatibility report',
     `manager: ${store.managerUrl || '(not configured)'}`,
@@ -1065,20 +1084,20 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           </div>
         </div>
         <div className="row-actions readiness-actions">
-          <span className="muted small grow">This checkpoint mirrors the controls below; guarded writes still confirm against fresh provider state.</span>
-          {!starterInstalled && starterModel ? (
+          <span className="muted small grow">{readinessHint}</span>
+          {showReadinessStarterDownload ? (
             <button className="btn small primary" disabled={pulling} onClick={() => void pull(STARTER_LOCAL_MODEL_ID)}>
               {pulling ? 'Downloading...' : 'Download starter'}
             </button>
           ) : null}
-          {starterInstalled && !localBackendConfigured ? (
+          {showReadinessAddOllama ? (
             <button className="btn small" disabled={busy} onClick={() => void addOllamaBackendFromReadiness()}>
               Add Ollama backend
             </button>
           ) : null}
-          {syncCandidate ? (
-            <button className="btn small" disabled={busy} onClick={() => void connect(syncCandidate.name)}>
-              Sync {syncCandidate.name}
+          {readinessSyncCandidate ? (
+            <button className="btn small" disabled={busy} onClick={() => void connect(readinessSyncCandidate.name)}>
+              Sync {readinessSyncCandidate.name}
             </button>
           ) : null}
           {explicitDefaultNeeded ? (
@@ -1094,15 +1113,21 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
               </button>
             </>
           ) : null}
-          <button className="btn small" disabled={discovering} onClick={() => void runDiscover()}>
-            {discovering ? 'Scanning...' : 'Scan running'}
-          </button>
-          <button className="btn small" onClick={() => void reloadManagerCapabilities()}>
-            Re-check manager
-          </button>
-          <button className="btn small" disabled={managerCaps === undefined} onClick={() => void copyManagerCompatibilityReport()}>
-            {managerReportCopied ? 'Report copied' : 'Copy manager report'}
-          </button>
+          {showReadinessScan ? (
+            <button className="btn small" disabled={discovering} onClick={() => void runDiscover()}>
+              {discovering ? 'Scanning...' : 'Scan running'}
+            </button>
+          ) : null}
+          {showReadinessManagerCheck ? (
+            <button className="btn small" onClick={() => void reloadManagerCapabilities()}>
+              Re-check manager
+            </button>
+          ) : null}
+          {showReadinessManagerReport ? (
+            <button className="btn small" onClick={() => void copyManagerCompatibilityReport()}>
+              {managerReportCopied ? 'Report copied' : 'Copy manager report'}
+            </button>
+          ) : null}
         </div>
       </section>
 

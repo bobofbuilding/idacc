@@ -2876,7 +2876,7 @@
         {
           "id": "readiness-summary",
           "label": "Readiness summary",
-          "description": "Shows manager online/offline, Control Center manager-extension /capabilities feature/route readiness with a copyable compatibility report, explicit default state or unpinned route-ready choices, synced local backend readiness, ready backend count, synced count, and missing key count before the deeper Settings controls."
+          "description": "Shows manager online/offline, Control Center manager-extension /capabilities feature/route readiness, explicit default state or unpinned route-ready choices, synced local backend readiness, ready backend count, synced count, and missing key count. The action row is quiet when ready and only shows contextual fixes for unpinned defaults, unsynced/no backends, or manager compatibility issues."
         },
         {
           "id": "local-driving-path",
@@ -4356,6 +4356,11 @@
         "Settings first-run readiness: the Routing tile no longer displays auto-selected backend names such as auto: ollama when no explicit default is pinned.",
         "Settings default routing: first-run readiness now shows a neutral Default backend picker populated from all route-ready providers, so NVIDIA, Ollama, Nebius, and custom synced backends can be selected through the same guarded providers:setDefault path.",
         "Docs: product spec and wiki now describe the readiness route shortcut as provider-neutral and route-ready rather than local-first."
+      ],
+      "implementedOneHundredSeventyThirdPass": [
+        "Settings first-run readiness: the action row is now contextual instead of always rendering scan, manager recheck, report copy, local starter, sync, and default controls at once.",
+        "Settings ready-state simplification: when manager compatibility and routing are green, the strip becomes status text only unless a default is still unpinned; detailed scan/report controls stay in their owning sections.",
+        "Settings blocker actions: manager recheck/report only appear while manager compatibility is not green, scan/starter actions only appear when no backend exists, and sync only appears for the route blocker that can actually be fixed from the checkpoint."
       ]
     },
     {
@@ -4419,5 +4424,5 @@
       "body": "# Wiki\n\nWiki is both the human documentation page and the editable schematic for the Control Center UI. Each article explains the operator purpose of a page; the structured sections below preserve tabs, tiles, fields, controls, displays, routes, and source files for implementation detail.\n\n## Use it for\n\n- Search pages, controls, routes, source files, and notes from inside the desktop app.\n- Confirm how a UI surface is intended to behave before editing code or filing follow-up work.\n- Keep app navigation metadata and human documentation in one reviewed JSON artifact.\n\n## Editing rule\n\nThe desktop app hot-reload polls CONTROL_CENTER_WIKI.json through the main-process wiki bridge. Sidebar labels, icons, order, and visibility still come from pages[].nav for implemented routes, so documentation edits must preserve that metadata and keep every page.body non-empty."
     }
   ],
-  "appVersion": "0.1.393"
+  "appVersion": "0.1.394"
 }

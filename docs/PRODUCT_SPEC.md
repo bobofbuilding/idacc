@@ -1,6 +1,6 @@
 # ID Agents Control Center — Product Spec
 
-_Updated 2026-07-01 · reflects app **v0.1.393**. This is a page-by-page specification of
+_Updated 2026-07-01 · reflects app **v0.1.394**. This is a page-by-page specification of
 the desktop app as it actually ships today, produced by reviewing every page._
 
 ---
@@ -459,8 +459,9 @@ Manager; this is the plumbing.)
 **What you can do** (by card):
 - **First-run readiness**: manager connection, Control Center manager-extension
   feature/route compatibility, provider routing, local runtime readiness, backend
-  readiness, a neutral route-ready backend picker for pinning the default,
-  **Re-check manager**, and **Copy manager report** for stale or stock managers.
+  readiness, and contextual fixes only when a blocker exists (default picker when
+  unpinned, sync/scan when no backend is ready, manager diagnostics when the
+  extension check is not green).
 - **Hardware**: read-only host compute (chip, cores, GPU, memory, disk) — used for local-model fit
   warnings.
 - **Connection**: manager URL, active team, read-only coordinator status, and an HR Manager Route
