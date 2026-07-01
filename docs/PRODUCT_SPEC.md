@@ -505,8 +505,9 @@ Manager; this is the plumbing.)
   under Inference backends instead. Antigravity CLI is managed from Settings as the consumer
   subscription successor, but is not offered as an agent harness until the manager exposes an
   Antigravity adapter.
-- **Local models (Ollama)**: parallel-inference cap (1–16), installed chips, **Download** by id
-  (streamed progress), a searchable **catalog** with capability filters and hardware fit-warnings.
+- **Local models (Ollama)**: compact model/backend status, one **Scan running** action, guarded
+  next-step setup, local concurrency (1–16), installed chips, **Download** by id (streamed
+  progress), and a searchable **catalog** with capability filters and hardware fit-warnings.
 - **Local image generator**: URL + API style (Stable Diffusion WebUI / OpenAI Images API),
   **Scan local**, Save/Clear (local first for in-chat images; image-capable API backend fallback).
 - **Local LLM stacks**: starter-first curated list with compact primary filters, an optional tag

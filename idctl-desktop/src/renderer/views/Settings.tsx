@@ -993,19 +993,19 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const localSyncCandidate = localProviders.find((p) => p.enabled !== false && providerKeyReady(p) && !providerRouteReady(p));
   const localDrivingTone = localBackendReady ? 'ok' : localBackendConfigured || starterInstalled ? 'warn' : 'err';
   const localDrivingTitle = localBackendReady
-    ? 'local backend ready'
+    ? 'Backend ready'
     : localSyncCandidate
-      ? 'sync local backend'
+      ? 'Sync local backend'
       : starterInstalled
-        ? 'add Ollama backend'
-        : 'download starter model';
+        ? 'Add Ollama backend'
+        : 'Download starter model';
   const localDrivingDetail = localBackendReady
-    ? `${localRouteReadyProviders.map((p) => p.name).join(', ')} available for open routing; pin a default in Inference backends only if desired.`
+    ? `${localRouteReadyProviders.map((p) => p.name).join(', ')} available for local routing.`
     : localSyncCandidate
-      ? `${localSyncCandidate.name} is configured; connect and sync so its models appear in runtime pickers.`
+      ? `${localSyncCandidate.name} is configured but its model list is not synced.`
       : starterInstalled
-        ? `${STARTER_LOCAL_MODEL_ID} is installed; add the Ollama backend so agents can route to it.`
-        : `Download ${STARTER_LOCAL_MODEL_ID}; IDACC will add Ollama after the pull succeeds.`;
+        ? `${STARTER_LOCAL_MODEL_ID} is installed and ready to attach.`
+        : `Start with ${STARTER_LOCAL_MODEL_ID}.`;
   const providersNeedingKeys = enabledProviders.filter((p) => providerNeedsKey(p) && !providerKeyReady(p)).length;
   const textRuntimeReady = store.connection === 'online' && (defaultRouteReady || routeReadyProviders.length > 0);
   const managerFeatureSet = new Set(managerCaps?.features ?? []);
@@ -1624,35 +1624,22 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       </section>
 
       <section className="card">
-        <h3>Local models (Ollama)</h3>
-        <p className="muted small" style={{ marginTop: -4 }}>
-          Download a model to run locally via Ollama (<span className="mono">127.0.0.1:11434</span>) — these power the <span className="mono">ollama</span> runtime with no API key, fully offline. Size warnings are checked against your hardware (shown at the top).
-        </p>
-        <div className="row-actions" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+        <div className="row-actions" style={{ alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <h3 style={{ margin: 0 }}>Local models (Ollama)</h3>
+          <span className="grow" />
           <span className={ollamaModels.length ? 'ok-text small' : 'warn-text small'}>
-            model: {ollamaModels.length ? `${ollamaModels.length} installed` : 'none installed'}
+            {ollamaModels.length ? `${ollamaModels.length} models` : 'no models'}
           </span>
           <span className={localBackendReady ? 'ok-text small' : 'warn-text small'}>
-            local backend: {localBackendReady ? localRouteReadyProviders.map((p) => p.name).join(', ') : localBackendConfigured ? 'needs model/sync' : 'not added'}
+            {localBackendReady ? 'backend ready' : localBackendConfigured ? 'sync needed' : 'backend not added'}
           </span>
-          <span className={routeReadyProviders.length ? 'ok-text small' : 'warn-text small'}>
-            routing: {defaultRouteReady ? `${defaultProvider?.name} pinned` : routeReadyProviders.length ? `open · ${routeReadyProviders.length} ready` : 'no ready backend'}
-          </span>
-          <span className="muted small">
-            synced: {syncedProviders.length}/{providers.length} · enabled: {enabledProviders.length}
-          </span>
-          {!modelInstalled(STARTER_LOCAL_MODEL_ID) && starterModel ? (
-            <button className="btn small primary" disabled={pulling} title={`Download ${STARTER_LOCAL_MODEL_ID}`} onClick={() => void pull(STARTER_LOCAL_MODEL_ID)}>
-              Download starter
-            </button>
-          ) : null}
           <button className="btn small" disabled={discovering} onClick={() => void runDiscover()}>
             {discovering ? 'Scanning…' : 'Scan running'}
           </button>
         </div>
         <div className={`local-driving-strip ${localDrivingTone}`}>
           <div className="grow">
-            <b>Local driving path: {localDrivingTitle}</b>
+            <b>{localDrivingTitle}</b>
             <span>{localDrivingDetail}</span>
           </div>
           <div className="row-actions">
@@ -1671,13 +1658,10 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                 Sync {localSyncCandidate.name}
               </button>
             ) : null}
-            <button className="btn small" disabled={discovering} onClick={() => void runDiscover()}>
-              {discovering ? 'Scanning…' : 'Scan running'}
-            </button>
           </div>
         </div>
         <div className="row-actions" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
-          <span className="muted small">parallel local inferences:</span>
+          <span className="muted small">Local concurrency</span>
           <input type="number" min={1} max={16} style={{ width: 64 }} value={concInput} disabled={concBusy || !localConc}
             onChange={(e) => setConcInput(e.target.value)} />
           <button className="btn small primary" disabled={concBusy || !localConc || concInput === String(localConc?.concurrency)} onClick={() => void saveConc()}>
@@ -1686,9 +1670,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           {localConc ? <span className="muted small">running {localConc.active}{localConc.queued ? ` · ${localConc.queued} queued` : ''}</span> : <span className="muted small">manager unreachable</span>}
           {concMsg ? <span className={`small ${/fail|1–16/.test(concMsg) ? 'status-error' : 'ok-text'}`}>{concMsg}</span> : null}
         </div>
-        <p className="muted small" style={{ marginTop: -2 }}>
-          How many <span className="mono">ollama</span> agents run at the same time. Cloud runtimes (codex, claude) always run in parallel; local agents share one model server, so this caps concurrent local inference — raise it only if your machine can handle it. Applies live (set <span className="mono">LOCAL_MODEL_CONCURRENCY</span> for a persistent default).
-        </p>
         <div className="row-actions" style={{ flexWrap: 'wrap', gap: 6 }}>
           <span className="muted small">installed:</span>
           {ollamaModels.length === 0 ? (
