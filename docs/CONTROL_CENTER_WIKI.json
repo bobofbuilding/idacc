@@ -2760,14 +2760,6 @@
           "routesInto": [
             "providers:add"
           ]
-        },
-        {
-          "id": "readiness-default-backend",
-          "label": "Default backend",
-          "description": "First-run readiness picker listing every route-ready backend so operators can pin NVIDIA, Ollama, or any other synced provider without the app suggesting the first backend automatically.",
-          "routesInto": [
-            "providers:setDefault"
-          ]
         }
       ],
       "controls": [
@@ -2825,13 +2817,12 @@
           "id": "first-run-quick-actions",
           "label": "Readiness quick actions",
           "type": "buttons",
-          "description": "Re-check manager extension compatibility, copy the manager compatibility report, download starter, add Ollama backend, sync a stale backend, make the ready backend explicit default, or scan running local servers from the top checkpoint and Local models path strip.",
+          "description": "Re-check manager extension compatibility, copy the manager compatibility report, download starter, add Ollama backend, sync a stale backend, or scan running local servers from the top checkpoint and Local models path strip. Default pinning stays optional in the provider table.",
           "routesInto": [
             "manager:capabilities",
             "ollama:pull",
             "providers:add",
             "providers:connect",
-            "providers:setDefault",
             "providers:discover"
           ]
         },
@@ -2876,12 +2867,12 @@
         {
           "id": "readiness-summary",
           "label": "Readiness summary",
-          "description": "Shows manager online/offline, Control Center manager-extension /capabilities feature/route readiness, explicit default state or unpinned route-ready choices, synced local backend readiness, ready backend count, synced count, and missing key count. The action row is quiet when ready and only shows contextual fixes for unpinned defaults, unsynced/no backends, or manager compatibility issues."
+          "description": "Shows manager online/offline, Control Center manager-extension /capabilities feature/route readiness, open-or-pinned routing state, synced local backend readiness, ready backend count, synced count, and missing key count. The action row is quiet when ready and only shows contextual fixes for unsynced/no backends or manager compatibility issues."
         },
         {
           "id": "local-driving-path",
           "label": "Local driving path",
-          "description": "Compact Local models strip that shows the next local setup state: download starter, add Ollama backend, sync local backend, make local backend default, or local default ready. Its buttons reuse the existing guarded pull/add/sync/default/scan paths."
+          "description": "Compact Local models strip that shows the next local setup state: download starter, add Ollama backend, sync local backend, or local backend ready for open routing. Its buttons reuse the existing guarded pull/add/sync/scan paths."
         },
         {
           "id": "hardware-summary",
@@ -4366,6 +4357,11 @@
         "Release hygiene: scripts/release.sh now deletes local ID-Agents-Control-Center-*-arm64.zip files after release-publish.py has uploaded and verified the GitHub release asset.",
         "Disk-space guardrail: local release zips are treated as upload scratch space only, so repeated patch releases no longer consume roughly 98 MB per pass.",
         "Docs: product spec now records GitHub releases as the durable archive and local zips as post-publish cleanup artifacts."
+      ],
+      "implementedOneHundredSeventyFifthPass": [
+        "Settings first-run readiness: open routing is now a green ready state when at least one backend is route-ready; the tile no longer says default not pinned or asks operators to choose one.",
+        "Settings local models: the local driving path treats synced local backends as ready for open routing and no longer offers a Make default shortcut.",
+        "Settings default pinning: guarded provider default stars remain available in the Inference backends table as an optional deterministic preference, not a first-run requirement."
       ]
     },
     {
@@ -4429,5 +4425,5 @@
       "body": "# Wiki\n\nWiki is both the human documentation page and the editable schematic for the Control Center UI. Each article explains the operator purpose of a page; the structured sections below preserve tabs, tiles, fields, controls, displays, routes, and source files for implementation detail.\n\n## Use it for\n\n- Search pages, controls, routes, source files, and notes from inside the desktop app.\n- Confirm how a UI surface is intended to behave before editing code or filing follow-up work.\n- Keep app navigation metadata and human documentation in one reviewed JSON artifact.\n\n## Editing rule\n\nThe desktop app hot-reload polls CONTROL_CENTER_WIKI.json through the main-process wiki bridge. Sidebar labels, icons, order, and visibility still come from pages[].nav for implemented routes, so documentation edits must preserve that metadata and keep every page.body non-empty."
     }
   ],
-  "appVersion": "0.1.395"
+  "appVersion": "0.1.396"
 }

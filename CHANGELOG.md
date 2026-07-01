@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.396] — 2026-07-01
+- Treat open backend routing as ready
+
 ## [0.1.395] — 2026-07-01
 - Clean local release zips after publish
 

@@ -107,7 +107,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [apiKey, setApiKey] = useState('');
   const [replaceProviderArmed, setReplaceProviderArmed] = useState(false);
   const [providerMsg, setProviderMsg] = useState('');
-  const [readinessDefaultChoice, setReadinessDefaultChoice] = useState('');
   // local LLM discovery (scan localhost for running servers)
   const [discovering, setDiscovering] = useState(false);
   const [discovered, setDiscovered] = useState<Discovered[] | null>(null);
@@ -807,37 +806,27 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const syncedProviders = providers.filter(providerModelReady);
   const routeReadyProviders = enabledProviders.filter(providerRouteReady);
   const defaultRouteReady = defaultProvider ? providerRouteReady(defaultProvider) : false;
-  const explicitDefaultNeeded = !defaultRouteReady && routeReadyProviders.length > 0;
-  const routeDefaultChoice = readinessDefaultChoice && routeReadyProviders.some((p) => p.name === readinessDefaultChoice)
-    ? readinessDefaultChoice
-    : routeReadyProviders[0]?.name ?? '';
   const starterModel = TOP_LOCAL_MODEL_CATALOG.find((m) => m.id === STARTER_LOCAL_MODEL_ID) ?? TOP_LOCAL_MODEL_CATALOG[0];
   const starterInstalled = modelInstalled(STARTER_LOCAL_MODEL_ID);
   const localBackendConfigured = localProviders.some((p) => p.enabled !== false);
   const localRouteReadyProviders = localProviders.filter(providerRouteReady);
   const localBackendReady = localRouteReadyProviders.length > 0;
   const localSyncCandidate = localProviders.find((p) => p.enabled !== false && providerKeyReady(p) && !providerRouteReady(p));
-  const localDefaultReady = Boolean(defaultProvider && isLocalProvider(defaultProvider) && providerRouteReady(defaultProvider));
-  const localDefaultCandidate = localRouteReadyProviders[0];
-  const localDrivingTone = localDefaultReady ? 'ok' : localBackendReady || localBackendConfigured || starterInstalled ? 'warn' : 'err';
-  const localDrivingTitle = localDefaultReady
-    ? 'local default ready'
-    : localDefaultCandidate
-      ? 'local backend ready'
-      : localSyncCandidate
-        ? 'sync local backend'
-        : starterInstalled
-          ? 'add Ollama backend'
-          : 'download starter model';
-  const localDrivingDetail = localDefaultReady
-    ? `${defaultProvider?.name ?? 'local backend'} is synced and default for local agents.`
-    : localDefaultCandidate
-      ? `${localDefaultCandidate.name} is synced; make it default to keep local agents from falling back to another backend.`
-      : localSyncCandidate
-        ? `${localSyncCandidate.name} is configured; connect and sync so its models appear in runtime pickers.`
-        : starterInstalled
-          ? `${STARTER_LOCAL_MODEL_ID} is installed; add the Ollama backend so agents can route to it.`
-          : `Download ${STARTER_LOCAL_MODEL_ID}; IDACC will add Ollama after the pull succeeds.`;
+  const localDrivingTone = localBackendReady ? 'ok' : localBackendConfigured || starterInstalled ? 'warn' : 'err';
+  const localDrivingTitle = localBackendReady
+    ? 'local backend ready'
+    : localSyncCandidate
+      ? 'sync local backend'
+      : starterInstalled
+        ? 'add Ollama backend'
+        : 'download starter model';
+  const localDrivingDetail = localBackendReady
+    ? `${localRouteReadyProviders.map((p) => p.name).join(', ')} available for open routing; pin a default in Inference backends only if desired.`
+    : localSyncCandidate
+      ? `${localSyncCandidate.name} is configured; connect and sync so its models appear in runtime pickers.`
+      : starterInstalled
+        ? `${STARTER_LOCAL_MODEL_ID} is installed; add the Ollama backend so agents can route to it.`
+        : `Download ${STARTER_LOCAL_MODEL_ID}; IDACC will add Ollama after the pull succeeds.`;
   const providersNeedingKeys = enabledProviders.filter((p) => providerNeedsKey(p) && !providerKeyReady(p)).length;
   const textRuntimeReady = store.connection === 'online' && (defaultRouteReady || routeReadyProviders.length > 0);
   const managerFeatureSet = new Set(managerCaps?.features ?? []);
@@ -907,9 +896,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const readinessHint = !managerExtensionReady
     ? 'Resolve manager compatibility first; diagnostics appear only while this checkpoint is not green.'
     : textRuntimeReady
-      ? explicitDefaultNeeded
-        ? 'Ready. Pin a default backend only if you want deterministic routing.'
-        : 'Ready. Detailed provider tools stay in their sections below.'
+      ? defaultRouteReady
+        ? 'Ready. A backend is pinned; provider tools stay in Inference backends below.'
+        : 'Ready. Routing is open across ready backends; pinning a default is optional.'
       : providers.length
         ? 'Add missing keys or sync a backend in Inference backends below.'
         : 'Add a backend below, or use the starter local path if you want offline inference.';
@@ -1059,14 +1048,14 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             <b>{managerExtensionTitle}</b>
             <small title={managerExtensionIssues.length ? `Missing: ${managerExtensionIssues.join(', ')}` : managerCaps?.extension}>{managerExtensionDetail}</small>
           </div>
-          <div className={`readiness-check ${defaultRouteReady ? 'ok' : routeReadyProviders.length ? 'warn' : 'err'}`}>
+          <div className={`readiness-check ${routeReadyProviders.length ? 'ok' : providers.length ? 'warn' : 'err'}`}>
             <span>Routing</span>
-            <b>{defaultRouteReady ? defaultProvider?.name : routeReadyProviders.length ? 'default not pinned' : 'no ready backend'}</b>
+            <b>{defaultRouteReady ? defaultProvider?.name : routeReadyProviders.length ? 'open routing' : 'no ready backend'}</b>
             <small>
               {defaultRouteReady
                 ? 'explicit default'
                 : routeReadyProviders.length
-                  ? `${routeReadyProviders.length} ready backend${routeReadyProviders.length === 1 ? '' : 's'}; choose one`
+                  ? `${routeReadyProviders.length} ready backend${routeReadyProviders.length === 1 ? '' : 's'}`
                   : providers.length
                     ? 'sync or enable a backend'
                     : 'add a backend'}
@@ -1099,19 +1088,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             <button className="btn small" disabled={busy} onClick={() => void connect(readinessSyncCandidate.name)}>
               Sync {readinessSyncCandidate.name}
             </button>
-          ) : null}
-          {explicitDefaultNeeded ? (
-            <>
-              <label className="readiness-default-picker muted small">
-                <span>Default backend</span>
-                <select className="cell-select small" value={routeDefaultChoice} disabled={busy || !routeDefaultChoice} onChange={(e) => setReadinessDefaultChoice(e.target.value)}>
-                  {routeReadyProviders.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
-                </select>
-              </label>
-              <button className="btn small" disabled={busy || !routeDefaultChoice} onClick={() => void setDefault(routeDefaultChoice)}>
-                Set default
-              </button>
-            </>
           ) : null}
           {showReadinessScan ? (
             <button className="btn small" disabled={discovering} onClick={() => void runDiscover()}>
@@ -1299,8 +1275,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           <span className={localBackendReady ? 'ok-text small' : 'warn-text small'}>
             local backend: {localBackendReady ? localRouteReadyProviders.map((p) => p.name).join(', ') : localBackendConfigured ? 'needs model/sync' : 'not added'}
           </span>
-          <span className={defaultRouteReady ? 'ok-text small' : 'warn-text small'}>
-            default: {defaultProvider ? `${defaultProvider.name}${defaultRouteReady ? '' : ' needs sync'}` : 'none'}
+          <span className={routeReadyProviders.length ? 'ok-text small' : 'warn-text small'}>
+            routing: {defaultRouteReady ? `${defaultProvider?.name} pinned` : routeReadyProviders.length ? `open · ${routeReadyProviders.length} ready` : 'no ready backend'}
           </span>
           <span className="muted small">
             synced: {syncedProviders.length}/{providers.length} · enabled: {enabledProviders.length}
@@ -1333,11 +1309,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             {localSyncCandidate ? (
               <button className="btn small" disabled={busy} onClick={() => void connect(localSyncCandidate.name)}>
                 Sync {localSyncCandidate.name}
-              </button>
-            ) : null}
-            {localDefaultCandidate && !localDefaultReady ? (
-              <button className="btn small" disabled={busy} onClick={() => void setDefault(localDefaultCandidate.name)}>
-                Make {localDefaultCandidate.name} default
               </button>
             ) : null}
             <button className="btn small" disabled={discovering} onClick={() => void runDiscover()}>

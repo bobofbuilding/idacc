@@ -611,7 +611,6 @@ textarea.composer-input { resize: none; line-height: 1.4; min-height: 38px; max-
 .readiness-check b { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .readiness-check small { display: block; margin-top: 2px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .readiness-actions { flex-wrap: wrap; align-items: center; }
-.readiness-default-picker { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .local-driving-strip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-2); }
 .local-driving-strip.ok { border-color: color-mix(in srgb, var(--ok) 38%, var(--line)); }
 .local-driving-strip.warn { border-color: color-mix(in srgb, var(--warn) 46%, var(--line)); }
