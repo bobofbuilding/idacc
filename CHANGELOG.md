@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.452] — 2026-07-02
+- Add one-agent add path in HR team builder
+
 ## [0.1.451] — 2026-07-02
 - Add Settings API provider model selection for Health dropdowns
 

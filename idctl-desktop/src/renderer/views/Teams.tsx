@@ -2379,6 +2379,15 @@ function TeamBuilder({
 
   function updateRow(i: number, patch: Partial<Row>) { setRowsDirty(true); setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r))); }
   function addRow() { setRowsDirty(true); setRows((rs) => [...rs, blankRow()]); }
+  function startSingleAgentAdd() {
+    setRowsDirty(true);
+    setRows([blankRow()]);
+    setSpec('');
+    setAiSuggestions(undefined);
+    setResults([]);
+    setPost({});
+    setError('');
+  }
   function removeRow(i: number) { setRowsDirty(true); setRows((rs) => (rs.length <= 1 ? rs : rs.filter((_, j) => j !== i))); }
   function setLead(i: number) { setRowsDirty(true); setRows((rs) => rs.map((r, j) => ({ ...r, lead: j === i }))); }
   function toggleRowSkill(i: number, name: string) {
@@ -2508,7 +2517,7 @@ function TeamBuilder({
     // "already in <team>" (informational), not errors. No-op if everything already exists.
     const batch = toCreate;
     if (!batch.length) {
-      setError(alreadyThere.length ? `All ${alreadyThere.length} agent${alreadyThere.length === 1 ? '' : 's'} already in ${targetTeam} — nothing to add.` : 'Add at least one named agent.');
+      setError(alreadyThere.length ? `All ${alreadyThere.length} agent${alreadyThere.length === 1 ? '' : 's'} already in ${targetTeam} — use One new agent to add a single agent row.` : 'Add at least one named agent.');
       return;
     }
     const postSteps = [
@@ -2819,8 +2828,20 @@ function TeamBuilder({
 
             <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', margin: '12px 0 6px' }}>
               <span className="muted small">roster — {targetTeam === PRIMARY_TEAM ? `${PRIMARY_TEAM}/${DEFAULT_LEAD} is the fixed primary; ` : '★ marks the lead; '}▸ for persona &amp; skills</span>
-              <button className="btn small" disabled={locked} onClick={addRow}>＋ add agent</button>
+              <span className="row-actions">
+                {teamExists ? (
+                  <button className="btn small" disabled={locked} title={`Clear this review batch to one blank agent row for ${targetTeam}`} onClick={startSingleAgentAdd}>
+                    ＋ one new agent
+                  </button>
+                ) : null}
+                <button className="btn small" disabled={locked} onClick={addRow}>＋ add row</button>
+              </span>
             </div>
+            {teamExists && named.length > 0 && toCreate.length === 0 ? (
+              <p className="muted small" style={{ marginTop: -2 }}>
+                This review batch only contains agents already in <span className="mono">{targetTeam}</span>. Choose <b>One new agent</b> to add a single blank row.
+              </p>
+            ) : null}
             <div style={{ maxHeight: 340, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
               {rows.map((r, i) => {
                 const rowSlug = slugName(r.name);

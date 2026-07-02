@@ -357,7 +357,7 @@ questions through `legal/general-counsel`.
   MCP servers, shared skills, heartbeat, OWS wallet, probe-after) → opt-in coordination preset (off by default, with an extra
   primary-route warning for default-team wiring) + cross-team relay → **Build** for a new team or
   **Build + merge** for an existing target (sequential `onboard:run` with duplicate names skipped,
-  a live checklist, then optional coordinator/default-primary + instructions + relay wiring) →
+  explicit **One new agent** reset for single-agent adds, a live checklist, then optional coordinator/default-primary + instructions + relay wiring) →
   per-agent **↻ retry**).
 - **Create team from template/config** (+ From template): pick source (default template / library
   template / saved config), name it, debounced **Preflight** preview, create.
