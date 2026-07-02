@@ -5,10 +5,11 @@
  *   claude-* runtimes         ← anthropic provider (GET /v1/models with a key)
  *   codex runtime             ← openai provider
  *   cursor-cli runtime        ← (no public model API) curated only
- *   grok/antigravity/kiro/q
+ *   grok/antigravity/q
  *                              ← managed subscription CLIs; linked in Settings,
  *                                 assignable only after id-agents exposes a harness
  *   copilot                    ← managed GitHub Copilot CLI harness
+ *   kiro-cli                   ← managed Kiro CLI harness
  *   gemini                     ← legacy/current-only CLI id; API setup lives in providers
  *
  * When a backing provider is configured and has a synced model list, we use it
@@ -47,6 +48,7 @@ export const MANAGER_EXECUTION_RUNTIMES = [
   'codex',
   'cursor-cli',
   'copilot',
+  'kiro-cli',
   'ollama',
 ];
 
@@ -307,6 +309,7 @@ export const RUNTIME_EFFORTS: Record<string, string[]> = {
   'claude-code-cli': ['low', 'medium', 'high', 'xhigh'],
   'claude-code-local': ['low', 'medium', 'high', 'xhigh'],
   copilot: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+  'kiro-cli': ['low', 'medium', 'high', 'xhigh', 'max'],
 };
 
 /** The effort scale this runtime honors (empty if it has no reasoning-effort knob). */
@@ -352,7 +355,7 @@ export const RUNTIME_CURATED: Record<string, string[]> = {
   antigravity: ['default'],
   gemini: ['default'],
   copilot: ['default'],
-  'kiro-cli': ['default'],
+  'kiro-cli': ['auto', 'claude-sonnet-4.5', 'claude-sonnet-4', 'claude-haiku-4.5', 'deepseek-3.2', 'minimax-m2.5', 'minimax-m2.1', 'glm-5', 'qwen3-coder-next'],
   q: ['default'],
   ollama: [],
 };

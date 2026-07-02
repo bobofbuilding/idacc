@@ -2991,6 +2991,11 @@
         "Settings and Health now treat GitHub Copilot as assignable only after the id-agents manager exposes the new copilot harness adapter.",
         "The runtime picker still leaves Grok Build, Google Antigravity, Kiro, and legacy q under linked subscription adapter-needed state until their manager adapters ship.",
         "Validation: npm test in idctl, npm run typecheck in idctl-desktop, wiki JSON parse, and npm run build passed before release validation."
+      ],
+      "implementedTwoHundredFortiethPass": [
+        "Settings and Health now treat Kiro as assignable only after the id-agents manager exposes the new kiro-cli harness adapter and Settings confirms a signed-in Kiro CLI account.",
+        "The Kiro runtime model catalog now shows Kiro's current model choices: auto, Claude Sonnet/Haiku, DeepSeek, MiniMax, GLM, and Qwen Coder options instead of a single default placeholder.",
+        "Validation: npm test in idctl, npm run typecheck in idctl-desktop, wiki JSON parse, and npm run build passed before release validation."
       ]
     },
     {
@@ -4830,6 +4835,13 @@
         "The Copilot harness uses a private prompt-file handoff instead of placing the full agent task on the process command line, checks the copilot binary at manager preflight, and keeps model strings provider-owned.",
         "Grok Build, Google Antigravity, Kiro, and legacy q remain adapter-needed/read-only linked subscription evidence until their manager harnesses are implemented.",
         "Validation: npm run build:core and npx vitest run tests/unit/runtime-registry.test.ts in id-agents; npm test in idctl; npm run typecheck, wiki JSON parse, and npm run build in idctl-desktop passed before release validation."
+      ],
+      "implementedTwoHundredFortyFirstPass": [
+        "Kiro is the second linked-subscription adapter pass: the id-agents manager now has a kiro-cli runtime profile, Kiro CLI harness, and `kiro-cli whoami` preflight before local agent spawn.",
+        "The Kiro harness runs `kiro-cli chat --no-interactive`, uses a private prompt-file handoff, supports Kiro model/effort selection, and passes resume ids through `--resume-id`.",
+        "IDACC now offers Kiro as an assignable harness only when Settings reports a signed-in Kiro CLI, and its dropdown uses the Kiro model catalog instead of a one-model placeholder.",
+        "Grok Build, Google Antigravity, and legacy q remain adapter-needed linked subscription evidence until their manager harnesses are implemented.",
+        "Validation: npm run build and npx vitest run tests/unit/runtime-registry.test.ts in id-agents; npm test in idctl; npm run typecheck, wiki JSON parse, and npm run build in idctl-desktop passed before release validation."
       ]
     },
     {
@@ -4893,5 +4905,5 @@
       "body": "# Wiki\n\nWiki is both the human documentation page and the editable schematic for the Control Center UI. Each article explains the operator purpose of a page; the structured sections below preserve tabs, tiles, fields, controls, displays, routes, and source files for implementation detail.\n\n## Use it for\n\n- Search pages, controls, routes, source files, and notes from inside the desktop app.\n- Confirm how a UI surface is intended to behave before editing code or filing follow-up work.\n- Keep app navigation metadata and human documentation in one reviewed JSON artifact.\n\n## Editing rule\n\nThe desktop app hot-reload polls CONTROL_CENTER_WIKI.json through the main-process wiki bridge. Sidebar labels, icons, order, and visibility still come from pages[].nav for implemented routes, so documentation edits must preserve that metadata and keep every page.body non-empty."
     }
   ],
-  "appVersion": "0.1.480"
+  "appVersion": "0.1.481"
 }
