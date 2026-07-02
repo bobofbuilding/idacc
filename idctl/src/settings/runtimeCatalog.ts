@@ -5,8 +5,10 @@
  *   claude-* runtimes         ← anthropic provider (GET /v1/models with a key)
  *   codex runtime             ← openai provider
  *   cursor-cli runtime        ← (no public model API) curated only
- *   grok/copilot/kiro/q        ← managed CLI runtimes; CLI-owned auth/models
- *   gemini                     ← legacy/current-only CLI harness id; API setup lives in providers
+ *   grok/antigravity/copilot/kiro/q
+ *                              ← managed subscription CLIs; linked in Settings,
+ *                                 assignable only after id-agents exposes a harness
+ *   gemini                     ← legacy/current-only CLI id; API setup lives in providers
  *
  * When a backing provider is configured and has a synced model list, we use it
  * (that IS "probing the runtime"). Otherwise we fall back to a curated list of
@@ -15,7 +17,7 @@
 
 import type { ProviderKind, ProviderProfile } from './schema.ts';
 
-/** Switchable/visible managed agent runtimes (remote runtime excluded). */
+/** Visible runtime/model lanes (remote runtime excluded). */
 export const RUNTIMES = [
   'claude-agent-sdk',
   'claude-code-cli',
@@ -23,10 +25,26 @@ export const RUNTIMES = [
   'codex',
   'cursor-cli',
   'grok',
+  'antigravity',
   'gemini',
   'copilot',
   'kiro-cli',
   'q',
+  'ollama',
+];
+
+/**
+ * Concrete runtime ids the current bundled id-agents manager can execute as
+ * agent harnesses. Subscription CLIs can still be linked in Settings and shown
+ * as model lanes, but they must not become assignable until the manager ships a
+ * matching harness/adapter.
+ */
+export const MANAGER_EXECUTION_RUNTIMES = [
+  'claude-agent-sdk',
+  'claude-code-cli',
+  'claude-code-local',
+  'codex',
+  'cursor-cli',
   'ollama',
 ];
 
@@ -55,6 +73,7 @@ const RUNTIME_LABELS: Record<string, string> = {
   codex: 'Codex',
   'cursor-cli': 'Cursor',
   grok: 'Grok Build',
+  antigravity: 'Google Antigravity',
   gemini: 'Gemini CLI',
   copilot: 'GitHub Copilot',
   'kiro-cli': 'Kiro',
@@ -67,6 +86,10 @@ export function runtimeDisplayLabel(runtime: string): string {
     try { return decodeURIComponent(runtime.slice('provider:'.length)); } catch { return runtime.slice('provider:'.length); }
   }
   return RUNTIME_LABELS[runtime] ?? runtime.replace('claude-code-', 'claude-').replace('claude-agent-sdk', 'claude-sdk').replace('-cli', '');
+}
+
+export function runtimeHasManagerHarness(runtime: string | undefined): boolean {
+  return Boolean(runtime && MANAGER_EXECUTION_RUNTIMES.includes(runtime));
 }
 
 /**
@@ -172,8 +195,15 @@ export function anthropicApiReady(providers: ProviderForRuntime[]): boolean {
   );
 }
 
-function addRuntime(out: string[], runtime?: string): void {
-  if (runtime && RUNTIMES.includes(runtime) && !out.includes(runtime)) out.push(runtime);
+function addRuntime(out: string[], runtime?: string, options: { allowUnsupported?: boolean } = {}): void {
+  if (!runtime || !RUNTIMES.includes(runtime) || out.includes(runtime)) return;
+  if (!options.allowUnsupported && !runtimeHasManagerHarness(runtime)) return;
+  out.push(runtime);
+}
+
+export function managedRuntimeHasEvidence(s: ManagedRuntimeForOffer): boolean {
+  if (!s.runtime || s.installed === false) return false;
+  return s.installed === true || s.loggedIn === true;
 }
 
 function providerKeyReady(p: ProviderForRuntime): boolean {
@@ -210,9 +240,11 @@ function managedRuntimeReady(s: ManagedRuntimeForOffer): boolean {
   if (s.statusSupported === true) return s.loggedIn === true;
   // These CLIs do not expose a safe non-interactive account status in Settings;
   // binary presence is the strongest read-only availability signal we have.
-  // Gemini CLI is excluded from managed sign-ins; use Google Gemini API under
-  // Inference backends. Existing gemini assignments remain current-only via keep.
-  return s.installed === true && ['grok', 'copilot'].includes(s.runtime);
+  // The manager-harness gate is applied separately before a runtime is offered
+  // for assignment. Gemini CLI is excluded from managed sign-ins; use Google
+  // Gemini API under Inference backends. Existing gemini assignments remain
+  // current-only via keep.
+  return s.installed === true && ['grok', 'antigravity', 'copilot'].includes(s.runtime);
 }
 
 /**
@@ -239,7 +271,7 @@ export function offerableRuntimes(
   managed: ManagedRuntimeForOffer[] = [],
 ): string[] {
   const out: string[] = [];
-  addRuntime(out, keep);
+  addRuntime(out, keep, { allowUnsupported: true });
 
   for (const s of managed) {
     if (!managedRuntimeReady(s)) continue;
@@ -314,6 +346,7 @@ export const RUNTIME_CURATED: Record<string, string[]> = {
   'cursor-cli': ['sonnet-4', 'composer-2'],
   // These managed CLIs own model/account selection; keep fallback catalogs minimal.
   grok: ['default'],
+  antigravity: ['default'],
   gemini: ['default'],
   copilot: ['default'],
   'kiro-cli': ['default'],
