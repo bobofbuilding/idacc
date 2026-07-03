@@ -26,10 +26,46 @@ export function setTransport(t: Transport): void {
 type StoreChangeListener = (event: StoreChangeEvent) => void;
 const storeChangeListeners = new Set<StoreChangeListener>();
 let transportEventsBound = false;
+let pendingStoreChange: StoreChangeEvent | null = null;
+let pendingStoreChangeTimer: ReturnType<typeof setTimeout> | null = null;
+const recentStoreChanges = new Map<string, number>();
+const STORE_CHANGE_FLUSH_MS = 120;
+const STORE_CHANGE_DEDUPE_MS = 500;
 
-export function emitStoreChange(event: StoreChangeEvent): void {
+function storeChangeKey(event: StoreChangeEvent): string {
+  return `${event.method}:${[...event.domains].sort().join('|')}`;
+}
+
+function flushStoreChange(): void {
+  pendingStoreChangeTimer = null;
+  const event = pendingStoreChange;
+  pendingStoreChange = null;
+  if (!event) return;
   for (const listener of storeChangeListeners) {
     try { listener(event); } catch { /* listeners should not break the bus */ }
+  }
+}
+
+export function emitStoreChange(event: StoreChangeEvent): void {
+  if (!event.domains.length) return;
+  const key = storeChangeKey(event);
+  const last = recentStoreChanges.get(key) ?? 0;
+  if (Date.now() - last < STORE_CHANGE_DEDUPE_MS) return;
+  recentStoreChanges.set(key, Date.now());
+  for (const [recentKey, at] of recentStoreChanges) {
+    if (Date.now() - at > STORE_CHANGE_DEDUPE_MS * 4) recentStoreChanges.delete(recentKey);
+  }
+  if (pendingStoreChange) {
+    pendingStoreChange = {
+      method: pendingStoreChange.method === event.method ? event.method : 'batch',
+      domains: [...new Set([...pendingStoreChange.domains, ...event.domains])],
+      at: Date.now(),
+    };
+  } else {
+    pendingStoreChange = { ...event, domains: [...new Set(event.domains)], at: Date.now() };
+  }
+  if (!pendingStoreChangeTimer) {
+    pendingStoreChangeTimer = setTimeout(flushStoreChange, STORE_CHANGE_FLUSH_MS);
   }
 }
 

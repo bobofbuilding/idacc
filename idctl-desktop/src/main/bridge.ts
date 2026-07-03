@@ -1427,7 +1427,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // opts.team pins the plan to a specific team (independent of the global active team).
   // opts.respectOwners keeps explicit execution owners, but coordinator/validator owners
   // are still routed to an execution assignee when one exists.
-  'work:createPlan': (objective: string, subtasks: SubTask[], opts?: { dispatch?: boolean; lane?: string; team?: string; respectOwners?: boolean }) =>
+  'work:createPlan': (objective: string, subtasks: SubTask[], opts?: { dispatch?: boolean; lane?: string; team?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean }) =>
     createAndDispatchPlan(opts?.team ? client.withTeam(String(opts.team)) : client, String(objective), Array.isArray(subtasks) ? subtasks : [], opts ?? {}),
   // Cross-team fan-out: hand one objective to several teams' ACTIVE leads at once.
   'work:teamLeads': (teams: string[]) => teamLeads(client, Array.isArray(teams) ? teams.map(String) : []),

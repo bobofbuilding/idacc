@@ -40,8 +40,13 @@ let brainDashboardWin: BrowserWindow | null = null;
 let stopGoalDriver: (() => void) | null = null;
 let stopLearnQueueRunner: (() => void) | null = null;
 let kickLearnQueueRunner: ((delayMs?: number) => void) | null = null;
-let rendererCrashReloadAt = 0;
 let rendererSafeMode = false;
+let rendererRecoveryFirstAt = 0;
+let rendererRecoveryAttempts = 0;
+let rendererStableTimer: ReturnType<typeof setTimeout> | null = null;
+let storeChangeTimer: ReturnType<typeof setTimeout> | null = null;
+const pendingStoreChangeDomains = new Set<string>();
+const pendingStoreChangeMethods = new Set<string>();
 
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
 type BrainDashboardTab = 'fleet' | 'health' | 'skills' | 'learning' | 'agents' | 'graph';
@@ -64,6 +69,10 @@ const BRAIN_DASHBOARD_TABS: Record<BrainDashboardTab, { title: string; path: str
   agents: { title: 'Brain Agents', path: '/dashboard/agents' },
   graph: { title: 'Brain Graph', path: '/dashboard/graph' },
 };
+const RENDERER_RECOVERY_WINDOW_MS = 5 * 60 * 1000;
+const RENDERER_RECOVERY_MAX_RELOADS = 3;
+const RENDERER_STABLE_RESET_MS = 2 * 60 * 1000;
+const STORE_CHANGE_FLUSH_MS = 150;
 
 function envFlagEnabled(value: string | undefined): boolean {
   return /^(1|true|yes|on)$/i.test(String(value || '').trim());
@@ -162,6 +171,78 @@ function recordRendererCrash(details: Electron.RenderProcessGoneDetails): Render
     console.warn('[renderer-crash] failed to persist safe-mode state:', e);
     return null;
   }
+}
+
+function rendererIndexFile(): string {
+  return join(__dirname, '../renderer/index.html');
+}
+
+function loadRendererApp(target: BrowserWindow): void {
+  const initialView = process.env.IDCTL_VIEW;
+  void target.loadFile(rendererIndexFile(), initialView ? { search: `view=${initialView}` } : undefined);
+}
+
+function rendererCrashFallbackHtml(state: RendererCrashState | null, details: Electron.RenderProcessGoneDetails): string {
+  const lastCrash = state?.lastRendererCrashAt || new Date().toISOString();
+  const reason = details.reason || state?.lastReason || 'unknown';
+  const exitCode = details.exitCode ?? state?.lastExitCode ?? 'unknown';
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ID Agents Control Center - Renderer Recovery</title>
+  <style>
+    :root { color-scheme: dark; background: #0e1116; color: #d8dee9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; }
+    main { width: min(720px, calc(100vw - 48px)); border: 1px solid #2b3340; border-radius: 8px; background: #151a22; padding: 24px; }
+    h1 { margin: 0 0 12px; font-size: 20px; line-height: 1.25; }
+    p { margin: 8px 0; color: #aeb7c4; line-height: 1.5; }
+    code { color: #e5edf7; background: #0f141b; padding: 2px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Renderer recovery paused</h1>
+    <p>The app renderer crashed repeatedly, so Control Center paused automatic reloads instead of looping on a blank window.</p>
+    <p>Safe mode is enabled. Quit and reopen the app after installing the latest update.</p>
+    <p>Last crash: <code>${lastCrash}</code> · reason <code>${reason}</code> · exit <code>${exitCode}</code></p>
+  </main>
+</body>
+</html>`;
+}
+
+function scheduleRendererRecovery(target: BrowserWindow, details: Electron.RenderProcessGoneDetails, state: RendererCrashState | null): void {
+  const now = Date.now();
+  if (!rendererRecoveryFirstAt || now - rendererRecoveryFirstAt > RENDERER_RECOVERY_WINDOW_MS) {
+    rendererRecoveryFirstAt = now;
+    rendererRecoveryAttempts = 0;
+  }
+  rendererRecoveryAttempts += 1;
+  const attempt = rendererRecoveryAttempts;
+  const delayMs = Math.min(1000 + attempt * 750, 4000);
+  setTimeout(() => {
+    try {
+      if (target.isDestroyed()) return;
+      if (attempt <= RENDERER_RECOVERY_MAX_RELOADS) {
+        loadRendererApp(target);
+      } else {
+        void target.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(rendererCrashFallbackHtml(state, details))}`);
+      }
+    } catch (e) {
+      console.warn('[renderer-crash] recovery failed:', e);
+    }
+  }, delayMs);
+}
+
+function scheduleRendererStableReset(): void {
+  if (rendererStableTimer) clearTimeout(rendererStableTimer);
+  rendererStableTimer = setTimeout(() => {
+    rendererRecoveryFirstAt = 0;
+    rendererRecoveryAttempts = 0;
+    rendererStableTimer = null;
+  }, RENDERER_STABLE_RESET_MS);
+  rendererStableTimer.unref?.();
 }
 
 configureChromiumStability();
@@ -286,8 +367,25 @@ async function armComputerUseFromCurrentAttached(teamArg: unknown, expectedAttac
 function publishStoreChange(method: string): void {
   const domains = syncDomainsForMethod(method);
   if (!domains.length) return;
-  const event: StoreChangeEvent = { method, domains, at: Date.now() };
-  try { win?.webContents.send('idagents:sync', event); } catch { /* window may be gone */ }
+  for (const domain of domains) pendingStoreChangeDomains.add(domain);
+  pendingStoreChangeMethods.add(method);
+  if (storeChangeTimer) return;
+  storeChangeTimer = setTimeout(() => {
+    storeChangeTimer = null;
+    const flushedDomains = [...pendingStoreChangeDomains];
+    const flushedMethods = [...pendingStoreChangeMethods];
+    pendingStoreChangeDomains.clear();
+    pendingStoreChangeMethods.clear();
+    if (!flushedDomains.length) return;
+    const methodLabel = flushedMethods.length === 1
+      ? flushedMethods[0]
+      : `batch:${flushedMethods.slice(0, 6).join(',')}${flushedMethods.length > 6 ? ',...' : ''}`;
+    const event: StoreChangeEvent = { method: methodLabel, domains: flushedDomains, at: Date.now() };
+    try {
+      if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send('idagents:sync', event);
+    } catch { /* window may be gone */ }
+  }, STORE_CHANGE_FLUSH_MS);
+  storeChangeTimer.unref?.();
 }
 
 function startLearnQueueRunner(): () => void {
@@ -592,22 +690,18 @@ function createWindow() {
   win.on('close', saveNow);
   win.webContents.on('render-process-gone', (_event, details) => {
     logProcessExit('renderer', details as unknown as Record<string, unknown>);
+    let crashState: RendererCrashState | null = null;
     if (details.reason === 'crashed' || details.reason === 'oom') {
-      recordRendererCrash(details);
+      crashState = recordRendererCrash(details);
       if (!rendererSafeMode) {
         app.relaunch();
         app.exit(0);
         return;
       }
     }
-    const now = Date.now();
-    if (now - rendererCrashReloadAt > 60_000 && win && !win.isDestroyed()) {
-      rendererCrashReloadAt = now;
-      setTimeout(() => {
-        try { if (win && !win.isDestroyed()) win.reload(); } catch { /* best-effort recovery */ }
-      }, 1_000);
-    }
+    if (win && !win.isDestroyed()) scheduleRendererRecovery(win, details, crashState);
   });
+  win.webContents.on('did-finish-load', () => scheduleRendererStableReset());
 
   // Open external links in the system browser, never in-app.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -639,8 +733,7 @@ function createWindow() {
     if (menu.items.length > 0) menu.popup({ window: win ?? undefined });
   });
 
-  const initialView = process.env.IDCTL_VIEW;
-  win.loadFile(join(__dirname, '../renderer/index.html'), initialView ? { search: `view=${initialView}` } : undefined);
+  loadRendererApp(win);
 
   // Verification hook: with IDCTL_SHOT=<path>, capture the rendered window once
   // data has loaded, write a PNG, and quit. Lets the build be proven headlessly.

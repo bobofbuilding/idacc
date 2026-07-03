@@ -20,6 +20,9 @@ export interface CreatePlanResult { created: CreatedTask[]; dispatched: number; 
 
 /** Quote a free-text argument as ONE token for the manager tokenizer (matches client qArg). */
 function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
+const GOAL_ID_RE = /\bgoal_[a-z0-9_]+\b/i;
+const FALLBACK_GOAL_ID = 'goal_manual_dispatch';
+
 function budgetedAskCommand(client: ManagerClient, command: string, source: string): string {
   return optimizeAskCommand(command, { source, team: client.team }).command;
 }
@@ -41,6 +44,35 @@ function taskKeys(t: Task): string[] {
 function clip(s: string, n: number): string { const t = (s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; }
 
 const MAX_SUBTASKS = 12;
+
+function extractGoalId(...texts: Array<string | undefined | null>): string {
+  for (const text of texts) {
+    const match = String(text || '').match(GOAL_ID_RE);
+    if (match) return match[0];
+  }
+  return FALLBACK_GOAL_ID;
+}
+
+function taskBriefFlags(objective: string, st: Pick<SubTask, 'title' | 'description'>): string {
+  const goalId = extractGoalId(st.description, objective);
+  const expected = st.description
+    ? `Complete this task and produce the requested output: ${clip(st.description, 220)}`
+    : `Complete "${clip(st.title, 160)}" and report concise evidence.`;
+  const acceptance = 'Owner delivers the expected output, cites evidence or blockers, keeps scope to this task, and closes with acceptance coverage or a failure note.';
+  const validation = 'Owning lead reviews the completion; default coder and researcher validate substantial cross-team work.';
+  const outOfScope = 'Unrelated refactors, destructive operations, credential changes, and optional follow-up recommendations beyond this task.';
+  const backlog = 'Non-required recommendations or low-relevance follow-ups become backlog candidates instead of live delegated work.';
+  const relevance = 'medium: improves managed-agent throughput and contributor readiness for Bittrees-related work.';
+  return [
+    ['--goal', goalId],
+    ['--expected-output', expected],
+    ['--acceptance', acceptance],
+    ['--validation-path', validation],
+    ['--out-of-scope', outOfScope],
+    ['--backlog-policy', backlog],
+    ['--bittrees-relevance', relevance],
+  ].map(([flag, value]) => `${flag} ${qArg(value)}`).join(' ');
+}
 
 /** An agent is routable only when it's actually running. Anything clearly
  *  stopped/offline/errored is skipped so work never dispatches into the void. */
@@ -150,6 +182,8 @@ function extractJsonArray(text: string): unknown[] | null {
 const DECOMP_PROMPT = (objective: string, agentLines: string) =>
   `You are the team lead. Break the objective below into a small set of concrete, independently-actionable sub-tasks for your fleet, and assign each to the best-suited agent.
 
+This is an ADVISORY decomposition request only. Do not create, claim, or close manager tasks for yourself while answering it. The control center will create the live tasks and dispatch them after parsing your JSON.
+
 Objective: ${objective}
 
 Available agents:
@@ -159,6 +193,7 @@ Return ONLY a JSON array (no prose, no markdown fence) of up to ${MAX_SUBTASKS} 
 [{"title":"short imperative task","description":"1-2 sentences: what to do and the expected output","agent":"<one of the agent names above>","dependsOn":[<0-based indices of prerequisite tasks in THIS array; empty when it can start immediately>]}]
 
 Rules:
+- Do not create manager tasks, claim a task, or mark a task done for this advisory decomposition request.
 - Assign work ONLY to agents that are running; never assign a task to one marked [STOPPED — do not assign].
 - Do not assign execution to yourself/the coordinator when any non-coordinator assignee is available.
 - On the default team, coder and researcher validate completed work; do not assign normal execution to them when another worker or team lead is available.
@@ -220,8 +255,9 @@ const WORK_PROMPT = (objective: string, st: SubTask, ref: string) =>
 
 Your assigned task (${ref}): ${st.title}
 ${st.description ? st.description + '\n' : ''}
-Do this task now. When finished, mark it done with: /task done ${ref}
-If you cannot complete it, still mark it done with a brief failure note.`;
+Do this task now. When finished, mark it done with: /task done ${ref} --acceptance "completed the assigned scope; evidence is in my reply"
+If you delegated child tasks as a lead/coordinator, include their task names when closing: --delegated-task-names "child-task-one,child-task-two"
+If you cannot complete it, mark it done with: /task done ${ref} --failure-note "<why this task could not be completed>".`;
 
 /**
  * Create every sub-task (so they all appear in the Tasks view at once), then
@@ -235,7 +271,7 @@ export async function createAndDispatchPlan(
   client: ManagerClient,
   objective: string,
   subtasks: SubTask[],
-  opts: { dispatch?: boolean; lane?: string; respectOwners?: boolean } = {},
+  opts: { dispatch?: boolean; lane?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean } = {},
 ): Promise<CreatePlanResult> {
   // dispatch=false → create tasks UNOWNED (status todo) into a lane and DON'T farm them
   // out (a staged queue the lead works later). Default true = assign owners + dispatch.
@@ -248,7 +284,7 @@ export async function createAndDispatchPlan(
   // owner pool (and the coerce-to-fallback target) is the running roster whenever
   // any agent is running; degrade to the full roster only if nothing is active.
   const coordinator = pickActiveLead(roster) ?? '';
-  const pool = executionPoolForTeam(roster, coordinator, client.team);
+  const pool = executionPoolForTeam(roster, coordinator, client.team, opts.allowCoordinatorOwners === true);
   const names = new Set(pool.map((a) => a.name));
   const fallback = pool[0]?.name ?? '';
   const list = subtasks.slice(0, MAX_SUBTASKS).map((st, i, arr) => ({
@@ -271,7 +307,7 @@ export async function createAndDispatchPlan(
     // Dispatching: assign the owner now (manager sets owned→doing). Queuing: create
     // unowned (stays todo) and record the lead's suggested owner in the description.
     const desc = dispatch ? st.description : `${st.description}${st.description ? '\n\n' : ''}(suggested owner: ${st.agent})`.trim();
-    const cmd = `/task create ${qArg(st.title)}${dispatch ? ` --owner ${st.agent}` : ''}${desc ? ` --description ${qArg(desc)}` : ''}`;
+    const cmd = `/task create ${qArg(st.title)}${dispatch ? ` --owner ${st.agent}` : ''}${desc ? ` --description ${qArg(desc)}` : ''} ${taskBriefFlags(objective, st)}`;
     try {
       const env = await client.remote<{ task?: { shortId?: string; name?: string } }>(cmd);
       const task = env.result?.task;
@@ -387,7 +423,7 @@ ${objective}
 
 How to run it:
 1. Break it into concrete, independently-actionable tasks for your ACTIVE teammates (skip anyone stopped).
-2. Create each as a real task: /task create "<short title>" --owner <teammate> --description "<what to do + expected output>".
+2. Create each as a real task with dispatch-ready metadata: /task create "<short title>" --owner <teammate> --description "<what to do + expected output>" --goal "<goal id from objective, or goal_manual_dispatch>" --expected-output "<artifact or result>" --acceptance "<how to verify done>" --validation-path "coder and researcher review substantial work" --out-of-scope "<what not to do>" --backlog-policy "Non-required recommendations become backlog candidates." --bittrees-relevance "medium: improves managed-agent throughput and contributor readiness for Bittrees-related work."
 3. Dispatch the work, coordinate, and keep task status updated as things progress.
 4. Other teams are handling their own slices in parallel — own yours end to end.
 
@@ -449,8 +485,8 @@ Rules:
 
 const TRIAGE_WORK = (ref: string, title: string, desc: string) =>
   `You've been assigned task ${ref}: ${title}
-${desc ? desc + '\n' : ''}Do this task now. When finished, mark it done with: /task done ${ref}
-If you cannot complete it, still mark it done with a brief failure note.`;
+${desc ? desc + '\n' : ''}Do this task now. When finished, mark it done with: /task done ${ref} --acceptance "completed the assigned scope; evidence is in my reply"
+If you cannot complete it, mark it done with: /task done ${ref} --failure-note "<why this task could not be completed>".`;
 
 /**
  * Have the team lead triage UNASSIGNED tasks that are sitting in the To-Do lane

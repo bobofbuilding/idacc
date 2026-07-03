@@ -287,6 +287,7 @@ async function createGoalLeadTasks(
       createAndDispatchPlan(baseClient.withTeam(team), objective, teamSubtasks, {
         dispatch: true,
         respectOwners: true,
+        allowCoordinatorOwners: true,
       }).catch(() => ({ created: [], dispatched: 0, deferred: 0 })),
     ),
   );
