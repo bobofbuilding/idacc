@@ -93,7 +93,7 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
   }
   async function resolveBrainApproval(option: string) {
-    const status = /reject|deny|keep current/i.test(option) ? 'rejected' : 'approved';
+    const status = /reject|deny|keep current|keep separate|separate/i.test(option) ? 'rejected' : 'approved';
     setBusy(true); setErr('');
     try {
       await call('brainApproval:resolve', brainApprovalId, status, option);

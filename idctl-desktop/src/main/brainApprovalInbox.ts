@@ -76,7 +76,7 @@ function resolutionPath(kind: string): string {
     case 'memory.retire':
       return 'review stale/noisy memory; approval lets Brain retire it with rollback evidence';
     case 'entity.alias.fuzzy_merge':
-      return 'confirm canonical and duplicate entities; approval lets Brain record a reversible alias merge';
+      return 'approve only when both records are the same real-world entity; approval lets Brain record a reversible alias merge';
     case 'team.instruction.supersede':
       return 'confirm replacement instruction; approval lets Brain supersede the older team instruction memory';
     case 'fact.contradiction':
@@ -131,11 +131,12 @@ function approvalPlainLanguage(approval: BrainApproval, kind: string, subject: s
   switch (kind) {
     case 'entity.alias.fuzzy_merge':
       return [
-        'Plain-English meaning: Brain found two records whose names look similar and wants a human to decide whether they refer to the same thing.',
+        'Question: Should Brain treat these two records as the same thing, or keep them separate?',
         candidates.length ? `Records to compare:\n${candidates.map((c) => `- ${c}`).join('\n')}` : `Record names: ${subject}.`,
-        [...common, similarity ? `Name similarity: ${similarity}.` : '', `Reversible: ${booleanLabel(reversible)}.`, hardDelete === false ? 'No record will be hard-deleted.' : 'Deletion behavior: review before approving.'].filter(Boolean).join(' '),
-        'Approve if: these records really describe the same agent, team, project, contract, wallet, or concept and should be linked in Brain memory.',
-        'Reject if: they are different things, you are unsure, or linking them would make future memory/search results less clear.',
+        'Proof needed to approve: same real-world entity. For tokens, contracts, chains, or wallets, approve only if the chain and contract/address evidence match.',
+        [...common, similarity ? `Brain signal: names are ${similarity} similar.` : 'Brain signal: name similarity only.', `Reversible: ${booleanLabel(reversible)}.`, hardDelete === false ? 'No record will be hard-deleted.' : 'Deletion behavior: review before approving.'].filter(Boolean).join(' '),
+        'Approve means: queue a reversible Brain alias merge so future Brain lookup/search may treat these records as one canonical thing.',
+        'Reject means: keep both Brain records independent. Use this when they are different tokens, different contracts, different chains, or you are unsure.',
       ];
     case 'memory.retire':
       return [
@@ -197,8 +198,6 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
   const detail = [
     `Brain approval #${id}`,
     '',
-    'What this number means: this is an internal Brain review ticket. It is not a blockchain transaction, not a key action, and not an agent command by itself.',
-    '',
     `Review type: ${kind}`,
     `Short label: ${subject}`,
     '',
@@ -209,10 +208,14 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
     'What happens after rejection: IDACC marks this approval as rejected and Brain keeps the current state.',
   ].join('\n');
 
+  const options = kind === 'entity.alias.fuzzy_merge'
+    ? ['Approve alias merge', 'Reject / keep separate']
+    : ['Approve after review — queue Brain change', 'Reject — keep current Brain state'];
+
   return {
     id: `brain-approval-${id}`,
     question: detail,
-    options: ['Approve after review — queue Brain change', 'Reject — keep current Brain state'],
+    options,
     agent: '',
     taskRef: `brain-approval:${id}`,
     taskTitle: `Brain approval #${id}`,
@@ -228,7 +231,7 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
       requestedBy: approval.requested_by ?? 'brain',
       status: approval.status ?? 'pending',
       sourceUrl: `${brainBaseUrl()}/dashboard/health`,
-      detailVersion: 2,
+      detailVersion: 3,
     },
   };
 }

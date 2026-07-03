@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.498] — 2026-07-03
+- Clarify Brain fuzzy merge approval cards
+
 ## [0.1.497] — 2026-07-03
 - Add LM Studio backend start action
 
