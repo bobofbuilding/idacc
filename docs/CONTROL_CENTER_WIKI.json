@@ -169,7 +169,7 @@
       ],
       "purpose": "Manage agent onchain identity, wallet controller address, Safe-style account, and scoped session keys.",
       "scope": "All-team agent roster with wallet-bearing agents sorted first. Key provider is currently mock unless a live provider is wired behind the same interface.",
-      "body": "# Identity & Keys\n\nIdentity & Keys owns controller proof, wallet provisioning, and scoped key actions. Keep this page focused on current authority and safety boundaries. Bridge reads that only inspect identity-adjacent settings should not broadcast page invalidations."
+      "body": "# Identity & Keys\n\nIdentity & Keys owns controller proof, wallet provisioning, and scoped key actions. Keep this page focused on current authority and safety boundaries. Bridge reads that only inspect identity-adjacent settings should not broadcast page invalidations, create tasks, or dispatch work."
     },
     {
       "id": "teams",
@@ -218,7 +218,7 @@
       ],
       "purpose": "Capability workbench for MCP tool servers, skills, and bundled plugins.",
       "scope": "Active team, all teams, or all leads depending on scope selector. Runtime support is advisory; capability assignment remains runtime-neutral while stale target rows are still blocked by fresh-read guards.",
-      "body": "# Capabilities\n\nCapabilities owns skills, MCP servers, plugins, runtime-neutral capability wiring, and guarded Brain sync handoffs. Provider and runtime catalog reads stay cached/non-invalidating; provider connects and explicit runtime probes still refresh dependent views without passive CLI command execution."
+      "body": "# Capabilities\n\nCapabilities owns skills, MCP servers, plugins, runtime-neutral capability wiring, and guarded Brain sync handoffs. Provider and runtime catalog reads stay cached/non-invalidating; provider connects and explicit runtime probes still refresh dependent views without passive CLI command execution. Dashboard draft/proposal reads are review-only; they do not auto-promote agent output into Tasks or dispatch assignments."
     },
     {
       "id": "computer",
@@ -303,5 +303,5 @@
       "body": "# Wiki\n\nThis page now reads a compact app manifest. The replacement authoring contract is being rebuilt in docs/CONTROL_CENTER_WIKI.md as Markdown-first schema documentation."
     }
   ],
-  "appVersion": "0.1.545"
+  "appVersion": "0.1.546"
 }
