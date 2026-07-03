@@ -235,8 +235,6 @@ function cooldownTitle(row: RuntimeCooldown): string {
 
 export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: FleetStore; onProbe?: (a: TeamAgent) => void; probeBusy?: string | null; navigate?: (view: string) => void }) {
   const cols = onProbe ? 9 : 8;
-  const runtimeCatalogVersion = useSyncVersion(['runtime-catalog']);
-  const runtimeCooldownVersion = useSyncVersion(['agents']);
   const hierarchyVersion = useSyncVersion(['org', 'agents']);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -252,6 +250,8 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   const [configDrafts, setConfigDrafts] = useState<Record<string, AgentConfigDraft>>({});
   const configDraftList = Object.values(configDrafts);
   const runtimeDetailsActive = runtimeDetailsRequested || showModels || configDraftList.length > 0;
+  const runtimeCatalogVersion = useSyncVersion(runtimeDetailsActive ? ['runtime-catalog'] : []);
+  const runtimeCooldownVersion = useSyncVersion(runtimeDetailsActive ? ['agents'] : []);
   const viewAll = store.viewAll;
   const orderedAgents = useMemo(() => agentsLeadFirst(store.agents, store.coordinator), [store.agents, store.coordinator]);
   const shown: TeamAgent[] = useMemo(() => (viewAll ? store.allAgents : orderedAgents), [viewAll, store.allAgents, orderedAgents]);

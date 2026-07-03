@@ -255,11 +255,10 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         setSubs(next);
         setSubsCheckedAt(Date.now());
       }
-      // Keep model picker data current too. The main process also refreshes provider
-      // models on boot + every 6h; this warms the renderer-visible catalog/freshness
-      // routes when Settings is open without running package installers or updaters.
-      void call<Record<string, string[]>>('runtime:models').catch(() => null);
-      void call('runtime:freshness').catch(() => null);
+      if (options.force) {
+        void call<Record<string, string[]>>('runtime:models').catch(() => null);
+        void call('runtime:freshness').catch(() => null);
+      }
       if (options.notice) setSubNotice('Managed runtimes refreshed. Account status and model freshness were checked.');
     } finally {
       if (options.busy) setSubsBusy(false);
@@ -386,8 +385,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           setSubs(next);
           setSubsCheckedAt(Date.now());
         }
-        void call<Record<string, string[]>>('runtime:models').catch(() => null);
-        void call('runtime:freshness').catch(() => null);
       } finally {
         subRefreshRunningRef.current = false;
       }
@@ -2229,7 +2226,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       <section className="card">
         <h3>Managed subscription sign-ins</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Local CLI sign-ins and subscription-backed runtimes are launched and tracked from IDACC. Signed in means live CLI status; account linked means safe local account evidence. API-key providers are configured under <b>Inference backends</b>. Account status and model freshness auto-check on open, focus, and every 5 minutes.
+          Local CLI sign-ins and subscription-backed runtimes are launched and tracked from IDACC. Signed in means live CLI status; account linked means safe local account evidence. API-key providers are configured under <b>Inference backends</b>. Account status auto-checks on open, focus, and every 5 minutes; model freshness updates on explicit refresh.
         </p>
         {visibleManagedSubRows.map(({ key, label, runtime }) => {
           const s = subs?.[key];
