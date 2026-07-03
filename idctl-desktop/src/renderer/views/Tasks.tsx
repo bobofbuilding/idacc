@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore, type TeamAgent } from '../store.ts';
 import { usePrompt } from '../components/prompt.tsx';
 import { useToast } from '../components/toast.tsx';
-import type { NewsItem, Task } from '../../../../idctl/src/api/types.ts';
+import type { Task } from '../../../../idctl/src/api/types.ts';
 import type { ScheduleEntry } from '../../../../idctl/src/api/client.ts';
 import { Schedule } from './Schedule.tsx';
 import { Loops } from './Loops.tsx';
@@ -23,8 +23,6 @@ type AssignScope = 'team' | 'selected-teams' | 'team-leads' | 'all-agents';
 type TaskSnapshot = { status: string; owner?: string; team?: string; lane: Lane };
 type TeamAgentsGroup = { team: string; agents: TeamAgent[] };
 type WorkSchedule = ScheduleEntry & { team?: string };
-type WorkDraftNews = NewsItem & { teamName?: string };
-type WorkDraftProposal = { id: string; team: string; actor: string; at: number; objective: string; subtasks: SubTask[] };
 type WorkOrgHierarchy = {
   primary: { team: string; agent: string } | null;
   secondaries: { agent: string; team: string; leadsTeams: string[] }[];
@@ -47,80 +45,6 @@ function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/
 function clipText(s: string, n: number): string {
   const t = String(s || '').replace(/\s+/g, ' ').trim();
   return t.length > n ? `${t.slice(0, n)}...` : t;
-}
-function str(x: unknown): string { return typeof x === 'string' ? x : ''; }
-function previewOf(d: Record<string, unknown>): string {
-  return str(d.message_preview) || str(d.preview) || str(d.message) || str(d.text) || str(d.title) || str(d.note);
-}
-function toMs(ts?: number | null): number {
-  if (!ts) return 0;
-  return ts < 10_000_000_000 ? ts * 1000 : ts;
-}
-function extractJsonArrayText(text: string): string {
-  const start = text.search(/\[\s*\{/);
-  if (start < 0) return '';
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < text.length; i += 1) {
-    const ch = text[i];
-    if (inString) {
-      if (escaped) { escaped = false; continue; }
-      if (ch === '\\') { escaped = true; continue; }
-      if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') { inString = true; continue; }
-    if (ch === '[') depth += 1;
-    if (ch === ']') {
-      depth -= 1;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-  return '';
-}
-function draftActor(n: WorkDraftNews): string {
-  const d = n.data ?? {};
-  const from = str(d.from) || str(d.sender) || str(d.agent) || str(d.source);
-  const to = str(d.to) || str(d.target) || str(d.recipient);
-  if (from && to) return `${from} -> ${to}`;
-  return from || to || n.type;
-}
-function parseDraftProposal(n: WorkDraftNews): WorkDraftProposal | null {
-  const raw = n.message || previewOf(n.data ?? {});
-  const json = extractJsonArrayText(raw);
-  if (!json) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed) || !parsed.length) return null;
-  const subtasks = parsed.slice(0, 12).flatMap((row, i) => {
-    if (!row || typeof row !== 'object') return [];
-    const o = row as Record<string, unknown>;
-    const title = clipText(str(o.title) || str(o.task) || `Task ${i + 1}`, 120);
-    const description = clipText(str(o.description) || str(o.detail) || str(o.summary), 400);
-    const agent = clipText(str(o.agent) || str(o.owner) || str(o.assignee), 80);
-    if (!title && !description && !agent) return [];
-    const deps = Array.isArray(o.dependsOn) ? o.dependsOn : Array.isArray(o.depends_on) ? o.depends_on : [];
-    const dependsOn = deps.map((d) => Number(d)).filter((d) => Number.isInteger(d) && d >= 0 && d < parsed.length && d !== i);
-    return [{ title: title || `Task ${i + 1}`, description, agent, dependsOn }];
-  });
-  if (!subtasks.length) return null;
-  const team = n.teamName || 'default';
-  const actor = draftActor(n);
-  const at = toMs(n.timestamp) || Date.now();
-  const titles = subtasks.slice(0, 3).map((s) => s.title).join('; ');
-  return {
-    id: `${team}:${n.id ?? `${n.timestamp}:${n.type}:${raw.slice(0, 80)}`}`,
-    team,
-    actor,
-    at,
-    objective: `Review proposed work from ${actor}${titles ? `: ${titles}` : ''}`,
-    subtasks,
-  };
 }
 const SURFACE_BLOCKERS_PROMPT = (taskList: string) =>
   'Review the team\'s current open tasks below. For any task BLOCKED on a decision only the USER can make ' +
@@ -265,8 +189,6 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const [laneOverlay, setLaneOverlay] = useState<Record<string, string>>({}); // ref → fine-grained lane
   const [depsOverlay, setDepsOverlay] = useState<Record<string, string[]>>({}); // ref → prerequisite refs (app-side; manager has no deps)
   const [taskUsage, setTaskUsage] = useState<Record<string, { tokens: number; input: number; output: number; ms: number; turns: number }>>({}); // ref → token spend
-  const [draftProposals, setDraftProposals] = useState<WorkDraftProposal[]>([]);
-  const [showDraftProposals, setShowDraftProposals] = useState(false);
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   // Auto-decompose: describe an objective → lead splits it → create + farm out.
   const [showAssign, setShowAssign] = useState(false);
@@ -351,7 +273,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
     : (activeTeamAgents.length ? activeTeamAgents : teamAgents);
   const assignOptionKeys = new Set(assignOptions.map((a) => agentKey(a, activeTeam)));
   const selectedAssignTargets = assignOptions.filter((a) => assignTo.has(agentKey(a, activeTeam)));
-  function normalizeDraftForTeam(team: string, items: SubTask[]): SubTask[] {
+  function normalizeProposalForTeam(team: string, items: SubTask[]): SubTask[] {
     const agents = agentsForWorkTeam(team);
     const coordinatorName = leadForWorkTeam(team);
     const candidates = executionCandidatesForTeam(team, agents, coordinatorName);
@@ -372,17 +294,6 @@ function TasksPanel({ store }: { store: FleetStore }) {
           .filter((d) => Number.isInteger(d) && d >= 0 && d < arr.length && d !== i),
       };
     });
-  }
-  function reviewDraftProposal(draft: WorkDraftProposal) {
-    const team = activeTeams.includes(draft.team) ? draft.team : activeTeam;
-    const normalized = normalizeDraftForTeam(team, draft.subtasks);
-    setWorkTeam(team);
-    setLead(leadForWorkTeam(team));
-    setMode('plan');
-    setShowAssign(true);
-    setObjective(draft.objective);
-    setProposal(normalized);
-    setAssignNote(`imported ${normalized.length} proposed task${normalized.length === 1 ? '' : 's'} from ${draft.team}/${draft.actor}; review owners before Create & dispatch`);
   }
   // Keep the single-agent target (schedule/loop/dream) valid as the team changes.
   useEffect(() => {
@@ -585,21 +496,6 @@ function TasksPanel({ store }: { store: FleetStore }) {
       const maps = await Promise.all(teamsShown.map((tm) => call<Record<string, { tokens: number; input: number; output: number; ms: number; turns: number }>>('tasks:usage', tm).catch(() => ({}))));
       setTaskUsage(Object.assign({}, ...maps));
     } catch { /* usage is best-effort */ }
-    try {
-      const news = await call<WorkDraftNews[]>('news:allTeams', 80).catch(() => []);
-      const cutoff = Date.now() - 60 * 60 * 1000;
-      const seen = new Set<string>();
-      const drafts: WorkDraftProposal[] = [];
-      for (const n of news) {
-        const draft = parseDraftProposal(n);
-        if (!draft || draft.at < cutoff || seen.has(draft.id)) continue;
-        seen.add(draft.id);
-        drafts.push(draft);
-      }
-      setDraftProposals(drafts.sort((a, b) => b.at - a.at).slice(0, 8));
-    } catch {
-      setDraftProposals([]);
-    }
   }
   useEffect(() => {
     reload();
@@ -900,7 +796,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
   }
   async function createPlan() {
     if (!proposal || !proposal.length) return;
-    const dispatchProposal = normalizeDraftForTeam(activeTeam, proposal);
+    const dispatchProposal = normalizeProposalForTeam(activeTeam, proposal);
     const rerouted = dispatchProposal.some((p, i) => p.agent !== proposal[i]?.agent);
     if (rerouted) {
       setProposal(dispatchProposal);
@@ -1101,39 +997,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
         </span>
         <span className="grow" />
         <button className="btn" disabled={busy || triaging} title="Triage unassigned work, re-dispatch stalled tasks, and surface blocker decisions — on demand (no longer automatic)" onClick={() => void reconcileNow()}>⟳ Reconcile</button>
-        {draftProposals.length ? (
-          <button className="btn" disabled={busy} title="Review agent-proposed Dashboard drafts before turning them into real tasks" onClick={() => setShowDraftProposals((v) => !v)}>
-            {showDraftProposals ? 'Hide drafts' : `Review drafts (${draftProposals.length})`}
-          </button>
-        ) : null}
         <button className="btn" disabled={busy || proposing} title="Create work: auto-plan, direct assignment, schedule, loop, or dream" onClick={() => { setShowAssign((v) => !v); setAssignNote(''); setProposal(null); }}>{showAssign ? '− Close' : '⚡ Create work'}</button>
         <button className="btn primary" disabled={busy} onClick={() => void newTask()}>+ New task</button>
       </div>
-
-      {draftProposals.length && showDraftProposals ? (
-        <section className="card draft-proposal-card" style={{ marginBottom: 10 }}>
-          <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>
-            <h3 style={{ margin: 0 }}>Draft proposals</h3>
-            <span className="muted small">Dashboard draft rows are review-only; they are not live tasks until you create them</span>
-            <span className="grow" />
-            <span className="muted small">{draftProposals.length} recent</span>
-            <button className="btn small" disabled={busy} onClick={() => setShowDraftProposals(false)}>Hide</button>
-          </div>
-          <div className="draft-proposal-list">
-            {draftProposals.map((draft) => (
-              <div className="draft-proposal-row" key={draft.id}>
-                <div className="draft-proposal-main">
-                  <b>{draft.team} · {draft.actor}</b>
-                  <div className="muted small draft-proposal-summary" title={draft.subtasks.map((s) => s.title).join('\n')}>
-                    {draft.subtasks.length} proposed task{draft.subtasks.length === 1 ? '' : 's'} · {ago(draft.at)} · {draft.subtasks.slice(0, 3).map((s) => s.title).join('; ')}{draft.subtasks.length > 3 ? ` +${draft.subtasks.length - 3} more` : ''}
-                  </div>
-                </div>
-                <button className="btn small primary" disabled={proposing} onClick={() => reviewDraftProposal(draft)}>Review in Create Work</button>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
 
       {showAssign ? (
         <section className="card" style={{ marginBottom: 10 }}>

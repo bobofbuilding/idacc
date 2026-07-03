@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.534] — 2026-07-03
+- Remove Dashboard drafts from Work task creation flow
+
 ## [0.1.533] — 2026-07-03
 - Avoid variable font renderer crash path
 
