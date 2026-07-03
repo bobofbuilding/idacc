@@ -1204,9 +1204,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const starterModel = TOP_LOCAL_MODEL_CATALOG.find((m) => m.id === STARTER_LOCAL_MODEL_ID) ?? TOP_LOCAL_MODEL_CATALOG[0];
   const starterInstalled = modelInstalled(STARTER_LOCAL_MODEL_ID);
   const catalogUpdateRows = ollamaCatalog?.installedUpdates.slice(0, 8) ?? [];
-  const catalogNewRows = ollamaCatalog?.newModels.slice(0, 5) ?? [];
   const catalogUpdateCount = ollamaCatalog?.installedUpdates.length ?? 0;
-  const catalogNewCount = ollamaCatalog?.savedCount ?? ollamaCatalog?.newModels.length ?? 0;
   const ollamaCatalogStatus = ollamaCatalog
     ? `catalog checked ${timeAgo(ollamaCatalog.checkedAt)}`
     : ollamaCatalogChecking
@@ -2430,24 +2428,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             </div>
           </div>
         ) : null}
-        {catalogNewRows.length ? (
-          <div className="local-catalog-summary">
-            <div className="grow">
-              <b>{catalogNewCount || catalogNewRows.length} new catalog tag{(catalogNewCount || catalogNewRows.length) === 1 ? '' : 's'} added</b>
-              <span>Search below or paste a tag to download only what you want to test.</span>
-            </div>
-            <div className="chips">
-              {catalogNewRows.map((m) => (
-                <span key={m.name} className="chip mono" title={catalogModelMeta(m)}>
-                  {m.name}
-                </span>
-              ))}
-              {catalogNewCount > catalogNewRows.length ? <span className="muted small">+{catalogNewCount - catalogNewRows.length} more</span> : null}
-            </div>
-          </div>
-        ) : null}
-        {ollamaCatalogMsg && !catalogUpdateRows.length && !catalogNewRows.length ? (
-          <p className={`small ${/fail/.test(ollamaCatalogMsg) ? 'status-error' : 'muted'}`} style={{ margin: '6px 0 0' }}>
+        {ollamaCatalogMsg && /fail/i.test(ollamaCatalogMsg) && !catalogUpdateRows.length ? (
+          <p className="small status-error" style={{ margin: '6px 0 0' }}>
             {ollamaCatalogMsg}
           </p>
         ) : null}

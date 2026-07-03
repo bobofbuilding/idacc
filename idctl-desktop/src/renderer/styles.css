@@ -255,24 +255,6 @@ button.chip.incompat:hover { border-color: var(--line); }
   flex-wrap: wrap;
   margin-bottom: 4px;
 }
-.local-catalog-summary {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg-2);
-}
-.local-catalog-summary b,
-.local-catalog-summary span {
-  display: block;
-}
-.local-catalog-summary .chips {
-  justify-content: flex-end;
-}
 .catalog-grid { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; max-height: 320px; overflow-y: auto; }
 .catalog-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; flex-wrap: wrap; }
 .catalog-row:hover { background: var(--bg-3); }
