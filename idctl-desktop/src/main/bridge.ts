@@ -6,7 +6,7 @@
  */
 
 import { inspectLibraryPluginMetadata, ManagerClient } from '../../../idctl/src/api/client.ts';
-import type { Agent, Task } from '../../../idctl/src/api/types.ts';
+import type { Agent, NewsItem, Task } from '../../../idctl/src/api/types.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
 import type { BrainAgentsReport, BrainControllerReport, BrainCoreHealthReport, BrainFleetReport, BrainGraphReport, BrainSkillIndex, BrainSkillNode } from '../../../idctl/src/api/brain.ts';
 import { runOnboarding, type OnboardPlan, type PreparedRuntime } from '../../../idctl/src/api/onboard.ts';
@@ -43,6 +43,7 @@ import {
   setGoalDriver,
   setHeadroomPilot,
 } from '../../../idctl/src/settings/store.ts';
+import { configDir, resolveConfigPath } from '../../../idctl/src/settings/paths.ts';
 import { detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { realpathSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
@@ -61,7 +62,7 @@ import { decomposeWork, createAndDispatchPlan, fanOutObjective, teamLeads, triag
 import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, type GoalDriverConfig } from './goaldriver.ts';
 import { buildOrgHierarchy, previewOrgSync, syncOrg, startOrgSyncLoop } from './orgSync.ts';
 import { syncDomainsForMethod } from '../shared/syncDomains.ts';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -898,6 +899,136 @@ let client = new ManagerClient(cfg);
 const keys = getKeyProvider();
 const RECENT_DONE_TASK_LIMIT = 25;
 let doneTaskLimitUnsupportedAt = 0;
+type TeamNewsItem = NewsItem & { teamName?: string };
+type AutoDraftRecord = { at: number; team: string; status: 'created' | 'skipped' | 'failed'; created: number; reason?: string };
+type AutoDraftStore = { processed: Record<string, AutoDraftRecord> };
+const AUTO_DRAFT_WINDOW_MS = 30 * 60 * 1000;
+const AUTO_DRAFT_MAX_PER_SCAN = 1;
+const AUTO_DRAFT_OPEN_TASK_LIMIT = 0;
+let autoDraftDispatchInFlight: Promise<void> | null = null;
+
+function textValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function clipDraftText(value: string, n: number): string {
+  const s = String(value || '').replace(/\s+/g, ' ').trim();
+  return s.length > n ? `${s.slice(0, n)}...` : s;
+}
+
+function toMs(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n < 10_000_000_000 ? n * 1000 : n;
+}
+
+function extractJsonArrayText(text: string): string {
+  const start = text.search(/\[\s*\{/);
+  if (start < 0) return '';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '[') depth += 1;
+    if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return '';
+}
+
+function newsDraftRaw(n: TeamNewsItem): string {
+  const d = n.data ?? {};
+  return textValue(n.message) || textValue(d.message) || textValue(d.result) || textValue(d.text) || textValue(d.output);
+}
+
+function newsActor(n: TeamNewsItem): string {
+  const d = n.data ?? {};
+  return textValue(d.from) || textValue(d.sender) || textValue(d.agent) || textValue(d.source);
+}
+
+function shouldAutoPromoteDraft(n: TeamNewsItem): boolean {
+  if (n.type && !/reply|message|result/i.test(n.type)) return false;
+  const actor = newsActor(n);
+  // Auto-promotion is intentionally limited to lead-style decomposition replies.
+  // Other agent JSON arrays remain visible as review-only drafts.
+  return /(^lead$|[-_]lead$|manager$|coordinator$)/i.test(actor);
+}
+
+function parseAutoDraftProposal(n: TeamNewsItem): { id: string; team: string; actor: string; at: number; objective: string; subtasks: SubTask[] } | null {
+  if (!shouldAutoPromoteDraft(n)) return null;
+  const raw = newsDraftRaw(n);
+  const json = extractJsonArrayText(raw);
+  if (!json) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || !parsed.length) return null;
+  const subtasks = parsed.slice(0, 12).flatMap((row, i) => {
+    if (!row || typeof row !== 'object') return [];
+    const o = row as Record<string, unknown>;
+    const title = clipDraftText(textValue(o.title) || textValue(o.task) || `Task ${i + 1}`, 120);
+    const description = clipDraftText(textValue(o.description) || textValue(o.detail) || textValue(o.summary), 400);
+    const agent = clipDraftText(textValue(o.agent) || textValue(o.owner) || textValue(o.assignee), 80);
+    if (!title && !description && !agent) return [];
+    const deps = Array.isArray(o.dependsOn) ? o.dependsOn : Array.isArray(o.depends_on) ? o.depends_on : [];
+    const dependsOn = deps.map((d) => Number(d)).filter((d) => Number.isInteger(d) && d >= 0 && d < parsed.length && d !== i);
+    return [{ title: title || `Task ${i + 1}`, description, agent, dependsOn }];
+  });
+  if (!subtasks.length) return null;
+  const team = n.teamName || 'default';
+  const actor = newsActor(n) || n.type || 'agent';
+  const at = toMs(n.timestamp) || Date.now();
+  const fingerprint = textValue(n.data?.in_reply_to) || textValue(n.in_reply_to) || textValue(n.query_id) || createHash('sha256').update(raw).digest('hex').slice(0, 24);
+  const titles = subtasks.slice(0, 3).map((s) => s.title).join('; ');
+  return {
+    id: `${team}:${fingerprint}`,
+    team,
+    actor,
+    at,
+    objective: `Auto-promote proposed work from ${actor}${titles ? `: ${titles}` : ''}`,
+    subtasks,
+  };
+}
+
+function autoDraftStorePath(): string {
+  const dir = join(configDir(resolveConfigPath()), 'work');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return join(dir, 'dashboard-draft-dispatch.json');
+}
+
+function loadAutoDraftStore(): AutoDraftStore {
+  const file = autoDraftStorePath();
+  if (!existsSync(file)) return { processed: {} };
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as AutoDraftStore;
+    return { processed: parsed && typeof parsed.processed === 'object' && parsed.processed ? parsed.processed : {} };
+  } catch {
+    return { processed: {} };
+  }
+}
+
+function saveAutoDraftStore(store: AutoDraftStore): void {
+  const rows = Object.entries(store.processed)
+    .sort((a, b) => (b[1].at ?? 0) - (a[1].at ?? 0))
+    .slice(0, 500);
+  const payload: AutoDraftStore = { processed: Object.fromEntries(rows) };
+  const file = autoDraftStorePath();
+  writeFileSync(file, JSON.stringify(payload, null, 2));
+  try { chmodSync(file, 0o600); } catch { /* best effort */ }
+}
 
 function taskDedupeKey(t: Task): string {
   return String(t.shortId ?? t.uuid ?? t.name ?? `${t.teamName ?? ''}:${t.title}:${t.createdAt ?? ''}`);
@@ -949,6 +1080,109 @@ async function boardTasksForTeam(team: string): Promise<Task[]> {
   } catch {
     return (await client.withTeam(team).tasks().catch(() => [])).map((t) => ({ ...t, teamName: t.teamName ?? team }));
   }
+}
+
+async function openTaskCountForTeams(teams: string[]): Promise<number> {
+  const rows = await Promise.all(teams.map(async (team) => {
+    const [todo, doing] = await Promise.all([
+      managerTaskRows(team, 'todo').catch(() => []),
+      managerTaskRows(team, 'doing').catch(() => []),
+    ]);
+    return todo.length + doing.length;
+  }));
+  return rows.reduce((sum, n) => sum + n, 0);
+}
+
+async function agentTeamIndex(teams: string[]): Promise<Map<string, string>> {
+  const rows = await Promise.all(
+    teams.map(async (team) => ({ team, agents: await client.withTeam(team).agents().catch(() => [] as Agent[]) })),
+  );
+  const index = new Map<string, string>();
+  for (const row of rows) {
+    for (const agent of row.agents) {
+      const name = textValue(agent.name).toLowerCase();
+      if (name && !index.has(name)) index.set(name, row.team);
+    }
+  }
+  return index;
+}
+
+function taskGroupsByOwnerTeam(
+  subtasks: SubTask[],
+  fallbackTeam: string,
+  owners: Map<string, string>,
+): Map<string, SubTask[]> {
+  const taskTeam = subtasks.map((st) => owners.get(textValue(st.agent).toLowerCase()) || fallbackTeam);
+  const byTeam = new Map<string, { original: number; task: SubTask }[]>();
+  subtasks.forEach((task, original) => {
+    const team = taskTeam[original] || fallbackTeam;
+    const rows = byTeam.get(team) ?? [];
+    rows.push({ original, task });
+    byTeam.set(team, rows);
+  });
+  const out = new Map<string, SubTask[]>();
+  for (const [team, rows] of byTeam) {
+    const originalToLocal = new Map(rows.map((row, local) => [row.original, local] as const));
+    out.set(team, rows.map((row, local) => {
+      const keptDeps = row.task.dependsOn
+        .filter((dep) => taskTeam[dep] === team && originalToLocal.has(dep))
+        .map((dep) => originalToLocal.get(dep)!)
+        .filter((dep) => dep !== local);
+      const crossDeps = row.task.dependsOn.filter((dep) => taskTeam[dep] && taskTeam[dep] !== team);
+      const crossNote = crossDeps.length
+        ? `\n\nCross-team dependency note: original draft listed prerequisite task index(es) ${crossDeps.join(', ')} in other team(s); coordinate through the team lead before final closeout.`
+        : '';
+      return {
+        ...row.task,
+        description: `${row.task.description}${crossNote}`.trim(),
+        dependsOn: keptDeps,
+      };
+    }));
+  }
+  return out;
+}
+
+async function createAutoDraftTasks(draft: { id: string; team: string; actor: string; objective: string; subtasks: SubTask[] }): Promise<number> {
+  const teams = await client.teams().then((rows) => rows.map((t) => t.name)).catch(() => [cfg.team ?? 'default']);
+  const owners = await agentTeamIndex(teams);
+  const groups = taskGroupsByOwnerTeam(draft.subtasks, draft.team, owners);
+  let created = 0;
+  for (const [team, subtasks] of groups) {
+    const result = await createAndDispatchPlan(
+      client.withTeam(team),
+      `${draft.objective}${groups.size > 1 ? ` (${team})` : ''}`,
+      subtasks,
+      { dispatch: true, respectOwners: true },
+    );
+    created += result.created.filter((row) => row.ok).length;
+  }
+  return created;
+}
+
+function autoPromoteDashboardDrafts(news: TeamNewsItem[]): void {
+  if (autoDraftDispatchInFlight) return;
+  autoDraftDispatchInFlight = (async () => {
+    const store = loadAutoDraftStore();
+    const cutoff = Date.now() - AUTO_DRAFT_WINDOW_MS;
+    const candidates = news
+      .map((n) => parseAutoDraftProposal(n))
+      .filter((draft): draft is NonNullable<typeof draft> => !!draft && draft.at >= cutoff && !store.processed[draft.id])
+      .sort((a, b) => b.at - a.at)
+      .slice(0, AUTO_DRAFT_MAX_PER_SCAN);
+    if (!candidates.length) return;
+    const teams = await client.teams().then((rows) => rows.map((t) => t.name)).catch(() => [cfg.team ?? 'default']);
+    const open = await openTaskCountForTeams(teams);
+    if (open > AUTO_DRAFT_OPEN_TASK_LIMIT) return;
+    for (const draft of candidates) {
+      try {
+        const created = await createAutoDraftTasks(draft);
+        store.processed[draft.id] = { at: Date.now(), team: draft.team, status: created ? 'created' : 'skipped', created, reason: created ? undefined : 'no tasks created' };
+      } catch (e) {
+        store.processed[draft.id] = { at: Date.now(), team: draft.team, status: 'failed', created: 0, reason: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    saveAutoDraftStore(store);
+  })().finally(() => { autoDraftDispatchInFlight = null; });
 }
 
 const COALESCED_READ_METHODS = new Set([
@@ -1097,7 +1331,9 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
       seen.add(id);
       out.push(n);
     }
-    return out.sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0)).slice(0, lim);
+    const rows = out.sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0)).slice(0, lim);
+    autoPromoteDashboardDrafts(rows);
+    return rows;
   },
   // Live agent activity (tool/file steps) for the chat "what they're doing" feed.
   // Team-scoped so a same-named agent in another team can't bleed in; an optional
