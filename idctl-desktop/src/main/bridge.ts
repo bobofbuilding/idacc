@@ -1191,6 +1191,7 @@ const COALESCED_READ_METHODS = new Set([
   'teams',
   'agents:allTeams',
   'events',
+  'events:tail',
   'events:multi',
   'news:allTeams',
   'activity:get',
@@ -1219,6 +1220,7 @@ const READ_CACHE_TTL_MS = new Map<string, number>([
   ['agents', 3000],
   ['teams', 5000],
   ['agents:allTeams', 8000],
+  ['events:tail', 1000],
   ['events:multi', 8000],
   ['news:allTeams', 8000],
   ['inboxPending', 5000],
@@ -1274,6 +1276,24 @@ function goalDriverConfig(): GoalDriverConfig {
   return normalizeGoalDriverConfig(loadSettings().goalDriver);
 }
 
+async function eventTailCursor(scopedClient: ManagerClient): Promise<number> {
+  const requestedTail = await scopedClient.events(0, { wait: 0, limit: 1, tail: true });
+  if (!requestedTail.events?.length) return Number(requestedTail.next_seq) || 0;
+
+  // Older managers ignore tail=1 and return the oldest retained event. Keep the
+  // expensive catch-up inside the main process so React doesn't render thousands
+  // of historical rows during startup. Patched managers return above immediately.
+  let cursor = Number(requestedTail.next_seq) || 0;
+  for (let i = 0; i < 200; i += 1) {
+    const page = await scopedClient.events(cursor, { wait: 0, limit: 1000 });
+    const next = Number(page.next_seq) || cursor;
+    if (!page.events?.length || next <= cursor) return cursor;
+    cursor = next;
+    if (page.events.length < 1000) return cursor;
+  }
+  return cursor;
+}
+
 const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // fleet
   health: () => client.health(),
@@ -1289,6 +1309,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     return groups.filter((g) => g.agents.length > 0);
   },
   events: (since: number) => client.events(Number(since) || 0, { wait: 20, limit: 100 }),
+  'events:tail': () => eventTailCursor(client).then((next_seq) => ({ next_seq })),
   // Holistic activity: merge every team's recent events into one stream (tagged with
   // team), newest last. Used by the "All teams" Dashboard feed.
   'events:multi': async (limit?: number) => {
@@ -1300,17 +1321,16 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     //
     // CRITICAL: the manager's `/events?since=N` returns events with seq > N, OLDEST-first,
     // so `since=0` returns the OLDEST retained events (the head of the ring), NOT the live
-    // tail. Reading `since=0` directly showed days-old events ("activity not live"). To get
-    // the live tail we must first learn the head seq (`next_seq`), then fetch a recent
-    // window ending there and keep its newest slice.
+    // tail. Reading `since=0` directly showed days-old events ("activity not live"). Use
+    // the manager's tail cursor, then fetch a recent window ending there and keep its
+    // newest slice.
     const perTeam = Math.max(8, Math.ceil(lim / Math.max(1, names.length)));
     const win = Math.max(perTeam * 4, 200);
     const per = await Promise.all(
       names.map(async (name) => {
         const tc = client.withTeam(name);
         try {
-          const head = await tc.events(0, { wait: 0, limit: 1 }); // cheap: just read next_seq (the head)
-          const next = Number(head.next_seq) || 0;
+          const next = await eventTailCursor(tc);
           const since = Math.max(0, next - win);
           const r = await tc.events(since, { wait: 0, limit: win });
           const evs = (r.events ?? []).map((e) => ({ ...e, team: e.team ?? name, timestamp: e.timestamp ?? e.occurred_at }));

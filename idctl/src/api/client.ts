@@ -522,10 +522,11 @@ export class ManagerClient {
   // ---- Live event stream ------------------------------------------------
 
   /** Long-poll the team event stream from a cursor. `wait` holds the socket. */
-  async events(since: number, opts: { topics?: string; limit?: number; wait?: number } = {}, signal?: AbortSignal): Promise<EventsResponse> {
+  async events(since: number, opts: { topics?: string; limit?: number; wait?: number; tail?: boolean } = {}, signal?: AbortSignal): Promise<EventsResponse> {
     const p = new URLSearchParams({ since: String(since), limit: String(opts.limit ?? 100) });
     if (opts.topics) p.set('topics', opts.topics);
     if (opts.wait) p.set('wait', String(opts.wait));
+    if (opts.tail) p.set('tail', '1');
     const timeoutMs = opts.wait ? Math.max(DEFAULT_MANAGER_TIMEOUT_MS, (opts.wait * 1000) + LONG_POLL_GRACE_MS) : DEFAULT_MANAGER_TIMEOUT_MS;
     const resp = await this.get<EventsResponse & { events?: unknown[] }>(`/events?${p.toString()}`, signal, timeoutMs);
     return {

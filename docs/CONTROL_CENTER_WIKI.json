@@ -5028,6 +5028,12 @@
         "AgentTable no longer reloads runtime models, provider rows, subscription status, runtime freshness, and cooldown metadata on every fleet refresh; hierarchy labels reload only on org/agent mutations.",
         "Managed subscription status is now coalesced behind a shared five-minute main-process cache, while explicit Settings Re-check, sign-in, sign-out, and post-install checks can still force a fresh CLI/account probe.",
         "Validation: npm run typecheck and npm run build passed in idctl-desktop after the HR resource-pressure refactor."
+      ],
+      "implementedTwoHundredSixtyThirdPass": [
+        "The manager event API now supports a tail cursor so IDACC can start live event streams without replaying every retained event through React.",
+        "IDACC persists per-team event cursors, applies backpressure to continuous event batches, and keeps older-manager fallback catch-up inside the Electron main process instead of the renderer.",
+        "Dashboard recent activity now reads from the live event tail instead of assuming since=0 is a head cursor, and the global wiki metadata poll now uses a cached main-process read with a slower foreground/hidden interval.",
+        "Validation: npm run typecheck and npm run build passed in idctl-desktop, and npm run build passed in id-agents before release validation."
       ]
     },
     {

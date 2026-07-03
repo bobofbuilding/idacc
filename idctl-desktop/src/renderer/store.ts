@@ -148,6 +148,8 @@ const SNAPSHOT_POLL_MS = 5000;
 const ALL_TEAMS_POLL_MS = 10000;
 const HIDDEN_POLL_MS = 30000;
 const EVENT_VIEW_REFRESH_MIN_MS = 5000;
+const EVENT_STREAM_BACKPRESSURE_MS = 750;
+const EVENT_CURSOR_STORAGE_PREFIX = 'idacc:event-cursor:';
 const VIEW_INVALIDATING_EVENT_PREFIXES = ['agent:', 'checkin:', 'goal:', 'learn:', 'schedule:', 'task:', 'team:'];
 
 function fleetSnapshotSig(input: {
@@ -195,6 +197,29 @@ function eventsInvalidateViews(events: ManagerEvent[]): boolean {
 
 function fleetPollDelay(baseMs: number): number {
   return typeof document !== 'undefined' && document.hidden ? Math.max(baseMs, HIDDEN_POLL_MS) : baseMs;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function eventCursorKey(team?: string): string {
+  return `${EVENT_CURSOR_STORAGE_PREFIX}${team || 'default'}`;
+}
+
+function readStoredEventCursor(team?: string): number {
+  try {
+    const raw = localStorage.getItem(eventCursorKey(team));
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeStoredEventCursor(team: string | undefined, seq: number): void {
+  if (!Number.isFinite(seq) || seq <= 0) return;
+  try { localStorage.setItem(eventCursorKey(team), String(Math.floor(seq))); } catch { /* storage unavailable */ }
 }
 
 export function useFleet(): FleetStore {
@@ -315,9 +340,19 @@ export function useFleet(): FleetStore {
   // Event-stream cursor loop.
   useEffect(() => {
     let alive = true;
-    let since = 0;
+    let since = readStoredEventCursor(teamRef.current);
     const myEpoch = epoch.current;
     const loop = async () => {
+      if (!since) {
+        try {
+          const tail = await call<{ next_seq: number }>('events:tail');
+          if (!alive || epoch.current !== myEpoch) return;
+          since = Number(tail.next_seq) || 0;
+          writeStoredEventCursor(teamRef.current, since);
+        } catch {
+          since = readStoredEventCursor(teamRef.current);
+        }
+      }
       while (alive && epoch.current === myEpoch) {
         try {
           const resp = await call<{ events: ManagerEvent[]; next_seq: number }>('events', since);
@@ -336,9 +371,14 @@ export function useFleet(): FleetStore {
               setLastUpdated(now);
             }
           }
-          since = resp.next_seq ?? since;
+          const nextSeq = Number(resp.next_seq) || since;
+          since = Math.max(since, nextSeq);
+          writeStoredEventCursor(teamRef.current, since);
+          if (resp.events?.length) {
+            await sleep(fleetPollDelay(EVENT_STREAM_BACKPRESSURE_MS));
+          }
         } catch {
-          await new Promise((r) => setTimeout(r, 3000));
+          await sleep(3000);
         }
       }
     };

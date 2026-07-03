@@ -31,6 +31,8 @@ const DEFAULT_NAV: { id: ViewId; label: string; icon: string; order: number }[] 
   { id: 'wiki', label: 'Wiki', icon: '▤', order: 120 },
 ];
 const IMPLEMENTED_VIEWS = new Set<ViewId>([...DEFAULT_NAV.map((n) => n.id), 'health', 'inbox', 'schedule']);
+const WIKI_REFRESH_MS = 30000;
+const WIKI_REFRESH_HIDDEN_MS = 120000;
 
 class CrashBoundary extends Component<{ children: ReactNode; scope: string }, { error: string | null }> {
   state = { error: null };
@@ -172,7 +174,7 @@ export function App() {
       } catch (err) {
         if (live) setWikiError(err instanceof Error ? err.message : String(err));
       } finally {
-        if (live) timer = setTimeout(load, 1500);
+        if (live) timer = setTimeout(load, document.hidden ? WIKI_REFRESH_HIDDEN_MS : WIKI_REFRESH_MS);
       }
     };
     void load();
