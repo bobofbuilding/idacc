@@ -132,7 +132,7 @@ let count = 0;
 let bytes = 0;
 if (fs.existsSync(dir)) {
   for (const name of fs.readdirSync(dir)) {
-    if (!/^ID-Agents-Control-Center-\d+\.\d+\.\d+-arm64\.zip$/.test(name)) continue;
+    if (!/^ID-Agents-Control-Center-\d+\.\d+\.\d+(?:-mac)?-arm64\.zip$/.test(name)) continue;
     const file = path.join(dir, name);
     const st = fs.statSync(file);
     if (!st.isFile()) continue;
