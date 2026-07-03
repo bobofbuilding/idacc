@@ -35,6 +35,8 @@ export interface BlockerQuestion {
   fingerprint?: string; // normalized question fingerprint for duplicate suppression
   seenCount?: number;   // how many duplicate raises were folded into this item
   lastSeenAt?: number;
+  source?: string;      // producer namespace (brain-approvals, learn, plan, etc.)
+  metadata?: Record<string, unknown>;
 }
 
 function fileFor(id: string): string {
@@ -172,6 +174,8 @@ export function addQuestion(q: BlockerQuestion): { ok: boolean; id: string } {
     dedupeKey: q.dedupeKey ? String(q.dedupeKey).slice(0, 200) : undefined,
     seenCount: q.seenCount || 1,
     lastSeenAt: q.lastSeenAt || Date.now(),
+    source: q.source ? String(q.source).slice(0, 120) : undefined,
+    metadata: q.metadata && typeof q.metadata === 'object' ? q.metadata : undefined,
   };
   payload.fingerprint = q.fingerprint ? String(q.fingerprint).slice(0, 600) : fingerprintOf(payload);
   const dup = findDuplicate(payload);

@@ -20,6 +20,8 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^dreams:(save|remove)$/, ['dreams', 'work', 'brain']],
   [/^materials:(save|remove|importFiles|priority|process|processNext|markRecommendation)$/, ['materials', 'work', 'brain', 'inbox']],
   [/^questions:(add|remove)$/, ['questions', 'inbox', 'tasks', 'work', 'brain']],
+  [/^brainApprovals:syncInbox$/, ['questions', 'inbox', 'brain']],
+  [/^brainApproval:resolve$/, ['questions', 'inbox', 'brain']],
   [/^inbox:(respond|dismiss)$/, ['inbox', 'tasks', 'dashboard', 'brain']],
   [/^tasks:set(Lane|Deps|Review)$/, ['tasks', 'work', 'brain']],
   [/^work:(createPlan|fanout|triage)$/, ['tasks', 'work', 'dashboard', 'brain']],

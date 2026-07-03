@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { call, useSyncVersion, type FleetStore } from '../store.ts';
 import type { InboxItem } from '../../../../idctl/src/api/types.ts';
 
-type BlockerQuestion = { id: string; question: string; options: string[]; agent: string; taskRef?: string; taskTitle?: string; team: string; createdAt: number; seenCount?: number; lastSeenAt?: number };
+type BlockerQuestion = { id: string; question: string; options: string[]; agent: string; taskRef?: string; taskTitle?: string; team: string; createdAt: number; seenCount?: number; lastSeenAt?: number; source?: string; metadata?: Record<string, unknown> };
 function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
 
 /** Order decisions so a prerequisite task's decision comes BEFORE a dependent's.
@@ -75,8 +75,10 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
   const subject = q.taskTitle ?? q.taskRef ?? '';
   const isLearnQuestion = q.taskRef?.startsWith('learn:') ?? false;
   const isPlanQuestion = q.taskRef?.startsWith('plan:') ?? false;
+  const isBrainApproval = q.taskRef?.startsWith('brain-approval:') ?? q.source === 'brain-approvals';
   const isSyntheticQuestion = isLearnQuestion || isPlanQuestion;
-  const from = q.agent || (isSyntheticQuestion ? 'review gate' : 'agent');
+  const from = q.agent || (isBrainApproval ? 'Brain governance' : isSyntheticQuestion ? 'review gate' : 'agent');
+  const brainApprovalId = isBrainApproval ? String(q.metadata?.approvalId ?? q.taskRef?.split(':')[1] ?? '').trim() : '';
 
   // Deliver a response to the blocked agent (best-effort, async) and clear the item.
   // A response moves the task into the board's "Under Review" lane (the block is being
@@ -90,7 +92,23 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
       onDone();
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
   }
-  const chooseOption = (o: string) => deliver(`Decision on “${subject}”. You asked: ${q.question} — the user chose: ${o}. Proceed accordingly.`);
+  async function resolveBrainApproval(option: string) {
+    const status = /reject|deny|keep current/i.test(option) ? 'rejected' : 'approved';
+    setBusy(true); setErr('');
+    try {
+      await call('brainApproval:resolve', brainApprovalId, status, option);
+      await call('questions:remove', q.id).catch(() => undefined);
+      onDone();
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
+  }
+  async function openBrainHealth() {
+    setBusy(true); setErr('');
+    try { await call('brain:openDashboard', 'health'); setBusy(false); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
+  }
+  const chooseOption = (o: string) => isBrainApproval
+    ? resolveBrainApproval(o)
+    : deliver(`Decision on “${subject}”. You asked: ${q.question} — the user chose: ${o}. Proceed accordingly.`);
   const sendComment = () => { const c = comment.trim(); if (c) void deliver(`Response on “${subject}”. You asked: ${q.question} — the user says: ${c}. Proceed accordingly.`); };
   const handleManually = () => deliver(`Re “${subject}”: ${q.question} — the USER is handling this manually/independently. Do NOT work on it or re-raise it; set it aside and continue with everything else. The user will follow up when it's done.`);
   async function skip() {
@@ -109,15 +127,21 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
       {q.options.length ? (
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
           {q.options.map((o) => (
-            <button key={o} className="btn" style={{ textAlign: 'left' }} disabled={busy} onClick={() => void chooseOption(o)} title={`Answer “${o}” and reply to ${q.agent || 'the agent'}`}>{o}</button>
+            <button key={o} className="btn" style={{ textAlign: 'left' }} disabled={busy} onClick={() => void chooseOption(o)} title={isBrainApproval ? `${o}; Brain apply remains separate` : `Answer “${o}” and reply to ${q.agent || 'the agent'}`}>{o}</button>
           ))}
         </div>
       ) : null}
       {/* Then the secondary actions, underneath the options. */}
       <div className="row-actions" style={{ marginTop: 8, gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button className="btn small" disabled={busy} onClick={() => setShowComment((v) => !v)} title="Write your own response instead of picking an option">✎ Comment</button>
-        <button className="btn small" disabled={busy} onClick={() => void handleManually()} title="You'll handle this yourself — the agent sets it aside and won't re-raise it">🛠 I'll handle it</button>
-        <button className="btn small" disabled={busy} onClick={() => void skip()} title="Dismiss without answering">Skip</button>
+        {isBrainApproval ? (
+          <button className="btn small" disabled={busy} onClick={() => void openBrainHealth()} title="Open the Brain Health triage view without changing this approval">Open Brain Health</button>
+        ) : (
+          <>
+            <button className="btn small" disabled={busy} onClick={() => setShowComment((v) => !v)} title="Write your own response instead of picking an option">✎ Comment</button>
+            <button className="btn small" disabled={busy} onClick={() => void handleManually()} title="You'll handle this yourself — the agent sets it aside and won't re-raise it">🛠 I'll handle it</button>
+          </>
+        )}
+        <button className="btn small" disabled={busy} onClick={() => void skip()} title={isBrainApproval ? 'Dismiss locally; unresolved Brain approvals may return on the next sync' : 'Dismiss without answering'}>{isBrainApproval ? 'Dismiss locally' : 'Skip'}</button>
       </div>
       {showComment ? (
         <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'flex-end' }}>

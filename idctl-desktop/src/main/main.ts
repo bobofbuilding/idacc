@@ -21,6 +21,7 @@ import { listLoops, getLoop, saveLoop, removeLoop, type Loop } from './loopstore
 import { listGoals, getGoal, saveGoal, removeGoal, type Goal } from './goalstore.ts';
 import { listDreams, getDream, saveDream, removeDream, type Dream } from './dreamstore.ts';
 import { listQuestions, addQuestion, removeQuestion, type BlockerQuestion } from './questionstore.ts';
+import { resolveBrainApprovalFromInbox, syncBrainApprovalInbox } from './brainApprovalInbox.ts';
 import { getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, removeMaterial, saveMaterial, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
 import { generateImage, readImage, imageModels, getImageServer, detectImageServer, probeImageServer } from './images.ts';
 import { readWiki } from './wiki.ts';
@@ -650,11 +651,16 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return removeDream(args[0] as string);
     // Blocker-question queue (app-side; shown in the Inbox with options).
     case 'questions:list':
+      await syncBrainApprovalInbox();
       return listQuestions(args[0] as string | undefined);
     case 'questions:add':
       return addQuestion(args[0] as BlockerQuestion);
     case 'questions:remove':
       return removeQuestion(args[0] as string);
+    case 'brainApprovals:syncInbox':
+      return syncBrainApprovalInbox({ force: true, limit: Number(args[0] ?? 100) });
+    case 'brainApproval:resolve':
+      return resolveBrainApprovalFromInbox(args[0], args[1], args[2]);
     // Learn materials: Work > Learn queue, guarded extraction, active-goal comparison, review gates.
     case 'materials:list':
       return listMaterials();
