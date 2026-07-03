@@ -10,6 +10,7 @@
  */
 
 import { totalmem, cpus, platform as osPlatform, arch as osArch, homedir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -196,8 +197,24 @@ export async function localStackInstallStatus(ids: string[]): Promise<Record<str
     let installed = false;
     let source: string | undefined;
     if (id === 'ollama') {
-      installed = await brewFormulaInstalled('ollama');
-      source = installed ? 'homebrew formula' : undefined;
+      const formula = await brewFormulaInstalled('ollama');
+      const cask = await brewCaskInstalled('ollama');
+      const cli = await commandOk('ollama', ['--version']);
+      const app = osPlatform() === 'darwin' && (existsSync('/Applications/Ollama.app') || existsSync(`${homedir()}/Applications/Ollama.app`));
+      installed = formula || cask || cli || app;
+      source = formula ? 'homebrew formula' : cask ? 'homebrew cask' : cli ? 'ollama CLI' : app ? 'Ollama.app' : undefined;
+      out[id] = {
+        id,
+        installed,
+        source,
+        detail: installed
+          ? formula || cask
+            ? `Detected ${source}; uninstall action matches this install path.`
+            : `Detected ${source}; IDACC will not offer package uninstall for this external install path.`
+          : 'No matching package/container install evidence found.',
+        checkedAt,
+      };
+      continue;
     } else if (id === 'lm-studio') {
       installed = await brewCaskInstalled('lm-studio');
       source = installed ? 'homebrew cask' : undefined;

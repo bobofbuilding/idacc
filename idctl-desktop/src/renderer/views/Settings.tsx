@@ -1623,6 +1623,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     if (stackPrimaryAction(s)) return 'Install';
     return 'Review command';
   }
+  function stackInstallManaged(status?: LocalStackInstallStatus): boolean {
+    return /homebrew|pip package|docker container/i.test(status?.source ?? '');
+  }
   function stackInstallCmd(s: LocalStackEntry): string | null {
     const c = stackCommand(s.install);
     if (!c || stackInstallUnavailableReason(s)) return null;
@@ -2606,6 +2609,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             const effectiveApiBase = stackApiBase(s);
             const configuredProviders = stackConfiguredProviders(s);
             const configured = configuredProviders.length > 0;
+            const stackActive = stackInstalled || running || configured;
+            const managedInstall = stackInstallManaged(installStatus);
             const confirmInstall = stackConfirm === `i:${s.id}`;
             const confirmUninstall = stackConfirm === `u:${s.id}`;
             const portLabel = stackPortLabel(s);
@@ -2632,7 +2637,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                 <p className="muted small stack-blurb">{s.blurb}</p>
                 {s.installNote ? <p className="muted small stack-blurb">{s.installNote}</p> : null}
                 <div className="stack-install">
-                  {confirmInstall && installCommand && !stackInstalled ? (
+                  {confirmInstall && installCommand && !stackActive ? (
                     <>
                       <code className="mono" title={installDraft?.note}>{installCommand}</code>
                       {installDraft?.autoFixed ? <span className="small ok-text">auto-fixed port {installDraft.originalPort} → {installDraft.port}</span> : null}
@@ -2647,9 +2652,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                     </>
                   ) : (
                     <>
-                      {!stackInstalled && ic ? (
+                      {!stackActive && ic ? (
                         <button className={`btn small${stackPrimaryAction(s) ? ' primary' : ''}`} title={ic} onClick={() => reviewStackInstall(s)}>{stackInstallLabel(s)}</button>
-                      ) : !stackInstalled ? (
+                      ) : !stackActive ? (
                         <a className="btn small" href={s.homepage} target="_blank" rel="noreferrer" title={installUnavailable ?? 'No CLI install — opens the download page'}>Docs ↗</a>
                       ) : null}
                       {installUnavailable ? <span className="muted small" title={installUnavailable}>{stackInstallUnavailableLabel(s)}</span> : null}
@@ -2662,7 +2667,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                       {configuredProviders.length === 1 ? (
                         <button className="btn small" title={`Remove inference backend ${configuredProviders[0].name}; does not uninstall the app/server`} onClick={() => void removeProviderProfile(configuredProviders[0].name)}>Remove backend</button>
                       ) : null}
-                      {uc && stackInstalled ? (
+                      {uc && stackInstalled && managedInstall ? (
                         <button className="btn small" title={s.uninstallNote ?? uc} onClick={() => void reviewStackUninstall(s, running, configuredProviders)}>Uninstall</button>
                       ) : null}
                     </>
