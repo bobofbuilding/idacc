@@ -18,6 +18,7 @@ import type {
   EventsResponse,
   ActivityResponse,
   InboxItem,
+  ManagerEvent,
   NewsItem,
   ProbeResult,
   QueryResult,
@@ -196,6 +197,148 @@ function qArg(s: string): string {
 const DEFAULT_MANAGER_TIMEOUT_MS = 35_000;
 const LONG_POLL_GRACE_MS = 5_000;
 
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function textField(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return undefined;
+}
+
+function labelField(value: unknown): string | undefined {
+  const direct = textField(value);
+  if (direct != null) return direct;
+  const obj = objectRecord(value);
+  return textField(obj.name) ?? textField(obj.alias) ?? textField(obj.id) ?? textField(obj.query_id);
+}
+
+function numberField(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.map((item) => textField(item)?.trim()).filter((item): item is string => !!item);
+}
+
+function delegatesField(value: unknown): string[] | null {
+  if (value === '*') return ['*'];
+  return stringList(value) ?? null;
+}
+
+export function normalizeTaskRecord(raw: unknown): Task | null {
+  const row = objectRecord(raw);
+  if (!Object.keys(row).length) return null;
+  const title = textField(row.title) ?? textField(row.name) ?? textField(row.shortId) ?? textField(row.uuid);
+  if (!title) return null;
+  return {
+    ...(textField(row.name) ? { name: textField(row.name) } : {}),
+    ...(textField(row.uuid) ? { uuid: textField(row.uuid) } : {}),
+    ...(textField(row.shortId ?? row.short_id) ? { shortId: textField(row.shortId ?? row.short_id) } : {}),
+    title,
+    description: textField(row.description) ?? null,
+    status: textField(row.status) ?? 'todo',
+    ownerName: textField(row.ownerName ?? row.owner_name ?? row.owner) ?? null,
+    ...(textField(row.teamName ?? row.team_name ?? row.team) ? { teamName: textField(row.teamName ?? row.team_name ?? row.team) } : {}),
+    linkedEvents: stringList(row.linkedEvents ?? row.linked_events) ?? [],
+    createdAt: numberField(row.createdAt ?? row.created_at) ?? 0,
+    updatedAt: numberField(row.updatedAt ?? row.updated_at),
+    completedAt: numberField(row.completedAt ?? row.completed_at) ?? null,
+  };
+}
+
+export function normalizeManagerEvent(raw: unknown): ManagerEvent | null {
+  const row = objectRecord(raw);
+  if (!Object.keys(row).length) return null;
+  const data = objectRecord(row.data);
+  const topic = textField(row.topic) ?? textField(data.topic) ?? 'event';
+  return {
+    seq: numberField(row.seq) ?? 0,
+    ...(textField(row.team) ? { team: textField(row.team) } : {}),
+    topic,
+    ...(labelField(row.actor) ? { actor: labelField(row.actor) } : {}),
+    ...(labelField(row.subject) ? { subject: labelField(row.subject) } : {}),
+    data,
+    ...(numberField(row.timestamp) != null ? { timestamp: numberField(row.timestamp) } : {}),
+    ...(numberField(row.occurred_at ?? row.occurredAt) != null ? { occurred_at: numberField(row.occurred_at ?? row.occurredAt) } : {}),
+  };
+}
+
+function normalizeAgentRecord(raw: unknown): Agent | null {
+  const row = objectRecord(raw);
+  const id = textField(row.id) ?? textField(row.name);
+  const name = textField(row.name) ?? textField(row.alias) ?? id;
+  if (!id || !name) return null;
+  const metadata = objectRecord(row.metadata);
+  return {
+    id,
+    name,
+    ...(textField(row.alias) ? { alias: textField(row.alias) } : {}),
+    port: numberField(row.port) ?? 0,
+    status: textField(row.status) ?? 'unknown',
+    ...(textField(row.health) ? { health: textField(row.health) } : {}),
+    ...(textField(row.model) ? { model: textField(row.model) } : {}),
+    ...(textField(row.type) ? { type: textField(row.type) } : {}),
+    ...(textField(row.runtime) ? { runtime: textField(row.runtime) } : {}),
+    ...(textField(row.url) ? { url: textField(row.url) } : {}),
+    ...(textField(row.workingDirectory ?? row.working_directory) ? { workingDirectory: textField(row.workingDirectory ?? row.working_directory) } : {}),
+    createdAt: numberField(row.createdAt ?? row.created_at) ?? 0,
+    lastHealthCheck: numberField(row.lastHealthCheck ?? row.last_health_check),
+    ...(Object.keys(metadata).length ? { metadata } : {}),
+    ...(textField(row.teamName ?? row.team_name ?? row.team) ? { teamName: textField(row.teamName ?? row.team_name ?? row.team) } : {}),
+    ...(textField(row.deploymentShape) === 'remote-endpoint' ? { deploymentShape: 'remote-endpoint' as const } : textField(row.deploymentShape) === 'local-process' ? { deploymentShape: 'local-process' as const } : {}),
+    pid: numberField(row.pid) ?? null,
+    customer_domain: textField(row.customer_domain) ?? null,
+    public_endpoint_url: textField(row.public_endpoint_url) ?? null,
+    ows_wallet: textField(row.ows_wallet) ?? null,
+    ows_address: textField(row.ows_address) ?? null,
+    idchain_domain: textField(row.idchain_domain) ?? null,
+    ssh_target: textField(row.ssh_target) ?? null,
+    last_seen: numberField(row.last_seen) ?? null,
+    last_probed_at: numberField(row.last_probed_at) ?? null,
+    last_error: textField(row.last_error) ?? null,
+    consecutive_failures: numberField(row.consecutive_failures),
+  };
+}
+
+function normalizeTeamRecord(raw: unknown): Team | null {
+  const row = objectRecord(raw);
+  const name = textField(row.name);
+  if (!name) return null;
+  return {
+    id: textField(row.id) ?? name,
+    name,
+    agentCount: numberField(row.agentCount ?? row.agent_count ?? row.agents) ?? 0,
+    ...(textField(row.createdAt ?? row.created_at) ? { createdAt: textField(row.createdAt ?? row.created_at) } : {}),
+  };
+}
+
+function normalizeInboxRecord(raw: unknown): InboxItem | null {
+  const row = objectRecord(raw);
+  const queryId = textField(row.query_id ?? row.queryId);
+  if (!queryId) return null;
+  const schedule = objectRecord(row.schedule);
+  return {
+    query_id: queryId,
+    prompt: textField(row.prompt) ?? null,
+    message: textField(row.message) ?? textField(row.prompt) ?? queryId,
+    timestamp: numberField(row.timestamp) ?? numberField(row.createdAt ?? row.created_at) ?? Date.now(),
+    status: textField(row.status) ?? 'pending',
+    session_id: textField(row.session_id ?? row.sessionId) ?? null,
+    from: textField(row.from) ?? null,
+    reply_endpoint: textField(row.reply_endpoint ?? row.replyEndpoint) ?? null,
+    schedule: Object.keys(schedule).length ? schedule : null,
+    mode: textField(row.mode) ?? null,
+  };
+}
+
 export class ManagerClient {
   constructor(private cfg: Config) {}
 
@@ -364,14 +507,16 @@ export class ManagerClient {
   // ---- Teams & agents ---------------------------------------------------
 
   async teams(signal?: AbortSignal): Promise<Team[]> {
-    const data = await this.get<{ teams?: Team[] }>('/teams', signal);
-    return (data.teams ?? []).filter((t) => t.name.toLowerCase() !== 'all');
+    const data = await this.get<{ teams?: unknown[] }>('/teams', signal);
+    return (data.teams ?? [])
+      .map(normalizeTeamRecord)
+      .filter((t): t is Team => !!t && t.name.toLowerCase() !== 'all');
   }
 
   async agents(signal?: AbortSignal): Promise<Agent[]> {
     const q = this.cfg.team ? `?team=${encodeURIComponent(this.cfg.team)}` : '';
-    const data = await this.get<{ agents?: Agent[] }>(`/agents${q}`, signal);
-    return data.agents ?? [];
+    const data = await this.get<{ agents?: unknown[] }>(`/agents${q}`, signal);
+    return (data.agents ?? []).map(normalizeAgentRecord).filter((a): a is Agent => !!a);
   }
 
   // ---- Live event stream ------------------------------------------------
@@ -382,7 +527,12 @@ export class ManagerClient {
     if (opts.topics) p.set('topics', opts.topics);
     if (opts.wait) p.set('wait', String(opts.wait));
     const timeoutMs = opts.wait ? Math.max(DEFAULT_MANAGER_TIMEOUT_MS, (opts.wait * 1000) + LONG_POLL_GRACE_MS) : DEFAULT_MANAGER_TIMEOUT_MS;
-    return this.get<EventsResponse>(`/events?${p.toString()}`, signal, timeoutMs);
+    const resp = await this.get<EventsResponse & { events?: unknown[] }>(`/events?${p.toString()}`, signal, timeoutMs);
+    return {
+      ...resp,
+      events: (resp.events ?? []).map(normalizeManagerEvent).filter((e): e is ManagerEvent => !!e),
+      next_seq: numberField(resp.next_seq) ?? since,
+    };
   }
 
   // ---- Remote command surface ------------------------------------------
@@ -478,8 +628,14 @@ export class ManagerClient {
   // ---- Tasks ------------------------------------------------------------
 
   async tasks(signal?: AbortSignal): Promise<Task[]> {
-    const env = await this.remote<{ tasks?: Task[] }>('/task', undefined, signal);
-    return env.result?.tasks ?? [];
+    try {
+      const data = await this.get<{ tasks?: unknown[] }>('/tasks', signal);
+      return (data.tasks ?? []).map(normalizeTaskRecord).filter((t): t is Task => !!t);
+    } catch (err) {
+      if (!(err instanceof ManagerError) || err.status !== 404) throw err;
+      const env = await this.remote<{ tasks?: unknown[] }>('/task', undefined, signal);
+      return (env.result?.tasks ?? []).map(normalizeTaskRecord).filter((t): t is Task => !!t);
+    }
   }
 
   /** Control Center capability discovery — which CC-only routes this manager supports.
@@ -505,8 +661,8 @@ export class ManagerClient {
   // ---- Manager inbox (questions awaiting a human) -----------------------
 
   async inboxPending(signal?: AbortSignal): Promise<InboxItem[]> {
-    const data = await this.get<{ pending?: InboxItem[] }>('/manager/inbox/pending', signal);
-    return data.pending ?? [];
+    const data = await this.get<{ pending?: unknown[] }>('/manager/inbox/pending', signal);
+    return (data.pending ?? []).map(normalizeInboxRecord).filter((item): item is InboxItem => !!item);
   }
 
   async inboxRespond(queryId: string, message: string, sessionId?: string, signal?: AbortSignal): Promise<void> {
@@ -890,14 +1046,16 @@ export class ManagerClient {
 
   /** Read a team's relay policy. `delegates_to`: team names ("*"=all) or null=permissive. */
   async teamConfig(name: string, signal?: AbortSignal): Promise<{ name: string; delegates_to: string[] | null }> {
-    return this.requireRoute('Read team relay policy', () =>
-      this.get(`/teams/${encodeURIComponent(name)}/config`, signal));
+    const cfg = await this.requireRoute('Read team relay policy', () =>
+      this.get<{ name?: unknown; delegates_to?: unknown }>(`/teams/${encodeURIComponent(name)}/config`, signal));
+    return { name: textField(cfg.name) ?? name, delegates_to: delegatesField(cfg.delegates_to) };
   }
 
   /** Set a team's relay allow-list. Pass string[] (or ["*"]), or null for permissive. */
   async setTeamDelegates(name: string, delegates: string[] | null, signal?: AbortSignal): Promise<{ name: string; delegates_to: string[] | null }> {
-    return this.requireRoute('Set team relay allow-list', () =>
-      this.post(`/teams/${encodeURIComponent(name)}/delegates`, { delegates }, signal));
+    const cfg = await this.requireRoute('Set team relay allow-list', () =>
+      this.post<{ name?: unknown; delegates_to?: unknown }>(`/teams/${encodeURIComponent(name)}/delegates`, { delegates }, signal));
+    return { name: textField(cfg.name) ?? name, delegates_to: delegatesField(cfg.delegates_to) };
   }
 
   /** Delete an EMPTY team. The manager refuses the `default` team and any team that
@@ -912,8 +1070,9 @@ export class ManagerClient {
    * null removes the override (inherit team). string[] (or ["*"]) restricts.
    */
   async setAgentDelegates(agentId: string, delegates: string[] | null, signal?: AbortSignal): Promise<{ agent: string; delegates_to: string[] | null }> {
-    return this.requireRoute('Set agent relay override', () =>
-      this.post(`/agents/${encodeURIComponent(agentId)}/delegates`, { delegates }, signal));
+    const cfg = await this.requireRoute('Set agent relay override', () =>
+      this.post<{ agent?: unknown; delegates_to?: unknown }>(`/agents/${encodeURIComponent(agentId)}/delegates`, { delegates }, signal));
+    return { agent: textField(cfg.agent) ?? agentId, delegates_to: delegatesField(cfg.delegates_to) };
   }
 
   // ---- Scheduling / checkins -------------------------------------------

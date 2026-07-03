@@ -1069,6 +1069,29 @@ select:focus, input:focus { border-color: var(--accent); }
 }
 .cmdk-status { margin-left: auto; color: var(--accent); font-size: 12px; }
 
+.crash-boundary {
+  margin: 18px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--err) 55%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--err) 8%, var(--bg));
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 720px;
+}
+.crash-title {
+  font-weight: 700;
+}
+.crash-detail {
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
 /* ── Control drawer — right-side slide-over hosting the Dashboard's control panels ── */
 .drawer-overlay { position: fixed; inset: 0; z-index: 110; background: rgba(0, 0, 0, .4); display: flex; justify-content: flex-end; }
 .drawer {

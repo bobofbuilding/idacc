@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Component, useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useFleet, call, useSyncVersion } from './store.ts';
 import { PromptProvider } from './components/prompt.tsx';
 import { ToastProvider } from './components/toast.tsx';
@@ -31,6 +31,33 @@ const DEFAULT_NAV: { id: ViewId; label: string; icon: string; order: number }[] 
   { id: 'wiki', label: 'Wiki', icon: '▤', order: 120 },
 ];
 const IMPLEMENTED_VIEWS = new Set<ViewId>([...DEFAULT_NAV.map((n) => n.id), 'health', 'inbox', 'schedule']);
+
+class CrashBoundary extends Component<{ children: ReactNode; scope: string }, { error: string | null }> {
+  state = { error: null };
+
+  static getDerivedStateFromError(err: unknown): { error: string } {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+
+  componentDidCatch(err: unknown, info: unknown): void {
+    console.error(`[idacc] ${this.props.scope} render failed`, err, info);
+  }
+
+  render(): ReactNode {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="crash-boundary">
+        <div className="crash-title">{this.props.scope} failed to render</div>
+        <div className="crash-detail">{this.state.error}</div>
+        <button className="btn primary" onClick={() => this.setState({ error: null })}>Retry</button>
+      </div>
+    );
+  }
+}
+
+export function AppErrorBoundary({ children }: { children: ReactNode }) {
+  return <CrashBoundary scope="App">{children}</CrashBoundary>;
+}
 
 function isViewId(id: string | null | undefined): id is ViewId {
   return !!id && IMPLEMENTED_VIEWS.has(id as ViewId);
@@ -199,19 +226,21 @@ export function App() {
         </nav>
 
         <main className="content">
-          <Router
-            view={view}
-            store={store}
-            navigate={navigateTo}
-            teamsFocus={teamsFocus}
-            onTeamsFocusHandled={clearTeamsFocus}
-            wiki={wiki}
-            wikiError={wikiError}
-            wikiQuery={wikiQuery}
-            setWikiQuery={setWikiQuery}
-            wikiPageId={wikiPageId}
-            setWikiPageId={setWikiPageId}
-          />
+          <CrashBoundary key={view} scope={nav.find((n) => n.id === view)?.label ?? view}>
+            <Router
+              view={view}
+              store={store}
+              navigate={navigateTo}
+              teamsFocus={teamsFocus}
+              onTeamsFocusHandled={clearTeamsFocus}
+              wiki={wiki}
+              wikiError={wikiError}
+              wikiQuery={wikiQuery}
+              setWikiQuery={setWikiQuery}
+              wikiPageId={wikiPageId}
+              setWikiPageId={setWikiPageId}
+            />
+          </CrashBoundary>
           <StatusBar store={store} />
         </main>
       </div>

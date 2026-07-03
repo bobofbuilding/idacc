@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildProviderModelLanes, buildRuntimeCatalog, managedRuntimeHasEvidence, offerableRuntimes } from './runtimeCatalog.ts';
+import { buildProviderModelLanes, buildRuntimeCatalog, managedRuntimeHasEvidence, offerableRuntimes, runtimeSupports } from './runtimeCatalog.ts';
 import type { ProviderProfile } from './schema.ts';
 
 const providers = [
@@ -134,6 +134,9 @@ assert.deepEqual(
   ['antigravity'],
   'Antigravity CLI should become assignable once the manager exposes the Antigravity harness and Settings confirms sign-in',
 );
+
+assert.equal(runtimeSupports('antigravity', 'skills'), true, 'Antigravity uses the manager .agents skill workspace');
+assert.equal(runtimeSupports('antigravity', 'portablePlugins'), true, 'portable plugin packages must have an Antigravity fallback path');
 
 assert.deepEqual(
   offerableRuntimes([], undefined, [{ runtime: 'grok', installed: true, loggedIn: false, statusSupported: false }]),

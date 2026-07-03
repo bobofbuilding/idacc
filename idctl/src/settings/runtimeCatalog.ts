@@ -140,9 +140,9 @@ export type RuntimeCapability = 'mcp' | 'plugins' | 'portablePlugins' | 'skills'
  * still don't consume our McpServerSpec.
  *
  * skills — the manager deploys SKILL.md files to a runtime-aware dir for every
- * LOCAL runtime (`.claude/skills`, `.agents/skills` for codex/ollama,
- * `.cursor/skills`), so all local runtimes qualify; only the remote-endpoint
- * runtime (no workspace) is excluded. (getRuntimePaths in id-agents.)
+ * LOCAL runtime (`.claude/skills`, `.agents/skills` for codex/grok/antigravity/
+ * ollama, `.cursor/skills`), so all local runtimes qualify; only the
+ * remote-endpoint runtime (no workspace) is excluded. (getRuntimePaths in id-agents.)
  *
  * plugins — Claude Code plugin bundles; only the Claude-family runtimes load them.
  *
@@ -152,9 +152,9 @@ export type RuntimeCapability = 'mcp' | 'plugins' | 'portablePlugins' | 'skills'
  */
 const RUNTIME_CAPABILITIES: Record<RuntimeCapability, string[]> = {
   mcp: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'grok', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
-  skills: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
+  skills: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
   plugins: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local'],
-  portablePlugins: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
+  portablePlugins: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
 };
 
 /** Short, user-facing reason a runtime can't use a capability (for tooltips). */
