@@ -163,6 +163,7 @@ export function App() {
   }, [store.lastUpdated, inboxSyncVersion]);
 
   useEffect(() => {
+    if (view !== 'wiki') return;
     let live = true;
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
@@ -179,7 +180,7 @@ export function App() {
     };
     void load();
     return () => { live = false; clearTimeout(timer); };
-  }, []);
+  }, [view]);
 
   async function applyUpdate() {
     setApplying(true);

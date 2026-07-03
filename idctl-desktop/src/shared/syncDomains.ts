@@ -31,7 +31,7 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^org:(sync|setConfig|setSecondaryLeads)$/, ['org', 'dashboard', 'agents', 'work', 'brain']],
   [/^(setAgent|agent:(move|setInstructions)|spawnAgent|deployTeam|team:|rebuildAgent|installSkill|uninstallSkill|createSkill|projectPluginSkill|deleteSkill|setTeamDelegates|setAgentDelegates)/, ['agents', 'teams', 'dashboard', 'brain', 'modules']],
   [/^skills:(syncBrain|categorize)$/, ['modules', 'brain']],
-  [/^(mcp:(add|remove)|providers:(add|remove|setDefault|setModelSelection|toggle|connect)|runtime:probe|manager:setLocalConcurrency|headroom:setPilot|evmRpc:(save|remove|probe)|image:setServer)/, ['settings', 'modules', 'brain']],
+  [/^(mcp:(add|remove)|providers:(add|remove|setDefault|setModelSelection|toggle|connect)|runtime:probe|subs:(signin|signout|install)|ollama:(pull|remove|catalogCheck)|manager:setLocalConcurrency|headroom:setPilot|evmRpc:(save|remove|probe)|image:setServer)/, ['settings', 'modules', 'brain']],
   [/^(chats:(save|rename|remove|markRead|patch)|chat:saveFiles|chat:savePasted)$/, ['chats', 'dashboard']],
   [/^(dispatch|dispatch:start|remote)$/, ['dashboard', 'tasks', 'inbox']],
 ];

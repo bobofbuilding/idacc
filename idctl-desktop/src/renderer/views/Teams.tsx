@@ -30,6 +30,14 @@ type RuntimeVerificationReport = {
   refreshedCatalog: Record<string, string[]>;
   providers: ProviderRow[];
 };
+type HrBuildCatalogCache = {
+  version: number;
+  modelCatalog: Record<string, string[]>;
+  skillCatalog: string[];
+  providers: ProviderRow[];
+  managedRuntimes: Record<string, ManagedRuntimeStatus>;
+};
+let hrBuildCatalogCache: HrBuildCatalogCache | null = null;
 
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 type GoalPriority = 'primary' | 'secondary' | 'general';
@@ -478,7 +486,7 @@ ${COORDINATION_TAIL}`;
 export function Teams({ store, focus, onFocusHandled, navigate }: { store: FleetStore; focus?: HrFocus; onFocusHandled?: () => void; navigate?: (target: string) => void }) {
   const syncVersion = useSyncVersion(['goals', 'work', 'org', 'agents']);
   const hrStructureVersion = useSyncVersion(['org', 'agents', 'teams']);
-  const hrCatalogVersion = useSyncVersion(['settings', 'modules', 'agents']);
+  const hrCatalogVersion = useSyncVersion(['settings', 'modules']);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string>('');
   const hrOwner = useMemo(() => resolveHrManagerAgent(store), [store.allAgents, store.agents, store.team]);
@@ -964,17 +972,42 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   }
 
   // Catalogs for the Onboard modal (runtimes/models, library skills, providers).
-  const [modelCatalog, setModelCatalog] = useState<Record<string, string[]>>({});
-  const [skillCatalog, setSkillCatalog] = useState<string[]>([]);
-  const [providers, setProviders] = useState<ProviderRow[]>([]);
-  const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>({});
+  const [modelCatalog, setModelCatalog] = useState<Record<string, string[]>>(() => hrBuildCatalogCache?.modelCatalog ?? {});
+  const [skillCatalog, setSkillCatalog] = useState<string[]>(() => hrBuildCatalogCache?.skillCatalog ?? []);
+  const [providers, setProviders] = useState<ProviderRow[]>(() => hrBuildCatalogCache?.providers ?? []);
+  const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>(() => hrBuildCatalogCache?.managedRuntimes ?? {});
 
   useEffect(() => {
     if (tab !== 'build') return;
-    call<Record<string, string[]>>('runtime:models').then(setModelCatalog).catch(() => setModelCatalog({}));
-    call<LibrarySkillEntry[]>('librarySkills').then((s) => setSkillCatalog(s.map((x) => x.name))).catch(() => setSkillCatalog([]));
-    call<ProviderRow[]>('providers:list').then(setProviders).catch(() => setProviders([]));
-    call<Record<string, ManagedRuntimeStatus>>('subs:status').then(setManagedRuntimes).catch(() => setManagedRuntimes({}));
+    if (hrBuildCatalogCache?.version === hrCatalogVersion) {
+      setModelCatalog(hrBuildCatalogCache.modelCatalog);
+      setSkillCatalog(hrBuildCatalogCache.skillCatalog);
+      setProviders(hrBuildCatalogCache.providers);
+      setManagedRuntimes(hrBuildCatalogCache.managedRuntimes);
+      return;
+    }
+    let live = true;
+    Promise.all([
+      call<Record<string, string[]>>('runtime:models').catch(() => ({})),
+      call<LibrarySkillEntry[]>('librarySkills').then((s) => s.map((x) => x.name)).catch(() => [] as string[]),
+      call<ProviderRow[]>('providers:list').catch(() => [] as ProviderRow[]),
+      call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => ({})),
+    ]).then(([nextModelCatalog, nextSkillCatalog, nextProviders, nextManagedRuntimes]) => {
+      const nextCache = {
+        version: hrCatalogVersion,
+        modelCatalog: nextModelCatalog,
+        skillCatalog: nextSkillCatalog,
+        providers: nextProviders,
+        managedRuntimes: nextManagedRuntimes,
+      };
+      hrBuildCatalogCache = nextCache;
+      if (!live) return;
+      setModelCatalog(nextCache.modelCatalog);
+      setSkillCatalog(nextCache.skillCatalog);
+      setProviders(nextCache.providers);
+      setManagedRuntimes(nextCache.managedRuntimes);
+    });
+    return () => { live = false; };
   }, [tab, hrCatalogVersion]);
 
 
@@ -2032,6 +2065,13 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             onRuntimeVerified={(report) => {
               setModelCatalog(report.refreshedCatalog);
               setProviders(report.providers);
+              hrBuildCatalogCache = {
+                version: hrCatalogVersion,
+                modelCatalog: report.refreshedCatalog,
+                skillCatalog,
+                providers: report.providers,
+                managedRuntimes,
+              };
             }}
             onClose={() => { /* inline — nothing to close */ }}
             onBusy={setBusy}
