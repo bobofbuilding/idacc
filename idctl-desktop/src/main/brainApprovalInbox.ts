@@ -101,7 +101,7 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
     id: `brain-approval-${id}`,
     question: detail,
     options: ['Approve for Brain apply queue', 'Reject / keep current state'],
-    agent: 'Brain governance',
+    agent: '',
     taskRef: `brain-approval:${id}`,
     taskTitle: `${kind}: ${subject}`,
     team: 'brain',

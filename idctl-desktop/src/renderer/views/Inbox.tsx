@@ -114,7 +114,7 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
   async function skip() {
     setBusy(true); setErr('');
     try {
-      if (q.taskRef && !isSyntheticQuestion) void call('tasks:setReview', q.taskRef, '').catch(() => {}); // dismissing clears the adjustment state
+      if (q.taskRef && !isSyntheticQuestion && !isBrainApproval) void call('tasks:setReview', q.taskRef, '').catch(() => {}); // dismissing clears the adjustment state
       await call('questions:remove', q.id); onDone();
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
   }
