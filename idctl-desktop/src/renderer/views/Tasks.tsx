@@ -245,6 +245,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const [depsOverlay, setDepsOverlay] = useState<Record<string, string[]>>({}); // ref → prerequisite refs (app-side; manager has no deps)
   const [taskUsage, setTaskUsage] = useState<Record<string, { tokens: number; input: number; output: number; ms: number; turns: number }>>({}); // ref → token spend
   const [draftProposals, setDraftProposals] = useState<WorkDraftProposal[]>([]);
+  const [showDraftProposals, setShowDraftProposals] = useState(false);
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   // Auto-decompose: describe an objective → lead splits it → create + farm out.
   const [showAssign, setShowAssign] = useState(false);
@@ -1067,17 +1068,23 @@ function TasksPanel({ store }: { store: FleetStore }) {
         </span>
         <span className="grow" />
         <button className="btn" disabled={busy || triaging} title="Triage unassigned work, re-dispatch stalled tasks, and surface blocker decisions — on demand (no longer automatic)" onClick={() => void reconcileNow()}>⟳ Reconcile</button>
+        {draftProposals.length ? (
+          <button className="btn" disabled={busy} title="Review agent-proposed Dashboard drafts before turning them into real tasks" onClick={() => setShowDraftProposals((v) => !v)}>
+            {showDraftProposals ? 'Hide drafts' : `Review drafts (${draftProposals.length})`}
+          </button>
+        ) : null}
         <button className="btn" disabled={busy || proposing} title="Create work: auto-plan, direct assignment, schedule, loop, or dream" onClick={() => { setShowAssign((v) => !v); setAssignNote(''); setProposal(null); }}>{showAssign ? '− Close' : '⚡ Create work'}</button>
         <button className="btn primary" disabled={busy} onClick={() => void newTask()}>+ New task</button>
       </div>
 
-      {draftProposals.length ? (
-        <section className="card" style={{ marginBottom: 10 }}>
+      {draftProposals.length && showDraftProposals ? (
+        <section className="card draft-proposal-card" style={{ marginBottom: 10 }}>
           <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>
             <h3 style={{ margin: 0 }}>Draft proposals</h3>
-            <span className="muted small">agent-proposed work is review-only until you create tasks</span>
+            <span className="muted small">Dashboard draft rows are review-only; they are not live tasks until you create them</span>
             <span className="grow" />
             <span className="muted small">{draftProposals.length} recent</span>
+            <button className="btn small" disabled={busy} onClick={() => setShowDraftProposals(false)}>Hide</button>
           </div>
           <div className="draft-proposal-list">
             {draftProposals.map((draft) => (
