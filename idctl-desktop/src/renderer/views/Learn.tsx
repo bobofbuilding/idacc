@@ -396,7 +396,7 @@ export function Learn({ store }: { store: FleetStore }) {
       </section>
 
       <div className="split learn-workspace">
-        <section className="card grow">
+        <section className="card grow learn-queue-card">
           <h3>Queue <span className="muted small">- {activeMaterials.length} active{completedCount ? ` · ${completedCount} completed hidden` : ''}</span></h3>
           {activeMaterials.length ? (
             <table className="grid">
@@ -434,7 +434,7 @@ export function Learn({ store }: { store: FleetStore }) {
           )}
         </section>
 
-        <section className="card grow">
+        <section className="card grow learn-review-card">
           <h3>Review <span className="muted small">{selected ? `- ${selected.title}` : ''}</span></h3>
           {selected ? (
             <div className="stack">

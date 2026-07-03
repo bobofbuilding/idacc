@@ -93,7 +93,7 @@
       ],
       "purpose": "Work operating surface: goals, plans, Learn material ingestion, live Kanban, recurring schedules, agent chains, dreams, and hidden context-budgeted dispatch.",
       "scope": "All-team task view for the board; creation and assignment panels can target the selected team, selected teams, team leads, or every active agent depending on assignment scope.",
-      "body": "# Work\n\nWork owns goals, plans, tasks, Learn intake, schedules, loops, and dreams. Task creation and assignment should be explicit, manager-routed, and guarded against draft/replay duplication. Learn materials are auto-processed one at a time by the main process: queued rows drain in the background, blocked rows remain only while blocking recommendations are still draft, and ready rows are hidden from the active queue. Work fanout and decomposition defer instead of enqueueing more lead prompts when the target lead already has too many active queries. Shared sync-domain rules must keep read calls non-invalidating so Work-adjacent pages do not reload themselves in loops."
+      "body": "# Work\n\nWork owns goals, plans, tasks, Learn intake, schedules, loops, and dreams. Task creation and assignment should be explicit, manager-routed, and guarded against draft/replay duplication. Learn materials are auto-processed one at a time by the main process: queued rows drain in the background, material write/remove progress now publishes Learn sync changes while the tab is open, blocked rows remain only while blocking recommendations are still draft, and ready rows are hidden from the active queue. The Learn queue and review panes are constrained below intake so selected review content wraps inside its panel instead of crowding submission controls. Work fanout and decomposition defer instead of enqueueing more lead prompts when the target lead already has too many active queries. Shared sync-domain rules must keep read calls non-invalidating so Work-adjacent pages do not reload themselves in loops."
     },
     {
       "id": "projects",
@@ -307,5 +307,5 @@
       "body": "# Wiki\n\nThis page now reads a compact app manifest. The replacement authoring contract is being rebuilt in docs/CONTROL_CENTER_WIKI.md as Markdown-first schema documentation. The renderer loads and polls the wiki manifest only while the Wiki page is open, keeping the rest of the app free from idle wiki refresh work."
     }
   ],
-  "appVersion": "0.1.555"
+  "appVersion": "0.1.556"
 }

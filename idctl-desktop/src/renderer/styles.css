@@ -389,13 +389,33 @@ button.chip.incompat:hover { border-color: var(--line); }
 .learn-intake-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .learn-intake-head h3 { margin: 0; }
 .learn-workspace {
+  display: grid;
+  grid-template-columns: minmax(320px, .95fr) minmax(380px, 1.15fr);
+  gap: 14px;
+  align-items: start;
   margin-top: 10px;
   position: relative;
   z-index: 1;
+  min-width: 0;
 }
 .learn-workspace > .card {
   overflow: auto;
-  max-height: calc(100vh - 292px);
+  max-height: clamp(340px, calc(100vh - 320px), 760px);
+  min-width: 0;
+  overscroll-behavior: contain;
+}
+.learn-queue-card,
+.learn-review-card {
+  scroll-margin-top: 160px;
+}
+.learn-workspace .grid {
+  table-layout: fixed;
+}
+.learn-workspace .grid th,
+.learn-workspace .grid td,
+.learn-workspace .kv,
+.learn-workspace .plan-content {
+  overflow-wrap: anywhere;
 }
 .learn-intake-grid {
   display: grid;
@@ -449,6 +469,7 @@ button.chip.incompat:hover { border-color: var(--line); }
   background: color-mix(in srgb, var(--warn) 8%, transparent);
 }
 @media (max-width: 1180px) {
+  .learn-workspace { grid-template-columns: 1fr; }
   .learn-intake-grid { grid-template-columns: 1fr; align-items: stretch; }
   .learn-control-row { grid-template-columns: minmax(110px, 1fr) minmax(120px, 1fr) auto; align-items: end; }
   .learn-actions { justify-content: flex-start; }

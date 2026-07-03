@@ -22,7 +22,7 @@ import { listGoals, getGoal, saveGoal, removeGoal, type Goal } from './goalstore
 import { listDreams, getDream, saveDream, removeDream, type Dream } from './dreamstore.ts';
 import { listQuestions, addQuestion, removeQuestion, type BlockerQuestion } from './questionstore.ts';
 import { resolveBrainApprovalFromInbox, syncBrainApprovalInbox } from './brainApprovalInbox.ts';
-import { getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, recoverStaleMaterials, removeMaterial, saveMaterial, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
+import { getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, recoverStaleMaterials, removeMaterial, saveMaterial, subscribeMaterialChanges, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
 import { generateImage, readImage, imageModels, getImageServer, detectImageServer, probeImageServer } from './images.ts';
 import { readWiki } from './wiki.ts';
 import { listLocalModelCatalog, loadSettings, mergeLocalModelCatalog, removeEvmRpc, saveSettings, setUpdateSettings, setImageServer, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
@@ -39,6 +39,7 @@ let win: BrowserWindow | null = null;
 let brainDashboardWin: BrowserWindow | null = null;
 let stopGoalDriver: (() => void) | null = null;
 let stopLearnQueueRunner: (() => void) | null = null;
+let stopMaterialChangeBridge: (() => void) | null = null;
 let kickLearnQueueRunner: ((delayMs?: number) => void) | null = null;
 let rendererSafeMode = false;
 let rendererRecoveryFirstAt = 0;
@@ -1222,6 +1223,7 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     // Disabled by default: when enabled, active+autopilot goals gap-fill fleet tasks.
     try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
     // Work > Learn queue: process newly-added materials even when the Learn tab is not mounted.
+    try { stopMaterialChangeBridge = subscribeMaterialChanges(() => publishStoreChange('materials:changed')); } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }
     try { stopLearnQueueRunner = startLearnQueueRunner(); } catch (e) { console.warn('[learn] failed to start queue runner:', e); }
     // Computer Use broker: loopback controller + live frame pump + approval prompts → the renderer.
     void startBroker(
@@ -1247,6 +1249,7 @@ app.on('will-quit', stopUpdater);
 app.on('will-quit', stopBroker);
 app.on('will-quit', () => { try { stopGoalDriver?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopLearnQueueRunner?.(); } catch { /* */ } });
+app.on('will-quit', () => { try { stopMaterialChangeBridge?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* */ } });
 app.on('child-process-gone', (_event, details) => {
   logProcessExit('child-process', details as unknown as Record<string, unknown>);

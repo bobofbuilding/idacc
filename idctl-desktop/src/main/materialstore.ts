@@ -195,6 +195,20 @@ const INJECTION_RE = /(ignore\s+(all\s+)?previous|forget\s+(all\s+)?(previous|pr
 const STALE_PROCESSING_MS = 20 * 60 * 1000;
 
 let processing = false;
+type MaterialChangeReason = 'write' | 'remove';
+type MaterialChangeListener = (reason: MaterialChangeReason, material: LearnMaterial | { id: string }) => void;
+const materialChangeListeners = new Set<MaterialChangeListener>();
+
+export function subscribeMaterialChanges(listener: MaterialChangeListener): () => void {
+  materialChangeListeners.add(listener);
+  return () => { materialChangeListeners.delete(listener); };
+}
+
+function notifyMaterialChange(reason: MaterialChangeReason, material: LearnMaterial | { id: string }): void {
+  for (const listener of materialChangeListeners) {
+    try { listener(reason, material); } catch { /* listeners should not break queue writes */ }
+  }
+}
 
 function configBase(): string {
   const env = process.env.IDCTL_CONFIG?.trim();
@@ -376,6 +390,7 @@ function writeMaterial(material: LearnMaterial): { ok: boolean; id: string } {
   writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 });
   try { renameSync(tmp, f); } catch (e) { try { rmSync(tmp, { force: true }); } catch { /* ignore */ } throw e; }
   try { if ((statSync(f).mode & 0o077) !== 0) chmodSync(f, 0o600); } catch { /* best-effort */ }
+  notifyMaterialChange('write', payload);
   return { ok: true, id: payload.id };
 }
 
@@ -408,6 +423,7 @@ export function listMaterials(): LearnMaterial[] {
 export function removeMaterial(id: string): { ok: boolean } {
   try { rmSync(fileFor(id), { force: true }); } catch { /* ignore */ }
   try { rmSync(blobDir(id), { recursive: true, force: true }); } catch { /* ignore */ }
+  notifyMaterialChange('remove', { id });
   return { ok: true };
 }
 
