@@ -149,6 +149,7 @@ const ALL_TEAMS_POLL_MS = 10000;
 const HIDDEN_POLL_MS = 30000;
 const EVENT_VIEW_REFRESH_MIN_MS = 5000;
 const EVENT_STREAM_BACKPRESSURE_MS = 750;
+const EVENT_STREAM_IDLE_BACKOFF_MS = 1000;
 const EVENT_CURSOR_STORAGE_PREFIX = 'idacc:event-cursor:';
 const VIEW_INVALIDATING_EVENT_PREFIXES = ['agent:', 'checkin:', 'goal:', 'learn:', 'schedule:', 'task:', 'team:'];
 
@@ -362,7 +363,8 @@ export function useFleet(activeView?: string): FleetStore {
         try {
           const resp = await call<{ events: ManagerEvent[]; next_seq: number }>('events', since);
           if (!alive) return;
-          if (resp.events?.length) {
+          const hadEvents = !!resp.events?.length;
+          if (hadEvents) {
             // Stamp each event with its REAL wall-clock time (`occurred_at`, epoch
             // ms from the manager) so the activity feed shows correct ages — and
             // they survive a reconnect/replay (e.g. after an app update + restart,
@@ -379,9 +381,7 @@ export function useFleet(activeView?: string): FleetStore {
           const nextSeq = Number(resp.next_seq) || since;
           since = Math.max(since, nextSeq);
           writeStoredEventCursor(teamRef.current, since);
-          if (resp.events?.length) {
-            await sleep(fleetPollDelay(EVENT_STREAM_BACKPRESSURE_MS));
-          }
+          await sleep(fleetPollDelay(hadEvents ? EVENT_STREAM_BACKPRESSURE_MS : EVENT_STREAM_IDLE_BACKOFF_MS));
         } catch {
           await sleep(3000);
         }
