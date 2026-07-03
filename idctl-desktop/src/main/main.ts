@@ -38,6 +38,8 @@ declare const __dirname: string;
 let win: BrowserWindow | null = null;
 let brainDashboardWin: BrowserWindow | null = null;
 let stopGoalDriver: (() => void) | null = null;
+let stopLearnQueueRunner: (() => void) | null = null;
+let kickLearnQueueRunner: ((delayMs?: number) => void) | null = null;
 let rendererCrashReloadAt = 0;
 let rendererSafeMode = false;
 
@@ -286,6 +288,55 @@ function publishStoreChange(method: string): void {
   if (!domains.length) return;
   const event: StoreChangeEvent = { method, domains, at: Date.now() };
   try { win?.webContents.send('idagents:sync', event); } catch { /* window may be gone */ }
+}
+
+function startLearnQueueRunner(): () => void {
+  let stopped = false;
+  let running = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const idleMs = 30_000;
+  const retryMs = 90_000;
+
+  const schedule = (delayMs = idleMs) => {
+    if (stopped) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => void tick(), Math.max(0, delayMs));
+    timer.unref?.();
+  };
+
+  const tick = async () => {
+    if (stopped) return;
+    if (running) { schedule(2_000); return; }
+    running = true;
+    try {
+      recoverStaleMaterials();
+      const current = listMaterials();
+      const activeProcessing = current.some((m) => m.status === 'processing');
+      const hasQueued = current.some((m) => m.status === 'queued');
+      if (!activeProcessing && hasQueued) {
+        const material = await processNextMaterial({});
+        if (material) {
+          publishStoreChange('materials:processNext');
+          recordControlAction('materials:processNext', ['background'], material);
+        }
+      }
+      const remaining = listMaterials().some((m) => m.status === 'queued');
+      schedule(remaining ? 750 : idleMs);
+    } catch (e) {
+      console.warn('[learn] auto-process queue failed:', e);
+      schedule(retryMs);
+    } finally {
+      running = false;
+    }
+  };
+
+  kickLearnQueueRunner = schedule;
+  schedule(2_000);
+  return () => {
+    stopped = true;
+    kickLearnQueueRunner = null;
+    if (timer) clearTimeout(timer);
+  };
 }
 
 function evmEnvKeyName(id: string): string {
@@ -853,27 +904,36 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return listMaterials();
     case 'materials:get':
       return getMaterial(args[0] as string);
-    case 'materials:save':
-      return saveMaterial(args[0] as CreateMaterialInput | LearnMaterial);
+    case 'materials:save': {
+      const result = saveMaterial(args[0] as CreateMaterialInput | LearnMaterial);
+      kickLearnQueueRunner?.(250);
+      return result;
+    }
     case 'materials:remove':
       return removeMaterial(args[0] as string);
     case 'materials:pickFiles':
       return pickMaterialFiles();
     case 'materials:pickFolder':
       return pickMaterialFolder();
-    case 'materials:importFiles':
-      return importMaterialFiles(
+    case 'materials:importFiles': {
+      const result = importMaterialFiles(
         Array.isArray(args[0]) ? args[0].map(String) : [],
         (args[1] as { priority?: LearnPriority; prioritized?: boolean } | undefined) ?? {},
       );
+      kickLearnQueueRunner?.(250);
+      return result;
+    }
     case 'materials:priority':
       return updateMaterialPriority(args[0] as string, args[1] as LearnPriority, args[2] as boolean | undefined);
     case 'materials:processNext':
       return processNextMaterial((args[0] as ProcessMaterialContext | undefined) ?? {});
     case 'materials:process':
       return processMaterial(args[0] as string, (args[1] as ProcessMaterialContext | undefined) ?? {});
-    case 'materials:recoverStale':
-      return recoverStaleMaterials();
+    case 'materials:recoverStale': {
+      const result = recoverStaleMaterials();
+      kickLearnQueueRunner?.(250);
+      return result;
+    }
     case 'materials:markRecommendation':
       return markRecommendation(args[0] as string, args[1] as string, args[2] as LearnReviewState);
     case 'image:generate':
@@ -1028,6 +1088,8 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     try { startModelRefreshLoop(); } catch (e) { console.warn('[model-refresh] failed to start:', e); }
     // Disabled by default: when enabled, active+autopilot goals gap-fill fleet tasks.
     try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
+    // Work > Learn queue: process newly-added materials even when the Learn tab is not mounted.
+    try { stopLearnQueueRunner = startLearnQueueRunner(); } catch (e) { console.warn('[learn] failed to start queue runner:', e); }
     // Computer Use broker: loopback controller + live frame pump + approval prompts → the renderer.
     void startBroker(
       (frame) => { try { win?.webContents.send('computeruse:frame', frame); } catch { /* window gone */ } },
@@ -1051,6 +1113,7 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
 app.on('will-quit', stopUpdater);
 app.on('will-quit', stopBroker);
 app.on('will-quit', () => { try { stopGoalDriver?.(); } catch { /* */ } });
+app.on('will-quit', () => { try { stopLearnQueueRunner?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* */ } });
 app.on('child-process-gone', (_event, details) => {
   logProcessExit('child-process', details as unknown as Record<string, unknown>);

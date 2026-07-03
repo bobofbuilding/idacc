@@ -377,14 +377,22 @@ button.chip.incompat:hover { border-color: var(--line); }
   overflow-wrap: anywhere;
 }
 /* Work > Learn intake */
-.learn-intake { display: flex; flex-direction: column; gap: 12px; overflow: visible; }
+.learn-intake {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
+}
 .learn-intake-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .learn-intake-head h3 { margin: 0; }
+.learn-workspace { margin-top: 4px; }
 .learn-intake-grid {
   display: grid;
   grid-template-columns: minmax(280px, 1fr) minmax(340px, auto);
   gap: 12px;
-  align-items: end;
+  align-items: stretch;
 }
 .learn-main-fields { display: grid; gap: 8px; min-width: 0; }
 .learn-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -395,6 +403,7 @@ button.chip.incompat:hover { border-color: var(--line); }
   align-items: end;
   gap: 8px;
   min-width: 0;
+  align-self: end;
 }
 .learn-pin {
   min-height: 32px;
