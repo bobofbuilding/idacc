@@ -365,9 +365,9 @@ export function runtimeHasSpeed(runtime?: string): boolean {
 
 /** Current known models per runtime, used when no probeable provider is configured. */
 export const RUNTIME_CURATED: Record<string, string[]> = {
-  'claude-agent-sdk': ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-  'claude-code-cli': ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-  'claude-code-local': ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  'claude-agent-sdk': ['claude-fable-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  'claude-code-cli': ['claude-fable-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  'claude-code-local': ['claude-fable-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   // Fallback only — the bridge merges the live list from ~/.codex/models_cache.json.
   codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark', 'gpt-5.3-codex'],
   'cursor-cli': ['sonnet-4', 'composer-2'],

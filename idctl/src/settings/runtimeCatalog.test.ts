@@ -69,6 +69,13 @@ assert.deepEqual(
   'provider lane model catalogs should be keyed by provider:<name> for the staged Harness dropdown',
 );
 
+const curatedCatalog = buildRuntimeCatalog([]);
+assert.deepEqual(
+  curatedCatalog['claude-code-cli'].slice(0, 2),
+  ['claude-fable-5', 'claude-sonnet-5'],
+  'Claude Code curated fallback should include current Fable and Sonnet 5 choices before older Claude models',
+);
+
 const selectedProviderCatalog = buildRuntimeCatalog([
   {
     name: 'openrouter',
