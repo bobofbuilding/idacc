@@ -1223,21 +1223,18 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const installedLocalStacks = installedLocalStackRows.map((row) => row.stack.name);
   const localBackendReady = localRouteReadyProviders.length > 0;
   const localSyncCandidate = localProviders.find((p) => p.enabled !== false && providerKeyReady(p) && !providerRouteReady(p));
-  const localDrivingTone = localBackendReady ? 'ok' : localBackendConfigured || starterInstalled ? 'warn' : 'err';
-  const localDrivingTitle = localBackendReady
-    ? 'Backend ready'
+  const localRoutingText = localBackendReady
+    ? `routing ready: ${localRouteReadyProviders.map((p) => p.name).join(', ')}`
     : localSyncCandidate
-      ? 'Sync local backend'
+      ? `routing sync needed: ${localSyncCandidate.name}`
       : starterInstalled
-        ? 'Add Ollama backend'
-        : 'Download starter model';
-  const localDrivingDetail = localBackendReady
-    ? `${localRouteReadyProviders.map((p) => p.name).join(', ')} available for local routing.`
-    : localSyncCandidate
-      ? `${localSyncCandidate.name} is configured but its model list is not synced.`
-      : starterInstalled
-        ? `${STARTER_LOCAL_MODEL_ID} is installed and ready to attach.`
-        : `Start with ${STARTER_LOCAL_MODEL_ID}.`;
+        ? 'routing not added'
+        : 'starter model needed';
+  const localCatalogText = catalogUpdateCount
+    ? `${catalogUpdateCount} catalog update${catalogUpdateCount === 1 ? '' : 's'}`
+    : discoveredCatalogCount
+      ? `${discoveredCatalogCount} catalog tag${discoveredCatalogCount === 1 ? '' : 's'}`
+      : 'starter catalog';
   const providersNeedingKeys = enabledProviders.filter((p) => providerNeedsKey(p) && !providerKeyReady(p)).length;
   const textRuntimeReady = store.connection === 'online' && (defaultRouteReady || routeReadyProviders.length > 0);
   const managerFeatureSet = new Set(managerCaps?.features ?? []);
@@ -2304,36 +2301,16 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             Stack setup
           </button>
         </div>
-        <div className="local-model-summary">
-          <div>
-            <span>Ollama</span>
-            <b className={ollamaModels.length ? 'ok-text' : 'warn-text'}>{ollamaModels.length ? `${ollamaModels.length} installed` : 'none installed'}</b>
-          </div>
-          <div>
-            <span>Routing</span>
-            <b className={localBackendReady ? 'ok-text' : 'warn-text'}>{localBackendReady ? 'ready' : localBackendConfigured ? 'sync needed' : 'not added'}</b>
-          </div>
-          <div>
-            <span>Stacks</span>
-            <b>{installedLocalStackRows.length ? installedLocalStackRows.map(({ stack }) => stack.name).join(', ') : 'none detected'}</b>
-          </div>
-          <div>
-            <span>Catalog</span>
-            <b className={catalogUpdateCount ? 'warn-text' : discoveredCatalogCount ? 'ok-text' : ''}>
-              {catalogUpdateCount
-                ? `${catalogUpdateCount} update${catalogUpdateCount === 1 ? '' : 's'}`
-                : discoveredCatalogCount
-                  ? `${discoveredCatalogCount} added tag${discoveredCatalogCount === 1 ? '' : 's'}`
-                  : 'starter list'}
-            </b>
-          </div>
-        </div>
-        <div className={`local-driving-strip ${localDrivingTone}`}>
-          <div className="grow">
-            <b>{localDrivingTitle}</b>
-            <span>{localDrivingDetail}</span>
-          </div>
-          <div className="row-actions">
+        <div className="local-model-status-line">
+          <span className={localBackendReady ? 'ok-text' : localBackendConfigured || starterInstalled ? 'warn-text' : 'status-error'}>
+            {localRoutingText}
+          </span>
+          <span>{ollamaModels.length ? `${ollamaModels.length} Ollama model${ollamaModels.length === 1 ? '' : 's'}` : 'no Ollama models'}</span>
+          {installedLocalStacks.length ? <span>stacks: {installedLocalStacks.join(', ')}</span> : null}
+          <span className={catalogUpdateCount ? 'warn-text' : 'muted'}>{localCatalogText}</span>
+          <span className="grow" />
+          {!localBackendReady ? (
+            <span className="row-actions">
             {!starterInstalled && starterModel ? (
               <button className="btn small primary" disabled={pulling} onClick={() => void pull(STARTER_LOCAL_MODEL_ID)}>
                 {pulling ? 'Downloading…' : 'Download starter'}
@@ -2349,7 +2326,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                 Sync {localSyncCandidate.name}
               </button>
             ) : null}
-          </div>
+            </span>
+          ) : null}
         </div>
         {localConc || concMsg ? (
           <div className="row-actions local-concurrency-row">
