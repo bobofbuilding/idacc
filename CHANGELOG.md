@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.520] — 2026-07-03
+- Surface Dashboard draft work proposals in Work Tasks for operator review before dispatch.
+
 ## [0.1.519] — 2026-07-03
 - Clarify Learn blocked review state
 
