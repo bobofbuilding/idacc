@@ -19,12 +19,335 @@
  * decision). The ACTIONS map IS the allow-list — drop an entry to stop learning that action.
  */
 import { brain } from '../../../idctl/src/api/brain.ts';
+import { createHash } from 'node:crypto';
 
 type Summary = { subject?: string; data?: Record<string, unknown>; tags?: string[] };
+type TrackingCandidate = {
+  contributionType: string;
+  title: string;
+  team?: string;
+  agent?: string;
+  project?: string;
+  taskRef?: string;
+  tags?: string[];
+  data?: Record<string, unknown>;
+};
+type OpportunitySignal = { type: string; value?: string };
+type TrackingEvent = TrackingCandidate & {
+  id: string;
+  at: string;
+  weekKey: string;
+  method: string;
+  opportunity?: OpportunitySignal;
+};
 
 const s = (v: unknown): string => (typeof v === 'string' ? v : '');
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 const clip = (v: unknown, n: number): string => s(v).replace(/\s+/g, ' ').trim().slice(0, n);
+const clean = (v: unknown, n = 160): string => clip(v, n);
+const keyPart = (v: unknown): string => (s(v) || 'default').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'default';
+
+function safeJson(value: unknown, n = 3000): string {
+  try { return JSON.stringify(value).slice(0, n); } catch { return ''; }
+}
+
+function shortHash(value: unknown): string {
+  return createHash('sha1').update(typeof value === 'string' ? value : safeJson(value, 12000)).digest('hex').slice(0, 12);
+}
+
+function isoWeekKey(date = new Date()): string {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+function arrayText(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((v) => String(v).trim()).filter(Boolean) : [];
+}
+
+function opportunitySignal(text: string): OpportunitySignal | undefined {
+  const amount = text.match(/(?:\$|USD\s*|USDC\s*)\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:USD|USDC)\b/i)?.[0];
+  const checks: Array<[RegExp, string]> = [
+    [/\b(paid work|contract|client|customer|sale|deal|invoice|revenue|sponsor|grant|bounty|rfp|proposal)\b/i, 'revenue'],
+    [/\b(partner|partnership|integration|collaboration|co-marketing)\b/i, 'partnership'],
+    [/\b(referral|intro|introduction|warm handoff)\b/i, 'referral'],
+    [/\b(opportunity|prospect|sales lead|business lead|qualified lead)\b/i, 'lead'],
+  ];
+  const hit = checks.find(([re]) => re.test(text));
+  return hit ? { type: hit[1], ...(amount ? { value: amount } : {}) } : undefined;
+}
+
+function candidateForAction(method: string, args: unknown[], result: unknown, summary: Summary): TrackingCandidate | null {
+  const data = summary.data ?? {};
+  const subject = clean(summary.subject || method, 180);
+  switch (method) {
+    case 'work:createPlan':
+      return {
+        contributionType: 'work-dispatch',
+        title: subject,
+        team: s(data.team),
+        tags: ['work', 'dispatch'],
+        data: { objective: data.objective, subtasks: data.subtasks, team: data.team },
+      };
+    case 'work:fanout':
+      return {
+        contributionType: 'cross-team-fanout',
+        title: subject,
+        tags: ['work', 'dispatch'],
+        data: { objective: data.objective, teams: data.teams },
+      };
+    case 'work:triage':
+      return {
+        contributionType: 'task-triage',
+        title: subject,
+        team: s(data.team),
+        agent: s(data.lead),
+        tags: ['work', 'triage'],
+        data: { lead: data.lead, team: data.team },
+      };
+    case 'tasks:setLane': {
+      const lane = s(data.lane) || s(args[1]);
+      if (!/(done|under-review|needs-adjustment|rework|holding|backlog|validated|published)/i.test(lane)) return null;
+      return {
+        contributionType: 'task-lane',
+        title: subject,
+        taskRef: s(data.ref) || s(args[0]),
+        tags: ['task', 'weekly-contribution'],
+        data: { ref: data.ref ?? args[0], lane },
+      };
+    }
+    case 'tasks:setReview': {
+      const state = s(data.state) || s(args[1]);
+      if (!state) return null;
+      return {
+        contributionType: 'task-review',
+        title: subject,
+        taskRef: s(data.ref) || s(args[0]),
+        tags: ['task', 'review'],
+        data: { ref: data.ref ?? args[0], state },
+      };
+    }
+    case 'projects:save':
+      return {
+        contributionType: 'project-registry',
+        title: subject,
+        project: s(data.id) || s(obj(args[0]).id),
+        team: s(data.team),
+        agent: s(data.lead),
+        tags: ['project', ...arrayText(data.tags)],
+        data: {
+          id: data.id,
+          name: data.name,
+          status: data.status,
+          team: data.team,
+          lead: data.lead,
+          tags: data.tags,
+          links: obj(args[0]).links,
+          notes: clean(obj(args[0]).notes, 500),
+          description: clean(obj(args[0]).description, 500),
+        },
+      };
+    case 'plans:save':
+      return {
+        contributionType: 'draft-plan',
+        title: subject,
+        team: s(data.team),
+        agent: s(data.agent),
+        project: s(data.id),
+        tags: ['plan', 'draft', ...arrayText(data.tags)],
+        data: { id: data.id, status: data.status, team: data.team, agent: data.agent, version: data.version, tags: data.tags },
+      };
+    case 'brain:createPlan':
+      return {
+        contributionType: 'brain-plan',
+        title: subject,
+        project: s(obj(result).file),
+        tags: ['plan', 'brain-plan'],
+        data: { file: obj(result).file, num: obj(result).num, ok: obj(result).ok },
+      };
+    case 'brain:setPlanStatus':
+      return {
+        contributionType: 'plan-status',
+        title: subject,
+        project: s(data.file) || s(args[0]),
+        tags: ['plan', 'brain-plan'],
+        data: { file: data.file ?? args[0], status: args[1] },
+      };
+    case 'dreams:save':
+      return {
+        contributionType: 'dream-report',
+        title: subject,
+        team: s(data.team),
+        agent: s(data.agent),
+        project: s(data.id),
+        tags: ['dream', 'report'],
+        data: { id: data.id, agent: data.agent, team: data.team, focus: data.focus },
+      };
+    case 'goals:save':
+      return {
+        contributionType: 'goal',
+        title: subject,
+        team: s(data.team),
+        agent: s(data.agent),
+        project: s(data.id),
+        tags: ['goal', s(data.priority)].filter(Boolean),
+        data: { id: data.id, status: data.status, priority: data.priority, team: data.team, agent: data.agent, autopilot: data.autopilot },
+      };
+    case 'goalDriver:runOnce':
+      return {
+        contributionType: 'goal-driver',
+        title: subject,
+        tags: ['goal', 'autopilot', 'dispatch'],
+        data: obj(result),
+      };
+    case 'skills:syncBrain':
+      return {
+        contributionType: 'skill-catalog',
+        title: subject,
+        project: 'capabilities',
+        tags: ['capability', 'catalog', 'brain'],
+        data: { count: data.count ?? obj(result).count, total: data.total ?? obj(result).total, generatedAt: obj(result).generatedAt },
+      };
+    case 'materials:process':
+    case 'materials:processNext': {
+      const m = obj(result);
+      if (!m.id) return null;
+      return {
+        contributionType: 'learn-material',
+        title: subject,
+        project: s(m.id),
+        tags: ['learn', 'material', s(m.kind)].filter(Boolean),
+        data: { id: m.id, kind: m.kind, status: m.status, stage: m.stage, source: m.source, teams: obj(m.classification).routedTeams },
+      };
+    }
+    case 'materials:markRecommendation':
+      return {
+        contributionType: 'learn-recommendation',
+        title: subject,
+        project: s(args[0]),
+        tags: ['learn', 'review'],
+        data: { materialId: args[0], recommendationId: args[1], state: args[2] },
+      };
+    default:
+      return null;
+  }
+}
+
+function trackingEvent(method: string, args: unknown[], result: unknown, summary: Summary): TrackingEvent | null {
+  const candidate = candidateForAction(method, args, result, summary);
+  if (!candidate) return null;
+  const at = new Date();
+  const weekKey = isoWeekKey(at);
+  const text = [
+    candidate.title,
+    method,
+    safeJson(candidate.data),
+    safeJson({ team: candidate.team, agent: candidate.agent, project: candidate.project, taskRef: candidate.taskRef }),
+  ].join(' ');
+  const opportunity = opportunitySignal(text);
+  const id = `tracking:${opportunity ? 'opportunity' : 'contribution'}:${weekKey}:${shortHash({ method, candidate, opportunity })}`;
+  return {
+    ...candidate,
+    id,
+    at: at.toISOString(),
+    weekKey,
+    method,
+    ...(opportunity ? { opportunity } : {}),
+    tags: Array.from(new Set(['contribution-tracking', ...(candidate.tags ?? []), ...(opportunity ? ['opportunity-attribution', opportunity.type] : [])])),
+  };
+}
+
+function trackingEntry(event: TrackingEvent): string {
+  const details = [
+    event.team ? `team=${event.team}` : '',
+    event.agent ? `agent=${event.agent}` : '',
+    event.project ? `project=${event.project}` : '',
+    event.taskRef ? `task=${event.taskRef}` : '',
+  ].filter(Boolean).join(' ');
+  return [
+    `<!-- ${event.id} -->`,
+    `- ${event.at} [${event.contributionType}] ${event.title}`,
+    details ? `  - target: ${details}` : '',
+    event.opportunity ? `  - opportunity: ${event.opportunity.type}${event.opportunity.value ? ` value=${event.opportunity.value}` : ''}` : '',
+    `  - attribution: source=control-center method=${event.method} event=${event.id}`,
+  ].filter(Boolean).join('\n');
+}
+
+async function appendTrackingMemory(key: string, heading: string, event: TrackingEvent, tags: string[]): Promise<void> {
+  const marker = `<!-- ${event.id} -->`;
+  const existing = await brain.getMemory('control-center', key);
+  if (existing?.includes(marker)) return;
+  const body = trackingEntry(event);
+  const content = existing?.trim()
+    ? `${existing.trim()}\n${body}\n`
+    : [`# ${heading}`, '', `Week: ${event.weekKey}`, '', body, ''].join('\n');
+  await brain.memory('control-center', {
+    key,
+    content,
+    tags,
+    shared: true,
+    project: 'bittrees',
+  });
+}
+
+async function recordTrackingHooks(method: string, args: unknown[], result: unknown, summary: Summary): Promise<void> {
+  const event = trackingEvent(method, args, result, summary);
+  if (!event) return;
+  await Promise.all([
+    brain.timeline({
+      type: event.opportunity ? 'tracking:opportunity-attributed' : 'tracking:weekly-contribution',
+      subject: event.title,
+      data: {
+        id: event.id,
+        weekKey: event.weekKey,
+        method: event.method,
+        contributionType: event.contributionType,
+        team: event.team,
+        agent: event.agent,
+        project: event.project,
+        taskRef: event.taskRef,
+        opportunity: event.opportunity,
+        data: event.data ?? {},
+      },
+      tags: ['control-center', 'tracking', ...event.tags],
+    }),
+    brain.entity({
+      id: event.id,
+      type: event.opportunity ? 'opportunity' : 'weekly-contribution',
+      name: event.title,
+      status: 'recorded',
+      tags: ['dashboard-state', 'tracking', ...event.tags],
+      data: {
+        weekKey: event.weekKey,
+        method: event.method,
+        contributionType: event.contributionType,
+        team: event.team,
+        agent: event.agent,
+        project: event.project,
+        taskRef: event.taskRef,
+        opportunity: event.opportunity,
+        data: event.data ?? {},
+      },
+    }),
+    appendTrackingMemory(
+      `weekly-contributions:${event.weekKey}`,
+      'Weekly contribution tracker',
+      event,
+      ['dashboard-state', 'tracking', 'weekly-contributions', 'bittrees'],
+    ),
+    ...(event.opportunity ? [
+      appendTrackingMemory(
+        `opportunity-attribution:${event.weekKey}`,
+        'Opportunity attribution tracker',
+        event,
+        ['dashboard-state', 'tracking', 'opportunity-attribution', 'bittrees', event.opportunity.type],
+      ),
+    ] : []),
+  ]);
+}
 
 /**
  * method → summarizer. Presence here = "record this action to the brain." Each summarizer is
