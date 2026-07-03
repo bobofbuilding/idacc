@@ -255,13 +255,30 @@ async function createGoalLeadTasks(
   subtasks: SubTask[],
   targets: GoalLeadTarget[],
 ): Promise<{ ok: number; refs: string[] }> {
-  const teamByLead = new Map(targets.map((target) => [target.lead, target.team]));
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const targetsByLead = new Map(targets.map((target) => [norm(target.lead), target]));
+  const targetsByTeam = new Map(targets.map((target) => [norm(target.team), target]));
+  const targetForSubtask = (st: SubTask, index: number): GoalLeadTarget => {
+    const agentKey = norm(st.agent || '');
+    const exact = targetsByLead.get(agentKey) ?? targetsByTeam.get(agentKey);
+    if (exact) return exact;
+    const hay = norm(`${st.agent} ${st.title} ${st.description}`);
+    const hinted = targets.find((target) => hay.includes(norm(target.team)) || hay.includes(norm(target.lead)));
+    return hinted ?? targets[index % targets.length];
+  };
   const byTeam = new Map<string, SubTask[]>();
-  for (const st of subtasks) {
-    const team = teamByLead.get(st.agent);
-    if (!team) continue;
+  for (let i = 0; i < subtasks.length; i++) {
+    const st = subtasks[i];
+    const target = targetForSubtask(st, i);
+    const team = target.team;
     const list = byTeam.get(team) ?? [];
-    list.push(st);
+    list.push({
+      ...st,
+      agent: target.lead,
+      description: st.agent && st.agent !== target.lead
+        ? `${st.description ?? ''}\n\nAutopilot routed owner hint "${st.agent}" to ${target.team}/${target.lead}.`.trim()
+        : st.description,
+    });
     byTeam.set(team, list);
   }
 

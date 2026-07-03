@@ -39,9 +39,11 @@ interface Goal {
   createdAt: number;
   updatedAt: number;
 }
+interface RecoverStaleResult { recovered: number; materials: LearnMaterial[] }
 
 const PRIORITIES: LearnPriority[] = ['urgent', 'high', 'normal'];
 const KIND_LABEL: Record<LearnMaterialKind, string> = { github: 'GitHub', folder: 'Folder', site: 'Site', pdf: 'PDF' };
+const STALE_PROCESSING_MS = 20 * 60 * 1000;
 const STATUS_CLASS: Record<string, string> = {
   queued: 'st-paused',
   processing: 'st-active',
@@ -66,6 +68,10 @@ function ago(ts: number): string {
 function clip(s: string, n: number): string {
   const t = String(s || '').replace(/\s+/g, ' ').trim();
   return t.length > n ? `${t.slice(0, n)}...` : t;
+}
+
+function isStaleProcessing(m: LearnMaterial): boolean {
+  return m.status === 'processing' && Date.now() - m.updatedAt > STALE_PROCESSING_MS;
 }
 
 function sourceKind(source: string, picked: 'auto' | LearnMaterialKind): LearnMaterialKind | undefined {
@@ -101,6 +107,7 @@ export function Learn({ store }: { store: FleetStore }) {
 
   const selected = useMemo(() => materials.find((m) => m.id === selectedId) ?? materials[0] ?? null, [materials, selectedId]);
   const processing = materials.find((m) => m.status === 'processing');
+  const staleProcessing = useMemo(() => materials.filter(isStaleProcessing), [materials]);
   const context = {
     knownTeams: store.teams.map((t) => t.name).filter(Boolean),
     defaultTeam: store.team ?? 'default',
@@ -172,9 +179,10 @@ export function Learn({ store }: { store: FleetStore }) {
   }
 
   async function processNext() {
-    if (processing) { setSelectedId(processing.id); setNote('a material is already processing'); return; }
+    if (processing && !isStaleProcessing(processing)) { setSelectedId(processing.id); setNote('a material is already processing'); return; }
     setBusy(true); setNote('processing next material...');
     try {
+      if (processing) await call<RecoverStaleResult>('materials:recoverStale').catch(() => null);
       const material = await call<LearnMaterial | null>('materials:processNext', context);
       setNote(material ? `processed ${material.title}` : 'queue is empty');
       if (material) setSelectedId(material.id);
@@ -188,9 +196,15 @@ export function Learn({ store }: { store: FleetStore }) {
 
   async function processSelected() {
     if (!selected) return;
-    if (processing && processing.id !== selected.id) { setSelectedId(processing.id); setNote('a material is already processing'); return; }
+    if (processing && processing.id !== selected.id && !isStaleProcessing(processing)) { setSelectedId(processing.id); setNote('a material is already processing'); return; }
     setBusy(true); setNote(`processing ${selected.title}...`);
     try {
+      if (selected.status === 'processing' && isStaleProcessing(selected)) {
+        const recovered = await call<RecoverStaleResult>('materials:recoverStale');
+        setNote(`recovered ${recovered.recovered} stale material${recovered.recovered === 1 ? '' : 's'}`);
+        await reload();
+        return;
+      }
       const material = await call<LearnMaterial>('materials:process', selected.id, context);
       setNote(`processed ${material.title}`);
       setSelectedId(material.id);
@@ -210,6 +224,20 @@ export function Learn({ store }: { store: FleetStore }) {
       await call('materials:remove', selected.id);
       setSelectedId('');
       await reload();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function recoverStale() {
+    setBusy(true); setNote('recovering stale Learn processing state...');
+    try {
+      const recovered = await call<RecoverStaleResult>('materials:recoverStale');
+      setMaterials(recovered.materials);
+      setSelectedId((cur) => (cur && recovered.materials.some((m) => m.id === cur) ? cur : (recovered.materials[0]?.id ?? '')));
+      setNote(`recovered ${recovered.recovered} stale material${recovered.recovered === 1 ? '' : 's'}`);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
     } finally {
@@ -284,6 +312,17 @@ export function Learn({ store }: { store: FleetStore }) {
     <div className="stack">
       <section className="card">
         <h3>Learn intake</h3>
+        {staleProcessing.length ? (
+          <div className="review-box" style={{ marginBottom: 10 }}>
+            <div>
+              <b>{staleProcessing.length} stale processing material{staleProcessing.length === 1 ? '' : 's'}</b>
+              <div className="muted small">These rows were left in processing and are blocking the one-at-a-time Learn queue.</div>
+            </div>
+            <button className="btn primary" disabled={busy} onClick={() => void recoverStale()}>
+              Recover queue
+            </button>
+          </div>
+        ) : null}
         <div className="kv" style={{ gridTemplateColumns: '90px 1fr 86px 112px 74px auto auto', gap: 8, alignItems: 'center' }}>
           <span className="muted small">Source</span>
           <input value={source} disabled={busy} placeholder="GitHub URL or site URL" onChange={(e) => setSource(e.target.value)} />
@@ -350,8 +389,8 @@ export function Learn({ store }: { store: FleetStore }) {
           {selected ? (
             <div className="stack">
               <div className="row-actions" style={{ gap: 8, flexWrap: 'wrap' }}>
-                <button className="btn primary" disabled={busy || selected.status === 'processing'} onClick={() => void processSelected()}>
-                  {selected.status === 'queued' || selected.status === 'failed' ? 'Process selected' : 'Reprocess'}
+                <button className="btn primary" disabled={busy || (selected.status === 'processing' && !isStaleProcessing(selected))} onClick={() => void processSelected()}>
+                  {selected.status === 'processing' && isStaleProcessing(selected) ? 'Recover selected' : selected.status === 'queued' || selected.status === 'failed' ? 'Process selected' : 'Reprocess'}
                 </button>
                 <button className="btn" disabled={busy} onClick={() => void removeSelected()}>Remove</button>
                 {selected.snapshotPath ? <span className="muted small">snapshot: {selected.snapshotPath}</span> : null}

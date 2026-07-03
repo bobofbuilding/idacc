@@ -22,7 +22,7 @@ import { listGoals, getGoal, saveGoal, removeGoal, type Goal } from './goalstore
 import { listDreams, getDream, saveDream, removeDream, type Dream } from './dreamstore.ts';
 import { listQuestions, addQuestion, removeQuestion, type BlockerQuestion } from './questionstore.ts';
 import { resolveBrainApprovalFromInbox, syncBrainApprovalInbox } from './brainApprovalInbox.ts';
-import { getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, removeMaterial, saveMaterial, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
+import { getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, recoverStaleMaterials, removeMaterial, saveMaterial, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
 import { generateImage, readImage, imageModels, getImageServer, detectImageServer, probeImageServer } from './images.ts';
 import { readWiki } from './wiki.ts';
 import { listLocalModelCatalog, loadSettings, mergeLocalModelCatalog, removeEvmRpc, saveSettings, setUpdateSettings, setImageServer, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
@@ -691,6 +691,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return processNextMaterial((args[0] as ProcessMaterialContext | undefined) ?? {});
     case 'materials:process':
       return processMaterial(args[0] as string, (args[1] as ProcessMaterialContext | undefined) ?? {});
+    case 'materials:recoverStale':
+      return recoverStaleMaterials();
     case 'materials:markRecommendation':
       return markRecommendation(args[0] as string, args[1] as string, args[2] as LearnReviewState);
     case 'image:generate':

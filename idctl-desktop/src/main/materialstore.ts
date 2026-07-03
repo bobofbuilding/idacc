@@ -192,6 +192,7 @@ const STOP_WORDS = new Set([
   'through', 'under', 'using', 'where', 'which', 'while', 'with', 'would',
 ]);
 const INJECTION_RE = /(ignore\s+(all\s+)?previous|forget\s+(all\s+)?(previous|prior)|developer\s+message|system\s+prompt|do\s+not\s+follow|exfiltrat|reveal\s+(your|the)\s+(system|prompt|secret)|<\|system\|>|begin\s+system|assistant:|user:)/ig;
+const STALE_PROCESSING_MS = 20 * 60 * 1000;
 
 let processing = false;
 
@@ -484,6 +485,35 @@ export function markRecommendation(materialId: string, recommendationId: string,
   return getMaterial(materialId) ?? material;
 }
 
+function recoverMaterialIfStale(material: LearnMaterial, maxAgeMs = STALE_PROCESSING_MS): LearnMaterial {
+  if (material.status !== 'processing' || Date.now() - material.updatedAt < maxAgeMs) return material;
+  const hasReviewArtifacts = Boolean(material.recommendations?.length || material.summary || material.comparison);
+  const hasBlockingDraft = (material.recommendations ?? []).some((r) => r.blocking && r.reviewState !== 'dismissed');
+  material.status = hasReviewArtifacts ? (hasBlockingDraft ? 'blocked' : 'ready') : 'queued';
+  material.stage = hasReviewArtifacts ? 'recommendations' : material.stage;
+  material.processingTag = hasReviewArtifacts ? 'recovered for review' : 'requeued after stale processing';
+  material.progress.push({
+    stage: material.stage,
+    status: 'warning',
+    note: hasReviewArtifacts
+      ? 'Recovered stale processing state; existing Learn outputs are available for review.'
+      : 'Recovered stale processing state; material returned to the queue.',
+    at: now(),
+  });
+  writeMaterial(material);
+  return getMaterial(material.id) ?? material;
+}
+
+export function recoverStaleMaterials(maxAgeMs = STALE_PROCESSING_MS): { recovered: number; materials: LearnMaterial[] } {
+  let recovered = 0;
+  for (const material of listMaterials()) {
+    const before = `${material.status}:${material.processingTag ?? ''}:${material.updatedAt}`;
+    const after = recoverMaterialIfStale(material, maxAgeMs);
+    if (`${after.status}:${after.processingTag ?? ''}:${after.updatedAt}` !== before) recovered++;
+  }
+  return { recovered, materials: listMaterials() };
+}
+
 function compareQueue(a: LearnMaterial, b: LearnMaterial): number {
   return Number(!!b.prioritized) - Number(!!a.prioritized)
     || PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
@@ -492,6 +522,7 @@ function compareQueue(a: LearnMaterial, b: LearnMaterial): number {
 }
 
 export async function processNextMaterial(ctx: ProcessMaterialContext = {}): Promise<LearnMaterial | null> {
+  recoverStaleMaterials();
   if (processing) {
     return listMaterials().find((m) => m.status === 'processing') ?? null;
   }

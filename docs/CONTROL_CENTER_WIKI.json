@@ -4972,6 +4972,12 @@
         "Settings Local models & backends now frames the Ollama catalog search, capability filters, and downloadable model rows inside a dedicated bordered panel.",
         "The catalog toolbar and scrollable model list gained clearer spacing, row boundaries, and hover treatment so the searchable model catalog reads as one coherent control group.",
         "Validation: npm run typecheck in idctl-desktop, wiki JSON parse, and npm run build in idctl-desktop passed before release validation."
+      ],
+      "implementedTwoHundredFiftyThirdPass": [
+        "Work Goal Autopilot now preserves default-team decompositions even when the lead returns team names or rough owner hints instead of exact team-lead agent names, mapping them to active team leads before creating tasks.",
+        "Work Learn now recovers stale processing rows: old processing materials with review artifacts become ready/blocked for review, while unfinished stale rows return to queued, and Process next runs this recovery before selecting work.",
+        "The Learn tab now surfaces stale processing materials with a Recover queue action and allows a stale selected material to be recovered instead of permanently disabling reprocessing.",
+        "Validation: npm run typecheck in idctl-desktop, wiki JSON parse, and npm run build in idctl-desktop passed before release validation."
       ]
     },
     {
@@ -5035,5 +5041,5 @@
       "body": "# Wiki\n\nWiki is both the human documentation page and the editable schematic for the Control Center UI. Each article explains the operator purpose of a page; the structured sections below preserve tabs, tiles, fields, controls, displays, routes, and source files for implementation detail.\n\n## Use it for\n\n- Search pages, controls, routes, source files, and notes from inside the desktop app.\n- Confirm how a UI surface is intended to behave before editing code or filing follow-up work.\n- Keep app navigation metadata and human documentation in one reviewed JSON artifact.\n\n## Editing rule\n\nThe desktop app hot-reload polls CONTROL_CENTER_WIKI.json through the main-process wiki bridge. Sidebar labels, icons, order, and visibility still come from pages[].nav for implemented routes, so documentation edits must preserve that metadata and keep every page.body non-empty."
     }
   ],
-  "appVersion": "0.1.513"
+  "appVersion": "0.1.514"
 }
