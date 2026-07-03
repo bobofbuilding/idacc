@@ -235,7 +235,7 @@ function cooldownTitle(row: RuntimeCooldown): string {
 
 export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: FleetStore; onProbe?: (a: TeamAgent) => void; probeBusy?: string | null; navigate?: (view: string) => void }) {
   const cols = onProbe ? 9 : 8;
-  const runtimeCatalogVersion = useSyncVersion(['settings', 'modules']);
+  const runtimeCatalogVersion = useSyncVersion(['runtime-catalog']);
   const runtimeCooldownVersion = useSyncVersion(['agents']);
   const hierarchyVersion = useSyncVersion(['org', 'agents']);
   const [selected, setSelected] = useState<string | null>(null);

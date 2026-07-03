@@ -33,11 +33,15 @@ type RuntimeVerificationReport = {
 type HrBuildCatalogCache = {
   version: number;
   modelCatalog: Record<string, string[]>;
-  skillCatalog: string[];
   providers: ProviderRow[];
   managedRuntimes: Record<string, ManagedRuntimeStatus>;
 };
-let hrBuildCatalogCache: HrBuildCatalogCache | null = null;
+type HrBuildSkillCatalogCache = {
+  version: number;
+  skillCatalog: string[];
+};
+let hrBuildRuntimeCatalogCache: HrBuildCatalogCache | null = null;
+let hrBuildSkillCatalogCache: HrBuildSkillCatalogCache | null = null;
 
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 type GoalPriority = 'primary' | 'secondary' | 'general';
@@ -492,7 +496,8 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
 
   // HR pillars as tabs + the live structure graph.
   const [tab, setTab] = useState<'structure' | 'health' | 'build' | 'route'>('structure');
-  const hrCatalogVersion = useSyncVersion(tab === 'build' ? ['settings', 'modules'] : []);
+  const hrRuntimeCatalogVersion = useSyncVersion(tab === 'build' ? ['runtime-catalog'] : []);
+  const hrSkillCatalogVersion = useSyncVersion(tab === 'build' ? ['modules'] : []);
   const [routePane, setRoutePane] = useState<'operations' | 'overview' | 'hierarchy'>('operations');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [graphGroups, setGraphGroups] = useState<{ team: string; agents: Agent[] }[]>([]);
@@ -972,43 +977,57 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   }
 
   // Catalogs for the Onboard modal (runtimes/models, library skills, providers).
-  const [modelCatalog, setModelCatalog] = useState<Record<string, string[]>>(() => hrBuildCatalogCache?.modelCatalog ?? {});
-  const [skillCatalog, setSkillCatalog] = useState<string[]>(() => hrBuildCatalogCache?.skillCatalog ?? []);
-  const [providers, setProviders] = useState<ProviderRow[]>(() => hrBuildCatalogCache?.providers ?? []);
-  const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>(() => hrBuildCatalogCache?.managedRuntimes ?? {});
+  const [modelCatalog, setModelCatalog] = useState<Record<string, string[]>>(() => hrBuildRuntimeCatalogCache?.modelCatalog ?? {});
+  const [skillCatalog, setSkillCatalog] = useState<string[]>(() => hrBuildSkillCatalogCache?.skillCatalog ?? []);
+  const [providers, setProviders] = useState<ProviderRow[]>(() => hrBuildRuntimeCatalogCache?.providers ?? []);
+  const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>(() => hrBuildRuntimeCatalogCache?.managedRuntimes ?? {});
 
   useEffect(() => {
     if (tab !== 'build') return;
-    if (hrBuildCatalogCache?.version === hrCatalogVersion) {
-      setModelCatalog(hrBuildCatalogCache.modelCatalog);
-      setSkillCatalog(hrBuildCatalogCache.skillCatalog);
-      setProviders(hrBuildCatalogCache.providers);
-      setManagedRuntimes(hrBuildCatalogCache.managedRuntimes);
+    if (hrBuildRuntimeCatalogCache?.version === hrRuntimeCatalogVersion) {
+      setModelCatalog(hrBuildRuntimeCatalogCache.modelCatalog);
+      setProviders(hrBuildRuntimeCatalogCache.providers);
+      setManagedRuntimes(hrBuildRuntimeCatalogCache.managedRuntimes);
       return;
     }
     let live = true;
     Promise.all([
       call<Record<string, string[]>>('runtime:models').catch(() => ({})),
-      call<LibrarySkillEntry[]>('librarySkills').then((s) => s.map((x) => x.name)).catch(() => [] as string[]),
       call<ProviderRow[]>('providers:list').catch(() => [] as ProviderRow[]),
       call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => ({})),
-    ]).then(([nextModelCatalog, nextSkillCatalog, nextProviders, nextManagedRuntimes]) => {
+    ]).then(([nextModelCatalog, nextProviders, nextManagedRuntimes]) => {
       const nextCache = {
-        version: hrCatalogVersion,
+        version: hrRuntimeCatalogVersion,
         modelCatalog: nextModelCatalog,
-        skillCatalog: nextSkillCatalog,
         providers: nextProviders,
         managedRuntimes: nextManagedRuntimes,
       };
-      hrBuildCatalogCache = nextCache;
+      hrBuildRuntimeCatalogCache = nextCache;
       if (!live) return;
       setModelCatalog(nextCache.modelCatalog);
-      setSkillCatalog(nextCache.skillCatalog);
       setProviders(nextCache.providers);
       setManagedRuntimes(nextCache.managedRuntimes);
     });
     return () => { live = false; };
-  }, [tab, hrCatalogVersion]);
+  }, [tab, hrRuntimeCatalogVersion]);
+
+  useEffect(() => {
+    if (tab !== 'build') return;
+    if (hrBuildSkillCatalogCache?.version === hrSkillCatalogVersion) {
+      setSkillCatalog(hrBuildSkillCatalogCache.skillCatalog);
+      return;
+    }
+    let live = true;
+    call<LibrarySkillEntry[]>('librarySkills')
+      .then((s) => s.map((x) => x.name))
+      .catch(() => [] as string[])
+      .then((nextSkillCatalog) => {
+        const nextCache = { version: hrSkillCatalogVersion, skillCatalog: nextSkillCatalog };
+        hrBuildSkillCatalogCache = nextCache;
+        if (live) setSkillCatalog(nextCache.skillCatalog);
+      });
+    return () => { live = false; };
+  }, [tab, hrSkillCatalogVersion]);
 
 
   // Per-agent relay overrides (an individual agent can be granted/denied
@@ -2065,10 +2084,9 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             onRuntimeVerified={(report) => {
               setModelCatalog(report.refreshedCatalog);
               setProviders(report.providers);
-              hrBuildCatalogCache = {
-                version: hrCatalogVersion,
+              hrBuildRuntimeCatalogCache = {
+                version: hrRuntimeCatalogVersion,
                 modelCatalog: report.refreshedCatalog,
-                skillCatalog,
                 providers: report.providers,
                 managedRuntimes,
               };
