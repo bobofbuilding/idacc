@@ -376,6 +376,11 @@ async function previewProjectsSync(rootArg?: string): Promise<{
   return { ok: true, root, found: scan.found.length, added, adopted, existing, total: projects.length + added, addNames, adoptNames };
 }
 
+type CliModelRuntime = 'grok' | 'antigravity';
+type CliModelCacheEntry = { at: number; models: string[] };
+const LIVE_CLI_MODEL_TIMEOUT_MS = 4000;
+const cliModelCache = new Map<CliModelRuntime, CliModelCacheEntry>();
+
 function codexModelsFromCache(): string[] {
   try {
     const raw = readFileSync(join(homedir(), '.codex', 'models_cache.json'), 'utf8');
@@ -389,52 +394,71 @@ function codexModelsFromCache(): string[] {
   }
 }
 
-function grokModelsFromCli(): string[] {
+function cachedCliModels(runtime: CliModelRuntime, refresh: boolean, load: () => string[]): string[] {
+  const cached = cliModelCache.get(runtime);
+  if (!refresh) return cached?.models ?? [];
   try {
+    const models = load();
+    cliModelCache.set(runtime, { at: Date.now(), models });
+    return models;
+  } catch {
+    if (cached) return cached.models;
+    cliModelCache.set(runtime, { at: Date.now(), models: [] });
+    return [];
+  }
+}
+
+function cliModelInfo(runtime: CliModelRuntime): CliModelCacheEntry | undefined {
+  return cliModelCache.get(runtime);
+}
+
+function grokModelsFromCli(refresh = false): string[] {
+  return cachedCliModels('grok', refresh, () => {
     const stdout = execFileSync('grok', ['models'], {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 15000,
+      timeout: LIVE_CLI_MODEL_TIMEOUT_MS,
     });
     if (!/available models/i.test(stdout) || /not authenticated|not logged in|signed out|login required/i.test(stdout)) return [];
     return stdout
       .split(/\r?\n/)
       .map((line) => line.trim().replace(/^[*-]\s*/, '').replace(/\s+\(default\)$/i, '').trim())
       .filter((line) => /^[a-z0-9][a-z0-9._:-]*$/i.test(line));
-  } catch {
-    return [];
-  }
+  });
 }
 
-function antigravityModelsFromCli(): string[] {
-  for (const command of ['agy', 'antigravity']) {
-    try {
-      const stdout = execFileSync(command, ['models'], {
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 15000,
-      });
-      if (!stdout.trim() || /not authenticated|not logged in|signed out|login required/i.test(stdout)) continue;
-      const models = stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line && line.length <= 120 && !/token|secret|bearer|api[_-]?key/i.test(line));
-      if (models.length) return models;
-    } catch {
-      // Try the next known Antigravity CLI entry point.
+function antigravityModelsFromCli(refresh = false): string[] {
+  return cachedCliModels('antigravity', refresh, () => {
+    for (const command of ['agy', 'antigravity']) {
+      try {
+        const stdout = execFileSync(command, ['models'], {
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: LIVE_CLI_MODEL_TIMEOUT_MS,
+        });
+        if (!stdout.trim() || /not authenticated|not logged in|signed out|login required/i.test(stdout)) continue;
+        const models = stdout
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => line && line.length <= 120 && !/token|secret|bearer|api[_-]?key/i.test(line));
+        if (models.length) return models;
+      } catch {
+        // Try the next known Antigravity CLI entry point.
+      }
     }
-  }
-  return [];
+    return [];
+  });
 }
 
 /** Catalog with subscription CLI live model lists merged into curated/runtime providers. */
-function runtimeCatalogWithLiveCliModels(): Record<string, string[]> {
+function runtimeCatalogWithLiveCliModels(options: { refreshCli?: boolean } = {}): Record<string, string[]> {
   const cat = buildRuntimeCatalog(loadSettings().providers);
   const codex = codexModelsFromCache();
   if (codex.length) cat.codex = Array.from(new Set([...codex, ...(cat.codex ?? [])]));
-  const grok = grokModelsFromCli();
+  const refreshCli = Boolean(options.refreshCli);
+  const grok = grokModelsFromCli(refreshCli);
   if (grok.length) cat.grok = Array.from(new Set([...grok, ...(cat.grok ?? [])]));
-  const antigravity = antigravityModelsFromCli();
+  const antigravity = antigravityModelsFromCli(refreshCli);
   if (antigravity.length) cat.antigravity = Array.from(new Set([...antigravity, ...(cat.antigravity ?? [])]));
   return cat;
 }
@@ -462,6 +486,8 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
   const providers = loadSettings().providers;
   const enrichedProviders = listProvidersEnriched();
   const cat = runtimeCatalogWithLiveCliModels();
+  const grokInfo = cliModelInfo('grok');
+  const antigravityInfo = cliModelInfo('antigravity');
   const managed = await subsStatus().then((rows) => Object.values(rows)).catch(() => []);
   const available = settingsAvailableRuntimeSet(enrichedProviders, managed);
   const managedByRuntime = new Map(managed.filter(managedRuntimeHasEvidence).map((s) => [s.runtime, s]));
@@ -507,12 +533,12 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
       return { runtime: rt, kind: 'harness', models, count: models.length, source: live ? 'codex-cache' : 'curated', lastCheckedMs: live ? mt : null, selectable, detail: unavailableDetail };
     }
     if (rt === 'grok') {
-      const live = grokModelsFromCli().length > 0;
-      return { runtime: rt, kind: 'harness', models, count: models.length, source: live ? 'grok-cli' : 'curated', lastCheckedMs: live ? Date.now() : null, selectable, detail: unavailableDetail };
+      const live = (grokInfo?.models.length ?? 0) > 0;
+      return { runtime: rt, kind: 'harness', models, count: models.length, source: live ? 'grok-cli' : 'curated', lastCheckedMs: live ? grokInfo?.at ?? null : null, selectable, detail: unavailableDetail };
     }
     if (rt === 'antigravity') {
-      const live = antigravityModelsFromCli().length > 0;
-      return { runtime: rt, kind: 'harness', models, count: models.length, source: live ? 'antigravity-cli' : 'curated', lastCheckedMs: live ? Date.now() : null, selectable, detail: unavailableDetail };
+      const live = (antigravityInfo?.models.length ?? 0) > 0;
+      return { runtime: rt, kind: 'harness', models, count: models.length, source: live ? 'antigravity-cli' : 'curated', lastCheckedMs: live ? antigravityInfo?.at ?? null : null, selectable, detail: unavailableDetail };
     }
     const p = providerFor(rt);
     if (p) return { runtime: rt, kind: 'harness', models, count: models.length, source: 'provider', provider: p.name, lastCheckedMs: p.lastSync?.at ?? null, selectable, detail: unavailableDetail };
@@ -544,7 +570,7 @@ async function probeAllRuntimes(): Promise<Record<string, string[]>> {
         }
       }),
   );
-  return runtimeCatalogWithLiveCliModels();
+  return runtimeCatalogWithLiveCliModels({ refreshCli: true });
 }
 
 type RuntimeAssignment = { name?: string; runtime?: string; model?: string };

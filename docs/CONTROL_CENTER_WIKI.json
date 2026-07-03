@@ -143,8 +143,8 @@
         "idctl-desktop/scripts/headroom-plugin-path-smoke.mjs"
       ],
       "purpose": "HR Manager Health tab for fleet health, local-model token throughput, liveness probes, and the full fleet roster with harness/model/lifecycle controls, neutral provider model-lane visibility, and read-only lead markers. Hidden context-budget savings are backend-only and not displayed here.",
-      "scope": "Embedded in HR Manager between Structure and Build; the legacy health route opens this tab. Usage spans local-model providers and refreshes as its own 15s observability stream; roster is holistic and grouped by team through AgentTable.",
-      "body": "# HR Manager Health\n\nHealth is the fleet observation and lifecycle surface inside HR Manager. It shows running state, runtime evidence, and guarded probe/lifecycle controls."
+      "scope": "Embedded in HR Manager between Structure and Build; the legacy health route opens this tab. Usage spans local-model providers and refreshes as its own 15s observability stream; roster is holistic and grouped by team through AgentTable. Harness/model lane reads are settings-scoped and cached so ordinary agent roster churn does not reload provider state.",
+      "body": "# HR Manager Health\n\nHealth is the fleet observation and lifecycle surface inside HR Manager. It shows running state, runtime evidence, and guarded probe/lifecycle controls. Harness and model selectors use cached passive catalog reads; the explicit re-check action is the live refresh path for provider and CLI model evidence."
     },
     {
       "id": "identity",
@@ -218,7 +218,7 @@
       ],
       "purpose": "Capability workbench for MCP tool servers, skills, and bundled plugins.",
       "scope": "Active team, all teams, or all leads depending on scope selector. Runtime support is advisory; capability assignment remains runtime-neutral while stale target rows are still blocked by fresh-read guards.",
-      "body": "# Capabilities\n\nCapabilities owns skills, MCP servers, plugins, runtime-neutral capability wiring, and guarded Brain sync handoffs. Provider and runtime catalog reads stay cached/non-invalidating; provider connects and runtime probes still refresh dependent views."
+      "body": "# Capabilities\n\nCapabilities owns skills, MCP servers, plugins, runtime-neutral capability wiring, and guarded Brain sync handoffs. Provider and runtime catalog reads stay cached/non-invalidating; provider connects and explicit runtime probes still refresh dependent views without passive CLI command execution."
     },
     {
       "id": "computer",
@@ -303,5 +303,5 @@
       "body": "# Wiki\n\nThis page now reads a compact app manifest. The replacement authoring contract is being rebuilt in docs/CONTROL_CENTER_WIKI.md as Markdown-first schema documentation."
     }
   ],
-  "appVersion": "0.1.544"
+  "appVersion": "0.1.545"
 }

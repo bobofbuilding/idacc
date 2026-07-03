@@ -221,7 +221,8 @@ function cooldownTitle(row: RuntimeCooldown): string {
 
 export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: FleetStore; onProbe?: (a: TeamAgent) => void; probeBusy?: string | null; navigate?: (view: string) => void }) {
   const cols = onProbe ? 9 : 8;
-  const runtimeCatalogVersion = useSyncVersion(['settings', 'modules', 'agents']);
+  const runtimeCatalogVersion = useSyncVersion(['settings', 'modules']);
+  const runtimeCooldownVersion = useSyncVersion(['agents']);
   const hierarchyVersion = useSyncVersion(['org', 'agents']);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -288,23 +289,30 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     if (!runtimeDetailsActive) return;
     let live = true;
     const load = async () => {
-      const [nextCatalog, nextProviders, nextManaged, nextFreshness, nextCooldowns] = await Promise.all([
+      const [nextCatalog, nextProviders, nextManaged, nextFreshness] = await Promise.all([
         call<Record<string, string[]>>('runtime:models').catch(() => ({})),
         call<ProviderRow[]>('providers:list').catch(() => []),
         call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => ({})),
         call<RuntimeFreshness[]>('runtime:freshness').catch(() => []),
-        call<RuntimeCooldown[]>('runtime:cooldowns').catch(() => []),
       ]);
       if (!live) return;
       setCatalog(nextCatalog);
       setProviders(nextProviders);
       setManagedRuntimes(nextManaged);
       setFreshness(nextFreshness);
-      setRuntimeCooldowns(nextCooldowns);
     };
     void load();
     return () => { live = false; };
   }, [runtimeCatalogVersion, runtimeDetailsActive]);
+
+  useEffect(() => {
+    if (!runtimeDetailsActive) return;
+    let live = true;
+    call<RuntimeCooldown[]>('runtime:cooldowns')
+      .then((rows) => { if (live) setRuntimeCooldowns(rows); })
+      .catch(() => { if (live) setRuntimeCooldowns([]); });
+    return () => { live = false; };
+  }, [runtimeCooldownVersion, runtimeDetailsActive]);
 
   useEffect(() => {
     call<{ coordinators?: Record<string, string> }>('coordinator:hierarchy').then((h) => setCoords(h.coordinators ?? {})).catch(() => {});
