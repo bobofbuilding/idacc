@@ -116,6 +116,93 @@ function booleanLabel(value: unknown): string {
   return value === true ? 'yes' : value === false ? 'no' : 'unknown';
 }
 
+function readPath(record: Record<string, unknown>, path: string[]): unknown {
+  let cursor: unknown = record;
+  for (const part of path) {
+    const row = asRecord(cursor);
+    if (!(part in row)) return undefined;
+    cursor = row[part];
+  }
+  return cursor;
+}
+
+function firstText(record: Record<string, unknown>, paths: string[][], max = 900): string {
+  for (const path of paths) {
+    const value = readPath(record, path);
+    if (value === undefined || value === null || value === '') continue;
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      const text = clip(redactText(value), max);
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
+function redactText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/\b(?:sk|pk|ghp|gho|xoxb|xoxp|Bearer)[A-Za-z0-9_./+=:-]{16,}\b/g, '[redacted secret]')
+    .replace(/\b(?!0x[a-fA-F0-9]{40}\b)[A-Za-z0-9_./+=-]{72,}\b/g, '[redacted long value]');
+}
+
+function timeLabel(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '';
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  return new Date(asMs(n)).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+}
+
+function countLabel(value: unknown, noun: string): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '';
+  return `${Math.round(n).toLocaleString('en-US')} ${noun}${Math.round(n) === 1 ? '' : 's'}`;
+}
+
+function memoryRetireDecisionLines(approval: BrainApproval, subject: string, common: string[]): string[] {
+  const payload = approval.payload ?? {};
+  const memoryId = firstText(payload, [['memory_id'], ['memory', 'id']], 80) || subject;
+  const key = firstText(payload, [['key'], ['memory_key'], ['memory', 'key']], 160);
+  const agent = firstText(payload, [['agent_id'], ['agent'], ['memory', 'agent_id']], 120);
+  const evidence = firstText(payload, [
+    ['evidence'],
+    ['memory', 'evidence'],
+    ['memory', 'text'],
+    ['memory', 'content'],
+    ['text'],
+    ['content'],
+    ['summary'],
+  ], 1100);
+  const suggestedReason = firstText(payload, [['suggested_reason'], ['reason'], ['recommendation']], 260);
+  const ignored = countLabel(payload['ignored_count'], 'ignored suggestion');
+  const volunteered = timeLabel(payload['last_volunteered_at']);
+  const used = timeLabel(payload['last_used_at']);
+  const score = Number(payload['score']);
+  const reversible = payload['reversible'] ?? approval.governance?.risk?.reversible;
+
+  const signals = [
+    agent ? `owner/agent ${agent}` : '',
+    key ? `key ${key}` : '',
+    ignored,
+    volunteered ? `last offered ${volunteered}` : '',
+    used ? `last accepted use ${used}` : 'no accepted use recorded',
+    Number.isFinite(score) ? `Brain retirement score ${Math.round(score * 10) / 10}` : '',
+    `rollback available: ${booleanLabel(reversible)}`,
+  ].filter(Boolean);
+
+  return [
+    'Decision: Should this Brain memory stop being used for answers, routing, and recommendations?',
+    `Memory under review: ${memoryId}${key ? ` (${key})` : ''}.`,
+    evidence
+      ? `Memory text / evidence excerpt:\n${evidence}`
+      : 'Memory text / evidence excerpt: not included in the Brain approval payload. Open Brain Health before approving; this card only proves that Brain asked to retire the memory, not what the memory says.',
+    suggestedReason ? `Brain recommendation: ${suggestedReason}.` : '',
+    signals.length ? `Review signals: ${signals.join('; ')}.` : '',
+    common.join(' '),
+    'Approve means: mark this approval as approved so Brain can queue a reversible retirement. The memory should no longer influence future retrieval/routing after Brain applies it.',
+    'Reject means: keep the memory active because it is still true, useful, or not sufficiently reviewed.',
+    'Approve only if: the excerpt is outdated, duplicated, misleading, or repeatedly irrelevant. If the excerpt is missing or unclear, reject or open Brain Health first.',
+  ].filter(Boolean);
+}
+
 function approvalPlainLanguage(approval: BrainApproval, kind: string, subject: string, reason: string): string[] {
   const payload = approval.payload ?? {};
   const candidates = candidateLabels(approval);
@@ -139,13 +226,7 @@ function approvalPlainLanguage(approval: BrainApproval, kind: string, subject: s
         'Reject means: keep both Brain records independent. Use this when they are different tokens, different contracts, different chains, or you are unsure.',
       ];
     case 'memory.retire':
-      return [
-        'Plain-English meaning: Brain thinks this memory is stale, noisy, or no longer useful and wants permission to retire it from active use.',
-        `Memory/topic: ${subject}.`,
-        common.join(' '),
-        'Approve if: the memory should stop influencing future answers or routing.',
-        'Reject if: the memory is still accurate, useful, or should remain available.',
-      ];
+      return memoryRetireDecisionLines(approval, subject, common);
     case 'team.instruction.supersede':
       return [
         'Plain-English meaning: Brain found an older team instruction that appears to be replaced by newer guidance.',
@@ -210,6 +291,8 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
 
   const options = kind === 'entity.alias.fuzzy_merge'
     ? ['Approve alias merge', 'Reject / keep separate']
+    : kind === 'memory.retire'
+      ? ['Approve retirement after review', 'Reject / keep memory active']
     : ['Approve after review — queue Brain change', 'Reject — keep current Brain state'];
 
   return {
