@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.513] — 2026-07-03
+- Frame local model catalog controls
+
 ## [0.1.512] — 2026-07-03
 - Move local concurrency into Local models control
 

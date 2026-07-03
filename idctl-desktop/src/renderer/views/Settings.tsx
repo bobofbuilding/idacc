@@ -2423,7 +2423,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
 
         {/* Browsable model catalog */}
         <div className="model-catalog">
-          <div className="row-actions" style={{ flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
+          <div className="row-actions model-catalog-toolbar">
             <input className="catalog-search" placeholder="search Ollama catalog…" value={modelQuery} onChange={(e) => setModelQuery(e.target.value)} />
             <span className="chips">
               {(['all', ...MODEL_CAPS] as (ModelCapability | 'all')[]).map((c) => (
