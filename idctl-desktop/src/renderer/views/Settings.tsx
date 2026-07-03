@@ -25,6 +25,7 @@ const STACK_BACKEND_PRESET_FILTER = 'backend-presets';
 const STACK_PRIMARY_FILTERS = ['all', STACK_BACKEND_PRESET_FILTER, 'start-here', 'easy', 'guided', 'advanced'];
 const STACK_RUNNABLE_CMD_RE = /^(brew|python3?|pip3?|pipx|uv|cargo|curl|docker|conda|npm|npx|open)\b/;
 const STACK_PLACEHOLDER_CMD_RE = /<[^>\s][^>]*>/;
+const STACK_BACKGROUND_START_IDS = new Set(['mlx-lm-server']);
 const LOCAL_PROVIDER_STACK_IDS: Record<string, string> = {
   ollama: 'ollama',
   lmstudio: 'lm-studio',
@@ -43,6 +44,7 @@ type HardwareInfo = { platform: string; arch: string; appleSilicon: boolean; cpu
 /** A discovered local server enriched by the bridge with whether it's already configured. */
 type Discovered = DiscoveredServer & { alreadyAdded: boolean };
 type LocalStackInstallStatus = { id: string; installed: boolean; source?: string; detail?: string; port?: number; checkedAt: number };
+type BackgroundStackStatus = { id: string; name: string; running: boolean; pid?: number; command?: string; startedAt?: number; port?: number; logPath?: string; detail?: string };
 type StackInstallDraft = { command: string; port?: number; originalPort?: number; baseUrl?: string; autoFixed?: boolean; note?: string };
 type DockerStatus = { installed: boolean; serverRunning: boolean; version?: string; serverVersion?: string; error?: string };
 type OllamaModel = { name: string; size?: number; parameterSize?: string; digest?: string; modifiedAt?: string };
@@ -176,6 +178,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const subRefreshRunningRef = useRef(false);
   const subRefreshLastAtRef = useRef(0);
   const [stackInstallStatus, setStackInstallStatus] = useState<Record<string, LocalStackInstallStatus>>({});
+  const [stackBackgroundStatus, setStackBackgroundStatus] = useState<Record<string, BackgroundStackStatus>>({});
   const [stackInstallChecking, setStackInstallChecking] = useState(false);
   const [showStackMoreFilters, setShowStackMoreFilters] = useState(false);
   function resetProviderAddReview() {
@@ -688,6 +691,11 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   }
 
   // Local LLM discovery: scan localhost for running servers, then one-click add.
+  async function checkBackgroundStacks(): Promise<Record<string, BackgroundStackStatus>> {
+    const status = await call<Record<string, BackgroundStackStatus>>('stack:backgroundStatus', TOP_LOCAL_STACKS.map((s) => s.id)).catch((): Record<string, BackgroundStackStatus> => ({}));
+    setStackBackgroundStatus(status);
+    return status;
+  }
   async function checkStackInstalls(): Promise<Record<string, LocalStackInstallStatus>> {
     setStackInstallChecking(true);
     try {
@@ -714,6 +722,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       const [found] = await Promise.all([
         call<Discovered[]>('providers:discover', stackExtraDiscoveryCandidates()).catch(() => []),
         checkStackInstalls(),
+        checkBackgroundStacks(),
       ]);
       const autoAddedUrls = opts.autoAddKnownStacks ? await autoAddKnownStackBackends(found) : new Set<string>();
       const displayed = autoAddedUrls.size
@@ -1379,6 +1388,13 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       if (stack?.id === 'lm-studio') {
         return 'LM Studio is saved as a backend, but its local API server is off. The app can be open without serving models; start the server, load or download a model if needed, then re-check.';
       }
+      if (stack?.id === 'mlx-lm-server') {
+        const bg = stackBackgroundStatus[stack.id];
+        if (bg?.running) {
+          return `MLX is running in the background${bg.pid ? ` (pid ${bg.pid})` : ''}, but ${p.baseUrl} is not answering yet. The first start may download/load the model; wait a moment, then re-check.`;
+        }
+        return `MLX is installed and saved as a backend, but the API server is not running at ${p.baseUrl}. Use Start background to keep mlx_lm.server running outside this window.`;
+      }
       return `${label} is saved as a backend, but no API server is listening at ${p.baseUrl}. Start its local API server, then re-check.`;
     }
     if (status === 'auth-error') {
@@ -1638,6 +1654,12 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   function stackStartCmd(s: LocalStackEntry): string | null {
     const c = stackCommand(s.start);
     return c && STACK_RUNNABLE_CMD_RE.test(c) ? c : null;
+  }
+  function stackCanStartBackground(s: LocalStackEntry): boolean {
+    return STACK_BACKGROUND_START_IDS.has(s.id) && !!stackStartCmd(s);
+  }
+  function stackBackgroundRunning(s: LocalStackEntry): boolean {
+    return stackBackgroundStatus[s.id]?.running === true;
   }
   function stackUsesDockerCommand(command?: string | null): boolean {
     return /^docker\b/.test(command ?? '');
@@ -1919,7 +1941,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         if (detectedPort) setStackPortOverrides((prev) => ({ ...prev, [s.id]: detectedPort }));
         const installed = status[s.id]?.installed === true;
         if (action === 'install' && installed) {
-          setStackMsg(`${s.name} installed. Start its local server, then Scan running to add it as a backend.`);
+          setStackMsg(`${s.name} installed. ${stackCanStartBackground(s) ? 'Use Start background to run its local API server.' : 'Start its local server, then Scan running to add it as a backend.'}`);
         } else if (action === 'uninstall' && !installed) {
           setStackMsg(`${s.name} uninstall no longer has matching package/container evidence.`);
         } else if (idx === arr.length - 1) {
@@ -1936,7 +1958,42 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setTimeout(() => void runDiscover({ autoAddKnownStacks: true }), delay);
     });
   }
+  async function startStackBackground(s: LocalStackEntry) {
+    const cmd = stackStartCmd(s);
+    if (!cmd) return;
+    setBusy(true);
+    try {
+      const status = await call<BackgroundStackStatus>('stack:startBackground', s.id, cmd);
+      setStackBackgroundStatus((prev) => ({ ...prev, [s.id]: status }));
+      setStackMsg(`${s.name} ${status.detail ?? 'started'}${status.pid ? ` · pid ${status.pid}` : ''}${status.logPath ? ` · log ${status.logPath}` : ''}. IDACC will re-check the API and sync models when it answers.`);
+      scheduleStackDiscoverScans(s);
+      [3000, 10000, 24000].forEach((delay) => {
+        setTimeout(() => void checkBackgroundStacks(), delay);
+      });
+    } catch (e) {
+      setStackMsg(`failed to start ${s.name} in background: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function stopStackBackground(s: LocalStackEntry) {
+    setBusy(true);
+    try {
+      const status = await call<BackgroundStackStatus>('stack:stopBackground', s.id);
+      setStackBackgroundStatus((prev) => ({ ...prev, [s.id]: status }));
+      setStackMsg(`${s.name}: ${status.detail ?? 'stopped'}. Re-check if an external copy is still running on port ${s.defaultPort ?? 'its port'}.`);
+      void runDiscover();
+    } catch (e) {
+      setStackMsg(`failed to stop ${s.name}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function runStackCmd(s: LocalStackEntry, action: 'install' | 'uninstall' | 'start' = 'install') {
+    if (action === 'start' && stackCanStartBackground(s)) {
+      await startStackBackground(s);
+      return;
+    }
     const draft = action === 'install' ? stackInstallDrafts[s.id] : undefined;
     const cmd = action === 'install'
       ? (draft?.command ?? stackInstallCmd(s))
@@ -2004,6 +2061,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       loadOllama().then((models) => { void checkOllamaCatalog({ silent: true, models, localCatalog }); }),
     );
     void checkStackInstalls();
+    void checkBackgroundStacks();
     void loadConc();
     void loadImgServer();
     void call<HardwareInfo>('app:hardware').then(setHardware).catch(() => {});
@@ -2027,6 +2085,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       void Promise.allSettled([
         loadLocalModelCatalog(),
         loadOllama(),
+        checkBackgroundStacks(),
         runDiscover(),
       ]).finally(() => {
         localRefreshRunningRef.current = false;
@@ -2605,6 +2664,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             const uc = stackUninstallCmd(s);
             const installStatus = stackInstallStatus[s.id];
             const stackInstalled = installStatus?.installed === true;
+            const backgroundRunning = stackBackgroundRunning(s);
             const installUnavailable = !ic && !stackInstalled ? stackInstallUnavailableReason(s) : null;
             const effectiveApiBase = stackApiBase(s);
             const configuredProviders = stackConfiguredProviders(s);
@@ -2627,6 +2687,11 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                   {running ? (
                     <span className={`small ${discoveryStale ? 'warn-text' : 'ok-text'}`} title={`Detected by scan ${discoveredAt ? timeAgo(discoveredAt) : 'recently'}`}>
                       {discoveryStale ? 'last scan running' : '● running'}
+                    </span>
+                  ) : null}
+                  {backgroundRunning ? (
+                    <span className="small ok-text" title={stackBackgroundStatus[s.id]?.logPath ? `IDACC started this process. Log: ${stackBackgroundStatus[s.id]?.logPath}` : 'IDACC started this process'}>
+                      ● background
                     </span>
                   ) : null}
                   {configured ? <span className="chip tag" title="A matching inference backend is configured below">backend configured</span> : null}
@@ -2661,8 +2726,10 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                       {running && !configured && effectiveApiBase ? (
                         <button className="btn small primary" title={`Add ${effectiveApiBase} as an inference backend after a fresh scan`} onClick={() => void addStackBackend(s)}>Add backend</button>
                       ) : null}
-                      {stackInstalled && !running && sc ? (
-                        <button className="btn small primary" title={sc} onClick={() => void runStackCmd(s, 'start')}>Start</button>
+                      {backgroundRunning ? (
+                        <button className="btn small" title="Stop the background process started by IDACC" onClick={() => void stopStackBackground(s)}>Stop</button>
+                      ) : stackInstalled && !running && sc ? (
+                        <button className="btn small primary" title={sc} onClick={() => void runStackCmd(s, 'start')}>{stackCanStartBackground(s) ? 'Start background' : 'Start'}</button>
                       ) : null}
                       {configuredProviders.length === 1 ? (
                         <button className="btn small" title={`Remove inference backend ${configuredProviders[0].name}; does not uninstall the app/server`} onClick={() => void removeProviderProfile(configuredProviders[0].name)}>Remove backend</button>
@@ -2703,7 +2770,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
               const offeredModels = savedProviderModels(p);
               const apiModelFilterable = !isLocalProvider(p) && syncedModels.length > 0;
               const localHint = localProviderStatusHint(p, installedStack);
-              const startableLocalStack = localHint && installedStack && providerStatus(p) === 'unreachable' && stackStartCmd(installedStack)
+              const backgroundManaged = installedStack ? stackBackgroundRunning(installedStack) : false;
+              const startableLocalStack = localHint && installedStack && !backgroundManaged && providerStatus(p) === 'unreachable' && stackStartCmd(installedStack)
                 ? installedStack
                 : undefined;
               const statusText = pendingInstalledStack
@@ -2764,9 +2832,14 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                       {localHint ? <div className="muted small provider-status-hint">{localHint}</div> : null}
                     </td>
                     <td className="row-actions">
+                      {backgroundManaged && installedStack ? (
+                        <button className="btn" disabled={busy} onClick={() => void stopStackBackground(installedStack)} title="Stop the background server process started by IDACC">
+                          Stop
+                        </button>
+                      ) : null}
                       {startableLocalStack ? (
                         <button className="btn primary" disabled={busy} onClick={() => void runStackCmd(startableLocalStack, 'start')} title={`Start ${startableLocalStack.name}'s local API server`}>
-                          Start server
+                          {stackCanStartBackground(startableLocalStack) ? 'Start background' : 'Start server'}
                         </button>
                       ) : null}
                       <button className={startableLocalStack ? 'btn' : 'btn primary'} disabled={busy} onClick={() => void connect(p.name)} title="Validate the key live and sync the model list">

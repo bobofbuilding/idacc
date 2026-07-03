@@ -2728,9 +2728,12 @@
         {
           "id": "local-stacks",
           "label": "Local LLM stacks",
-          "description": "Local inference stack catalog. It opens on a compact backend-presets filter, keeps common filters visible, moves advanced stack tags behind a tag dropdown, reviews install commands before visible Terminal runs, shows unavailable one-click installs with concrete reason labels such as Linux host required, choose model first, or manual setup, shows uninstall only after matching package/container install evidence, derives claimed ports from default/API/command host mappings, suppresses self-conflict warnings for a stack's own configured/discovered backend port, warns when another claimed port is running or configured, can auto-rewrite Docker -p, --port, and --tcp install commands to a free loopback port, separates package install from backend add, includes shared-port backend presets such as LocalAI, MLX, and TGI, auto-adds pending Inference backend rows for installed local provider stacks, auto-upgrades matching live backend presets after Scan running, keeps row-level Add backend as a fresh-scan fallback, and keeps ambient focus/interval discovery throttled and read-only so backend state is not mutated by window focus alone.",
+          "description": "Local inference stack catalog. It opens on a compact backend-presets filter, keeps common filters visible, moves advanced stack tags behind a tag dropdown, reviews install commands before visible Terminal runs, shows unavailable one-click installs with concrete reason labels such as Linux host required, choose model first, or manual setup, shows uninstall only after matching package/container install evidence, derives claimed ports from default/API/command host mappings, suppresses self-conflict warnings for a stack's own configured/discovered backend port, warns when another claimed port is running or configured, can auto-rewrite Docker -p, --port, and --tcp install commands to a free loopback port, separates package install from backend add, includes shared-port backend presets such as LocalAI, MLX, and TGI, runs MLX through an app-managed background start/stop path on port 8081 with local logs, auto-adds pending Inference backend rows for installed local provider stacks, auto-upgrades matching live backend presets after Scan running, keeps row-level Add backend as a fresh-scan fallback, and keeps ambient focus/interval discovery throttled and read-only so backend state is not mutated by window focus alone.",
           "routesInto": [
             "app:runInTerminal",
+            "stack:backgroundStatus",
+            "stack:startBackground",
+            "stack:stopBackground",
             "providers:discover"
           ]
         },

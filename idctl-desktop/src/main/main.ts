@@ -11,7 +11,7 @@ import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
 import { subsStatus, subsSignin, subsSignout, subsInstall, type SubProvider } from './subscriptions.ts';
 import { ollamaTags, ollamaPull, ollamaRemove, ollamaCatalogCheck, catalogModelToLocalEntry, type InstalledModelInput } from './ollama.ts';
-import { dockerStatus, getHardware, localStackInstallStatus, runInTerminal } from './system.ts';
+import { backgroundStackStatus, dockerStatus, getHardware, localStackInstallStatus, runInTerminal, startBackgroundStack, stopBackgroundStack } from './system.ts';
 import { pickProjectFolder, openProjectFolder, projectReadme, projectGit, projectGitRun, githubMeta, cloneGithub, projectDiff, createGithubRepo, linkGithubRepo, forkGithub, commitProject, detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { pickChatFiles, saveChatFiles, savePastedFile } from './chatfiles.ts';
 import { listChats, listInflightChats, getChat, saveChat, renameChat, removeChat, genTitle, genReason, unreadChatCount, markChatRead, patchChat, type ChatSession, type ChatPatch } from './chatstore.ts';
@@ -532,6 +532,12 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return getHardware();
     case 'stack:installStatus':
       return localStackInstallStatus(Array.isArray(args[0]) ? args[0] as string[] : []);
+    case 'stack:backgroundStatus':
+      return backgroundStackStatus(Array.isArray(args[0]) ? args[0] as string[] : []);
+    case 'stack:startBackground':
+      return startBackgroundStack(args[0], args[1], app.getPath('userData'));
+    case 'stack:stopBackground':
+      return stopBackgroundStack(args[0]);
     case 'stack:dockerStatus':
       return dockerStatus();
     case 'brain:openDashboard':

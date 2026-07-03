@@ -10,13 +10,24 @@
  */
 
 import { totalmem, cpus, platform as osPlatform, arch as osArch, homedir } from 'node:os';
-import { existsSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
+import { join } from 'node:path';
 
 const execFileP = promisify(execFile);
 const GB = 1024 ** 3;
+
+const BACKGROUND_STACKS: Record<string, { name: string; command: string; port?: number }> = {
+  'mlx-lm-server': {
+    name: 'MLX (mlx_lm.server)',
+    command: 'python3 -m mlx_lm server --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 8081',
+    port: 8081,
+  },
+};
+
+const backgroundProcs = new Map<string, { child: ChildProcess; command: string; startedAt: number; logPath: string; name: string; port?: number }>();
 
 /** GUI apps inherit a minimal PATH; include common package-manager locations. */
 function cliEnv(): NodeJS.ProcessEnv {
@@ -59,6 +70,21 @@ export interface DockerStatus {
   version?: string;
   serverVersion?: string;
   error?: string;
+}
+
+export interface BackgroundStackStatus {
+  id: string;
+  name: string;
+  running: boolean;
+  pid?: number;
+  command?: string;
+  startedAt?: number;
+  exitedAt?: number;
+  exitCode?: number | null;
+  signal?: NodeJS.Signals | null;
+  port?: number;
+  logPath?: string;
+  detail?: string;
 }
 
 // The system_profiler probe is slowish (~1s) but its result is static — cache it
@@ -278,4 +304,95 @@ export async function runInTerminal(command: string): Promise<{ ok: boolean; ran
   } catch (e) {
     return { ok: false, ran: false, command: cmd, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+function stackLogDir(userDataPath?: string): string {
+  const dir = join(userDataPath || join(homedir(), '.config', 'idctl'), 'local-stack-logs');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+function statusFromProcess(id: string, detail?: string): BackgroundStackStatus {
+  const row = backgroundProcs.get(id);
+  const known = BACKGROUND_STACKS[id];
+  if (!row) {
+    return {
+      id,
+      name: known?.name ?? id,
+      running: false,
+      port: known?.port,
+      detail,
+    };
+  }
+  return {
+    id,
+    name: row.name,
+    running: !row.child.killed && row.child.exitCode == null,
+    pid: row.child.pid,
+    command: row.command,
+    startedAt: row.startedAt,
+    exitCode: row.child.exitCode,
+    signal: row.child.signalCode,
+    port: row.port,
+    logPath: row.logPath,
+    detail,
+  };
+}
+
+export function backgroundStackStatus(ids: string[] = Object.keys(BACKGROUND_STACKS)): Record<string, BackgroundStackStatus> {
+  const out: Record<string, BackgroundStackStatus> = {};
+  for (const id of ids.map(String)) out[id] = statusFromProcess(id);
+  return out;
+}
+
+export async function startBackgroundStack(idValue: unknown, commandValue?: unknown, userDataPath?: string): Promise<BackgroundStackStatus> {
+  const id = String(idValue || '').trim();
+  const known = BACKGROUND_STACKS[id];
+  const command = String(commandValue || known?.command || '').trim();
+  if (!id || !known) throw new Error(`unsupported background stack "${id || '(empty)'}"`);
+  if (!command) throw new Error(`no background start command registered for ${known.name}`);
+
+  const existing = backgroundProcs.get(id);
+  if (existing && !existing.child.killed && existing.child.exitCode == null) return statusFromProcess(id, 'already running');
+
+  const logPath = join(stackLogDir(userDataPath), `${id}.log`);
+  appendFileSync(logPath, `\n\n[${new Date().toISOString()}] starting ${known.name}\n$ ${command}\n`, { mode: 0o600 });
+  const outFd = openSync(logPath, 'a', 0o600);
+  const errFd = openSync(logPath, 'a', 0o600);
+  const child = spawn('/bin/zsh', ['-lc', command], {
+    cwd: homedir(),
+    env: cliEnv(),
+    detached: true,
+    stdio: ['ignore', outFd, errFd],
+  });
+  closeSync(outFd);
+  closeSync(errFd);
+  const row = { child, command, startedAt: Date.now(), logPath, name: known.name, port: known.port };
+  backgroundProcs.set(id, row);
+  child.on('exit', (code, signal) => {
+    appendFileSync(logPath, `\n[${new Date().toISOString()}] exited code=${code ?? ''} signal=${signal ?? ''}\n`, { mode: 0o600 });
+    const current = backgroundProcs.get(id);
+    if (current?.child === child) backgroundProcs.delete(id);
+  });
+  child.unref();
+  return statusFromProcess(id, 'started in background');
+}
+
+export async function stopBackgroundStack(idValue: unknown): Promise<BackgroundStackStatus> {
+  const id = String(idValue || '').trim();
+  const row = backgroundProcs.get(id);
+  if (!row) return statusFromProcess(id, 'not running under IDACC');
+  row.child.kill('SIGTERM');
+  backgroundProcs.delete(id);
+  return {
+    id,
+    name: row.name,
+    running: false,
+    pid: row.child.pid,
+    command: row.command,
+    startedAt: row.startedAt,
+    port: row.port,
+    logPath: row.logPath,
+    detail: 'stop requested',
+  };
 }
