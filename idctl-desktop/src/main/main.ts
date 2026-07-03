@@ -59,6 +59,10 @@ type RendererCrashState = {
   safeModeSince?: string;
   lastReason?: string;
   lastExitCode?: number | null;
+  previousVersion?: string;
+  previousRendererCrashCount?: number;
+  resetAt?: string;
+  resetReason?: string;
 };
 
 const BRAIN_DASHBOARD_TABS: Record<BrainDashboardTab, { title: string; path: string }> = {
@@ -101,11 +105,38 @@ function recentRendererCrash(state: RendererCrashState | null): boolean {
   return Number.isFinite(at) && at > 0 && Date.now() - at < 24 * 60 * 60 * 1000;
 }
 
+function rendererCrashStateForCurrentVersion(): RendererCrashState | null {
+  const state = readRendererCrashState();
+  const currentVersion = app.getVersion();
+  if (!state) return null;
+  if (state.version === currentVersion) return state;
+
+  const next: RendererCrashState = {
+    version: currentVersion,
+    rendererCrashCount: 0,
+    lastRendererCrashAt: state.lastRendererCrashAt,
+    safeMode: false,
+    lastReason: 'reset-after-version-upgrade',
+    lastExitCode: null,
+    previousVersion: state.version ?? 'unknown',
+    previousRendererCrashCount: state.rendererCrashCount ?? 0,
+    resetAt: new Date().toISOString(),
+    resetReason: 'app-version-changed',
+  };
+
+  try {
+    writeRendererCrashState(next);
+  } catch (e) {
+    console.warn('[renderer-crash] failed to reset stale safe-mode state:', e);
+  }
+  return next;
+}
+
 function shouldUseRendererSafeMode(): boolean {
   if (envFlagEnabled(process.env.IDCTL_DISABLE_RENDERER_SAFE_MODE)) return false;
   if (envFlagEnabled(process.env.IDCTL_RENDERER_SAFE_MODE)) return true;
-  const state = readRendererCrashState();
-  return Boolean(state?.safeMode && recentRendererCrash(state));
+  const state = rendererCrashStateForCurrentVersion();
+  return Boolean(state?.safeMode && state.version === app.getVersion() && recentRendererCrash(state));
 }
 
 function configureChromiumStability(): void {
@@ -154,14 +185,14 @@ function logProcessExit(kind: string, detail: Record<string, unknown>): void {
 
 function recordRendererCrash(details: Electron.RenderProcessGoneDetails): RendererCrashState | null {
   try {
-    const previous = readRendererCrashState();
+    const previous = rendererCrashStateForCurrentVersion();
     const now = new Date().toISOString();
     const next: RendererCrashState = {
       version: app.getVersion(),
       rendererCrashCount: (previous?.rendererCrashCount ?? 0) + 1,
       lastRendererCrashAt: now,
       safeMode: true,
-      safeModeSince: previous?.safeModeSince ?? now,
+      safeModeSince: previous?.safeMode ? previous.safeModeSince ?? now : now,
       lastReason: details.reason,
       lastExitCode: details.exitCode ?? null,
     };
