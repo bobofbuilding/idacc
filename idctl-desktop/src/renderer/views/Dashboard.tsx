@@ -141,6 +141,9 @@ function taskVerb(status: string): string {
   if (/todo|open|queue|new|backlog|pending/i.test(status)) return 'queued';
   return status || 'task';
 }
+function taskIsDone(t: Task): boolean {
+  return DONE_RE.test(t.status);
+}
 function newsActor(n: DashboardNews): string {
   const d = n.data ?? {};
   const from = str(d.from) || str(d.sender) || str(d.agent) || str(d.source);
@@ -399,6 +402,13 @@ export function Dashboard({ store }: { store: FleetStore }) {
     const iv = setInterval(() => { loadActivity(); }, 15000);
     return () => clearInterval(iv);
   }, [loadActivity]);
+  const activityTaskStats = useMemo(() => {
+    const activeTeamSet = new Set(activeTeams);
+    const scoped = tasks.filter((t) => !t.teamName || activeTeamSet.has(t.teamName));
+    const open = scoped.filter((t) => !taskIsDone(t)).length;
+    const working = scoped.filter((t) => DOING_RE.test(t.status) && !taskIsDone(t)).length;
+    return { open, working, total: tasks.length };
+  }, [activeTeams, tasks]);
   const agentById = useMemo(() => new Map(store.allAgents.map((a) => [a.id, a.name] as const)), [store.allAgents]);
   const feedItems = useMemo<ActivityFeedItem[]>(() => {
     const name = (id: string) => agentLabel(id, agentById);
@@ -499,7 +509,7 @@ export function Dashboard({ store }: { store: FleetStore }) {
             top (when no project is focused; a focused project's banner adds a little extra). */}
         <aside className="card" style={{ width: 560, flexShrink: 0, marginTop: 38, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <h3 style={{ marginTop: 0 }}>
-            Activity <span className="muted small">· {activeTeams.length} active teams · {feedItems.length} feed rows · {tasks.length} tasks · {news.length + store.inbox.length} comms</span>
+            Activity <span className="muted small">· {activeTeams.length} active teams · {feedItems.length} recent rows · {activityTaskStats.working} working · {activityTaskStats.open} open tasks · {activityTaskStats.total} total · {news.length + store.inbox.length} recent comms</span>
           </h3>
           <div className="feed-list" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
             {feedItems.map((item) => (

@@ -925,12 +925,19 @@ function TasksPanel({ store }: { store: FleetStore }) {
     const s = q.trim().toLowerCase();
     return !s || t.title.toLowerCase().includes(s) || (t.ownerName ?? '').toLowerCase().includes(s) || ref(t).toLowerCase().includes(s);
   });
+  const visibleOpenCount = filtered.filter((t) => !isDone(t)).length;
+  const visibleDoneCount = filtered.filter(isDone).length;
+  const hiddenOpenCount = Math.max(0, openCount - visibleOpenCount);
+  const hiddenDoneCount = Math.max(0, doneCount - visibleDoneCount);
+  const hiddenTaskCount = Math.max(0, tasks.length - filtered.length);
 
   return (
     <>
       <style>{`@keyframes idctlPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}.idctl-pulse{animation:idctlPulse 1.2s ease-in-out infinite}`}</style>
       <div className="row-actions" style={{ marginBottom: 8, alignItems: 'center' }}>
-        <span className="muted small">{openCount} open · {doneCount} done</span>
+        <span className="muted small" title={`Visible board: ${visibleOpenCount} open, ${visibleDoneCount} done. Total live task pool: ${openCount} open, ${doneCount} done.`}>
+          {visibleOpenCount} visible open{hiddenOpenCount ? ` · ${hiddenOpenCount} hidden open` : ''} · {visibleDoneCount} visible done{hiddenDoneCount ? ` · ${doneCount} done total` : ''}
+        </span>
         {/* The MANAGER supervises stalled work now (auto check-ins + sweeper) — the board just shows it. */}
         <span className="muted small" title="The manager supervises stalled tasks (auto check-ins + the stalled-task sweeper). Use Reconcile to triage unassigned work, re-dispatch stalled tasks, and surface blocker decisions on demand.">
           · ⛭ manager-supervised{triaging ? ' · triaging…' : unassignedTodo ? ` · ${unassignedTodo} unassigned` : ''}{stalledTasks.length ? ` · ${stalledTasks.length} stalled` : ''}
@@ -1173,6 +1180,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
             <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
             show older{archivedCount ? ` (${archivedCount})` : ''}
           </label>
+          <span className="muted small" title={`Showing ${filtered.length} of ${tasks.length} tasks after search/filter/archive rules.`}>{filtered.length}/{tasks.length} shown{hiddenTaskCount ? ` · ${hiddenTaskCount} hidden` : ''}</span>
           <span className="muted small" title="The board re-fetches every 5s; the Done lane shows recent completions; drag a card between lanes">⟳ live flow · drag between lanes</span>
           <span className="grow" />
           {note ? <span className={`small ${/failed/.test(note) ? 'status-error' : 'muted'}`}>{note}</span> : null}
