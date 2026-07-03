@@ -17,7 +17,7 @@ type DecomposeResult = { ok: boolean; subtasks: SubTask[]; raw: string; error?: 
 type CreatedTask = { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; dependsOn: number[]; dispatched: boolean };
 type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: number };
 type TeamLead = { team: string; lead: string | null; activeCount: number; totalCount: number };
-type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
+type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
 type TriageResult = { considered: number; assigned: { ref: string; agent: string }[]; skipped: number; dispatched: number; error?: string };
 type AssignScope = 'team' | 'selected-teams' | 'team-leads' | 'all-agents';
 type TaskSnapshot = { status: string; owner?: string; team?: string; lane: Lane };
@@ -462,13 +462,15 @@ function TasksPanel({ store }: { store: FleetStore }) {
     try {
       const res = await call<FanoutResult[]>('work:fanout', obj, teams);
       const ok = res.filter((r) => r.status === 'dispatched');
-      const bad = res.filter((r) => r.status !== 'dispatched');
+      const deferred = res.filter((r) => r.status === 'deferred');
+      const failed = res.filter((r) => r.status !== 'dispatched' && r.status !== 'deferred');
       const parts = [
         ok.length ? `dispatched to ${ok.map((r) => `${r.team}/${r.lead}`).join(', ')}` : '',
-        bad.length ? `skipped ${bad.map((r) => `${r.team} (${r.status === 'no-active-agent' ? 'no active agent' : 'failed'})`).join(', ')}` : '',
+        deferred.length ? `deferred ${deferred.map((r) => `${r.team}/${r.lead}`).join(', ')}` : '',
+        failed.length ? `skipped ${failed.map((r) => `${r.team} (${r.status === 'no-active-agent' ? 'no active agent' : 'failed'})`).join(', ')}` : '',
       ].filter(Boolean);
       const summary = parts.join(' · ') || 'nothing dispatched';
-      t.update({ kind: ok.length ? 'success' : 'error', text: `Fan-out — ${summary}` });
+      t.update({ kind: ok.length ? 'success' : deferred.length ? 'info' : 'error', text: `Fan-out — ${summary}` });
       setAssignNote(summary);
       if (ok.length) { setFanTeams(new Set()); store.refresh(); }
     } catch (e) {

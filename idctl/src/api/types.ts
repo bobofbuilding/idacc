@@ -190,6 +190,19 @@ export interface QueryResult {
   agent?: string;
 }
 
+export interface ActiveAgentQueries {
+  team?: string;
+  agent?: { id?: string; name?: string; status?: string };
+  count: number;
+  queries: Array<{
+    query_id: string;
+    status: QueryStatus | string;
+    created: number;
+    age_ms?: number;
+    prompt_preview?: string;
+  }>;
+}
+
 export interface ProbeResult {
   team: string;
   probed: number;

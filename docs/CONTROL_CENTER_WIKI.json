@@ -56,7 +56,7 @@
       ],
       "purpose": "Operator decision queue: answer blockers surfaced by agents, Work Plans, Work Learn review gates, and manager inbox items waiting on a human reply, with store-level duplicate suppression.",
       "scope": "All local blocker questions across teams plus manager inbox from the live store snapshot.",
-      "body": "# Inbox\n\nInbox is the review surface for blocker questions and approval prompts. It should stay focused on actionable pending decisions and their source context."
+      "body": "# Inbox\n\nInbox is the review surface for blocker questions and approval prompts. It should stay focused on actionable pending decisions and their source context. Work plan actions can now surface deferred lead routing separately from hard failures, so review copy should preserve that distinction."
     },
     {
       "id": "work",
@@ -81,6 +81,8 @@
         "idctl-desktop/src/main/controlLog.ts",
         "idctl-desktop/src/main/brainplans.ts",
         "idctl-desktop/src/renderer/views/Inbox.tsx",
+        "idctl-desktop/src/main/work.ts",
+        "idctl/src/api/client.ts",
         "idctl-desktop/src/shared/contextBudget.ts",
         "idctl-desktop/src/main/contextBudget.ts",
         "idctl-desktop/scripts/context-budget-smoke.mjs",
@@ -91,7 +93,7 @@
       ],
       "purpose": "Work operating surface: goals, plans, Learn material ingestion, live Kanban, recurring schedules, agent chains, dreams, and hidden context-budgeted dispatch.",
       "scope": "All-team task view for the board; creation and assignment panels can target the selected team, selected teams, team leads, or every active agent depending on assignment scope.",
-      "body": "# Work\n\nWork owns goals, plans, tasks, Learn intake, schedules, loops, and dreams. Task creation and assignment should be explicit, manager-routed, and guarded against draft/replay duplication. Learn materials are auto-processed one at a time by the main process: queued rows drain in the background, blocked rows remain only while blocking recommendations are still draft, and ready rows are hidden from the active queue. Shared sync-domain rules must keep read calls non-invalidating so Work-adjacent pages do not reload themselves in loops."
+      "body": "# Work\n\nWork owns goals, plans, tasks, Learn intake, schedules, loops, and dreams. Task creation and assignment should be explicit, manager-routed, and guarded against draft/replay duplication. Learn materials are auto-processed one at a time by the main process: queued rows drain in the background, blocked rows remain only while blocking recommendations are still draft, and ready rows are hidden from the active queue. Work fanout and decomposition defer instead of enqueueing more lead prompts when the target lead already has too many active queries. Shared sync-domain rules must keep read calls non-invalidating so Work-adjacent pages do not reload themselves in loops."
     },
     {
       "id": "projects",
@@ -144,7 +146,7 @@
       ],
       "purpose": "HR Manager Health tab for fleet health, local-model token throughput, liveness probes, and the full fleet roster with harness/model/lifecycle controls, neutral provider model-lane visibility, and read-only lead markers. Hidden context-budget savings are backend-only and not displayed here.",
       "scope": "Embedded in HR Manager between Structure and Build; the legacy health route opens this tab. Usage spans local-model providers and refreshes as its own observability stream; roster is holistic and grouped by team through AgentTable. Harness/model lane reads stay unsubscribed until an operator opens model lanes or focuses a runtime/model picker, then use runtime-catalog scoped caches across tab remounts so ordinary agent roster churn, settings edits, module refreshes, and page switches do not reload provider state.",
-      "body": "# HR Manager Health\n\nHealth is the fleet observation and lifecycle surface inside HR Manager. It shows running state, runtime evidence, and guarded probe/lifecycle controls. Harness and model selectors stay on cached passive state until model lane details are requested, then refresh only when the runtime-catalog or cooldown sync version changes; the explicit re-check action is the live refresh path for provider and CLI model evidence."
+      "body": "# HR Manager Health\n\nHealth is the fleet observation and lifecycle surface inside HR Manager. It shows running state, runtime evidence, and guarded probe/lifecycle controls. Harness and model selectors use cached passive state by default; focusing a selector opens only a short-lived detail window, while the model-lanes panel pins runtime catalog details and cooldown polling. The explicit re-check action remains the live refresh path for provider and CLI model evidence."
     },
     {
       "id": "identity",
@@ -169,7 +171,7 @@
       ],
       "purpose": "Manage agent onchain identity, wallet controller address, Safe-style account, and scoped session keys.",
       "scope": "All-team agent roster with wallet-bearing agents sorted first. Key provider is currently mock unless a live provider is wired behind the same interface.",
-      "body": "# Identity & Keys\n\nIdentity & Keys owns controller proof, wallet provisioning, and scoped key actions. Keep this page focused on current authority and safety boundaries. Bridge reads that only inspect identity-adjacent settings should not broadcast page invalidations, create tasks, or dispatch work."
+      "body": "# Identity & Keys\n\nIdentity & Keys owns controller proof, wallet provisioning, and scoped key actions. Keep this page focused on current authority and safety boundaries. Shared API query lifecycle types may include active-query depth for routing guards; identity reads that only inspect settings should not broadcast page invalidations, create tasks, or dispatch work."
     },
     {
       "id": "teams",

@@ -35,7 +35,7 @@ type DecomposeResult = { ok: boolean; subtasks: SubTask[]; raw: string; error?: 
 type CreatedTask = { ok: boolean };
 type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: number };
 type TeamLead = { team: string; lead: string | null; activeCount: number; totalCount: number };
-type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
+type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
 
 const STATUSES: PlanStatus[] = ['draft', 'active', 'done', 'archived'];
 const STATUS_CLASS: Record<PlanStatus, string> = { draft: 'st-paused', active: 'st-active', done: 'st-done', archived: 'st-blocked' };

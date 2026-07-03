@@ -44,6 +44,13 @@ function taskKeys(t: Task): string[] {
 function clip(s: string, n: number): string { const t = (s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; }
 
 const MAX_SUBTASKS = 12;
+const WORK_LEAD_QUEUE_MAX = positiveEnvInt('IDACC_WORK_LEAD_QUEUE_MAX', 2);
+const WORK_LEAD_GUARD_TTL_MS = positiveEnvInt('IDACC_WORK_LEAD_GUARD_TTL_MINUTES', 45) * 60 * 1000;
+
+function positiveEnvInt(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+}
 
 function extractGoalId(...texts: Array<string | undefined | null>): string {
   for (const text of texts) {
@@ -96,6 +103,63 @@ function pickActiveLead(agents: { name: string; status?: string }[]): string | n
 
 function agentNameKey(name?: string): string {
   return String(name || '').trim().toLowerCase();
+}
+
+type LeadDispatchRecord = { queryId?: string; at: number; purpose: string };
+const leadDispatches = new Map<string, LeadDispatchRecord[]>();
+
+function leadDispatchKey(client: ManagerClient, lead: string): string {
+  return `${client.team ?? 'default'}:${agentNameKey(lead)}`;
+}
+
+function queryStillActive(status?: string): boolean {
+  return status === 'pending' || status === 'processing';
+}
+
+async function localLeadDispatchCount(client: ManagerClient, lead: string): Promise<number> {
+  const key = leadDispatchKey(client, lead);
+  const rows = leadDispatches.get(key) ?? [];
+  const now = Date.now();
+  const kept: LeadDispatchRecord[] = [];
+  for (const row of rows) {
+    if (now - row.at > WORK_LEAD_GUARD_TTL_MS) continue;
+    if (!row.queryId) {
+      kept.push(row);
+      continue;
+    }
+    try {
+      const q = await client.query(row.queryId, 0);
+      if (queryStillActive(q.status)) kept.push(row);
+    } catch {
+      kept.push(row);
+    }
+  }
+  if (kept.length) leadDispatches.set(key, kept);
+  else leadDispatches.delete(key);
+  return kept.length;
+}
+
+async function leadQueueLoad(client: ManagerClient, lead: string): Promise<{ count: number; source: 'manager' | 'app-local' }> {
+  const local = await localLeadDispatchCount(client, lead);
+  const live = await client.activeAgentQueries(lead).catch(() => null);
+  if (live) return { count: Math.max(local, live.count), source: 'manager' };
+  return { count: local, source: 'app-local' };
+}
+
+async function guardLeadQueue(client: ManagerClient, lead: string, purpose: string): Promise<{ ok: true } | { ok: false; detail: string }> {
+  const load = await leadQueueLoad(client, lead);
+  if (load.count < WORK_LEAD_QUEUE_MAX) return { ok: true };
+  return {
+    ok: false,
+    detail: `${purpose} deferred: ${client.team ?? 'default'}/${lead} already has ${load.count} active lead ${load.count === 1 ? 'query' : 'queries'} (${load.source}; limit ${WORK_LEAD_QUEUE_MAX})`,
+  };
+}
+
+function recordLeadDispatch(client: ManagerClient, lead: string, queryId: string | undefined, purpose: string): void {
+  const key = leadDispatchKey(client, lead);
+  const rows = leadDispatches.get(key) ?? [];
+  rows.push({ queryId, at: Date.now(), purpose });
+  leadDispatches.set(key, rows.slice(-WORK_LEAD_QUEUE_MAX));
 }
 
 function isDefaultTeamName(team?: string): boolean {
@@ -223,6 +287,8 @@ export async function decomposeWork(
 
   let raw = '';
   try {
+    const guard = await guardLeadQueue(client, lead, 'decomposition');
+    if (!guard.ok) return { ok: false, subtasks: [], raw: '', error: guard.detail };
     raw = await dispatchBudgeted(client, `/ask ${lead} ${qArg(DECOMP_PROMPT(obj, agentLines))}`, 'work:decompose');
   } catch (e) {
     return { ok: false, subtasks: [], raw: '', error: e instanceof Error ? e.message : String(e) };
@@ -401,7 +467,7 @@ export async function createAndDispatchPlan(
 // ---- Cross-team fan-out -------------------------------------------------
 
 export interface TeamLead { team: string; lead: string | null; activeCount: number; totalCount: number }
-export interface FanoutResult { team: string; lead?: string; status: 'dispatched' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string }
+export interface FanoutResult { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string }
 
 /** For each team, report its active lead + how many agents are running. Drives the
  *  fan-out picker so the UI can show which teams can actually take work right now. */
@@ -448,7 +514,10 @@ export async function fanOutObjective(client: ManagerClient, objective: string, 
         const agents = (await tc.agents().catch(() => [])) as Agent[];
         const lead = pickActiveLead(agents);
         if (!lead) return { team, status: 'no-active-agent', detail: agents.length ? `${agents.length} agent(s), none running` : 'no agents' };
+        const guard = await guardLeadQueue(tc, lead, 'fan-out');
+        if (!guard.ok) return { team, lead, status: 'deferred', detail: guard.detail };
         const env = await remoteBudgeted<{ queryId?: string }>(tc, `/ask ${lead} ${qArg(FANOUT_PROMPT(obj, team))}`, 'work:fanout');
+        recordLeadDispatch(tc, lead, env.result?.queryId, 'work:fanout');
         return { team, lead, status: 'dispatched', queryId: env.result?.queryId };
       } catch (e) {
         return { team, status: 'failed', detail: e instanceof Error ? e.message : String(e) };

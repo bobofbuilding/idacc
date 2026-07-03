@@ -15,6 +15,7 @@
 
 import type {
   Agent,
+  ActiveAgentQueries,
   EventsResponse,
   ActivityResponse,
   InboxItem,
@@ -644,6 +645,17 @@ export class ManagerClient {
   async capabilities(signal?: AbortSignal): Promise<{ cc_api_version?: number; features?: string[]; routes?: { method: string; path: string; group: string }[] } | null> {
     try {
       return await this.get('/capabilities', signal);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Pending/processing query depth for one agent. Null on older managers. */
+  async activeAgentQueries(agentIdOrName: string, signal?: AbortSignal): Promise<ActiveAgentQueries | null> {
+    try {
+      const ref = encodeURIComponent(String(agentIdOrName));
+      const d = await this.get<ActiveAgentQueries>(`/agents/${ref}/queries/active`, signal);
+      return { ...d, count: Number(d.count) || 0, queries: Array.isArray(d.queries) ? d.queries : [] };
     } catch {
       return null;
     }
