@@ -1425,7 +1425,8 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // …then create them all + farm out the work (parallel where possible). opts.lane
   // sets the Kanban lane; opts.dispatch=false queues them unowned instead of dispatching.
   // opts.team pins the plan to a specific team (independent of the global active team).
-  // opts.respectOwners keeps each subtask's explicit owner (used for direct assignments).
+  // opts.respectOwners keeps explicit execution owners, but coordinator/validator owners
+  // are still routed to an execution assignee when one exists.
   'work:createPlan': (objective: string, subtasks: SubTask[], opts?: { dispatch?: boolean; lane?: string; team?: string; respectOwners?: boolean }) =>
     createAndDispatchPlan(opts?.team ? client.withTeam(String(opts.team)) : client, String(objective), Array.isArray(subtasks) ? subtasks : [], opts ?? {}),
   // Cross-team fan-out: hand one objective to several teams' ACTIVE leads at once.

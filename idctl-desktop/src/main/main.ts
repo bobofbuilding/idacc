@@ -5,7 +5,7 @@
 
 import { app, BrowserWindow, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage } from 'electron';
 import { join } from 'node:path';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { call as bridgeCall, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
 import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
@@ -38,6 +38,7 @@ declare const __dirname: string;
 let win: BrowserWindow | null = null;
 let brainDashboardWin: BrowserWindow | null = null;
 let stopGoalDriver: (() => void) | null = null;
+let rendererCrashReloadAt = 0;
 
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
 type BrainDashboardTab = 'fleet' | 'health' | 'skills' | 'learning' | 'agents' | 'graph';
@@ -50,6 +51,38 @@ const BRAIN_DASHBOARD_TABS: Record<BrainDashboardTab, { title: string; path: str
   agents: { title: 'Brain Agents', path: '/dashboard/agents' },
   graph: { title: 'Brain Graph', path: '/dashboard/graph' },
 };
+
+function envFlagEnabled(value: string | undefined): boolean {
+  return /^(1|true|yes|on)$/i.test(String(value || '').trim());
+}
+
+function configureChromiumStability(): void {
+  // Crash reports from macOS 26.5.1 show repeated renderer SIGTRAPs inside
+  // Chromium's fontations_ffi path. Keep the app on CoreText unless explicitly
+  // opted back in while Electron/Chromium catches up.
+  if (!envFlagEnabled(process.env.IDCTL_ENABLE_FONTATIONS)) {
+    const existing = app.commandLine.getSwitchValue('disable-features');
+    const features = new Set(existing.split(',').map((item) => item.trim()).filter(Boolean));
+    features.add('FontationsBackend');
+    app.commandLine.appendSwitch('disable-features', [...features].join(','));
+  }
+}
+
+function logProcessExit(kind: string, detail: Record<string, unknown>): void {
+  try {
+    const dir = app.getPath('userData');
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, 'process-exits.jsonl'), JSON.stringify({
+      ts: new Date().toISOString(),
+      kind,
+      ...detail,
+    }) + '\n');
+  } catch (e) {
+    console.warn(`[process-exit] failed to write ${kind} log:`, e);
+  }
+}
+
+configureChromiumStability();
 
 async function syncGoalInstructionsAfterMutation(action: string): Promise<void> {
   try {
@@ -426,6 +459,16 @@ function createWindow() {
   win.on('resize', scheduleSave);
   win.on('move', scheduleSave);
   win.on('close', saveNow);
+  win.webContents.on('render-process-gone', (_event, details) => {
+    logProcessExit('renderer', details as unknown as Record<string, unknown>);
+    const now = Date.now();
+    if (now - rendererCrashReloadAt > 60_000 && win && !win.isDestroyed()) {
+      rendererCrashReloadAt = now;
+      setTimeout(() => {
+        try { if (win && !win.isDestroyed()) win.reload(); } catch { /* best-effort recovery */ }
+      }, 1_000);
+    }
+  });
 
   // Open external links in the system browser, never in-app.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -921,6 +964,9 @@ app.on('will-quit', stopUpdater);
 app.on('will-quit', stopBroker);
 app.on('will-quit', () => { try { stopGoalDriver?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* */ } });
+app.on('child-process-gone', (_event, details) => {
+  logProcessExit('child-process', details as unknown as Record<string, unknown>);
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

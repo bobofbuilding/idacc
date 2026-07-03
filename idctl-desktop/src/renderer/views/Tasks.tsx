@@ -931,8 +931,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
     }
   }
 
-  // ── Direct assignment: create the task(s) owned by the chosen agent(s) + dispatch now
-  //    (no decomposition; respectOwners keeps the exact owners). ──────────────────────
+  // ── Direct assignment: create task(s) for chosen execution owner(s) + dispatch now
+  //    (no decomposition; coordinator/validator owners can be rerouted). ──────────────
   async function createAssignment() {
     const title = objective.trim();
     const agents = selectedAssignTargets.filter((a) => assignOptionKeys.has(agentKey(a, activeTeam)));
@@ -953,12 +953,16 @@ function TasksPanel({ store }: { store: FleetStore }) {
       const results = await Promise.all([...byTeam.entries()].map(async ([tm, ags]) => {
         const subtasks = ags.map((a) => ({ title, description: taskDesc.trim(), agent: a.name, dependsOn: [] as number[] }));
         const res = await call<CreatePlanResult>('work:createPlan', title, subtasks, { team: tm, dispatch: true, respectOwners: true });
-        return { team: tm, ok: res.created.filter((c) => c.ok).length, dispatched: res.dispatched };
+        const created = res.created.filter((c) => c.ok);
+        return { team: tm, ok: created.length, dispatched: res.dispatched, created };
       }));
       const ok = results.reduce((n, r) => n + r.ok, 0);
       const dispatched = results.reduce((n, r) => n + r.dispatched, 0);
+      const assignedOwners = Array.from(new Set(results.flatMap((r) =>
+        r.created.map((c) => r.team === activeTeam ? c.agent : `${r.team}/${c.agent}`),
+      )));
       t.update({ kind: ok ? 'success' : 'error', text: `assigned ${ok}/${freshTargets.length} · dispatched ${dispatched} across ${results.length} team${results.length === 1 ? '' : 's'}` });
-      setAssignNote(`assigned to ${freshTargets.map((a) => agentLabel(a, activeTeam)).join(', ')} ✓`);
+      setAssignNote(`assigned to ${assignedOwners.length ? assignedOwners.join(', ') : freshTargets.map((a) => agentLabel(a, activeTeam)).join(', ')} ✓`);
       setObjective(''); setTaskDesc(''); setAssignTo(new Set()); setShowAssign(false);
       await reload();
     } catch (err) {

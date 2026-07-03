@@ -247,9 +247,8 @@ export async function createAndDispatchPlan(
   // Auto-route to ACTIVE agents only: a stopped agent can't pick up work, so the
   // owner pool (and the coerce-to-fallback target) is the running roster whenever
   // any agent is running; degrade to the full roster only if nothing is active.
-  const activePool = roster.filter((a) => isActiveStatus(a.status));
   const coordinator = pickActiveLead(roster) ?? '';
-  const pool = opts.respectOwners ? (activePool.length ? activePool : roster) : executionPoolForTeam(roster, coordinator, client.team);
+  const pool = executionPoolForTeam(roster, coordinator, client.team);
   const names = new Set(pool.map((a) => a.name));
   const fallback = pool[0]?.name ?? '';
   const list = subtasks.slice(0, MAX_SUBTASKS).map((st, i, arr) => ({
@@ -262,8 +261,8 @@ export async function createAndDispatchPlan(
   }));
   const created: CreatedTask[] = [];
   if (!fallback) return { created, dispatched: 0, deferred: 0 }; // no agents → nothing to dispatch
-  // Don't pile every task on one agent — spread across the active roster (best-fit up to a cap).
-  // respectOwners=true (direct assignments) keeps the caller's chosen owner verbatim.
+  // Don't pile every task on one agent - spread across the active roster (best-fit up to a cap).
+  // respectOwners=true keeps explicit execution owners, but still blocks coordinator/validator bypasses.
   if (!opts.respectOwners) balanceOwners(list, [...names]);
 
   // 1) Create all tasks (assigned to their owner) — fast, synchronous-ish.
