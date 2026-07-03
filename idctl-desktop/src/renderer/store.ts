@@ -29,8 +29,23 @@ let transportEventsBound = false;
 let pendingStoreChange: StoreChangeEvent | null = null;
 let pendingStoreChangeTimer: ReturnType<typeof setTimeout> | null = null;
 const recentStoreChanges = new Map<string, number>();
+const syncDomainVersions = new Map<string, number>();
+let wildcardSyncVersion = 0;
 const STORE_CHANGE_FLUSH_MS = 120;
 const STORE_CHANGE_DEDUPE_MS = 500;
+
+function syncVersionFor(wanted: Set<string>): number {
+  let version = wildcardSyncVersion;
+  for (const domain of wanted) version += syncDomainVersions.get(domain) ?? 0;
+  return version;
+}
+
+function noteSyncDomains(domains: string[]): void {
+  for (const domain of domains) {
+    if (domain === '*') wildcardSyncVersion += 1;
+    else syncDomainVersions.set(domain, (syncDomainVersions.get(domain) ?? 0) + 1);
+  }
+}
 
 function storeChangeKey(event: StoreChangeEvent): string {
   return `${event.method}:${[...event.domains].sort().join('|')}`;
@@ -52,6 +67,7 @@ export function emitStoreChange(event: StoreChangeEvent): void {
   const last = recentStoreChanges.get(key) ?? 0;
   if (Date.now() - last < STORE_CHANGE_DEDUPE_MS) return;
   recentStoreChanges.set(key, Date.now());
+  noteSyncDomains(event.domains);
   for (const [recentKey, at] of recentStoreChanges) {
     if (Date.now() - at > STORE_CHANGE_DEDUPE_MS * 4) recentStoreChanges.delete(recentKey);
   }
@@ -83,13 +99,16 @@ export function bindStoreEvents(api?: { onStoreChange?: (cb: (event: StoreChange
 export function useSyncVersion(domains: string | string[]): number {
   const key = Array.isArray(domains) ? domains.join('|') : domains;
   const wanted = useMemo(() => new Set(key.split('|').filter(Boolean)), [key]);
-  const [version, setVersion] = useState(0);
-  useEffect(() => subscribeStoreChanges((event) => {
-    if (!event.domains.length) return;
-    if (event.domains.includes('*') || event.domains.some((domain) => wanted.has(domain))) {
-      setVersion((v) => v + 1);
-    }
-  }), [wanted]);
+  const [version, setVersion] = useState(() => syncVersionFor(wanted));
+  useEffect(() => {
+    setVersion(syncVersionFor(wanted));
+    return subscribeStoreChanges((event) => {
+      if (!event.domains.length) return;
+      if (event.domains.includes('*') || event.domains.some((domain) => wanted.has(domain))) {
+        setVersion(syncVersionFor(wanted));
+      }
+    });
+  }, [wanted]);
   return version;
 }
 

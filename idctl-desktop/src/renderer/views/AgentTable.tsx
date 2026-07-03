@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { call, agentsLeadFirst, useSyncVersion, type FleetStore, type TeamAgent } from '../store.ts';
 import { statusClass } from '../agentStatus.ts';
 import type { RuntimeCooldown } from '../../../../idctl/src/api/client.ts';
@@ -25,6 +25,20 @@ type RuntimeFreshness = {
   selectable?: boolean;
   detail?: string;
 };
+type RuntimeDetailsCache = {
+  version: number;
+  catalog: Record<string, string[]>;
+  providers: ProviderRow[];
+  managedRuntimes: Record<string, ManagedRuntimeStatus>;
+  freshness: RuntimeFreshness[];
+};
+type RuntimeCooldownCache = {
+  version: number;
+  rows: RuntimeCooldown[];
+};
+let runtimeDetailsCache: RuntimeDetailsCache | null = null;
+let runtimeCooldownCache: RuntimeCooldownCache | null = null;
+
 type AgentConfigState = { runtime?: string; model?: string; effort: string; speed: string };
 type RuntimeRateLimitMeta = { laneId?: string; coolingUntilMs?: number; reason?: string; observedAtMs?: number; queryId?: string; resetText?: string; message?: string };
 type RuntimeFailoverMeta = { fromLaneId?: string; toLaneId?: string; queryId?: string; observedAtMs?: number };
@@ -226,24 +240,24 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   const hierarchyVersion = useSyncVersion(['org', 'agents']);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [catalog, setCatalog] = useState<Record<string, string[]>>({});
-  const [providers, setProviders] = useState<ProviderRow[]>([]);
-  const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>({});
+  const [catalog, setCatalog] = useState<Record<string, string[]>>(() => runtimeDetailsCache?.catalog ?? {});
+  const [providers, setProviders] = useState<ProviderRow[]>(() => runtimeDetailsCache?.providers ?? []);
+  const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>(() => runtimeDetailsCache?.managedRuntimes ?? {});
   const [coords, setCoords] = useState<Record<string, string>>({}); // team → coordinator (lead) name
   const [showStopped, setShowStopped] = useState(false); // by default the grid shows only running agents
-  const [freshness, setFreshness] = useState<RuntimeFreshness[]>([]);
-  const [runtimeCooldowns, setRuntimeCooldowns] = useState<RuntimeCooldown[]>([]);
+  const [freshness, setFreshness] = useState<RuntimeFreshness[]>(() => runtimeDetailsCache?.freshness ?? []);
+  const [runtimeCooldowns, setRuntimeCooldowns] = useState<RuntimeCooldown[]>(() => runtimeCooldownCache?.rows ?? []);
   const [showModels, setShowModels] = useState(false);
   const [runtimeDetailsRequested, setRuntimeDetailsRequested] = useState(false);
   const [configDrafts, setConfigDrafts] = useState<Record<string, AgentConfigDraft>>({});
   const configDraftList = Object.values(configDrafts);
   const runtimeDetailsActive = runtimeDetailsRequested || showModels || configDraftList.length > 0;
   const viewAll = store.viewAll;
-  const orderedAgents = agentsLeadFirst(store.agents, store.coordinator);
-  const shown: TeamAgent[] = viewAll ? store.allAgents : orderedAgents;
+  const orderedAgents = useMemo(() => agentsLeadFirst(store.agents, store.coordinator), [store.agents, store.coordinator]);
+  const shown: TeamAgent[] = useMemo(() => (viewAll ? store.allAgents : orderedAgents), [viewAll, store.allAgents, orderedAgents]);
   const sel: TeamAgent | undefined = shown.find((a) => a.id === selected) ?? shown[0];
   const teamOf = (a: TeamAgent): string | undefined => (viewAll ? a.team : undefined);
-  const groups = viewAll
+  const groups = useMemo(() => viewAll
     ? Object.values(
         store.allAgents.reduce<Record<string, { team: string; agents: TeamAgent[] }>>((acc, a) => {
           const t = a.team ?? '—';
@@ -255,9 +269,9 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         const ya = y.agents.some((a) => statusClass(a.status) === 'ok');
         return xa !== ya ? (xa ? -1 : 1) : x.team.localeCompare(y.team);
       })
-    : [];
+    : [], [viewAll, store.allAgents]);
   const isActive = (a: TeamAgent) => statusClass(a.status) === 'ok';
-  const activeCount = shown.filter(isActive).length;
+  const activeCount = useMemo(() => shown.filter(isActive).length, [shown]);
   const stoppedCount = shown.length - activeCount;
   const coolingRows = activeCooldowns(runtimeCooldowns);
   const selectedCooldown = sel ? cooldownFor(sel, coolingRows) : null;
@@ -287,6 +301,13 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
 
   useEffect(() => {
     if (!runtimeDetailsActive) return;
+    if (runtimeDetailsCache?.version === runtimeCatalogVersion) {
+      setCatalog(runtimeDetailsCache.catalog);
+      setProviders(runtimeDetailsCache.providers);
+      setManagedRuntimes(runtimeDetailsCache.managedRuntimes);
+      setFreshness(runtimeDetailsCache.freshness);
+      return;
+    }
     let live = true;
     const load = async () => {
       const [nextCatalog, nextProviders, nextManaged, nextFreshness] = await Promise.all([
@@ -296,6 +317,13 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         call<RuntimeFreshness[]>('runtime:freshness').catch(() => []),
       ]);
       if (!live) return;
+      runtimeDetailsCache = {
+        version: runtimeCatalogVersion,
+        catalog: nextCatalog,
+        providers: nextProviders,
+        managedRuntimes: nextManaged,
+        freshness: nextFreshness,
+      };
       setCatalog(nextCatalog);
       setProviders(nextProviders);
       setManagedRuntimes(nextManaged);
@@ -307,9 +335,17 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
 
   useEffect(() => {
     if (!runtimeDetailsActive) return;
+    if (runtimeCooldownCache?.version === runtimeCooldownVersion) {
+      setRuntimeCooldowns(runtimeCooldownCache.rows);
+      return;
+    }
     let live = true;
     call<RuntimeCooldown[]>('runtime:cooldowns')
-      .then((rows) => { if (live) setRuntimeCooldowns(rows); })
+      .then((rows) => {
+        if (!live) return;
+        runtimeCooldownCache = { version: runtimeCooldownVersion, rows };
+        setRuntimeCooldowns(rows);
+      })
       .catch(() => { if (live) setRuntimeCooldowns([]); });
     return () => { live = false; };
   }, [runtimeCooldownVersion, runtimeDetailsActive]);

@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.547] — 2026-07-03
+- Cache HR Manager harness/model lane selectors across tab switches
+
 ## [0.1.546] — 2026-07-03
 - Keep dashboard draft proposals review-only
 

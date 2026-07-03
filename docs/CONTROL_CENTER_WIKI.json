@@ -35,7 +35,7 @@
       ],
       "purpose": "Operator home: view the current routed team lead, talk to that lead, watch cross-team coordination, and read the live activity feed.",
       "scope": "All-team observation with a read-only chat target. The embedded chat dispatches to the routed team lead; the activity feed merges events across teams.",
-      "body": "# Dashboard\n\nDashboard is the operator home for live fleet status, routed lead chat, and recent activity. Keep this page lightweight; detailed behavioral history belongs in release notes, not the live wiki manifest."
+      "body": "# Dashboard\n\nDashboard is the operator home for live fleet status, routed lead chat, and recent activity. Keep this page lightweight; detailed behavioral history belongs in release notes, not the live wiki manifest. The renderer store coalesces and version-stamps sync domains so page remounts observe the latest invalidation state without extra broad refreshes."
     },
     {
       "id": "inbox",
@@ -143,8 +143,8 @@
         "idctl-desktop/scripts/headroom-plugin-path-smoke.mjs"
       ],
       "purpose": "HR Manager Health tab for fleet health, local-model token throughput, liveness probes, and the full fleet roster with harness/model/lifecycle controls, neutral provider model-lane visibility, and read-only lead markers. Hidden context-budget savings are backend-only and not displayed here.",
-      "scope": "Embedded in HR Manager between Structure and Build; the legacy health route opens this tab. Usage spans local-model providers and refreshes as its own 15s observability stream; roster is holistic and grouped by team through AgentTable. Harness/model lane reads are settings-scoped and cached so ordinary agent roster churn does not reload provider state.",
-      "body": "# HR Manager Health\n\nHealth is the fleet observation and lifecycle surface inside HR Manager. It shows running state, runtime evidence, and guarded probe/lifecycle controls. Harness and model selectors use cached passive catalog reads; the explicit re-check action is the live refresh path for provider and CLI model evidence."
+      "scope": "Embedded in HR Manager between Structure and Build; the legacy health route opens this tab. Usage spans local-model providers and refreshes as its own 15s observability stream; roster is holistic and grouped by team through AgentTable. Harness/model lane reads are settings-scoped and cached across tab remounts so ordinary agent roster churn and page switches do not reload provider state.",
+      "body": "# HR Manager Health\n\nHealth is the fleet observation and lifecycle surface inside HR Manager. It shows running state, runtime evidence, and guarded probe/lifecycle controls. Harness and model selectors reuse cached passive catalog/model-lane/cooldown reads until the relevant settings, modules, or agent sync version changes; the explicit re-check action is the live refresh path for provider and CLI model evidence."
     },
     {
       "id": "identity",
@@ -303,5 +303,5 @@
       "body": "# Wiki\n\nThis page now reads a compact app manifest. The replacement authoring contract is being rebuilt in docs/CONTROL_CENTER_WIKI.md as Markdown-first schema documentation."
     }
   ],
-  "appVersion": "0.1.546"
+  "appVersion": "0.1.547"
 }
