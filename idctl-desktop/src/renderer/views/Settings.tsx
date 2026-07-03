@@ -26,6 +26,7 @@ const STACK_PRIMARY_FILTERS = ['all', STACK_BACKEND_PRESET_FILTER, 'start-here',
 const STACK_RUNNABLE_CMD_RE = /^(brew|python3?|pip3?|pipx|uv|cargo|curl|docker|conda|npm|npx|open)\b/;
 const STACK_PLACEHOLDER_CMD_RE = /<[^>\s][^>]*>/;
 const STACK_BACKGROUND_START_IDS = new Set(['mlx-lm-server']);
+const LOCAL_CONCURRENCY_OPTIONS = Array.from({ length: 16 }, (_, i) => i + 1);
 const LOCAL_PROVIDER_STACK_IDS: Record<string, string> = {
   ollama: 'ollama',
   lmstudio: 'lm-studio',
@@ -920,7 +921,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [ollamaCatalog, setOllamaCatalog] = useState<OllamaCatalogCheck | null>(null);
   const [ollamaCatalogChecking, setOllamaCatalogChecking] = useState(false);
   const [ollamaCatalogMsg, setOllamaCatalogMsg] = useState('');
-  const [pullName, setPullName] = useState(STARTER_LOCAL_MODEL_ID);
   const [pulling, setPulling] = useState(false);
   const [pullMsg, setPullMsg] = useState('');
   // catalog browsers: model filters + stacks filter + copy feedback
@@ -1121,7 +1121,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setPulling(false);
     }
   }
-  async function pullModel() { await pull(pullName); }
   async function addOllamaBackendFromReadiness() {
     if (!window.confirm('Add Ollama at http://127.0.0.1:11434 as an enabled inference backend?')) return;
     const models = await loadOllama();
@@ -1147,7 +1146,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     return [...byId.values()];
   })();
   const discoveredCatalogCount = localCatalogModels.filter((m) => !bundledModelIds.has(m.id)).length;
-  const POPULAR = browsableModelCatalog.map((m) => m.id);
   async function copyText(text: string) {
     try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked */ }
   }
@@ -2329,18 +2327,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             </span>
           ) : null}
         </div>
-        {localConc || concMsg ? (
-          <div className="row-actions local-concurrency-row">
-            <span className="muted small">Local concurrency</span>
-            <input type="number" min={1} max={16} style={{ width: 64 }} value={concInput} disabled={concBusy || !localConc}
-              onChange={(e) => setConcInput(e.target.value)} />
-            <button className="btn small primary" disabled={concBusy || !localConc || concInput === String(localConc?.concurrency)} onClick={() => void saveConc()}>
-              {concBusy ? '…' : 'Apply'}
-            </button>
-            {localConc ? <span className="muted small">running {localConc.active}{localConc.queued ? ` · ${localConc.queued} queued` : ''}</span> : null}
-            {concMsg ? <span className={`small ${/fail|1–16/.test(concMsg) ? 'status-error' : 'ok-text'}`}>{concMsg}</span> : null}
-          </div>
-        ) : null}
         <div className="row-actions" style={{ flexWrap: 'wrap', gap: 6 }}>
           <span className="muted small">Ollama models:</span>
           {ollamaModels.length === 0 ? (
@@ -2411,14 +2397,29 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             {ollamaCatalogMsg}
           </p>
         ) : null}
-        <div className="row-actions" style={{ marginTop: 10 }}>
-          <input list="ollama-popular" style={{ width: 240 }} placeholder="model, e.g. llama3.2:1b" value={pullName} disabled={pulling} onChange={(e) => setPullName(e.target.value)} />
-          <datalist id="ollama-popular">{POPULAR.map((m) => <option key={m} value={m} />)}</datalist>
-          <button className="btn primary" disabled={pulling || !pullName.trim()} onClick={() => void pullModel()}>
-            {pulling ? 'Downloading…' : 'Download'}
-          </button>
-          {pullMsg ? <span className={`small grow ${/failed/.test(pullMsg) ? 'status-error' : pulling ? 'warn-text' : 'ok-text'}`}>{pullMsg}</span> : null}
-        </div>
+        {localConc || concMsg ? (
+          <div className="row-actions local-concurrency-row" style={{ marginTop: 10 }}>
+            <span className="muted small">Local concurrency</span>
+            <select
+              className="cell-select"
+              value={concInput}
+              disabled={concBusy || !localConc}
+              onChange={(e) => setConcInput(e.target.value)}
+              title="How many local model requests the manager may run at the same time. Cloud and API runtimes are not capped here."
+            >
+              {LOCAL_CONCURRENCY_OPTIONS.map((n) => (
+                <option key={n} value={n}>{n} local model{n === 1 ? '' : 's'}</option>
+              ))}
+            </select>
+            <button className="btn primary" disabled={concBusy || !localConc || concInput === String(localConc?.concurrency)} onClick={() => void saveConc()}>
+              {concBusy ? 'Applying…' : 'Set concurrency'}
+            </button>
+            {localConc ? <span className="muted small">running {localConc.active}{localConc.queued ? ` · ${localConc.queued} queued` : ''}</span> : null}
+            {concMsg ? <span className={`small grow ${/fail|1–16/.test(concMsg) ? 'status-error' : 'ok-text'}`}>{concMsg}</span> : null}
+          </div>
+        ) : pullMsg ? (
+          <div className={`small ${/failed/.test(pullMsg) ? 'status-error' : pulling ? 'warn-text' : 'ok-text'}`}>{pullMsg}</div>
+        ) : null}
 
         {/* Browsable model catalog */}
         <div className="model-catalog">
