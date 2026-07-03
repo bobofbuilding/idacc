@@ -1195,9 +1195,11 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const starterModel = TOP_LOCAL_MODEL_CATALOG.find((m) => m.id === STARTER_LOCAL_MODEL_ID) ?? TOP_LOCAL_MODEL_CATALOG[0];
   const starterInstalled = modelInstalled(STARTER_LOCAL_MODEL_ID);
   const catalogUpdateRows = ollamaCatalog?.installedUpdates.slice(0, 8) ?? [];
-  const catalogNewRows = ollamaCatalog?.newModels.slice(0, 10) ?? [];
+  const catalogNewRows = ollamaCatalog?.newModels.slice(0, 5) ?? [];
+  const catalogUpdateCount = ollamaCatalog?.installedUpdates.length ?? 0;
+  const catalogNewCount = ollamaCatalog?.savedCount ?? ollamaCatalog?.newModels.length ?? 0;
   const ollamaCatalogStatus = ollamaCatalog
-    ? `catalog ${timeAgo(ollamaCatalog.checkedAt)} · ${ollamaCatalog.installedUpdates.length} update${ollamaCatalog.installedUpdates.length === 1 ? '' : 's'} · ${ollamaCatalog.savedCount ?? ollamaCatalog.newModels.length} added`
+    ? `catalog checked ${timeAgo(ollamaCatalog.checkedAt)}`
     : ollamaCatalogChecking
       ? 'checking catalog…'
       : 'catalog unchecked';
@@ -2275,56 +2277,42 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         <div className="row-actions" style={{ alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <h3 style={{ margin: 0 }}>Local models & backends</h3>
           <span className="grow" />
-          <span className={ollamaModels.length ? 'ok-text small' : 'warn-text small'}>
-            {ollamaModels.length ? `${ollamaModels.length} Ollama model${ollamaModels.length === 1 ? '' : 's'}` : 'no Ollama models'}
-          </span>
-          <span className={installedLocalStackRows.length ? 'ok-text small' : 'muted small'}>
-            {installedLocalStackRows.length ? `${installedLocalStackRows.length} stack install${installedLocalStackRows.length === 1 ? '' : 's'}` : 'no stack installs'}
-          </span>
-          {discoveredCatalogCount ? <span className="ok-text small">{discoveredCatalogCount} discovered catalog tag{discoveredCatalogCount === 1 ? '' : 's'}</span> : null}
-          <span className={localBackendReady ? 'ok-text small' : 'warn-text small'}>
-            {localBackendReady ? 'backend ready' : localBackendConfigured ? 'sync needed' : 'backend not added'}
-          </span>
-          <span className={catalogUpdateRows.length ? 'warn-text small' : 'muted small'} title={ollamaCatalogMsg || undefined}>
+          <span className={catalogUpdateCount ? 'warn-text small' : 'muted small'} title={ollamaCatalogMsg || undefined}>
             {ollamaCatalogStatus}
           </span>
           <button className="btn small" disabled={ollamaCatalogChecking} title="Scan public Ollama tags and add newly discovered entries to the local searchable catalog" onClick={() => void checkOllamaCatalog()}>
-            {ollamaCatalogChecking ? 'Checking…' : 'Check + add catalog'}
+            {ollamaCatalogChecking ? 'Checking…' : 'Check catalog'}
           </button>
           <button className="btn small" disabled={discovering} onClick={() => void runDiscover()}>
             {discovering ? 'Scanning…' : 'Scan running'}
           </button>
-        </div>
-        <div className="row-actions" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
-          <span className="muted small">local APIs:</span>
-          {localRouteReadyProviders.length ? (
-            <span className="chips grow">
-              {localRouteReadyProviders.map((p) => <span className="chip" key={p.name}>{p.name}</span>)}
-            </span>
-          ) : (
-            <span className="muted small grow">none live yet</span>
-          )}
-        </div>
-        <div className="row-actions" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-          <span className="muted small">stack installs:</span>
-          {installedLocalStackRows.length ? (
-            <span className="chips grow">
-              {installedLocalStackRows.map(({ stack, status, running, configured }) => {
-                const state = configured ? 'backend' : running ? 'running' : 'installed';
-                const cls = configured || running ? 'chip tag' : 'chip';
-                return (
-                  <span className={cls} key={stack.id} title={status?.detail}>
-                    {stack.name} · {state}
-                  </span>
-                );
-              })}
-            </span>
-          ) : (
-            <span className="muted small grow">none detected yet</span>
-          )}
           <button className="btn small" type="button" onClick={openStackSetup}>
-            View stack setup
+            Stack setup
           </button>
+        </div>
+        <div className="local-model-summary">
+          <div>
+            <span>Ollama</span>
+            <b className={ollamaModels.length ? 'ok-text' : 'warn-text'}>{ollamaModels.length ? `${ollamaModels.length} installed` : 'none installed'}</b>
+          </div>
+          <div>
+            <span>Routing</span>
+            <b className={localBackendReady ? 'ok-text' : 'warn-text'}>{localBackendReady ? 'ready' : localBackendConfigured ? 'sync needed' : 'not added'}</b>
+          </div>
+          <div>
+            <span>Stacks</span>
+            <b>{installedLocalStackRows.length ? installedLocalStackRows.map(({ stack }) => stack.name).join(', ') : 'none detected'}</b>
+          </div>
+          <div>
+            <span>Catalog</span>
+            <b className={catalogUpdateCount ? 'warn-text' : discoveredCatalogCount ? 'ok-text' : ''}>
+              {catalogUpdateCount
+                ? `${catalogUpdateCount} update${catalogUpdateCount === 1 ? '' : 's'}`
+                : discoveredCatalogCount
+                  ? `${discoveredCatalogCount} added tag${discoveredCatalogCount === 1 ? '' : 's'}`
+                  : 'starter list'}
+            </b>
+          </div>
         </div>
         <div className={`local-driving-strip ${localDrivingTone}`}>
           <div className="grow">
@@ -2349,18 +2337,20 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             ) : null}
           </div>
         </div>
-        <div className="row-actions" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
-          <span className="muted small">Local concurrency</span>
-          <input type="number" min={1} max={16} style={{ width: 64 }} value={concInput} disabled={concBusy || !localConc}
-            onChange={(e) => setConcInput(e.target.value)} />
-          <button className="btn small primary" disabled={concBusy || !localConc || concInput === String(localConc?.concurrency)} onClick={() => void saveConc()}>
-            {concBusy ? '…' : 'Apply'}
-          </button>
-          {localConc ? <span className="muted small">running {localConc.active}{localConc.queued ? ` · ${localConc.queued} queued` : ''}</span> : <span className="muted small">manager unreachable</span>}
-          {concMsg ? <span className={`small ${/fail|1–16/.test(concMsg) ? 'status-error' : 'ok-text'}`}>{concMsg}</span> : null}
-        </div>
+        {localConc || concMsg ? (
+          <div className="row-actions local-concurrency-row">
+            <span className="muted small">Local concurrency</span>
+            <input type="number" min={1} max={16} style={{ width: 64 }} value={concInput} disabled={concBusy || !localConc}
+              onChange={(e) => setConcInput(e.target.value)} />
+            <button className="btn small primary" disabled={concBusy || !localConc || concInput === String(localConc?.concurrency)} onClick={() => void saveConc()}>
+              {concBusy ? '…' : 'Apply'}
+            </button>
+            {localConc ? <span className="muted small">running {localConc.active}{localConc.queued ? ` · ${localConc.queued} queued` : ''}</span> : null}
+            {concMsg ? <span className={`small ${/fail|1–16/.test(concMsg) ? 'status-error' : 'ok-text'}`}>{concMsg}</span> : null}
+          </div>
+        ) : null}
         <div className="row-actions" style={{ flexWrap: 'wrap', gap: 6 }}>
-          <span className="muted small">installed:</span>
+          <span className="muted small">Ollama models:</span>
           {ollamaModels.length === 0 ? (
             <span className="muted small grow">none yet</span>
           ) : (
@@ -2376,8 +2366,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                     </>
                   ) : (
                     <>
-                      <button title={`Re-pull ${m.name} to pick up updated weights or engine-specific artifacts`} disabled={pulling} onClick={() => void pull(m.name)}
-                        style={{ background: 'none', border: 'none', cursor: pulling ? 'default' : 'pointer', color: 'var(--accent, #45b7ff)', padding: 0, fontSize: 11, lineHeight: 1 }}>update</button>
                       <button title={`Uninstall ${m.name}`} onClick={() => setConfirmRemove(m.name)}
                         style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted, #888)', padding: 0, fontSize: 11, lineHeight: 1 }}>✕</button>
                     </>
@@ -2390,7 +2378,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         </div>
         {localBackendModelSources.length ? (
           <div className="local-backend-models">
-            <div className="muted small">other local backend models</div>
+            <div className="muted small">other local backends</div>
             {localBackendModelSources.map((row) => (
               <div className="local-backend-model-row" key={row.key}>
                 <div className="local-backend-model-title">
@@ -2427,17 +2415,18 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           </div>
         ) : null}
         {catalogNewRows.length ? (
-          <div className="local-driving-strip ok" style={{ marginTop: 8 }}>
+          <div className="local-catalog-summary">
             <div className="grow">
-              <b>Added to local Ollama catalog</b>
-              <span>Public Ollama tags were added to this app's searchable catalog overlay. Download only what you want to test.</span>
+              <b>{catalogNewCount || catalogNewRows.length} new catalog tag{(catalogNewCount || catalogNewRows.length) === 1 ? '' : 's'} added</b>
+              <span>Search below or paste a tag to download only what you want to test.</span>
             </div>
-            <div className="row-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <div className="chips">
               {catalogNewRows.map((m) => (
-                <button key={m.name} className="btn small" disabled={pulling} title={catalogModelMeta(m)} onClick={() => void pull(m.name)}>
+                <span key={m.name} className="chip mono" title={catalogModelMeta(m)}>
                   {m.name}
-                </button>
+                </span>
               ))}
+              {catalogNewCount > catalogNewRows.length ? <span className="muted small">+{catalogNewCount - catalogNewRows.length} more</span> : null}
             </div>
           </div>
         ) : null}

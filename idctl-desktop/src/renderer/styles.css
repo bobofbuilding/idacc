@@ -221,6 +221,58 @@ button.chip.incompat:hover { border-color: var(--line); }
 
 /* Local model catalog (browsable, downloadable via Ollama). */
 .model-catalog { margin-top: 8px; }
+.local-model-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 6px;
+  margin: 8px 0;
+}
+.local-model-summary > div {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+  padding: 8px 10px;
+}
+.local-model-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.local-model-summary b {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.local-concurrency-row {
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.local-catalog-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.local-catalog-summary b,
+.local-catalog-summary span {
+  display: block;
+}
+.local-catalog-summary .chips {
+  justify-content: flex-end;
+}
 .catalog-grid { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; max-height: 320px; overflow-y: auto; }
 .catalog-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; flex-wrap: wrap; }
 .catalog-row:hover { background: var(--bg-3); }
@@ -231,7 +283,11 @@ button.chip.incompat:hover { border-color: var(--line); }
 .local-backend-model-title b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .provider-status-hint { margin-top: 4px; max-width: 620px; line-height: 1.35; }
 @media (max-width: 780px) {
+  .local-model-summary { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
   .local-backend-model-row { grid-template-columns: 1fr; align-items: start; }
+}
+@media (max-width: 520px) {
+  .local-model-summary { grid-template-columns: 1fr; }
 }
 .mcp-replace-review { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--warn); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, transparent); }
 

@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.496] — 2026-07-03
+- Clean up Local models and backends card
+
 ## [0.1.495] — 2026-07-03
 - Explain Brain approval inbox cards
 - Add goal priority sections
