@@ -9,7 +9,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { call as bridgeCall, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
 import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
-import { subsStatus, subsSignin, subsSignout, subsInstall, type SubProvider } from './subscriptions.ts';
+import { invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubProvider } from './subscriptions.ts';
 import { ollamaTags, ollamaPull, ollamaRemove, ollamaCatalogCheck, catalogModelToLocalEntry, type InstalledModelInput } from './ollama.ts';
 import { backgroundStackStatus, dockerStatus, getHardware, localStackInstallStatus, runInTerminal, startBackgroundStack, stopBackgroundStack } from './system.ts';
 import { pickProjectFolder, openProjectFolder, projectReadme, projectGit, projectGitRun, githubMeta, cloneGithub, projectDiff, createGithubRepo, linkGithubRepo, forkGithub, commitProject, detectProjectsRoot, scanProjectsRoot } from './projects.ts';
@@ -858,12 +858,15 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'evmRpc:probe':
       return probeEvmRpc(String(args[0] ?? ''));
     case 'subs:status':
-      return subsStatus();
+      return subsStatus(Boolean(args[0]));
     case 'subs:signin':
+      invalidateSubsStatusCache();
       return subsSignin(args[0] as SubProvider);
     case 'subs:signout':
-      return subsSignout(args[0] as SubProvider);
+      invalidateSubsStatusCache();
+      return subsSignout(args[0] as SubProvider).finally(() => invalidateSubsStatusCache());
     case 'subs:install':
+      invalidateSubsStatusCache();
       return subsInstall(args[0] as SubProvider);
     case 'ollama:tags':
       return ollamaTags();

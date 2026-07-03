@@ -13,6 +13,7 @@ import { shell } from 'electron';
 import { runInTerminal } from './system.ts';
 
 const execFileP = promisify(execFile);
+const SUBS_STATUS_CACHE_TTL_MS = 5 * 60_000;
 
 export type SubProvider = 'claude' | 'chatgpt' | 'cursor' | 'grok' | 'antigravity' | 'copilot' | 'kiro-cli' | 'q';
 
@@ -67,6 +68,8 @@ export interface SubStatus {
 }
 
 const SUB_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'q'];
+let subsStatusCache: { at: number; rows: Record<SubProvider, SubStatus> } | null = null;
+let subsStatusInflight: Promise<Record<SubProvider, SubStatus>> | null = null;
 
 const SUB_META: Record<SubProvider, SubProviderMeta> = {
   claude: {
@@ -518,9 +521,23 @@ async function providerStatus(provider: SubProvider): Promise<SubStatus> {
   }
 }
 
-export async function subsStatus(): Promise<Record<SubProvider, SubStatus>> {
-  const rows = await Promise.all(SUB_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const));
-  return Object.fromEntries(rows) as Record<SubProvider, SubStatus>;
+export function invalidateSubsStatusCache(): void {
+  subsStatusCache = null;
+}
+
+export async function subsStatus(force = false): Promise<Record<SubProvider, SubStatus>> {
+  if (!force && subsStatusCache && Date.now() - subsStatusCache.at < SUBS_STATUS_CACHE_TTL_MS) {
+    return subsStatusCache.rows;
+  }
+  if (!force && subsStatusInflight) return subsStatusInflight;
+  subsStatusInflight = Promise.all(SUB_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const))
+    .then((rows) => {
+      const result = Object.fromEntries(rows) as Record<SubProvider, SubStatus>;
+      subsStatusCache = { at: Date.now(), rows: result };
+      return result;
+    })
+    .finally(() => { subsStatusInflight = null; });
+  return subsStatusInflight;
 }
 
 /**

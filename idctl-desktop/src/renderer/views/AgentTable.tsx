@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { call, agentsLeadFirst, type FleetStore, type TeamAgent } from '../store.ts';
+import { call, agentsLeadFirst, useSyncVersion, type FleetStore, type TeamAgent } from '../store.ts';
 import { statusClass } from '../agentStatus.ts';
 import type { RuntimeCooldown } from '../../../../idctl/src/api/client.ts';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
@@ -221,6 +221,8 @@ function cooldownTitle(row: RuntimeCooldown): string {
 
 export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: FleetStore; onProbe?: (a: TeamAgent) => void; probeBusy?: string | null; navigate?: (view: string) => void }) {
   const cols = onProbe ? 9 : 8;
+  const runtimeCatalogVersion = useSyncVersion(['settings', 'modules', 'agents']);
+  const hierarchyVersion = useSyncVersion(['org', 'agents']);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<Record<string, string[]>>({});
@@ -284,10 +286,13 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     call<Record<string, string[]>>('runtime:models').then(setCatalog).catch(() => setCatalog({}));
     call<ProviderRow[]>('providers:list').then(setProviders).catch(() => setProviders([]));
     call<Record<string, ManagedRuntimeStatus>>('subs:status').then(setManagedRuntimes).catch(() => setManagedRuntimes({}));
-    call<{ coordinators?: Record<string, string> }>('coordinator:hierarchy').then((h) => setCoords(h.coordinators ?? {})).catch(() => {});
     call<RuntimeFreshness[]>('runtime:freshness').then(setFreshness).catch(() => setFreshness([]));
     call<RuntimeCooldown[]>('runtime:cooldowns').then(setRuntimeCooldowns).catch(() => setRuntimeCooldowns([]));
-  }, [store.lastUpdated]);
+  }, [runtimeCatalogVersion]);
+
+  useEffect(() => {
+    call<{ coordinators?: Record<string, string> }>('coordinator:hierarchy').then((h) => setCoords(h.coordinators ?? {})).catch(() => {});
+  }, [hierarchyVersion, store.team, store.coordinator]);
 
   // ★ marks the team's coordinator (lead); routing changes live in HR Manager.
   const teamFor = (a: TeamAgent) => a.team ?? store.team ?? 'default';

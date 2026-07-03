@@ -5022,6 +5022,12 @@
         "Manager-backed read bursts from tab switches are coalesced and briefly cached for task, hierarchy, usage, schedule, inbox, event, news, and all-team roster reads while mutation methods still clear the read cache.",
         "Live task, schedule, agent, goal, learn, checkin, and team events can still refresh dependent views, but that event-driven refresh is throttled so high-volume activity cannot recreate the old app-side sync loop.",
         "Validation: npm run typecheck and npm run build passed in idctl-desktop before release validation."
+      ],
+      "implementedTwoHundredSixtySecondPass": [
+        "HR Manager no longer ties Structure graph, Manage relay overview, hierarchy/org sync reads, or Build runtime catalogs to the live fleet event tick.",
+        "AgentTable no longer reloads runtime models, provider rows, subscription status, runtime freshness, and cooldown metadata on every fleet refresh; hierarchy labels reload only on org/agent mutations.",
+        "Managed subscription status is now coalesced behind a shared five-minute main-process cache, while explicit Settings Re-check, sign-in, sign-out, and post-install checks can still force a fresh CLI/account probe.",
+        "Validation: npm run typecheck and npm run build passed in idctl-desktop after the HR resource-pressure refactor."
       ]
     },
     {
@@ -5085,5 +5091,5 @@
       "body": "# Wiki\n\nWiki is both the human documentation page and the editable schematic for the Control Center UI. Each article explains the operator purpose of a page; the structured sections below preserve tabs, tiles, fields, controls, displays, routes, and source files for implementation detail.\n\n## Use it for\n\n- Search pages, controls, routes, source files, and notes from inside the desktop app.\n- Confirm how a UI surface is intended to behave before editing code or filing follow-up work.\n- Keep app navigation metadata and human documentation in one reviewed JSON artifact.\n\n## Editing rule\n\nThe desktop app hot-reload polls CONTROL_CENTER_WIKI.json through the main-process wiki bridge. Sidebar labels, icons, order, and visibility still come from pages[].nav for implemented routes, so documentation edits must preserve that metadata and keep every page.body non-empty."
     }
   ],
-  "appVersion": "0.1.539"
+  "appVersion": "0.1.540"
 }

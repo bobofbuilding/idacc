@@ -247,10 +247,10 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [subsCheckedAt, setSubsCheckedAt] = useState<number | null>(null);
   const visibleManagedSubRows = managedSubRows.filter(({ key }) => key !== 'q' || subs?.q?.installed === true);
 
-  async function refreshManagedSubscriptions(options: { busy?: boolean; notice?: boolean } = {}) {
+  async function refreshManagedSubscriptions(options: { busy?: boolean; notice?: boolean; force?: boolean } = {}) {
     if (options.busy) setSubsBusy(true);
     try {
-      const next = await call<Record<SubKey, Sub>>('subs:status').catch(() => null);
+      const next = await call<Record<SubKey, Sub>>('subs:status', Boolean(options.force)).catch(() => null);
       if (next) {
         setSubs(next);
         setSubsCheckedAt(Date.now());
@@ -285,7 +285,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     setManagerCaps(await call<ManagerCapabilities>('manager:capabilities').catch(() => null));
   }
   async function recheckSubs() {
-    await refreshManagedSubscriptions({ busy: true, notice: true });
+    await refreshManagedSubscriptions({ busy: true, notice: true, force: true });
   }
   async function signinSub(provider: SubKey) {
     setSubBusy(provider);
@@ -305,7 +305,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           ? `${label} opened from IDACC. Finish the Antigravity login flow, then Re-check if the row does not update automatically. Agent assignment remains disabled until the manager exposes an Antigravity harness.`
           : `${label} account flow started from IDACC. Finish the vendor prompt/browser flow, then Re-check if the row does not update automatically.`;
       setSubNotice(note);
-      setTimeout(() => void refreshManagedSubscriptions(), 4000);
+      setTimeout(() => void refreshManagedSubscriptions({ force: true }), 4000);
     } finally {
       setSubBusy(null);
     }
@@ -335,7 +335,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   function scheduleSubInstallChecks(provider: SubKey, label: string) {
     [5000, 12000, 25000, 45000].forEach((delay, idx, arr) => {
       setTimeout(async () => {
-        const next = await call<Record<SubKey, Sub>>('subs:status').catch(() => null);
+        const next = await call<Record<SubKey, Sub>>('subs:status', true).catch(() => null);
         if (!next) return;
         setSubs(next);
         setSubsCheckedAt(Date.now());

@@ -477,6 +477,8 @@ ${COORDINATION_TAIL}`;
 
 export function Teams({ store, focus, onFocusHandled, navigate }: { store: FleetStore; focus?: HrFocus; onFocusHandled?: () => void; navigate?: (target: string) => void }) {
   const syncVersion = useSyncVersion(['goals', 'work', 'org', 'agents']);
+  const hrStructureVersion = useSyncVersion(['org', 'agents', 'teams']);
+  const hrCatalogVersion = useSyncVersion(['settings', 'modules', 'agents']);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string>('');
   const hrOwner = useMemo(() => resolveHrManagerAgent(store), [store.allAgents, store.agents, store.team]);
@@ -487,6 +489,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [graphGroups, setGraphGroups] = useState<{ team: string; agents: Agent[] }[]>([]);
   const [locallyDeletedTeams, setLocallyDeletedTeams] = useState<string[]>([]);
+  const activeTeam = store.team ?? 'default';
   useEffect(() => {
     if (!focus) return;
     if (focus === 'route-hierarchy') {
@@ -507,10 +510,9 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       return;
     }
     call<{ team: string; agents: Agent[] }[]>('agents:allTeams').then(setGraphGroups).catch(() => setGraphGroups([]));
-  }, [store.lastUpdated, store.allAgents]);
+  }, [store.allAgents, store.agents, activeTeam, hrStructureVersion]);
 
   // Cross-team relay policy (delegates_to) for the active team.
-  const activeTeam = store.team ?? 'default';
   useEffect(() => {
     setLocallyDeletedTeams((prev) => {
       const stillInManagerSnapshot = prev.filter((name) => store.teams.some((t) => t.name === name));
@@ -876,10 +878,10 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   // Whole-fleet relay topology — every team's outbound delegate policy, for the Manage overview.
   const [relayMatrix, setRelayMatrix] = useState<{ team: string; delegates: string[] | null }[]>([]);
   useEffect(() => {
-    if (tab !== 'route') return;
+    if (tab !== 'route' || routePane !== 'overview') return;
     void call<{ team: string; delegates: string[] | null }[]>('relay:matrix').then(setRelayMatrix).catch(() => setRelayMatrix([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, activeTeam, savedDelegates, store.lastUpdated]);
+  }, [tab, routePane, activeTeam, savedDelegates, hrStructureVersion, allKnownTeamNames]);
   const visibleRelayMatrix = useMemo(
     () => relayMatrix.filter((row) => allKnownTeamSet.has(row.team)),
     [relayMatrix, allKnownTeamSet],
@@ -968,11 +970,12 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>({});
 
   useEffect(() => {
+    if (tab !== 'build') return;
     call<Record<string, string[]>>('runtime:models').then(setModelCatalog).catch(() => setModelCatalog({}));
     call<LibrarySkillEntry[]>('librarySkills').then((s) => setSkillCatalog(s.map((x) => x.name))).catch(() => setSkillCatalog([]));
     call<ProviderRow[]>('providers:list').then(setProviders).catch(() => setProviders([]));
     call<Record<string, ManagedRuntimeStatus>>('subs:status').then(setManagedRuntimes).catch(() => setManagedRuntimes({}));
-  }, [store.lastUpdated]);
+  }, [tab, hrCatalogVersion]);
 
 
   // Per-agent relay overrides (an individual agent can be granted/denied
@@ -1163,7 +1166,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   async function loadHier() {
     setHier(await call<typeof hier>('coordinator:hierarchy').catch(() => ({ primary: null, coordinators: {} })));
   }
-  useEffect(() => { void loadHier(); }, [activeTeam, store.lastUpdated]);
+  useEffect(() => { void loadHier(); }, [activeTeam, hrStructureVersion]);
   async function ensureHierarchyFresh(action: string): Promise<HrHierarchy | null> {
     const fresh = await call<HrHierarchy>('coordinator:hierarchy').catch(() => ({ primary: null, coordinators: {} }));
     if (hierarchyStamp(fresh) !== hierarchyStamp(hier)) {
@@ -1310,7 +1313,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     setOrgCfg(await call<{ enabled?: boolean; autoRebuild?: boolean }>('org:getConfig').catch(() => ({ enabled: true, autoRebuild: true })));
     setSecondaries(normalizeSecondaryRows(await call<{ secondaries: SecLead[] }>('org:hierarchy').then((h) => h.secondaries ?? []).catch(() => [])));
   }
-  useEffect(() => { void loadOrg(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeTeam, store.lastUpdated]);
+  useEffect(() => { void loadOrg(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeTeam, hrStructureVersion]);
   async function ensureOrgConfigFresh(action: string): Promise<OrgCfg | null> {
     const fresh = await call<OrgCfg>('org:getConfig').catch(() => ({ enabled: true, autoRebuild: true }));
     if (orgConfigStamp(fresh) !== orgConfigStamp(orgCfg)) {
