@@ -62,6 +62,59 @@ function pickActiveLead(agents: { name: string; status?: string }[]): string | n
   ).name;
 }
 
+function agentNameKey(name?: string): string {
+  return String(name || '').trim().toLowerCase();
+}
+
+function isDefaultTeamName(team?: string): boolean {
+  return !team || team === 'default';
+}
+
+function isDefaultValidatorName(name?: string): boolean {
+  return /^(coder|researcher)$/i.test(String(name || '').trim());
+}
+
+/**
+ * Execution owners are different from coordinators. A lead may decompose and
+ * supervise, but work should go to non-lead assignees whenever the team has any.
+ * On the default team, coder/researcher are validation leads; use them only if
+ * no other non-lead assignee exists.
+ */
+function executionPoolForTeam<T extends { name: string; status?: string }>(
+  agents: T[],
+  lead: string,
+  team?: string,
+  allowCoordinator = false,
+): T[] {
+  const active = agents.filter((a) => isActiveStatus(a.status));
+  const base = active.length ? active : agents;
+  if (allowCoordinator || base.length <= 1) return base;
+  const leadKey = agentNameKey(lead);
+  const withoutLead = base.filter((a) => agentNameKey(a.name) !== leadKey);
+  if (!withoutLead.length) return base;
+  if (isDefaultTeamName(team)) {
+    const withoutValidators = withoutLead.filter((a) => !isDefaultValidatorName(a.name));
+    if (withoutValidators.length) return withoutValidators;
+  }
+  return withoutLead;
+}
+
+function agentLine(
+  a: { name: string; runtime?: string; skills?: string[]; status?: string },
+  lead: string,
+  assignableNames: Set<string>,
+  team?: string,
+): string {
+  let suffix = '';
+  if (!isActiveStatus(a.status)) suffix = ' [STOPPED - do not assign]';
+  else if (!assignableNames.has(a.name)) {
+    if (agentNameKey(a.name) === agentNameKey(lead)) suffix = ' [COORDINATOR - do not assign execution]';
+    else if (isDefaultTeamName(team) && isDefaultValidatorName(a.name)) suffix = ' [VALIDATOR - do not assign execution unless no worker/team lead exists]';
+    else suffix = ' [HELD - do not assign execution]';
+  }
+  return `- ${a.name}${a.runtime ? ` (${a.runtime})` : ''}${suffix}${a.skills?.length ? ` - skills: ${a.skills.slice(0, 6).join(', ')}` : ''}`;
+}
+
 /** Spread assignments so no single agent is handed a pile of tasks at once: cap each agent at
  *  max(2, ceil(total/active)) and move overflow to the least-loaded active agent. Keeps the
  *  best-fit owner up to the cap, then balances. Mutates items[].agent in place. */
@@ -107,6 +160,8 @@ Return ONLY a JSON array (no prose, no markdown fence) of up to ${MAX_SUBTASKS} 
 
 Rules:
 - Assign work ONLY to agents that are running; never assign a task to one marked [STOPPED — do not assign].
+- Do not assign execution to yourself/the coordinator when any non-coordinator assignee is available.
+- On the default team, coder and researcher validate completed work; do not assign normal execution to them when another worker or team lead is available.
 - Maximize parallelism: use an empty dependsOn whenever a task does not truly need another task's output.
 - Only add a dependency when a task genuinely needs a prior task's result.
 - Keep titles short and imperative; assign realistic owners chosen from the agent names above.`;
@@ -121,13 +176,14 @@ export async function decomposeWork(
   const obj = (objective || '').trim();
   if (!obj) return { ok: false, subtasks: [], raw: '', error: 'describe the work first' };
   const names = new Set(agents.map((a) => a.name));
-  const activeNames = new Set(agents.filter((a) => isActiveStatus(a.status)).map((a) => a.name));
+  const assignable = executionPoolForTeam(agents, lead, client.team);
+  const assignableNames = new Set(assignable.map((a) => a.name));
   const firstActive = agents.find((a) => isActiveStatus(a.status))?.name;
   // Prefer routing to an agent that's actually running; fall back to anything only
   // if the whole roster is stopped.
-  const fallback = (activeNames.has(lead) ? lead : firstActive) ?? (names.has(lead) ? lead : agents[0]?.name ?? lead);
+  const fallback = assignable.find((a) => isActiveStatus(a.status))?.name ?? assignable[0]?.name ?? firstActive ?? (names.has(lead) ? lead : agents[0]?.name ?? lead);
   const agentLines =
-    agents.map((a) => `- ${a.name}${a.runtime ? ` (${a.runtime})` : ''}${isActiveStatus(a.status) ? '' : ' [STOPPED — do not assign]'}${a.skills?.length ? ` — skills: ${a.skills.slice(0, 6).join(', ')}` : ''}`).join('\n') ||
+    agents.map((a) => agentLine(a, lead, assignableNames, client.team)).join('\n') ||
     `- ${fallback}`;
 
   let raw = '';
@@ -148,8 +204,8 @@ export async function decomposeWork(
     const title = clip(String(o.title ?? o.task ?? `Task ${i + 1}`), 120) || `Task ${i + 1}`;
     const description = clip(String(o.description ?? o.detail ?? ''), 400);
     let agent = String(o.agent ?? o.owner ?? '').trim();
-    // Coerce unknown OR stopped owners to an active agent (auto-route to who's running).
-    if (!(activeNames.size ? activeNames.has(agent) : names.has(agent))) agent = fallback;
+    // Coerce unknown, stopped, coordinator, or validator-only owners to an execution assignee.
+    if (!(assignableNames.size ? assignableNames.has(agent) : names.has(agent))) agent = fallback;
     const deps = Array.isArray(o.dependsOn) ? o.dependsOn : Array.isArray(o.depends_on) ? o.depends_on : [];
     const dependsOn = (deps as unknown[])
       .map((d) => Number(d))
@@ -192,7 +248,8 @@ export async function createAndDispatchPlan(
   // owner pool (and the coerce-to-fallback target) is the running roster whenever
   // any agent is running; degrade to the full roster only if nothing is active.
   const activePool = roster.filter((a) => isActiveStatus(a.status));
-  const pool = activePool.length ? activePool : roster;
+  const coordinator = pickActiveLead(roster) ?? '';
+  const pool = opts.respectOwners ? (activePool.length ? activePool : roster) : executionPoolForTeam(roster, coordinator, client.team);
   const names = new Set(pool.map((a) => a.name));
   const fallback = pool[0]?.name ?? '';
   const list = subtasks.slice(0, MAX_SUBTASKS).map((st, i, arr) => ({
@@ -388,6 +445,7 @@ ${agentLines}
 Return ONLY a JSON array (no prose, no markdown fence): [{"ref":"<task ref EXACTLY as given>","agent":"<one of the active agent names above>"}]
 Rules:
 - Assign EVERY task to exactly one ACTIVE agent; never assign one marked [STOPPED].
+- Do not assign to yourself/the coordinator when another active assignee is available.
 - Match each task to the agent whose role/skills fit best; spread load sensibly across agents.`;
 
 const TRIAGE_WORK = (ref: string, title: string, desc: string) =>
@@ -407,7 +465,8 @@ export async function triageUnassigned(client: ManagerClient, lead: string, opts
     client.tasks().catch(() => [] as Task[]),
     client.agents().catch(() => [] as Agent[]) as Promise<Agent[]>,
   ]);
-  const active = roster.filter((a) => isActiveStatus(a.status));
+  const coordinator = pickActiveLead(roster) ?? lead;
+  const active = executionPoolForTeam(roster, coordinator, client.team).filter((a) => isActiveStatus(a.status));
   const activeNames = new Set(active.map((a) => a.name));
   // Skip the waiting lanes (Backlog/Holding) — only triage the To-Do lane. Lanes are an
   // app-side overlay; a todo-status task with no overlay defaults to the To-Do lane.

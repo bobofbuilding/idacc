@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.526] — 2026-07-03
+- Route Work task creation away from primary leads and validators.
+
 ## [0.1.525] — 2026-07-03
 - Bound Work task board reads, clamp long task cards, and group related dashboard draft proposal batches.
 

@@ -200,6 +200,27 @@ function agentKey(a: TeamAgent, fallbackTeam = 'default'): string {
 function agentLabel(a: TeamAgent, fallbackTeam = 'default'): string {
   return `${a.name} · ${a.team ?? fallbackTeam}`;
 }
+function agentNameKey(name?: string): string {
+  return String(name || '').trim().toLowerCase();
+}
+function isDefaultTeamName(team?: string): boolean {
+  return !team || team === 'default';
+}
+function isDefaultValidatorName(name?: string): boolean {
+  return /^(coder|researcher)$/i.test(String(name || '').trim());
+}
+function executionCandidatesForTeam(team: string, agents: TeamAgent[], coordinatorName: string): TeamAgent[] {
+  const live = agents.filter((a) => liveAgent(a.status));
+  const base = live.length ? live : agents;
+  if (base.length <= 1) return base;
+  const withoutCoordinator = base.filter((a) => agentNameKey(a.name) !== agentNameKey(coordinatorName));
+  if (!withoutCoordinator.length) return base;
+  if (isDefaultTeamName(team)) {
+    const withoutValidators = withoutCoordinator.filter((a) => !isDefaultValidatorName(a.name));
+    if (withoutValidators.length) return withoutValidators;
+  }
+  return withoutCoordinator;
+}
 
 /** Tabbed wrapper: Tasks + Schedule + Loops in one page. */
 export function Tasks({ store, initialTab }: { store: FleetStore; initialTab?: Tab }) {
@@ -332,9 +353,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const selectedAssignTargets = assignOptions.filter((a) => assignTo.has(agentKey(a, activeTeam)));
   function normalizeDraftForTeam(team: string, items: SubTask[]): SubTask[] {
     const agents = agentsForWorkTeam(team);
-    const allNames = new Set(agents.map((a) => a.name));
-    const liveNames = new Set(agents.filter((a) => liveAgent(a.status)).map((a) => a.name));
-    const fallback = leadForWorkTeam(team) || agents.find((a) => liveAgent(a.status))?.name || agents[0]?.name || '';
+    const coordinatorName = leadForWorkTeam(team);
+    const candidates = executionCandidatesForTeam(team, agents, coordinatorName);
+    const allNames = new Set(candidates.map((a) => a.name));
+    const liveNames = new Set(candidates.filter((a) => liveAgent(a.status)).map((a) => a.name));
+    const fallback = candidates.find((a) => liveAgent(a.status))?.name || candidates[0]?.name || coordinatorName || agents.find((a) => liveAgent(a.status))?.name || agents[0]?.name || '';
     return items.map((s, i, arr) => {
       const candidate = s.agent?.trim();
       const agent = liveNames.size
@@ -877,15 +900,21 @@ function TasksPanel({ store }: { store: FleetStore }) {
   }
   async function createPlan() {
     if (!proposal || !proposal.length) return;
-    if (!(await ensureProposalOwnersFresh('Create plan', activeTeam, proposal.map((p) => p.agent)))) return;
+    const dispatchProposal = normalizeDraftForTeam(activeTeam, proposal);
+    const rerouted = dispatchProposal.some((p, i) => p.agent !== proposal[i]?.agent);
+    if (rerouted) {
+      setProposal(dispatchProposal);
+      setAssignNote('coordinator/validator owners were routed to execution candidates; review if needed');
+    }
+    if (!(await ensureProposalOwnersFresh('Create plan', activeTeam, dispatchProposal.map((p) => p.agent)))) return;
     if (!window.confirm(`Create and dispatch ${proposal.length} task${proposal.length === 1 ? '' : 's'} for ${activeTeam}?\n\nThis writes task cards and sends work to the selected owners.`)) return;
-    if (!(await ensureProposalOwnersFresh('Create plan', activeTeam, proposal.map((p) => p.agent)))) return;
+    if (!(await ensureProposalOwnersFresh('Create plan', activeTeam, dispatchProposal.map((p) => p.agent)))) return;
     setProposing(true); setAssignNote('creating tasks & dispatching to the fleet…');
-    const n = proposal.length;
+    const n = dispatchProposal.length;
     // Global toast: persists after the panel closes / you switch pages.
     const t = toast({ kind: 'progress', text: `Creating ${n} task${n === 1 ? '' : 's'} & dispatching to ${activeTeam}…` });
     try {
-      const res = await call<CreatePlanResult>('work:createPlan', objective.trim(), proposal, { team: activeTeam });
+      const res = await call<CreatePlanResult>('work:createPlan', objective.trim(), dispatchProposal, { team: activeTeam });
       const okCount = res.created.filter((c) => c.ok).length;
       const failed = res.created.length - okCount;
       const summary = `created ${okCount} task${okCount === 1 ? '' : 's'} · dispatched ${res.dispatched} now${res.deferred ? ` · ${res.deferred} queued on deps` : ''}${failed ? ` · ${failed} failed` : ''}`;
