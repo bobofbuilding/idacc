@@ -8,22 +8,6 @@ import type {
   LearnReviewState,
 } from '../../main/materialstore.ts';
 
-type PlanStatus = 'draft' | 'active' | 'done' | 'archived';
-interface PlanRevision { version: number; at: number; note: string; content: string }
-interface Plan {
-  id: string;
-  title: string;
-  request: string;
-  agent?: string;
-  team: string;
-  status: PlanStatus;
-  content: string;
-  version: number;
-  revisions: PlanRevision[];
-  tags?: string[];
-  createdAt: number;
-  updatedAt: number;
-}
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 type GoalPriority = 'primary' | 'secondary' | 'general';
 interface Goal {
@@ -40,6 +24,8 @@ interface Goal {
   updatedAt: number;
 }
 interface RecoverStaleResult { recovered: number; materials: LearnMaterial[] }
+type CreatedTask = { ok: boolean; ref?: string; title?: string; error?: string };
+type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: number };
 
 const PRIORITIES: LearnPriority[] = ['urgent', 'high', 'normal'];
 const KIND_LABEL: Record<LearnMaterialKind, string> = { github: 'GitHub', folder: 'Folder', site: 'Site', pdf: 'PDF' };
@@ -72,6 +58,11 @@ function clip(s: string, n: number): string {
 
 function isStaleProcessing(m: LearnMaterial): boolean {
   return m.status === 'processing' && Date.now() - m.updatedAt > STALE_PROCESSING_MS;
+}
+
+function safeLearnTeam(team: string): string {
+  const t = String(team || '').trim();
+  return !t || t === 'public' ? 'default' : t;
 }
 
 function materialStageText(m: LearnMaterial): string {
@@ -300,7 +291,7 @@ export function Learn({ store }: { store: FleetStore }) {
 
   async function acceptRecommendation(rec: LearnRecommendation) {
     if (!selected) return;
-    const team = rec.team || selected.classification?.routedTeams?.[0] || store.team || 'default';
+    const team = safeLearnTeam(rec.team || selected.classification?.routedTeams?.[0] || store.team || 'default');
     const now = Date.now();
     try {
       if (rec.type === 'question') {
@@ -330,25 +321,27 @@ export function Learn({ store }: { store: FleetStore }) {
         };
         await call('goals:save', goal);
       } else if (rec.type === 'task' || rec.type === 'feature') {
-        if (!window.confirm(`Create a draft ${rec.type === 'feature' ? 'feature update plan' : 'task plan'} from "${rec.title}"?`)) return;
-        const plan: Plan = {
-          id: newId('plan'),
+        const description = [
+          rec.body || rec.title,
+          '',
+          `Source Learn material: ${selected.title}`,
+          `Source type: ${selected.kind}`,
+          rec.type === 'feature' ? 'Review as a proposed workflow/feature update before implementation.' : 'Review and execute as a queued task.',
+        ].filter(Boolean).join('\n');
+        const result = await call<CreatePlanResult>('work:createPlan', rec.title, [{
           title: rec.title,
-          request: rec.body,
+          description,
           agent: coordinator,
-          team,
-          status: 'draft',
-          content: rec.body,
-          version: 1,
-          revisions: [{ version: 1, at: now, note: `Drafted from Learn material ${selected.title}`, content: rec.body }],
-          tags: ['learn', rec.type === 'feature' ? 'feature-update' : 'draft-task', selected.kind],
-          createdAt: now,
-          updatedAt: now,
-        };
-        await call('plans:save', plan);
+          dependsOn: [],
+        }], { dispatch: false, lane: 'todo', team, respectOwners: true });
+        const ok = result.created?.filter((t) => t.ok) ?? [];
+        if (!ok.length) {
+          const err = result.created?.find((t) => t.error)?.error ?? 'manager did not create a task';
+          throw new Error(`task creation failed: ${err}`);
+        }
       }
       await markRecommendation(rec, 'accepted');
-      setNote(`accepted ${rec.type} recommendation`);
+      setNote(rec.type === 'task' || rec.type === 'feature' ? `created queued task for ${rec.type} recommendation` : `accepted ${rec.type} recommendation`);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
     }

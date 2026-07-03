@@ -59,6 +59,55 @@ async function syncGoalInstructionsAfterMutation(action: string): Promise<void> 
   }
 }
 
+function planHasTag(plan: Plan, tag: string): boolean {
+  return Array.isArray(plan.tags) && plan.tags.includes(tag);
+}
+
+function isLearnTaskDraftPlan(plan: Plan): boolean {
+  return plan.status === 'draft' && planHasTag(plan, 'learn') && (planHasTag(plan, 'draft-task') || planHasTag(plan, 'feature-update'));
+}
+
+function learnDraftTaskDescription(plan: Plan): string {
+  return [
+    plan.content || plan.request || plan.title,
+    '',
+    'Migrated from a Learn recommendation draft plan because Learn recommendations should create queued Tasks, not persistent plan drafts.',
+    Array.isArray(plan.tags) && plan.tags.length ? `Tags: ${plan.tags.join(', ')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function safeLearnDraftTeam(team: string): string {
+  const t = String(team || '').trim();
+  return !t || t === 'public' ? 'default' : t;
+}
+
+async function convertLearnTaskDraftPlans(): Promise<number> {
+  let converted = 0;
+  for (const summary of listPlans()) {
+    const plan = getPlan(summary.id);
+    if (!plan || !isLearnTaskDraftPlan(plan)) continue;
+    try {
+      const result = await bridgeCall('work:createPlan', [
+        plan.title,
+        [{
+          title: plan.title,
+          description: learnDraftTaskDescription(plan),
+          agent: plan.agent ?? '',
+          dependsOn: [],
+        }],
+        { dispatch: false, lane: 'todo', team: safeLearnDraftTeam(plan.team), respectOwners: true },
+      ]) as { created?: { ok?: boolean; ref?: string; error?: string }[] };
+      if ((result.created ?? []).some((row) => row.ok)) {
+        removePlan(plan.id);
+        converted += 1;
+      }
+    } catch (e) {
+      console.warn(`[plans] Learn draft migration skipped for ${plan.id}:`, e);
+    }
+  }
+  return converted;
+}
+
 function normalizeBrainDashboardTab(value: unknown): BrainDashboardTab {
   const tab = String(value || 'fleet').toLowerCase();
   if (tab in BRAIN_DASHBOARD_TABS) return tab as BrainDashboardTab;
@@ -601,6 +650,7 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'chat:genReason':
       return genReason(args[0] as string);
     case 'plans:list':
+      await convertLearnTaskDraftPlans();
       return listPlans(args[0] as string | undefined);
     case 'plans:get':
       return getPlan(args[0] as string);
