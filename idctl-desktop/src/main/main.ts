@@ -39,9 +39,20 @@ let win: BrowserWindow | null = null;
 let brainDashboardWin: BrowserWindow | null = null;
 let stopGoalDriver: (() => void) | null = null;
 let rendererCrashReloadAt = 0;
+let rendererSafeMode = false;
 
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
 type BrainDashboardTab = 'fleet' | 'health' | 'skills' | 'learning' | 'agents' | 'graph';
+
+type RendererCrashState = {
+  version?: string;
+  rendererCrashCount?: number;
+  lastRendererCrashAt?: string;
+  safeMode?: boolean;
+  safeModeSince?: string;
+  lastReason?: string;
+  lastExitCode?: number | null;
+};
 
 const BRAIN_DASHBOARD_TABS: Record<BrainDashboardTab, { title: string; path: string }> = {
   fleet: { title: 'Brain Fleet', path: '/dashboard' },
@@ -56,6 +67,36 @@ function envFlagEnabled(value: string | undefined): boolean {
   return /^(1|true|yes|on)$/i.test(String(value || '').trim());
 }
 
+function rendererCrashStatePath(): string {
+  return join(app.getPath('userData'), 'renderer-crash-state.json');
+}
+
+function readRendererCrashState(): RendererCrashState | null {
+  try {
+    return JSON.parse(readFileSync(rendererCrashStatePath(), 'utf8')) as RendererCrashState;
+  } catch {
+    return null;
+  }
+}
+
+function writeRendererCrashState(state: RendererCrashState): void {
+  const dir = app.getPath('userData');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(rendererCrashStatePath(), JSON.stringify(state, null, 2), 'utf8');
+}
+
+function recentRendererCrash(state: RendererCrashState | null): boolean {
+  const at = state?.lastRendererCrashAt ? Date.parse(state.lastRendererCrashAt) : 0;
+  return Number.isFinite(at) && at > 0 && Date.now() - at < 24 * 60 * 60 * 1000;
+}
+
+function shouldUseRendererSafeMode(): boolean {
+  if (envFlagEnabled(process.env.IDCTL_DISABLE_RENDERER_SAFE_MODE)) return false;
+  if (envFlagEnabled(process.env.IDCTL_RENDERER_SAFE_MODE)) return true;
+  const state = readRendererCrashState();
+  return Boolean(state?.safeMode && recentRendererCrash(state));
+}
+
 function configureChromiumStability(): void {
   // Crash reports from macOS 26.5.1 show repeated renderer SIGTRAPs inside
   // Chromium's fontations_ffi path. Keep the app on CoreText unless explicitly
@@ -66,6 +107,14 @@ function configureChromiumStability(): void {
     features.add('FontationsBackend');
     app.commandLine.appendSwitch('disable-features', [...features].join(','));
   }
+  rendererSafeMode = shouldUseRendererSafeMode();
+  if (rendererSafeMode) {
+    app.disableHardwareAcceleration();
+    app.commandLine.appendSwitch('disable-gpu');
+    app.commandLine.appendSwitch('disable-gpu-compositing');
+    app.commandLine.appendSwitch('disable-zero-copy');
+    app.commandLine.appendSwitch('disable-accelerated-2d-canvas');
+  }
 }
 
 function logProcessExit(kind: string, detail: Record<string, unknown>): void {
@@ -75,10 +124,32 @@ function logProcessExit(kind: string, detail: Record<string, unknown>): void {
     appendFileSync(join(dir, 'process-exits.jsonl'), JSON.stringify({
       ts: new Date().toISOString(),
       kind,
+      rendererSafeMode,
       ...detail,
     }) + '\n');
   } catch (e) {
     console.warn(`[process-exit] failed to write ${kind} log:`, e);
+  }
+}
+
+function recordRendererCrash(details: Electron.RenderProcessGoneDetails): RendererCrashState | null {
+  try {
+    const previous = readRendererCrashState();
+    const now = new Date().toISOString();
+    const next: RendererCrashState = {
+      version: app.getVersion(),
+      rendererCrashCount: (previous?.rendererCrashCount ?? 0) + 1,
+      lastRendererCrashAt: now,
+      safeMode: true,
+      safeModeSince: previous?.safeModeSince ?? now,
+      lastReason: details.reason,
+      lastExitCode: details.exitCode ?? null,
+    };
+    writeRendererCrashState(next);
+    return next;
+  } catch (e) {
+    console.warn('[renderer-crash] failed to persist safe-mode state:', e);
+    return null;
   }
 }
 
@@ -446,7 +517,7 @@ function createWindow() {
       preload: join(__dirname, '../preload/preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      spellcheck: true, // squiggles + suggestions in the chat composer and other text fields
+      spellcheck: !rendererSafeMode, // safe mode favors stability over text-service integrations
     },
   });
 
@@ -461,6 +532,14 @@ function createWindow() {
   win.on('close', saveNow);
   win.webContents.on('render-process-gone', (_event, details) => {
     logProcessExit('renderer', details as unknown as Record<string, unknown>);
+    if (details.reason === 'crashed' || details.reason === 'oom') {
+      recordRendererCrash(details);
+      if (!rendererSafeMode) {
+        app.relaunch();
+        app.exit(0);
+        return;
+      }
+    }
     const now = Date.now();
     if (now - rendererCrashReloadAt > 60_000 && win && !win.isDestroyed()) {
       rendererCrashReloadAt = now;
