@@ -4930,6 +4930,12 @@
         "Settings can still display the q row when the binary is installed, and existing q-assigned agents stay visible through the current-runtime keep path for review or migration.",
         "The managed subscription adapter sweep now leaves Codex, Claude, Cursor, Copilot, Kiro, Grok, Antigravity, API provider lanes, and local lanes as the actionable picker set, with q treated as legacy compatibility only.",
         "Validation: npm test in idctl; npm run typecheck, wiki JSON parse, and npm run build in idctl-desktop passed before release validation."
+      ],
+      "implementedTwoHundredFortyFifthPass": [
+        "Settings now treats MLX package install, MLX background server process, and route-ready backend sync as separate states instead of implying that a saved backend is running.",
+        "MLX (mlx_lm.server) now defaults to port 8081, installs the Python package separately, and exposes Start background/Stop actions backed by main-process local-stack supervision with logs under the app data directory.",
+        "Installed-but-unreachable MLX backend rows now explain that no API server is listening, or that the background server is still downloading/loading before /v1/models answers.",
+        "Validation: npm run typecheck in idctl-desktop, wiki JSON parse, and npm run build passed before release validation."
       ]
     },
     {
@@ -4993,5 +4999,5 @@
       "body": "# Wiki\n\nWiki is both the human documentation page and the editable schematic for the Control Center UI. Each article explains the operator purpose of a page; the structured sections below preserve tabs, tiles, fields, controls, displays, routes, and source files for implementation detail.\n\n## Use it for\n\n- Search pages, controls, routes, source files, and notes from inside the desktop app.\n- Confirm how a UI surface is intended to behave before editing code or filing follow-up work.\n- Keep app navigation metadata and human documentation in one reviewed JSON artifact.\n\n## Editing rule\n\nThe desktop app hot-reload polls CONTROL_CENTER_WIKI.json through the main-process wiki bridge. Sidebar labels, icons, order, and visibility still come from pages[].nav for implemented routes, so documentation edits must preserve that metadata and keep every page.body non-empty."
     }
   ],
-  "appVersion": "0.1.504"
+  "appVersion": "0.1.505"
 }
