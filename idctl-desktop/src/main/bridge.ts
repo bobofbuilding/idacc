@@ -1246,7 +1246,6 @@ const READ_ONLY_SYNC_METHODS = new Set([
   'providers:list',
   'providers:probe',
   'providers:discover',
-  'runtime:probe',
   'runtime:verifyAssignments',
 ]);
 
