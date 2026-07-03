@@ -4957,6 +4957,11 @@
         "Synced local provider lanes are now selectable in the Health/HR Harness dropdown through the manager provider-api lane contract, while API provider lanes remain grouped separately.",
         "Google Antigravity re-check now tries both agy and antigravity CLI entry points, and the model-lane source label now says built-in defaults instead of curated fallback for runtimes without a live model-list API.",
         "Validation: npm test in idctl; npm run typecheck and npm run build in idctl-desktop; npm run build:core in id-agents passed before release validation."
+      ],
+      "implementedTwoHundredFiftiethPass": [
+        "Settings Local LLM stacks now removes the Jan, llama.cpp, MLX, LocalAI, vLLM, and Hugging Face TGI install cards from the visible shortlist for now.",
+        "The underlying discovery and backend support stays intact, so existing saved local backends or manually scanned live servers are not deleted by hiding those setup options.",
+        "Validation: npm run typecheck in idctl and idctl-desktop, npm test in idctl, wiki JSON parse, and npm run build in idctl-desktop passed before release validation."
       ]
     },
     {
@@ -5020,5 +5025,5 @@
       "body": "# Wiki\n\nWiki is both the human documentation page and the editable schematic for the Control Center UI. Each article explains the operator purpose of a page; the structured sections below preserve tabs, tiles, fields, controls, displays, routes, and source files for implementation detail.\n\n## Use it for\n\n- Search pages, controls, routes, source files, and notes from inside the desktop app.\n- Confirm how a UI surface is intended to behave before editing code or filing follow-up work.\n- Keep app navigation metadata and human documentation in one reviewed JSON artifact.\n\n## Editing rule\n\nThe desktop app hot-reload polls CONTROL_CENTER_WIKI.json through the main-process wiki bridge. Sidebar labels, icons, order, and visibility still come from pages[].nav for implemented routes, so documentation edits must preserve that metadata and keep every page.body non-empty."
     }
   ],
-  "appVersion": "0.1.510"
+  "appVersion": "0.1.511"
 }

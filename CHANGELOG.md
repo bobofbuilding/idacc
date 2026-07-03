@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.511] — 2026-07-03
+- Hide advanced local stack install cards
+
 ## [0.1.510] — 2026-07-03
 - Clean Health runtime lanes and Antigravity checks
 

@@ -80,14 +80,8 @@ export const LOCAL_STACKS: LocalStackEntry[] = [
 const SETTINGS_STACK_SHORTLIST = [
   'ollama',
   'lm-studio',
-  'jan',
   'gpt4all',
-  'llama-cpp',
-  'mlx-lm-server',
-  'localai',
   'docker-model-runner',
-  'vllm',
-  'tgi',
 ];
 export const TOP_LOCAL_STACKS: LocalStackEntry[] = SETTINGS_STACK_SHORTLIST
   .map((id) => LOCAL_STACKS.find((s) => s.id === id))
