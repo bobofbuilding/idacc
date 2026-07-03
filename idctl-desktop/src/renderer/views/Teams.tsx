@@ -486,13 +486,13 @@ ${COORDINATION_TAIL}`;
 export function Teams({ store, focus, onFocusHandled, navigate }: { store: FleetStore; focus?: HrFocus; onFocusHandled?: () => void; navigate?: (target: string) => void }) {
   const syncVersion = useSyncVersion(['goals', 'work', 'org', 'agents']);
   const hrStructureVersion = useSyncVersion(['org', 'agents', 'teams']);
-  const hrCatalogVersion = useSyncVersion(['settings', 'modules']);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string>('');
   const hrOwner = useMemo(() => resolveHrManagerAgent(store), [store.allAgents, store.agents, store.team]);
 
   // HR pillars as tabs + the live structure graph.
   const [tab, setTab] = useState<'structure' | 'health' | 'build' | 'route'>('structure');
+  const hrCatalogVersion = useSyncVersion(tab === 'build' ? ['settings', 'modules'] : []);
   const [routePane, setRoutePane] = useState<'operations' | 'overview' | 'hierarchy'>('operations');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [graphGroups, setGraphGroups] = useState<{ team: string; agents: Agent[] }[]>([]);

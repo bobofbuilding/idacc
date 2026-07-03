@@ -1007,7 +1007,11 @@ const COALESCED_READ_METHODS = new Set([
   'runtime:models',
   'runtime:freshness',
   'runtime:cooldowns',
+  'subs:status',
   'providers:list',
+  'librarySkills',
+  'libraryTeams',
+  'configs',
   'work:teamLeads',
   'libraryPluginInspections',
   'query:poll',
@@ -1036,14 +1040,24 @@ const READ_CACHE_TTL_MS = new Map<string, number>([
   ['runtime:models', 60000],
   ['runtime:freshness', 60000],
   ['runtime:cooldowns', 15000],
+  ['subs:status', 60000],
   ['providers:list', 15000],
+  ['librarySkills', 60000],
+  ['libraryTeams', 60000],
+  ['configs', 15000],
   ['work:teamLeads', 5000],
 ]);
 const READ_ONLY_SYNC_METHODS = new Set([
+  'configs',
+  'librarySkills',
+  'libraryTeams',
   'providers:list',
   'providers:probe',
   'providers:discover',
+  'runtime:models',
+  'runtime:freshness',
   'runtime:verifyAssignments',
+  'subs:status',
 ]);
 
 function coalescedCallKey(method: string, args: unknown[]): string {
@@ -1056,7 +1070,8 @@ function coalescedCallKey(method: string, args: unknown[]): string {
 
 async function coalesceReadCall(method: string, args: unknown[], run: () => Promise<unknown>): Promise<unknown> {
   const key = coalescedCallKey(method, args);
-  const ttl = READ_CACHE_TTL_MS.get(method) ?? 0;
+  const cacheable = !(method === 'subs:status' && args[0] === true);
+  const ttl = cacheable ? READ_CACHE_TTL_MS.get(method) ?? 0 : 0;
   if (ttl > 0) {
     const cached = readResultCache.get(key);
     if (cached && Date.now() - cached.at < ttl) return cached.result;
