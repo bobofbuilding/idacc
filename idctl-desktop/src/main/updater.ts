@@ -1,5 +1,5 @@
 /**
- * Self-update for the desktop app — "notify while running, upgrade on restart".
+ * Self-update for the desktop app — "notify while running, upgrade when requested".
  *
  * Flow:
  *   1. On launch + every checkIntervalHours, fetch an update manifest
@@ -7,9 +7,9 @@
  *      GitHub release from updateRepo.
  *   2. If the manifest version > the running version, download/stage the zip
  *      into userData/staged-update/ and notify the renderer (banner).
- *   3. On "Restart & update" (or, if autoUpgrade, on next app launch) a detached
- *      helper waits for this process to exit, swaps the new .app over the
- *      installed bundle, and relaunches it.
+ *   3. When the user clicks "Restart & update", a detached helper waits for
+ *      this process to exit, swaps the new .app over the installed bundle, and
+ *      relaunches it. Background checks never restart the app by themselves.
  *
  * Bundle replacement can't happen in-process (the running .app is locked), so
  * the swap runs in a small shell helper spawned detached right before quit.
@@ -263,15 +263,29 @@ export async function checkForUpdate(): Promise<UpdateStatus> {
     const latest = await fetchLatest(s);
     const lastChecked = Date.now();
     if (latest && compareVersions(latest.version, status.current) > 0) {
-      // Newer version — stage it so a restart can apply it.
-      const already = readStaged();
-      const freshlyStaged = !already || already.version !== latest.version;
-      if (freshlyStaged) await stage(latest);
-      status = { ...status, checking: false, available: true, staged: true, latest: latest.version, notes: latest.notes, lastChecked };
-      // Ping the OS the first time we download a given version — so it surfaces
-      // even when the user isn't on the Settings page. Skip on cold-start of an
-      // already-staged build (the sidebar chip handles that quietly).
-      if (freshlyStaged) notifyStaged(latest.version, latest.notes);
+      if (s.autoUpgrade === false) {
+        const staged = cleanupStagedState();
+        status = {
+          ...status,
+          checking: false,
+          available: true,
+          staged: !!staged,
+          latest: latest.version,
+          notes: staged?.notes ?? latest.notes,
+          lastChecked,
+        };
+      } else {
+        // Newer version — download and stage it so the explicit Restart & update
+        // button can apply it. Do not restart from a background check.
+        const already = readStaged();
+        const freshlyStaged = !already || already.version !== latest.version;
+        if (freshlyStaged) await stage(latest);
+        status = { ...status, checking: false, available: true, staged: true, latest: latest.version, notes: latest.notes, lastChecked };
+        // Ping the OS the first time we download a given version — so it surfaces
+        // even when the user isn't on the Settings page. Skip on cold-start of an
+        // already-staged build (the sidebar chip handles that quietly).
+        if (freshlyStaged) notifyStaged(latest.version, latest.notes);
+      }
     } else {
       const staged = cleanupStagedState();
       status = { ...status, checking: false, available: !!staged, staged: !!staged, latest: staged?.version ?? latest?.version, notes: staged?.notes ?? status.notes, lastChecked };
@@ -363,14 +377,7 @@ export function startUpdater(win: BrowserWindow): void {
   status = { ...status, current: app.getVersion(), staged: !!staged, available: !!staged, latest: staged?.version ?? status.latest, notes: staged?.notes ?? status.notes };
   // Headless screenshot runs: skip background checks.
   if (process.env.IDCTL_SHOT) return;
-  if (staged && settings()?.autoUpgrade !== false) {
-    emit();
-    setTimeout(() => {
-      const current = readStaged();
-      if (current?.version === staged.version) applyStagedAndRelaunch();
-    }, 1200);
-    return;
-  }
+  if (staged) emit();
   const hours = settings()?.checkIntervalHours ?? 4;
   // Initial check shortly after launch (let the window settle).
   setTimeout(() => void checkForUpdate(), 2500);

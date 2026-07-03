@@ -2199,14 +2199,14 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                     ? `up to date (latest v${updStatus.latest})`
                     : 'up to date'}
           </b>
-          <span>auto-upgrade</span>
+          <span>auto-download</span>
           <b>
             <input
               type="checkbox"
               checked={upd?.autoUpgrade ?? true}
               onChange={(e) => void saveUpdate({ autoUpgrade: e.target.checked })}
             />{' '}
-            <span className="muted small">apply a staged update on next launch</span>
+            <span className="muted small">download updates automatically; restart still requires Restart & update</span>
           </b>
         </div>
         <div className="row-actions" style={{ marginTop: 10 }}>

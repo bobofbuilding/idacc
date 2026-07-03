@@ -8,6 +8,11 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.495] — 2026-07-03
+- Explain Brain approval inbox cards
+- Add goal priority sections
+- Guard Brain approval inbox cards
+
 ## [0.1.494] — 2026-07-03
 - Expand Brain approval Inbox cards with plain-language review guidance and refresh stale approval card text during sync.
 

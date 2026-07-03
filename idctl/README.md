@@ -190,9 +190,9 @@ To present every team unconditionally, set `knownTeams` to `null` in the config.
 idctl keeps itself current. While the TUI is running, a background check (every
 `checkIntervalHours`, default 12) notices a newer GitHub release and shows a
 status-bar banner; with `autoUpgrade` on (default) it downloads + verifies the
-new binary and stages it, so **the next launch atomically replaces the binary
-and re-execs into the new version** — "upgrades on restart". Only compiled
-binaries self-update; running from source (tsx) is a no-op.
+new binary and stages it. Applying the staged update still requires the explicit
+upgrade/restart action. Only compiled binaries self-update; running from source
+(tsx) is a no-op.
 
 ```bash
 idctl upgrade            # check, download, verify, stage (applied next launch)
@@ -203,7 +203,7 @@ idctl upgrade --check    # report only; exit 10 if an update is available
 
 | field | default | meaning |
 |-------|---------|---------|
-| `autoUpgrade` | `true` | stage a found update so it applies on next launch |
+| `autoUpgrade` | `true` | download and stage a found update; applying it is explicit |
 | `updateRepo` | `bobofbuilding/id-agent-control-center` | GitHub `owner/name` to poll |
 | `updateManifestUrl` | *(unset)* | self-hosted `version.json` URL; used instead of GitHub |
 | `checkIntervalHours` | `12` | background check cadence |

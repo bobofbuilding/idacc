@@ -494,8 +494,8 @@ Manager; this is the plumbing.)
 - **Manager/local/backend diagnostics**: manager extension compatibility,
   open-or-pinned provider routing, local runtime readiness, backend readiness, and contextual fixes
   live in the cards that own those systems instead of a separate first-run checkpoint.
-- **Self-update**: version, status, **auto-upgrade** toggle, **Check now**. Background checks
-  stage newer builds, auto-upgrade applies a previously staged build on the next app launch, and
+- **Self-update**: version, status, **auto-download** toggle, **Check now**. Background checks
+  can stage newer builds, but applying a staged build requires the explicit Restart & update action;
   stale/consumed staged zips are gated during status, check, staging, and apply.
 - **Managed subscription sign-ins**: CLI OAuth/device/browser flows (no API key) for `claude-*`,
   `codex`, `cursor-cli`, `grok`, Antigravity `agy`, `copilot`, `kiro-cli`, and legacy `q` only when installed. Rows distinguish

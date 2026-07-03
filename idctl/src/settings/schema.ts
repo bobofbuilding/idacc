@@ -188,7 +188,7 @@ export interface ProjectEntry {
 }
 
 export interface UpdateSettings {
-  /** Auto-apply a staged update on next launch. Default true. */
+  /** Auto-download and stage a found update. Restart still requires explicit user action. Default true. */
   autoUpgrade: boolean;
   /** GitHub repo to poll, "owner/name". Default "bobofbuilding/id-agent-control-center". */
   updateRepo?: string;
