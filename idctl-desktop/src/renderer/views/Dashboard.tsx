@@ -37,6 +37,52 @@ function clip(s: string, n: number): string { const t = s.replace(/\s+/g, ' ').t
 function previewOf(d: Record<string, unknown>): string {
   return str(d.message_preview) || str(d.preview) || str(d.message) || str(d.text) || str(d.title) || str(d.note);
 }
+type WorkDraftSummary = { count: number; titles: string[] };
+function extractJsonArray(text: string): string {
+  const start = text.search(/\[\s*\{/);
+  if (start < 0) return '';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '[') depth += 1;
+    if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return '';
+}
+function workDraftFromText(text: string): WorkDraftSummary | null {
+  const raw = extractJsonArray(text);
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    const rows = parsed.filter((row): row is Record<string, unknown> => !!row && typeof row === 'object');
+    if (rows.length === 0) return null;
+    const taskShaped = rows.filter((row) => str(row.title) || str(row.description) || str(row.owner) || str(row.agent));
+    if (taskShaped.length === 0) return null;
+    return { count: rows.length, titles: taskShaped.map((row) => str(row.title)).filter(Boolean).slice(0, 3) };
+  } catch {
+    return null;
+  }
+}
+function workDraftDesc(actor: string, text: string): string | null {
+  const draft = workDraftFromText(text);
+  if (!draft) return null;
+  const noun = draft.count === 1 ? 'work item' : 'work items';
+  const titles = draft.titles.length ? `: ${draft.titles.join('; ')}${draft.count > draft.titles.length ? ` +${draft.count - draft.titles.length} more` : ''}` : '';
+  return [actor, `proposed ${draft.count} ${noun}${titles}`].filter(Boolean).join(' — ');
+}
 function replyKind(preview: string): string {
   const p = preview.toLowerCase();
   if (!preview) return '';
@@ -55,6 +101,8 @@ function describe(e: { topic: string; actor?: string; data?: Record<string, unkn
     const verb = QUERY_VERB[st] || (st ? `query ${st}` : 'query');
     const preview = previewOf(d);
     const head = who ? `${who} ${verb}` : verb;
+    const draft = workDraftDesc(head, preview);
+    if (draft) return draft;
     if (preview) { const kind = replyKind(preview); return `${head}${kind ? ` · ${kind}` : ''} · “${clip(preview, 80)}”`; }
     return head;
   }
@@ -111,6 +159,10 @@ function newsDesc(n: DashboardNews): string {
   const actor = newsActor(n);
   const preview = clip(n.message || previewOf(n.data ?? {}) || n.type, 120);
   return [actor, preview].filter(Boolean).join(' — ');
+}
+function newsWorkDraftDesc(n: DashboardNews): string | null {
+  const raw = n.message || previewOf(n.data ?? {});
+  return workDraftDesc(newsActor(n), raw);
 }
 function inboxDesc(i: InboxItem): string {
   const from = i.from || 'manager';
@@ -387,15 +439,16 @@ export function Dashboard({ store }: { store: FleetStore }) {
       });
     }
     for (const n of news) {
+      const draft = newsWorkDraftDesc(n);
       items.push({
         key: `comms:${n.teamName ?? ''}:${n.id ?? `${n.timestamp}:${n.type}:${n.message ?? ''}`}`,
-        topic: 'comms',
-        className: newsClass(n),
-        desc: newsDesc(n),
+        topic: draft ? 'draft' : 'comms',
+        className: draft ? 'warn' : newsClass(n),
+        desc: draft ?? newsDesc(n),
         team: n.teamName,
         agent: str(n.data?.from) || str(n.data?.sender) || str(n.data?.agent) || str(n.data?.source) || undefined,
         at: toMs(n.timestamp),
-        title: n.type,
+        title: draft ? `Autopilot decomposition draft · ${n.type}` : n.type,
       });
     }
     for (const i of store.inbox) {
@@ -446,7 +499,7 @@ export function Dashboard({ store }: { store: FleetStore }) {
             top (when no project is focused; a focused project's banner adds a little extra). */}
         <aside className="card" style={{ width: 560, flexShrink: 0, marginTop: 38, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <h3 style={{ marginTop: 0 }}>
-            Activity <span className="muted small">· active teams{feedItems.length ? ` (${feedItems.length})` : ''} · {tasks.length} tasks · {news.length + store.inbox.length} comms</span>
+            Activity <span className="muted small">· {activeTeams.length} active teams · {feedItems.length} feed rows · {tasks.length} tasks · {news.length + store.inbox.length} comms</span>
           </h3>
           <div className="feed-list" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
             {feedItems.map((item) => (
