@@ -46,6 +46,20 @@ assert.deepEqual(
   'ready API providers should become selectable model lanes without becoming static manager harness runtimes',
 );
 
+const localProviderLanes = buildProviderModelLanes([
+  { name: 'ollama', kind: 'ollama', baseUrl: 'http://127.0.0.1:11434', enabled: true, needsKey: false, lastSync: { at: 1, status: 'live', modelCount: 1, models: ['qwen3:1.7b'] } },
+  { name: 'lmstudio', kind: 'lmstudio', baseUrl: 'http://127.0.0.1:1234/v1', enabled: true, needsKey: false, lastSync: { at: 1, status: 'live', modelCount: 1, models: ['local-model'] } },
+]);
+
+assert.deepEqual(
+  localProviderLanes.map((lane) => ({ id: lane.id, label: lane.label, kind: lane.kind, selectable: lane.selectable, count: lane.models.length })),
+  [
+    { id: 'provider:ollama', label: 'Local · Ollama', kind: 'local', selectable: true, count: 1 },
+    { id: 'provider:lmstudio', label: 'Local · LM Studio', kind: 'local', selectable: true, count: 1 },
+  ],
+  'synced local providers should become selectable concrete local model lanes',
+);
+
 const providerCatalog = buildRuntimeCatalog([
   { name: 'openrouter', kind: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1', enabled: true, needsKey: true, lastSync: { at: 1, status: 'live', modelCount: 2, models: ['openai/gpt-5.4', 'anthropic/claude-sonnet-4.6'] } },
 ] satisfies ProviderProfile[]);

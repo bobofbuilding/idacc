@@ -39,7 +39,7 @@ interface AgentConfigDraft {
 }
 const DEFAULT_BACKBONE_AGENTS = new Set(['lead', 'coder', 'researcher']);
 const SOURCE_LABEL: Record<RuntimeFreshness['source'], string> = {
-  'codex-cache': 'codex CLI cache', 'grok-cli': 'grok CLI models', 'antigravity-cli': 'Antigravity CLI models', provider: 'live provider sync', curated: 'curated fallback', none: 'no models',
+  'codex-cache': 'codex CLI cache', 'grok-cli': 'grok CLI models', 'antigravity-cli': 'Antigravity CLI models', provider: 'live provider sync', curated: 'built-in defaults', none: 'no models',
 };
 const KIND_LABEL: Record<RuntimeModelLaneKind | 'harness', string> = {
   harness: 'harness',
@@ -265,16 +265,18 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
       .map((s) => s.runtime)
       .filter(Boolean) as string[],
   );
+  const hasConcreteLocalLane = freshness.some((f) => f.kind === 'local' && f.count > 0);
   const visibleFreshness = freshness.filter((f) => {
     if (!f.count && f.source === 'none') return false;
     const kind = f.kind ?? 'harness';
+    if (kind === 'harness' && f.runtime === 'ollama' && hasConcreteLocalLane) return false;
     if (kind !== 'harness') return true;
     return f.selectable !== false || currentRuntimeSet.has(f.runtime) || linkedManagedRuntimeSet.has(f.runtime);
   });
-  const apiModelLaneOpts = visibleFreshness
-    .filter((f) => f.kind === 'api')
+  const providerModelLaneOpts = visibleFreshness
+    .filter((f) => f.kind === 'api' || f.kind === 'local')
     .sort((a, b) => (a.label ?? a.runtime).localeCompare(b.label ?? b.runtime));
-  const selectableApiLaneOpts = apiModelLaneOpts.filter((f) => f.selectable !== false);
+  const selectableProviderLaneOpts = providerModelLaneOpts.filter((f) => f.selectable !== false);
   const groupRuntimeOpts = (runtimes: string[], group: ReturnType<typeof runtimePickerGroup>) =>
     runtimes.filter((rt) => runtimePickerGroup(rt) === group);
 
@@ -599,8 +601,12 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     const runtimeOpts = Array.from(new Set([currentHarness, ...offerableRuntimes(providers, currentHarness, Object.values(managedRuntimes))].filter(Boolean))) as string[];
     const subscriptionRuntimeOpts = groupRuntimeOpts(runtimeOpts, 'subscription');
     const localRuntimeOpts = groupRuntimeOpts(runtimeOpts, 'local');
-    const providerLaneOpts = selectableApiLaneOpts.filter((f) => f.runtime !== currentProviderLane);
-    const readonlyApiLaneOpts = apiModelLaneOpts.filter((f) => f.runtime !== currentProviderLane && f.selectable === false);
+    const providerLaneOpts = selectableProviderLaneOpts.filter((f) => f.runtime !== currentProviderLane);
+    const readonlyProviderLaneOpts = providerModelLaneOpts.filter((f) => f.runtime !== currentProviderLane && f.selectable === false);
+    const localProviderLaneOpts = providerLaneOpts.filter((f) => f.kind === 'local');
+    const apiProviderLaneOpts = providerLaneOpts.filter((f) => f.kind === 'api');
+    const readonlyLocalProviderLaneOpts = readonlyProviderLaneOpts.filter((f) => f.kind === 'local');
+    const readonlyApiProviderLaneOpts = readonlyProviderLaneOpts.filter((f) => f.kind === 'api');
     const linkedSubscriptionLaneOpts = visibleFreshness
       .filter((f) => (f.kind ?? 'harness') === 'harness' && f.selectable === false && linkedManagedRuntimeSet.has(f.runtime) && f.runtime !== currentHarness && !runtimeOpts.includes(f.runtime))
       .sort((a, b) => runtimeLabel(a.runtime).localeCompare(runtimeLabel(b.runtime)));
@@ -621,7 +627,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         <td onClick={(e) => e.stopPropagation()}>
           {isLocal ? (
             <select className="cell-select" value={displayRuntime ?? ''} onChange={(e) => stageRuntime(a, e.target.value)}
-              title="Settings-available subscription CLIs, local model runtimes, and synced API provider lanes are selectable.">
+              title="Settings-available subscription CLIs, synced local provider lanes, and synced API provider lanes are selectable.">
               {currentProviderLane ? <option value={currentProviderLane}>{runtimeLabel(currentProviderLane)} (current model lane)</option> : null}
               {subscriptionRuntimeOpts.length ? (
                 <optgroup label="Subscription CLI runtimes">
@@ -640,16 +646,30 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
                   ))}
                 </optgroup>
               ) : null}
-              {providerLaneOpts.length ? (
-                <optgroup label="API provider lanes">
-                  {providerLaneOpts.map((f) => (
+              {localProviderLaneOpts.length ? (
+                <optgroup label="Local provider lanes">
+                  {localProviderLaneOpts.map((f) => (
                     <option key={f.runtime} value={f.runtime}>{modelLaneOptionLabel(f)}</option>
                   ))}
                 </optgroup>
               ) : null}
-              {readonlyApiLaneOpts.length ? (
+              {apiProviderLaneOpts.length ? (
+                <optgroup label="API provider lanes">
+                  {apiProviderLaneOpts.map((f) => (
+                    <option key={f.runtime} value={f.runtime}>{modelLaneOptionLabel(f)}</option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {readonlyLocalProviderLaneOpts.length ? (
+                <optgroup label="Local provider lanes (sync needed)">
+                  {readonlyLocalProviderLaneOpts.map((f) => (
+                    <option key={f.runtime} value={`readonly:${f.runtime}`} disabled>{modelLaneOptionLabel(f)}</option>
+                  ))}
+                </optgroup>
+              ) : null}
+              {readonlyApiProviderLaneOpts.length ? (
                 <optgroup label="API provider lanes (sync needed)">
-                  {readonlyApiLaneOpts.map((f) => (
+                  {readonlyApiProviderLaneOpts.map((f) => (
                     <option key={f.runtime} value={`readonly:${f.runtime}`} disabled>{modelLaneOptionLabel(f)}</option>
                   ))}
                 </optgroup>
@@ -702,7 +722,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         </td>
         {onProbe ? (
           <td onClick={(e) => e.stopPropagation()}>
-            <button className="btn small" disabled={probeBusy === a.name} onClick={() => void probeAgent(a)}>{probeBusy === a.name ? '…' : 'Probe'}</button>
+            <button className="btn small" disabled={probeBusy === a.name} onClick={() => void probeAgent(a)} title="Send a tiny end-to-end /talk probe through this agent. Health refreshes token throughput afterward when the runtime reports usage.">{probeBusy === a.name ? '…' : 'Probe'}</button>
           </td>
         ) : null}
       </tr>
@@ -729,12 +749,12 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
             {showModels ? 'Hide model lanes' : `Model lanes${visibleFreshness.length ? ` (${visibleFreshness.length})` : ''}`}
           </button>
           {navigate ? <button className="btn small" onClick={() => navigate('teams:route')} title="Change team coordinators and primary routing in HR Manager Manage → Hierarchy & sync">Open HR Manage</button> : null}
-          <button className="btn" disabled={!!busy} onClick={() => void probeRuntimes()} title="Probe each runtime's backing inference provider for its newest available models (also auto-refreshes every 6h)">Probe runtimes</button>
+          <button className="btn" disabled={!!busy} onClick={() => void probeRuntimes()} title="Re-check provider and CLI model lists. Per-agent Probe below runs the end-to-end /talk health check.">Re-check model lanes</button>
         </div>
         {showModels ? (
           <div className="card model-lanes-panel">
             <div className="muted small" style={{ marginBottom: 4 }}>
-              Subscription CLIs, local model runtimes, and provider model lanes — auto-refreshed on boot + every 6h, or hit <b>Probe runtimes</b> now.
+              Subscription CLIs, local provider lanes, and API provider lanes. Re-check refreshes model lists; rows marked built-in defaults have no live model-list API.
             </div>
             {visibleFreshness.length ? (
               <div className="model-lanes-grid">
@@ -758,10 +778,10 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
                       </span>
                       <span className="muted small model-lane-count">{f.count} model{f.count === 1 ? '' : 's'}</span>
                       <span className={`small model-lane-source ${unavailableHarness || f.source === 'curated' || f.source === 'none' ? 'warn-text' : 'ok-text'}`}
-                        title={f.detail ?? (f.source === 'curated' ? 'No live model API for this runtime — using a curated fallback list (subscription runtimes have no /models endpoint).' : SOURCE_LABEL[f.source])}>
+                        title={f.detail ?? (f.source === 'curated' ? 'No live model-list signal is available for this runtime. IDACC is showing built-in default models until the runtime or provider exposes a live list.' : SOURCE_LABEL[f.source])}>
                         {sourceText}
                       </span>
-                      <span className="muted small model-lane-checked">{f.lastCheckedMs ? `checked ${agoMs(f.lastCheckedMs)}` : '—'}</span>
+                      <span className="muted small model-lane-checked">{f.lastCheckedMs ? `checked ${agoMs(f.lastCheckedMs)}` : f.source === 'curated' ? 'built-in' : '—'}</span>
                     </div>
                   );
                 })}

@@ -425,7 +425,17 @@ export function providerModelLaneKind(p: ProviderProfile): RuntimeModelLaneKind 
 export function providerModelLaneLabel(p: ProviderProfile): string {
   const kind = providerModelLaneKind(p);
   const prefix = kind === 'subscription' ? 'Subscription' : kind === 'local' ? 'Local' : 'API';
-  return `${prefix} · ${p.name}`;
+  return `${prefix} · ${prettyProviderLaneName(p.name)}`;
+}
+
+function prettyProviderLaneName(name: string | undefined): string {
+  const n = String(name ?? '').trim();
+  const key = n.toLowerCase();
+  if (key === 'ollama') return 'Ollama';
+  if (key === 'lmstudio' || key === 'lm-studio' || key === 'lm studio') return 'LM Studio';
+  if (key === 'localai' || key === 'local-ai') return 'LocalAI';
+  if (key === 'mlx-lm-server' || key === 'mlx_lm.server') return 'MLX';
+  return n || 'provider';
 }
 
 function uniqueModels(models: string[] | undefined): string[] {
@@ -454,13 +464,15 @@ export function buildProviderModelLanes(providers: Array<ProviderProfile & { key
       const models = providerVisibleModels(p);
       const kind = providerModelLaneKind(p);
       const routeReady = providerRouteReady(p);
-      const selectable = kind === 'api' && routeReady && models.length > 0;
+      const selectable = (kind === 'api' || kind === 'local') && routeReady && models.length > 0;
       const detail = kind === 'api'
         ? selectable
           ? 'Configured API provider lane. IDACC can assign this through the manager provider-api harness.'
           : 'Configured API provider lane. Connect & sync this backend before assigning it to an agent.'
         : kind === 'local'
-          ? 'Configured local provider/model lane. Agent assignment needs the manager harness to be pointed at this server before this can be selected directly.'
+          ? selectable
+            ? 'Configured local model lane. IDACC can assign this through the manager provider-api harness.'
+            : 'Configured local model lane. Start the local server, then Connect & sync it before assigning it to an agent.'
           : 'Configured subscription/API provider lane. Agent assignment uses the matching manager harness when available.';
       return {
         id: providerModelLaneId(p),

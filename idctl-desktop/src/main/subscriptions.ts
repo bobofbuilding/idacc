@@ -184,6 +184,14 @@ function cliPath(bin: string): string | undefined {
   return cliDirs().map((d) => `${d}/${bin}`).find((p) => existsSync(p));
 }
 
+function firstCliPath(bins: string[]): { bin: string; path: string } | undefined {
+  for (const bin of bins) {
+    const path = cliPath(bin);
+    if (path) return { bin, path };
+  }
+  return undefined;
+}
+
 function expandHome(p: string): string {
   return p.replace(/^~(?=\/|$)/, homedir());
 }
@@ -431,10 +439,11 @@ function googleAccountHint(): Pick<SubStatus, 'account' | 'accountSource' | 'ema
 }
 
 async function antigravityStatus(): Promise<SubStatus> {
-  if (!cliPath(SUB_META.antigravity.bin)) return notInstalled('antigravity');
+  const cli = firstCliPath(['agy', 'antigravity']);
+  if (!cli) return notInstalled('antigravity');
   const account = googleAccountHint();
   try {
-    const { stdout, stderr } = await execFileP('agy', ['models'], { env: cliEnv(), timeout: 15000 });
+    const { stdout, stderr } = await execFileP(cli.bin, ['models'], { env: cliEnv(), timeout: 15000 });
     const out = `${stdout}${stderr}`.trim();
     const loggedIn = Boolean(out) && !/not authenticated|not logged in|signed out|login required/i.test(out);
     return baseStatus('antigravity', {
@@ -443,7 +452,7 @@ async function antigravityStatus(): Promise<SubStatus> {
       statusSupported: true,
       ...account,
       linked: account.linked && !loggedIn ? true : undefined,
-      detail: truncateDetail(out),
+      detail: truncateDetail(out || `${cli.bin} detected at ${cli.path}`),
     });
   } catch (e: unknown) {
     const err = e as { stdout?: string; stderr?: string; message?: string };

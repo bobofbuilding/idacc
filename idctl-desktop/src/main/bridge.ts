@@ -406,20 +406,24 @@ function grokModelsFromCli(): string[] {
 }
 
 function antigravityModelsFromCli(): string[] {
-  try {
-    const stdout = execFileSync('agy', ['models'], {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 15000,
-    });
-    if (!stdout.trim() || /not authenticated|not logged in|signed out|login required/i.test(stdout)) return [];
-    return stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line && line.length <= 120 && !/token|secret|bearer|api[_-]?key/i.test(line));
-  } catch {
-    return [];
+  for (const command of ['agy', 'antigravity']) {
+    try {
+      const stdout = execFileSync(command, ['models'], {
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 15000,
+      });
+      if (!stdout.trim() || /not authenticated|not logged in|signed out|login required/i.test(stdout)) continue;
+      const models = stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && line.length <= 120 && !/token|secret|bearer|api[_-]?key/i.test(line));
+      if (models.length) return models;
+    } catch {
+      // Try the next known Antigravity CLI entry point.
+    }
   }
+  return [];
 }
 
 /** Catalog with subscription CLI live model lists merged into curated/runtime providers. */
@@ -471,7 +475,22 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
           (rt !== 'ollama' || isLocalProvider(p)),
       )
       .sort((a, b) => (b.lastSync?.at ?? 0) - (a.lastSync?.at ?? 0))[0];
-  const harnessRows = RUNTIMES.map((rt): RuntimeFreshness => {
+  const providerRows = buildProviderModelLanes(enrichedProviders).map((lane): RuntimeFreshness => ({
+    runtime: lane.id,
+    label: lane.label,
+    kind: lane.kind,
+    models: lane.models,
+    count: lane.models.length,
+    source: lane.source,
+    provider: lane.provider,
+    lastCheckedMs: lane.lastCheckedMs,
+    selectable: lane.selectable,
+    detail: lane.detail,
+  }));
+  const hasConcreteLocalProviderLane = providerRows.some((row) => row.kind === 'local' && row.count > 0);
+  const harnessRows = RUNTIMES
+    .filter((rt) => !(rt === 'ollama' && hasConcreteLocalProviderLane))
+    .map((rt): RuntimeFreshness => {
     const models = cat[rt] ?? [];
     const selectable = available.has(rt);
     const linkedSubscription = managedByRuntime.has(rt) && !runtimeHasManagerHarness(rt);
@@ -498,18 +517,6 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
     if (p) return { runtime: rt, kind: 'harness', models, count: models.length, source: 'provider', provider: p.name, lastCheckedMs: p.lastSync?.at ?? null, selectable, detail: unavailableDetail };
     return { runtime: rt, kind: 'harness', models, count: models.length, source: models.length ? 'curated' : 'none', lastCheckedMs: null, selectable, detail: unavailableDetail };
   });
-  const providerRows = buildProviderModelLanes(enrichedProviders).map((lane): RuntimeFreshness => ({
-    runtime: lane.id,
-    label: lane.label,
-    kind: lane.kind,
-    models: lane.models,
-    count: lane.models.length,
-    source: lane.source,
-    provider: lane.provider,
-    lastCheckedMs: lane.lastCheckedMs,
-    selectable: lane.selectable,
-    detail: lane.detail,
-  }));
   return [...harnessRows, ...providerRows];
 }
 
@@ -689,7 +696,7 @@ function resolveProviderLaneAssignment(runtime: string): { providerName: string;
   const p = loadSettings().providers.find((x) => x.name === providerName);
   if (!p) throw new Error(`provider lane "${providerName}" is no longer configured in Settings`);
   if (!providerRouteReadyForAssignment(p)) throw new Error(`provider lane "${providerName}" is not ready; Connect & sync it in Settings first`);
-  const apiKey = resolveProviderKey(p);
+  const apiKey = resolveProviderKey(p) || (!providerNeedsKey(p) && isLoopbackProvider(p) ? 'idacc-local-provider-no-key' : '');
   if (providerNeedsKey(p) && !apiKey) throw new Error(`provider lane "${providerName}" is missing an API key`);
   return {
     providerName,
