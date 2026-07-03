@@ -80,7 +80,7 @@ function resolutionPath(kind: string): string {
     case 'team.instruction.supersede':
       return 'confirm replacement instruction; approval lets Brain supersede the older team instruction memory';
     case 'fact.contradiction':
-      return 'choose the winning fact before apply; approval alone does not choose a winner';
+      return 'review the competing facts, choose the trusted fact only when the evidence is clear, otherwise reject or resolve it in Brain Health';
     case 'skill.publish':
       return 'confirm evidence and scope; approval lets Brain publish the skill proposal';
     case 'skill.proposal.evidence_invalid':
@@ -203,6 +203,125 @@ function memoryRetireDecisionLines(approval: BrainApproval, subject: string, com
   ].filter(Boolean);
 }
 
+function shortList(value: unknown, max = 8): string {
+  const items = asArray(value).map((item) => clip(redactText(item), 80)).filter(Boolean);
+  if (!items.length) return '';
+  const shown = items.slice(0, max);
+  return `${shown.join(', ')}${items.length > shown.length ? `, +${items.length - shown.length} more` : ''}`;
+}
+
+function summarizeClaimValue(value: unknown, maxItems = 4): string {
+  if (Array.isArray(value)) {
+    const items = value.map((item) => summarizeClaimValueItem(item)).filter(Boolean);
+    if (!items.length) return 'no readable value provided';
+    const shown = items.slice(0, maxItems);
+    return `${items.length} item${items.length === 1 ? '' : 's'}: ${shown.join('; ')}${items.length > shown.length ? `; +${items.length - shown.length} more` : ''}`;
+  }
+
+  const row = asRecord(value);
+  if (Object.keys(row).length) return summarizeClaimValueItem(row);
+
+  const text = clip(redactText(value), 700);
+  return text || 'no readable value provided';
+}
+
+function summarizeClaimValueItem(value: unknown): string {
+  const row = asRecord(value);
+  if (Object.keys(row).length) {
+    const path = firstText(row, [['path'], ['file'], ['file_path'], ['name'], ['id']], 140);
+    const category = firstText(row, [['category'], ['kind'], ['type']], 80);
+    const risk = firstText(row, [['risk'], ['risk_level'], ['severity']], 80);
+    const summary = firstText(row, [['summary'], ['description'], ['title'], ['claim'], ['text'], ['content']], 320);
+    const snippet = firstText(row, [['snippet'], ['excerpt'], ['evidence']], 220);
+    const meta = [category, risk].filter(Boolean).join(', ');
+    if (path && summary) return `${path}${meta ? ` (${meta})` : ''}: ${summary}`;
+    if (summary) return `${summary}${meta ? ` (${meta})` : ''}`;
+    if (path && snippet) return `${path}: ${snippet}`;
+    if (path) return path;
+    const json = JSON.stringify(row);
+    return clip(redactText(json), 360);
+  }
+  return clip(redactText(value), 320);
+}
+
+function contradictionClaimLines(approval: BrainApproval): string[] {
+  const payload = approval.payload ?? {};
+  const claimSets = [
+    asArray(payload['competing_values']),
+    asArray(payload['claims']),
+    asArray(payload['facts']),
+    asArray(payload['candidates']),
+  ].filter((items) => items.length);
+  const claims = claimSets[0] ?? [];
+  return claims.slice(0, 6).map((claim, index) => {
+    const row = asRecord(claim);
+    const id = firstText(row, [['fact_id'], ['id'], ['claim_id'], ['source_fact_id']], 80);
+    const label = id ? `Fact ${id}` : `Fact ${String.fromCharCode(65 + index)}`;
+    const value = row['value'] ?? row['claim'] ?? row['fact'] ?? row['statement'] ?? row['text'] ?? claim;
+    const source = firstText(row, [['source'], ['origin'], ['created_by'], ['requested_by']], 120);
+    const confidence = percent(row['confidence']);
+    const observed = timeLabel(row['observed_at'] ?? row['created_at'] ?? row['updated_at']);
+    const textUnits = shortList(row['text_unit_ids'], 5);
+    const signals = [
+      source ? `source ${source}` : '',
+      confidence ? `confidence ${confidence}` : '',
+      observed ? `observed ${observed}` : '',
+      textUnits ? `text units ${textUnits}` : '',
+    ].filter(Boolean);
+    return `- ${label}: ${summarizeClaimValue(value)}${signals.length ? ` (${signals.join('; ')})` : ''}`;
+  });
+}
+
+function contradictionDecisionLines(approval: BrainApproval, subject: string, common: string[]): string[] {
+  const payload = approval.payload ?? {};
+  const entity = firstText(payload, [['entity_id'], ['entity'], ['record_id'], ['subject']], 180) || subject;
+  const field = firstText(payload, [['field'], ['property'], ['key']], 160);
+  const claims = contradictionClaimLines(approval);
+  const confidence = percent(payload['confidence']);
+  const sourceFactIds = shortList(payload['source_fact_ids'], 8);
+  const sourceTextUnits = shortList(payload['source_text_unit_ids'], 8);
+  const consecutiveCycles = Number(payload['consecutive_cycle_count']);
+  const repeated = payload['observed_in_consecutive_cycles'] === true
+    ? Number.isFinite(consecutiveCycles) && consecutiveCycles > 0
+      ? `seen in ${Math.round(consecutiveCycles)} consecutive cycles`
+      : 'seen in consecutive cycles'
+    : '';
+  const proposed = asRecord(payload['proposed_resolution']);
+  const requiredFields = shortList(proposed['required_fields'], 6);
+  const losingStatuses = shortList(proposed['allowed_losing_status'], 6);
+  const reversible = proposed['reversible'] ?? approval.governance?.risk?.reversible;
+  const applyRoute = firstText(proposed, [['apply_route']], 120);
+  const signals = [
+    confidence ? `Brain confidence ${confidence}` : '',
+    sourceFactIds ? `source fact IDs ${sourceFactIds}` : '',
+    sourceTextUnits ? `source text units ${sourceTextUnits}` : '',
+    repeated,
+    `rollback available: ${booleanLabel(reversible)}`,
+  ].filter(Boolean);
+  const applyNotes = [
+    requiredFields ? `Brain apply requires ${requiredFields}` : '',
+    losingStatuses ? `losing fact can be marked ${losingStatuses}` : '',
+    applyRoute ? `apply route ${applyRoute}` : '',
+  ].filter(Boolean);
+
+  return [
+    'Decision: Which stored fact should Brain trust for this exact topic, and which competing fact should stay disputed/superseded?',
+    `Topic: ${entity}${field ? ` / field: ${field}` : ''}.`,
+    claims.length
+      ? `Competing facts Brain is asking you to compare:\n${claims.join('\n')}`
+      : 'Competing facts: not included in this Inbox payload. Do not approve from this card; open Brain Health to inspect the claims and choose the winner.',
+    signals.length ? `Evidence signals: ${signals.join('; ')}.` : '',
+    common.join(' '),
+    'Real question: are these two records mutually exclusive versions of the same fact, or are they both valid facts that should be split by commit, date, chain, contract, or another scope?',
+    'Approve means: mark this approval as reviewed only after the winner is clear. This Inbox button does not pick the winner by itself; if Brain still needs a winning_fact_id, the guarded apply step must get that from Brain Health or a proposal review before facts change.',
+    'Reject means: keep Brain from changing these facts from this approval. Use this when the card does not show enough evidence, when both facts can be true under different scopes, or when the winning fact is not obvious.',
+    applyNotes.length ? `Apply guardrails: ${applyNotes.join('; ')}.` : '',
+    field === 'changed_diff_snippets'
+      ? 'For repo change summaries: approve only if one claim is the correct snapshot for this repo field. If both are real changes from different commits/builds, reject or resolve in Brain Health by splitting the facts instead of choosing a false winner.'
+      : '',
+  ].filter(Boolean);
+}
+
 function approvalPlainLanguage(approval: BrainApproval, kind: string, subject: string, reason: string): string[] {
   const payload = approval.payload ?? {};
   const candidates = candidateLabels(approval);
@@ -236,13 +355,7 @@ function approvalPlainLanguage(approval: BrainApproval, kind: string, subject: s
         'Reject if: the older instruction is still valid or needs manual consolidation first.',
       ];
     case 'fact.contradiction':
-      return [
-        'Plain-English meaning: Brain found two facts that conflict and needs review before it trusts one over the other.',
-        `Fact/topic: ${subject}.`,
-        common.join(' '),
-        'Approve only if this specific approval clearly identifies the correct fact. If it does not, open Brain Health and resolve the contradiction there.',
-        'Reject if: there is not enough evidence to pick a winner.',
-      ];
+      return contradictionDecisionLines(approval, subject, common);
     case 'skill.publish':
       return [
         'Plain-English meaning: Brain has a skill proposal that may be ready to publish into the skill catalog.',
@@ -293,7 +406,9 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
     ? ['Approve alias merge', 'Reject / keep separate']
     : kind === 'memory.retire'
       ? ['Approve retirement after review', 'Reject / keep memory active']
-    : ['Approve after review — queue Brain change', 'Reject — keep current Brain state'];
+      : kind === 'fact.contradiction'
+        ? ['Approve only after winner is clear', 'Reject / needs more evidence']
+        : ['Approve after review — queue Brain change', 'Reject — keep current Brain state'];
 
   return {
     id: `brain-approval-${id}`,
@@ -314,7 +429,7 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
       requestedBy: approval.requested_by ?? 'brain',
       status: approval.status ?? 'pending',
       sourceUrl: `${brainBaseUrl()}/dashboard/health`,
-      detailVersion: 3,
+      detailVersion: 4,
     },
   };
 }

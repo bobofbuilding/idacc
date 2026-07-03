@@ -160,7 +160,8 @@ export function addQuestion(q: BlockerQuestion): { ok: boolean; id: string } {
   // Idempotent: blocker scans / plan scans / Learn gates may re-raise the same decision
   // repeatedly or with tiny wording changes. Normalize + scope before writing so the
   // Inbox has one live decision row, not a stack of duplicates.
-  const incomingQuestion = String(q.question || '').slice(0, 600).trim();
+  const questionLimit = q.source === 'brain-approvals' ? 5000 : 600;
+  const incomingQuestion = String(q.question || '').slice(0, questionLimit).trim();
   const id = q?.id || `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
   const payload: BlockerQuestion = {
     id,
