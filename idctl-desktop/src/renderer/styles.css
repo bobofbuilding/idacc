@@ -11,12 +11,14 @@
   --warn: #d29922;
   --err: #f85149;
   --radius: 10px;
+  --font-sans: Arial, Helvetica, sans-serif;
+  --mono: Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body {
-  font: 13px/1.5 -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  font: 13px/1.5 var(--font-sans);
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -50,7 +52,7 @@ input, textarea { -webkit-user-select: text; user-select: text; }
   padding: 8px 9px; border: 1px solid var(--accent); border-radius: 8px; background: var(--bg-3);
   font-size: 11px;
 }
-.sb-update .uv-line { font-family: var(--mono, ui-monospace, monospace); margin-bottom: 7px; white-space: nowrap; }
+.sb-update .uv-line { font-family: var(--mono); margin-bottom: 7px; white-space: nowrap; }
 .sb-update .uv-from { color: var(--muted); }
 .sb-update .uv-to { color: var(--ok); font-weight: 700; }
 .sb-update .uv-actions { display: flex; align-items: center; gap: 6px; }
@@ -129,7 +131,7 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 .grid tbody tr.sel { background: var(--bg-3); }
 .b { font-weight: 600; }
 .muted { color: var(--muted); }
-.mono { font-family: 'SF Mono', ui-monospace, monospace; }
+.mono { font-family: var(--mono); }
 .small { font-size: 11px; }
 
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; margin-right: 2px; background: var(--muted); }
@@ -477,7 +479,7 @@ button.chip.incompat:hover { border-color: var(--line); }
 /* Projects → git tracking */
 .accent-text { color: var(--accent); }
 .projects-root { margin: -4px 0 4px; }
-.projects-root .mono { font-family: var(--mono, ui-monospace, monospace); opacity: .85; overflow-wrap: anywhere; }
+.projects-root .mono { font-family: var(--mono); opacity: .85; overflow-wrap: anywhere; }
 .link-btn { background: none; border: none; color: var(--accent); padding: 0; font: inherit; cursor: pointer; }
 .link-btn:hover { text-decoration: underline; }
 .link-btn:disabled { opacity: .5; cursor: default; text-decoration: none; }
@@ -490,7 +492,7 @@ button.chip.incompat:hover { border-color: var(--line); }
 .project-automation-summary { margin-top: 6px; display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .project-automation-summary .chip { flex: 0 0 auto; }
 .project-automation-panel { margin-top: 6px; border: 1px solid var(--line); border-radius: 6px; padding: 8px; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; background: var(--bg-2); }
-.git-out { background: var(--bg-3); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; font-family: var(--mono, ui-monospace, monospace); font-size: 11px; line-height: 1.5; white-space: pre-wrap; max-height: 200px; overflow: auto; margin: 8px 0 0; }
+.git-out { background: var(--bg-3); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; font-family: var(--mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; max-height: 200px; overflow: auto; margin: 8px 0 0; }
 
 /* External links (open in the system browser via the main-process handler) */
 .ext-link { color: var(--accent); text-decoration: none; cursor: pointer; }
@@ -648,7 +650,7 @@ button.chip.incompat:hover { border-color: var(--line); }
 .chat-title:focus { border-color: var(--accent); }
 .chat-img { max-width: min(420px, 100%); max-height: 420px; border-radius: 10px; border: 1px solid var(--line); margin-top: 8px; display: block; }
 .chat-focus { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: -4px 0 8px; padding: 6px 10px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; }
-.chat-focus .mono { font-family: var(--mono, ui-monospace, monospace); opacity: .8; word-break: break-all; }
+.chat-focus .mono { font-family: var(--mono); opacity: .8; word-break: break-all; }
 .msg-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 /* Live + persisted "behind the scenes" fleet activity under an agent reply. */
 .chat-trace { margin: 6px 0 2px; padding: 6px 10px; background: var(--bg-2); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 8px; max-width: 560px; }
@@ -1088,7 +1090,7 @@ select:focus, input:focus { border-color: var(--accent); }
   color: var(--muted);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--mono);
   font-size: 12px;
 }
 

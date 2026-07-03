@@ -1867,7 +1867,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
                 {sgMsg ? <span className={`small ${/failed/.test(sgMsg) ? 'status-error' : 'ok-text'}`}>{sgMsg}</span> : null}
                 <button className="btn primary small" disabled={sgBusy || sgInstr === sgSaved} onClick={() => void saveSgInstr()}>{sgBusy ? '…' : 'Save & rebuild'}</button>
               </div>
-              <textarea style={{ width: '100%', minHeight: 140, fontFamily: 'var(--mono, ui-monospace, monospace)', fontSize: 12 }}
+              <textarea style={{ width: '100%', minHeight: 140, fontFamily: 'var(--mono)', fontSize: 12 }}
                 placeholder={`Instruction markdown for ${selectedAgent.agent.name}. Org Sync preserves manual text while updating its own marker-fenced block.`}
                 value={sgInstr} disabled={sgBusy} onChange={(e) => setSgInstr(e.target.value)} />
               <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border, #2a2a2a)' }}>
@@ -1902,7 +1902,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
                         {GOAL_PRIORITIES.map((p) => <option key={p} value={p}>{GOAL_PRIORITY_LABEL[p]}</option>)}
                       </select>
                     </div>
-                    <textarea style={{ width: '100%', minHeight: 120, marginTop: 8, fontFamily: 'var(--mono, ui-monospace, monospace)', fontSize: 12 }}
+                    <textarea style={{ width: '100%', minHeight: 120, marginTop: 8, fontFamily: 'var(--mono)', fontSize: 12 }}
                       placeholder={`Goal markdown for ${selectedAgent.agent.name}.`}
                       value={sgGoalContent} disabled={sgGoalBusy} onChange={(e) => setSgGoalContent(e.target.value)} />
                     <div className="row-actions" style={{ marginTop: 8 }}>
