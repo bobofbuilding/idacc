@@ -2411,6 +2411,16 @@ function TeamBuilder({
   const [aiSuggestions, setAiSuggestions] = useState<DesignedTeam['suggestions']>();
   const aiRun = useRef(0); // bumps to invalidate a stale/cancelled design wait
 
+  useEffect(() => {
+    if (rowsDirty || spec.trim() || !initialRuntime) return;
+    setRows((current) => {
+      if (current.length !== 1) return current;
+      const [row] = current;
+      if (row.runtime || row.name || row.model || row.role || row.description || row.skills.length || row.lead || row.open) return current;
+      return [{ ...row, runtime: initialRuntime }];
+    });
+  }, [initialRuntime, rowsDirty, spec]);
+
   // ---- options applied to every agent ----
   const [mcpIds, setMcpIds] = useState<string[]>([]);
   const [sharedSkills, setSharedSkills] = useState<string[]>([]);

@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.557] — 2026-07-03
+- Reduce HR runtime dropdown cache churn and default blank builder rows
+
 ## [0.1.556] — 2026-07-03
 - Fix Learn queue auto-processing refresh and keep review panels below intake
 
