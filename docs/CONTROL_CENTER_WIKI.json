@@ -258,7 +258,7 @@
         "Command-palette project/org sync entries now hand off to Projects or the focused HR Manager Manage > Hierarchy pane. The Dashboard drawer no longer exposes duplicate direct project/org sync buttons; those writes stay on their owner pages.",
         "Dashboard activity and coordination reload on shared sync-domain events from Work, Inbox, project, org, task, chat, and dispatch mutations, so the home view stays aligned with the rest of the app.",
         "Dashboard talk-to routing is now a read-only target view; it resolves the routed team through org:hierarchy before locking Chat to the current coordinator, while routing edits stay in HR Manager.",
-        "The shared fleet store now debounces manual refreshes, polls core manager snapshots every 5 seconds, polls the heavier all-team aggregate every 10 seconds, and backs off while the app is hidden so Dashboard/Health stay synced without creating a manager read storm."
+        "The shared fleet store now debounces manual refreshes, polls core manager snapshots every 5 seconds, polls the heavier all-team aggregate every 10 seconds, suppresses unchanged snapshot fan-out, and backs off while the app is hidden so Dashboard/Health stay synced without creating a manager read storm."
       ],
       "body": "# Dashboard\n\nDashboard is the daily command view. It combines lead chat for the selected team with all-team coordination, active task state, recent events, and hierarchy context so an operator can steer work without losing fleet awareness.\n\n## Use it for\n\n- Send a request to the selected team's lead while watching coordination across every running team.\n- Check whether work is moving through the leadership chain before opening the deeper Work or Health pages.\n- Read the event stream when you need fast context on what just changed.\n\n## Current guardrails\n\nDashboard is now observe-first by default. The talk-to target is a read-only view, not a selector; it fresh-reads org hierarchy and locks embedded Chat to the routed team's current coordinator, so sending from Dashboard cannot quietly fall back to a stale bare `lead` target. Command-palette project and org sync entries open Projects or HR Manager Manage > Hierarchy instead of mutating tracker or hierarchy state immediately. The shortcuts drawer shows Probe all, Refresh, and owner-page handoffs only; project sync and org sync no longer have duplicate direct Dashboard buttons, so tracker and hierarchy writes stay on their owner pages. Primary fleet-lead changes are no longer exposed as a Dashboard selector; use HR Manager Manage > Hierarchy for the routing diff preview.\n\n## Watch for\n\nThe Dashboard is not the fleet roster grid. Agent lifecycle controls, probes, and full roster inspection live on Health through AgentTable. If the question is \"who is running?\" use Health; if the question is \"what should the lead do next?\" start here.\n\n## Current build state - task/draft sync\n\nDashboard Activity groups related DRAFT proposal bursts by team, actor, and a short time window. A DRAFT row means an agent proposed review-only work; it is not a live manager task until the operator opens Create Work and dispatches selected items.\n"
     },
@@ -5016,6 +5016,12 @@
         "Electron startup now treats renderer-crash-state.json as version-scoped state, resetting stale safe mode when a newer app version starts after a prior renderer crash.",
         "The reset preserves previous crash version/count diagnostics while clearing GPU/spellcheck safe-mode throttles for the fixed version unless that same version crashes again.",
         "Validation: npm run typecheck in idctl-desktop passed before release validation."
+      ],
+      "implementedTwoHundredSixtyFirstPass": [
+        "Renderer store polling now computes stable fleet and all-team signatures so unchanged manager snapshots no longer emit global lastUpdated fan-out across Dashboard, Work, Teams, Learn, Schedule, and related views.",
+        "Manager-backed read bursts from tab switches are coalesced and briefly cached for task, hierarchy, usage, schedule, inbox, event, news, and all-team roster reads while mutation methods still clear the read cache.",
+        "Live task, schedule, agent, goal, learn, checkin, and team events can still refresh dependent views, but that event-driven refresh is throttled so high-volume activity cannot recreate the old app-side sync loop.",
+        "Validation: npm run typecheck and npm run build passed in idctl-desktop before release validation."
       ]
     },
     {
@@ -5079,5 +5085,5 @@
       "body": "# Wiki\n\nWiki is both the human documentation page and the editable schematic for the Control Center UI. Each article explains the operator purpose of a page; the structured sections below preserve tabs, tiles, fields, controls, displays, routes, and source files for implementation detail.\n\n## Use it for\n\n- Search pages, controls, routes, source files, and notes from inside the desktop app.\n- Confirm how a UI surface is intended to behave before editing code or filing follow-up work.\n- Keep app navigation metadata and human documentation in one reviewed JSON artifact.\n\n## Editing rule\n\nThe desktop app hot-reload polls CONTROL_CENTER_WIKI.json through the main-process wiki bridge. Sidebar labels, icons, order, and visibility still come from pages[].nav for implemented routes, so documentation edits must preserve that metadata and keep every page.body non-empty."
     }
   ],
-  "appVersion": "0.1.538"
+  "appVersion": "0.1.539"
 }

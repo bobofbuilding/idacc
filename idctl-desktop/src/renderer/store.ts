@@ -147,6 +147,51 @@ const EVENT_BUFFER = 1000;
 const SNAPSHOT_POLL_MS = 5000;
 const ALL_TEAMS_POLL_MS = 10000;
 const HIDDEN_POLL_MS = 30000;
+const EVENT_VIEW_REFRESH_MIN_MS = 5000;
+const VIEW_INVALIDATING_EVENT_PREFIXES = ['agent:', 'checkin:', 'goal:', 'learn:', 'schedule:', 'task:', 'team:'];
+
+function fleetSnapshotSig(input: {
+  info: { managerUrl: string; team?: string; coordinator?: string };
+  agents: Agent[];
+  teams: Team[];
+  inbox: InboxItem[];
+  chatUnread: number;
+}): string {
+  return JSON.stringify({
+    info: input.info,
+    chatUnread: input.chatUnread,
+    agents: input.agents.map((a) => [
+      a.id,
+      a.name,
+      a.status,
+      a.health,
+      a.pid ?? a.metadata?.pid ?? null,
+      a.model ?? '',
+      a.runtime ?? '',
+    ]),
+    teams: input.teams.map((t) => [t.id ?? '', t.name]),
+    inbox: input.inbox.map((i) => [i.query_id, i.status ?? '', i.timestamp ?? 0]),
+  });
+}
+
+function allAgentsSig(groups: Array<{ team: string; agents: Agent[] }>): string {
+  return JSON.stringify(groups.map((g) => [
+    g.team,
+    g.agents.map((a) => [
+      a.id,
+      a.name,
+      a.status,
+      a.health,
+      a.pid ?? a.metadata?.pid ?? null,
+      a.model ?? '',
+      a.runtime ?? '',
+    ]),
+  ]));
+}
+
+function eventsInvalidateViews(events: ManagerEvent[]): boolean {
+  return events.some((event) => VIEW_INVALIDATING_EVENT_PREFIXES.some((prefix) => event.topic.startsWith(prefix)));
+}
 
 function fleetPollDelay(baseMs: number): number {
   return typeof document !== 'undefined' && document.hidden ? Math.max(baseMs, HIDDEN_POLL_MS) : baseMs;
@@ -173,6 +218,9 @@ export function useFleet(): FleetStore {
   const [allAgents, setAllAgents] = useState<TeamAgent[]>([]);
   const [tick, setTick] = useState(0);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const snapshotSigRef = useRef('');
+  const allAgentsSigRef = useRef('');
+  const lastEventViewRefreshRef = useRef(0);
   const [streamEpoch, setStreamEpoch] = useState(0); // bumped ONLY on team change → never resets the event cursor on a plain refresh
   const epoch = useRef(0); // bump on team change to reset the event cursor loop
   const teamRef = useRef<string | undefined>(undefined);
@@ -182,6 +230,7 @@ export function useFleet(): FleetStore {
     if (refreshTimer.current) return;
     refreshTimer.current = setTimeout(() => {
       refreshTimer.current = null;
+      setLastUpdated(Date.now());
       setTick((t) => t + 1);
     }, 100);
   }, []);
@@ -219,24 +268,34 @@ export function useFleet(): FleetStore {
           call<InboxItem[]>('inboxPending').catch(() => [] as InboxItem[]),
         ]);
         if (!alive) return;
-        setManagerUrl(info.managerUrl);
-        setTeamState(info.team);
-        setCoordinatorState(info.coordinator ?? undefined);
-        setAgents(ag);
-        setTeams(tm);
-        setInbox(ib);
+        const cu = await call<number>('chats:unreadCount', info.team).catch(() => 0);
+        if (!alive) return;
+        const nextSig = fleetSnapshotSig({
+          info,
+          agents: ag,
+          teams: tm,
+          inbox: ib,
+          chatUnread: typeof cu === 'number' ? cu : 0,
+        });
+        if (nextSig !== snapshotSigRef.current) {
+          snapshotSigRef.current = nextSig;
+          setManagerUrl(info.managerUrl);
+          setTeamState(info.team);
+          setCoordinatorState(info.coordinator ?? undefined);
+          setAgents(ag);
+          setTeams(tm);
+          setInbox(ib);
+          setChatUnread(typeof cu === 'number' ? cu : 0);
+          setLastUpdated(Date.now());
+        }
         setConnection('online');
         setLastError(undefined);
-        setLastUpdated(Date.now());
         // On (re)connect — including after a manager restart — re-apply persisted
         // settings the manager doesn't keep itself (local-model concurrency).
         if (!wasOnlineRef.current) {
           wasOnlineRef.current = true;
           void call('manager:applyStoredConcurrency').catch(() => {});
         }
-        // Unviewed-chat count for the Chat nav badge (scoped to the active team).
-        const cu = await call<number>('chats:unreadCount', info.team).catch(() => 0);
-        if (alive) setChatUnread(typeof cu === 'number' ? cu : 0);
       } catch (err) {
         if (!alive) return;
         setConnection('offline');
@@ -271,6 +330,11 @@ export function useFleet(): FleetStore {
             // event truly carries no time (older managers).
             const batch = resp.events.map((e) => ({ ...e, timestamp: e.timestamp ?? e.occurred_at ?? Date.now() }));
             setEvents((prev) => [...prev, ...batch].slice(-EVENT_BUFFER));
+            const now = Date.now();
+            if (eventsInvalidateViews(resp.events) && now - lastEventViewRefreshRef.current >= EVENT_VIEW_REFRESH_MIN_MS) {
+              lastEventViewRefreshRef.current = now;
+              setLastUpdated(now);
+            }
           }
           since = resp.next_seq ?? since;
         } catch {
@@ -295,7 +359,11 @@ export function useFleet(): FleetStore {
       try {
         const groups = await call<{ team: string; agents: Agent[] }[]>('agents:allTeams').catch(() => []);
         if (!alive) return;
-        setAllAgents(groups.flatMap((g) => g.agents.map((a) => ({ ...a, team: g.team }))));
+        const nextSig = allAgentsSig(groups);
+        if (nextSig !== allAgentsSigRef.current) {
+          allAgentsSigRef.current = nextSig;
+          setAllAgents(groups.flatMap((g) => g.agents.map((a) => ({ ...a, team: g.team }))));
+        }
       } catch { /* keep last */ }
       finally { if (alive) timer = setTimeout(load, fleetPollDelay(ALL_TEAMS_POLL_MS)); }
     };
