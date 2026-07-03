@@ -365,6 +365,23 @@ button.chip.incompat:hover { border-color: var(--line); }
 .skill-desc { margin: 6px 0 0; }
 .skill-tags { margin-top: 8px; }
 
+/* Work > Tasks draft proposals */
+.draft-proposal-list { display: grid; gap: 8px; margin-top: 10px; }
+.draft-proposal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-1);
+}
+.draft-proposal-main { min-width: 0; }
+@media (max-width: 760px) {
+  .draft-proposal-row { grid-template-columns: 1fr; align-items: stretch; }
+}
+
 /* Work > Learn intake */
 .learn-intake { display: flex; flex-direction: column; gap: 10px; }
 .learn-intake-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
