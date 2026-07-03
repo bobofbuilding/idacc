@@ -99,12 +99,21 @@ function shouldUseRendererSafeMode(): boolean {
 
 function configureChromiumStability(): void {
   // Crash reports from macOS 26.5.1 show repeated renderer SIGTRAPs inside
-  // Chromium's fontations_ffi path. Keep the app on CoreText unless explicitly
+  // Chromium's fontations_ffi path. Electron 33.4.11 exposes this through
+  // FontationsFontBackend / FontationsForSelectedFormats, plus CoreText
+  // migration gates. Keep the app on the older CoreText path unless explicitly
   // opted back in while Electron/Chromium catches up.
   if (!envFlagEnabled(process.env.IDCTL_ENABLE_FONTATIONS)) {
     const existing = app.commandLine.getSwitchValue('disable-features');
     const features = new Set(existing.split(',').map((item) => item.trim()).filter(Boolean));
-    features.add('FontationsBackend');
+    for (const feature of [
+      'FontationsFontBackend',
+      'FontationsForSelectedFormats',
+      'FontFamilyPostscriptMatchingCTMigration',
+      'FontFamilyStyleMatchingCTMigration',
+    ]) {
+      features.add(feature);
+    }
     app.commandLine.appendSwitch('disable-features', [...features].join(','));
   }
   rendererSafeMode = shouldUseRendererSafeMode();
