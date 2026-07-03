@@ -40,6 +40,15 @@ function syncVersionFor(wanted: Set<string>): number {
   return version;
 }
 
+function syncDomainSet(domains: string | string[]): Set<string> {
+  const key = Array.isArray(domains) ? domains.join('|') : domains;
+  return new Set(key.split('|').filter(Boolean));
+}
+
+export function currentSyncVersion(domains: string | string[]): number {
+  return syncVersionFor(syncDomainSet(domains));
+}
+
 function noteSyncDomains(domains: string[]): void {
   for (const domain of domains) {
     if (domain === '*') wildcardSyncVersion += 1;
@@ -98,7 +107,7 @@ export function bindStoreEvents(api?: { onStoreChange?: (cb: (event: StoreChange
 
 export function useSyncVersion(domains: string | string[]): number {
   const key = Array.isArray(domains) ? domains.join('|') : domains;
-  const wanted = useMemo(() => new Set(key.split('|').filter(Boolean)), [key]);
+  const wanted = useMemo(() => syncDomainSet(key), [key]);
   const [version, setVersion] = useState(() => syncVersionFor(wanted));
   useEffect(() => {
     setVersion(syncVersionFor(wanted));

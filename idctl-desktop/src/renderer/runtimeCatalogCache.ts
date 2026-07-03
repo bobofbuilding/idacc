@@ -1,6 +1,6 @@
 import type { ProviderProfile } from '../../../idctl/src/settings/schema.ts';
 import type { RuntimeModelLaneKind } from '../../../idctl/src/settings/runtimeCatalog.ts';
-import { call } from './store.ts';
+import { call, currentSyncVersion } from './store.ts';
 
 export type RuntimeCatalogProvider = ProviderProfile & {
   keySource?: string;
@@ -37,6 +37,8 @@ export type RuntimeCatalogSnapshot = {
   at: number;
 };
 
+type RuntimeCatalogPatch = Partial<Omit<RuntimeCatalogSnapshot, 'version' | 'at'>>;
+
 let snapshot: RuntimeCatalogSnapshot | null = null;
 let inFlight: Promise<RuntimeCatalogSnapshot> | null = null;
 
@@ -47,7 +49,7 @@ export function getRuntimeCatalogSnapshot(version?: number): RuntimeCatalogSnaps
 
 export function primeRuntimeCatalogSnapshot(
   version: number,
-  patch: Partial<Omit<RuntimeCatalogSnapshot, 'version' | 'at'>>,
+  patch: RuntimeCatalogPatch,
 ): RuntimeCatalogSnapshot {
   const previous = snapshot?.version === version ? snapshot : null;
   snapshot = {
@@ -59,6 +61,14 @@ export function primeRuntimeCatalogSnapshot(
     at: Date.now(),
   };
   return snapshot;
+}
+
+export function currentRuntimeCatalogVersion(): number {
+  return currentSyncVersion(['runtime-catalog']);
+}
+
+export function primeCurrentRuntimeCatalogSnapshot(patch: RuntimeCatalogPatch): RuntimeCatalogSnapshot {
+  return primeRuntimeCatalogSnapshot(currentRuntimeCatalogVersion(), patch);
 }
 
 export async function loadRuntimeCatalogSnapshot(
@@ -93,4 +103,10 @@ export async function loadRuntimeCatalogSnapshot(
   });
 
   return inFlight;
+}
+
+export async function refreshCurrentRuntimeCatalogSnapshot(
+  options: { freshness?: boolean } = {},
+): Promise<RuntimeCatalogSnapshot> {
+  return loadRuntimeCatalogSnapshot(currentRuntimeCatalogVersion(), options);
 }

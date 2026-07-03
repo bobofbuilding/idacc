@@ -6,6 +6,7 @@ import type { DiscoveredServer, LocalServerCandidate } from '../../../../idctl/s
 import { PROVIDER_CATALOG, findProvider, providerNeedsKey } from '../../../../idctl/src/settings/providerCatalog.ts';
 import { LOCAL_MODEL_CATALOG, TOP_LOCAL_MODEL_CATALOG, type ModelCapability, type LocalModelEntry } from '../../../../idctl/src/settings/modelCatalog.ts';
 import { TOP_LOCAL_STACKS, type LocalStackEntry } from '../../../../idctl/src/settings/localStacks.ts';
+import { refreshCurrentRuntimeCatalogSnapshot } from '../runtimeCatalogCache.ts';
 import {
   CONTROL_CENTER_API_VERSION,
   CONTROL_CENTER_REQUIRED_FEATURES,
@@ -201,6 +202,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     setBaseUrl(e.baseUrl);
     setName(e.id);
   }
+  function warmRuntimeCatalog(): void {
+    void refreshCurrentRuntimeCatalogSnapshot({ freshness: true }).catch(() => null);
+  }
   // self-update
   const [version, setVersion] = useState('');
   const [upd, setUpd] = useState<{ autoUpgrade?: boolean; updateManifestUrl?: string; updateRepo?: string } | null>(null);
@@ -256,8 +260,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         setSubsCheckedAt(Date.now());
       }
       if (options.force) {
-        void call<Record<string, string[]>>('runtime:models').catch(() => null);
-        void call('runtime:freshness').catch(() => null);
+        warmRuntimeCatalog();
       }
       if (options.notice) setSubNotice('Managed runtimes refreshed. Account status and model freshness were checked.');
     } finally {
@@ -341,6 +344,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         const current = next[provider];
         if (current?.installed) {
           setSubNotice(`${label} detected. It is now available in IDACC; use Manage account here when you want to sign in or switch accounts.`);
+          warmRuntimeCatalog();
         } else if (idx === arr.length - 1) {
           setSubNotice(`${label} was not detected yet. Finish the installer, make sure the CLI is on PATH, then Re-check.`);
         }
@@ -455,6 +459,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         }
       }
       setProviders(await call<ProviderRow[]>('providers:add', p));
+      warmRuntimeCatalog();
       setProviderMsg(existing ? `replaced "${p.name}"` : `added "${p.name}"`);
       after?.();
     } finally {
@@ -499,6 +504,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       const r = await call<{ providers: ProviderRow[]; outcome: ProbeOutcome }>('providers:connect', n, providerStamp(fresh.current));
       setProviders(r.providers);
       setProbe((m) => ({ ...m, [n]: r.outcome }));
+      warmRuntimeCatalog();
     } finally {
       setBusy(false);
     }
@@ -523,6 +529,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       return;
     }
     setProviders(await call<ProviderRow[]>('providers:setDefault', n));
+    warmRuntimeCatalog();
   }
   async function toggle(n: string) {
     const fresh = await ensureProviderFresh(n, 'Toggle backend');
@@ -542,6 +549,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       return;
     }
     setProviders(await call<ProviderRow[]>('providers:toggle', n));
+    warmRuntimeCatalog();
   }
   async function removeProviderProfile(n: string) {
     const fresh = await ensureProviderFresh(n, 'Remove backend');
@@ -562,6 +570,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       return;
     }
     setProviders(await call<ProviderRow[]>('providers:remove', n));
+    warmRuntimeCatalog();
   }
   function rpcIdFromNetwork(network: string): string {
     return network.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'evm-rpc';
@@ -813,6 +822,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setProviders(nextProviders);
       setProviderMsg(`added pending local backend${addedNames.length === 1 ? '' : 's'}: ${addedNames.join(', ')}`);
       setStackMsg(`added pending backend${addedNames.length === 1 ? '' : 's'}: ${addedNames.join(', ')} — start the server, then Connect & sync`);
+      warmRuntimeCatalog();
     }
     return added;
   }
@@ -848,6 +858,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setProviders(nextProviders ?? latest);
       setProviderMsg(`auto-added local backend${addedNames.length === 1 ? '' : 's'}: ${addedNames.join(', ')}`);
       setStackMsg(`auto-added backend${addedNames.length === 1 ? '' : 's'}: ${addedNames.join(', ')}`);
+      warmRuntimeCatalog();
       return addedUrls;
     } finally {
       setBusy(false);
@@ -1099,6 +1110,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     };
     await call('providers:add', profile);
     await reload();
+    warmRuntimeCatalog();
   }
   async function pull(modelId: string) {
     const m = modelId.trim();
@@ -1471,8 +1483,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setProviderMsg(selection.mode === 'selected'
         ? `"${current.name}" Health dropdown now shows ${selected.length} selected model${selected.length === 1 ? '' : 's'}`
         : `"${current.name}" Health dropdown now shows all synced models`);
-      void call<Record<string, string[]>>('runtime:models').catch(() => null);
-      void call('runtime:freshness').catch(() => null);
+      warmRuntimeCatalog();
     } finally {
       setBusy(false);
     }
@@ -1556,7 +1567,10 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     try {
       const r = await call<{ ok: boolean; error?: string }>('ollama:remove', id);
       setPullMsg(r.ok ? `removed ${id} ✓` : `remove failed: ${r.error}`);
-      if (r.ok) await loadOllama();
+      if (r.ok) {
+        await loadOllama();
+        warmRuntimeCatalog();
+      }
     } finally { setRemoving(null); setConfirmRemove(null); }
   }
   // Stack install/uninstall commands: runnable (open Terminal) vs app-download (link out).
