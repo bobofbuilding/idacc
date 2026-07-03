@@ -6,12 +6,16 @@ import type { OnboardPlan, OnboardResult } from '../../../../idctl/src/api/onboa
 import { MCP_CATALOG, buildFromCatalog } from '../../../../idctl/src/settings/mcpCatalog.ts';
 import { parseTeamSpec, slugName, isReservedName } from '../../../../idctl/src/api/teamSpec.ts';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
-import type { ProviderProfile } from '../../../../idctl/src/settings/schema.ts';
 import { TeamGraph, type GraphSelection } from './TeamGraph.tsx';
 import { Health } from './Health.tsx';
+import {
+  getRuntimeCatalogSnapshot,
+  loadRuntimeCatalogSnapshot,
+  primeRuntimeCatalogSnapshot,
+  type ManagedRuntimeStatus,
+  type RuntimeCatalogProvider as ProviderRow,
+} from '../runtimeCatalogCache.ts';
 
-type ProviderRow = ProviderProfile & { keySource?: string; needsKey?: boolean };
-type ManagedRuntimeStatus = { runtime?: string; installed?: boolean; loggedIn?: boolean; linked?: boolean; statusSupported?: boolean };
 type RuntimeVerificationRow = {
   name: string;
   runtime: string;
@@ -30,17 +34,10 @@ type RuntimeVerificationReport = {
   refreshedCatalog: Record<string, string[]>;
   providers: ProviderRow[];
 };
-type HrBuildCatalogCache = {
-  version: number;
-  modelCatalog: Record<string, string[]>;
-  providers: ProviderRow[];
-  managedRuntimes: Record<string, ManagedRuntimeStatus>;
-};
 type HrBuildSkillCatalogCache = {
   version: number;
   skillCatalog: string[];
 };
-let hrBuildRuntimeCatalogCache: HrBuildCatalogCache | null = null;
 let hrBuildSkillCatalogCache: HrBuildSkillCatalogCache | null = null;
 
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
@@ -977,32 +974,23 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   }
 
   // Catalogs for the Onboard modal (runtimes/models, library skills, providers).
-  const [modelCatalog, setModelCatalog] = useState<Record<string, string[]>>(() => hrBuildRuntimeCatalogCache?.modelCatalog ?? {});
+  const cachedRuntimeCatalog = getRuntimeCatalogSnapshot(hrRuntimeCatalogVersion);
+  const [modelCatalog, setModelCatalog] = useState<Record<string, string[]>>(() => cachedRuntimeCatalog?.modelCatalog ?? {});
   const [skillCatalog, setSkillCatalog] = useState<string[]>(() => hrBuildSkillCatalogCache?.skillCatalog ?? []);
-  const [providers, setProviders] = useState<ProviderRow[]>(() => hrBuildRuntimeCatalogCache?.providers ?? []);
-  const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>(() => hrBuildRuntimeCatalogCache?.managedRuntimes ?? {});
+  const [providers, setProviders] = useState<ProviderRow[]>(() => cachedRuntimeCatalog?.providers ?? []);
+  const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>(() => cachedRuntimeCatalog?.managedRuntimes ?? {});
 
   useEffect(() => {
     if (tab !== 'build') return;
-    if (hrBuildRuntimeCatalogCache?.version === hrRuntimeCatalogVersion) {
-      setModelCatalog(hrBuildRuntimeCatalogCache.modelCatalog);
-      setProviders(hrBuildRuntimeCatalogCache.providers);
-      setManagedRuntimes(hrBuildRuntimeCatalogCache.managedRuntimes);
+    const cached = getRuntimeCatalogSnapshot(hrRuntimeCatalogVersion);
+    if (cached) {
+      setModelCatalog(cached.modelCatalog);
+      setProviders(cached.providers);
+      setManagedRuntimes(cached.managedRuntimes);
       return;
     }
     let live = true;
-    Promise.all([
-      call<Record<string, string[]>>('runtime:models').catch(() => ({})),
-      call<ProviderRow[]>('providers:list').catch(() => [] as ProviderRow[]),
-      call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => ({})),
-    ]).then(([nextModelCatalog, nextProviders, nextManagedRuntimes]) => {
-      const nextCache = {
-        version: hrRuntimeCatalogVersion,
-        modelCatalog: nextModelCatalog,
-        providers: nextProviders,
-        managedRuntimes: nextManagedRuntimes,
-      };
-      hrBuildRuntimeCatalogCache = nextCache;
+    loadRuntimeCatalogSnapshot(hrRuntimeCatalogVersion).then((nextCache) => {
       if (!live) return;
       setModelCatalog(nextCache.modelCatalog);
       setProviders(nextCache.providers);
@@ -2084,12 +2072,11 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             onRuntimeVerified={(report) => {
               setModelCatalog(report.refreshedCatalog);
               setProviders(report.providers);
-              hrBuildRuntimeCatalogCache = {
-                version: hrRuntimeCatalogVersion,
+              primeRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
                 modelCatalog: report.refreshedCatalog,
                 providers: report.providers,
                 managedRuntimes,
-              };
+              });
             }}
             onClose={() => { /* inline — nothing to close */ }}
             onBusy={setBusy}

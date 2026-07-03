@@ -4,6 +4,14 @@ import { statusClass } from '../agentStatus.ts';
 import type { RuntimeCooldown } from '../../../../idctl/src/api/client.ts';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
 import { RUNTIMES, offerableRuntimes, effortOptions, runtimeHasEffort, speedOptions, runtimeHasSpeed, runtimeDisplayLabel, runtimePickerGroup, runtimeHasManagerHarness, managedRuntimeHasEvidence, type RuntimeModelLaneKind } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import {
+  getRuntimeCatalogSnapshot,
+  loadRuntimeCatalogSnapshot,
+  primeRuntimeCatalogSnapshot,
+  type ManagedRuntimeStatus,
+  type RuntimeCatalogProvider as ProviderRow,
+  type RuntimeFreshnessRow as RuntimeFreshness,
+} from '../runtimeCatalogCache.ts';
 
 /**
  * The fleet agent grid — per-agent runtime/model switching + lifecycle actions, with a
@@ -12,31 +20,10 @@ import { RUNTIMES, offerableRuntimes, effortOptions, runtimeHasEffort, speedOpti
  * own team. Extracted from the Dashboard so it can live in HR Manager.
  */
 
-type ProviderRow = { name?: string; kind: string; baseUrl?: string; enabled?: boolean; keySource?: string; needsKey?: boolean; lastSync?: { status?: string; modelCount?: number; models?: string[] } };
-type ManagedRuntimeStatus = { runtime?: string; installed?: boolean; loggedIn?: boolean; linked?: boolean; statusSupported?: boolean };
-type RuntimeFreshness = {
-  runtime: string;
-  label?: string;
-  kind?: 'harness' | RuntimeModelLaneKind;
-  count: number;
-  source: 'codex-cache' | 'grok-cli' | 'antigravity-cli' | 'provider' | 'curated' | 'none';
-  provider?: string;
-  lastCheckedMs: number | null;
-  selectable?: boolean;
-  detail?: string;
-};
-type RuntimeDetailsCache = {
-  version: number;
-  catalog: Record<string, string[]>;
-  providers: ProviderRow[];
-  managedRuntimes: Record<string, ManagedRuntimeStatus>;
-  freshness: RuntimeFreshness[];
-};
 type RuntimeCooldownCache = {
   version: number;
   rows: RuntimeCooldown[];
 };
-let runtimeDetailsCache: RuntimeDetailsCache | null = null;
 let runtimeCooldownCache: RuntimeCooldownCache | null = null;
 const RUNTIME_DETAILS_HOLD_MS = 45_000;
 
@@ -239,12 +226,13 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   const hierarchyVersion = useSyncVersion(['org', 'agents']);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [catalog, setCatalog] = useState<Record<string, string[]>>(() => runtimeDetailsCache?.catalog ?? {});
-  const [providers, setProviders] = useState<ProviderRow[]>(() => runtimeDetailsCache?.providers ?? []);
-  const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>(() => runtimeDetailsCache?.managedRuntimes ?? {});
+  const initialRuntimeCatalog = getRuntimeCatalogSnapshot();
+  const [catalog, setCatalog] = useState<Record<string, string[]>>(() => initialRuntimeCatalog?.modelCatalog ?? {});
+  const [providers, setProviders] = useState<ProviderRow[]>(() => initialRuntimeCatalog?.providers ?? []);
+  const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>(() => initialRuntimeCatalog?.managedRuntimes ?? {});
   const [coords, setCoords] = useState<Record<string, string>>({}); // team → coordinator (lead) name
   const [showStopped, setShowStopped] = useState(false); // by default the grid shows only running agents
-  const [freshness, setFreshness] = useState<RuntimeFreshness[]>(() => runtimeDetailsCache?.freshness ?? []);
+  const [freshness, setFreshness] = useState<RuntimeFreshness[]>(() => initialRuntimeCatalog?.freshness ?? []);
   const [runtimeCooldowns, setRuntimeCooldowns] = useState<RuntimeCooldown[]>(() => runtimeCooldownCache?.rows ?? []);
   const [showModels, setShowModels] = useState(false);
   const [runtimeDetailsRequested, setRuntimeDetailsRequested] = useState(false);
@@ -314,33 +302,22 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
 
   useEffect(() => {
     if (!runtimeDetailsActive) return;
-    if (runtimeDetailsCache?.version === runtimeCatalogVersion) {
-      setCatalog(runtimeDetailsCache.catalog);
-      setProviders(runtimeDetailsCache.providers);
-      setManagedRuntimes(runtimeDetailsCache.managedRuntimes);
-      setFreshness(runtimeDetailsCache.freshness);
+    const cached = getRuntimeCatalogSnapshot(runtimeCatalogVersion);
+    if (cached?.freshness) {
+      setCatalog(cached.modelCatalog);
+      setProviders(cached.providers);
+      setManagedRuntimes(cached.managedRuntimes);
+      setFreshness(cached.freshness);
       return;
     }
     let live = true;
     const load = async () => {
-      const [nextCatalog, nextProviders, nextManaged, nextFreshness] = await Promise.all([
-        call<Record<string, string[]>>('runtime:models').catch(() => ({})),
-        call<ProviderRow[]>('providers:list').catch(() => []),
-        call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => ({})),
-        call<RuntimeFreshness[]>('runtime:freshness').catch(() => []),
-      ]);
+      const next = await loadRuntimeCatalogSnapshot(runtimeCatalogVersion, { freshness: true });
       if (!live) return;
-      runtimeDetailsCache = {
-        version: runtimeCatalogVersion,
-        catalog: nextCatalog,
-        providers: nextProviders,
-        managedRuntimes: nextManaged,
-        freshness: nextFreshness,
-      };
-      setCatalog(nextCatalog);
-      setProviders(nextProviders);
-      setManagedRuntimes(nextManaged);
-      setFreshness(nextFreshness);
+      setCatalog(next.modelCatalog);
+      setProviders(next.providers);
+      setManagedRuntimes(next.managedRuntimes);
+      setFreshness(next.freshness ?? []);
     };
     void load();
     return () => { live = false; };
@@ -577,9 +554,18 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   async function probeRuntimes() {
     setBusy('probe runtimes');
     try {
-      setCatalog(await call<Record<string, string[]>>('runtime:probe'));
-      setManagedRuntimes(await call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => managedRuntimes));
-      setFreshness(await call<RuntimeFreshness[]>('runtime:freshness').catch(() => freshness));
+      const nextCatalog = await call<Record<string, string[]>>('runtime:probe');
+      const nextManaged = await call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => managedRuntimes);
+      const nextFreshness = await call<RuntimeFreshness[]>('runtime:freshness').catch(() => freshness);
+      setCatalog(nextCatalog);
+      setManagedRuntimes(nextManaged);
+      setFreshness(nextFreshness);
+      primeRuntimeCatalogSnapshot(runtimeCatalogVersion, {
+        modelCatalog: nextCatalog,
+        providers,
+        managedRuntimes: nextManaged,
+        freshness: nextFreshness,
+      });
       requestRuntimeDetails();
       setShowModels(true);
     }
