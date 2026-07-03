@@ -310,8 +310,11 @@ export function Learn({ store }: { store: FleetStore }) {
 
   return (
     <div className="stack">
-      <section className="card">
-        <h3>Learn intake</h3>
+      <section className="card learn-intake">
+        <div className="learn-intake-head">
+          <h3>Learn intake</h3>
+          {note ? <span className="muted small">{note}</span> : null}
+        </div>
         {staleProcessing.length ? (
           <div className="review-box" style={{ marginBottom: 10 }}>
             <div>
@@ -323,25 +326,41 @@ export function Learn({ store }: { store: FleetStore }) {
             </button>
           </div>
         ) : null}
-        <div className="kv" style={{ gridTemplateColumns: '90px 1fr 86px 112px 74px auto auto', gap: 8, alignItems: 'center' }}>
-          <span className="muted small">Source</span>
-          <input value={source} disabled={busy} placeholder="GitHub URL or site URL" onChange={(e) => setSource(e.target.value)} />
-          <select className="cell-select" value={kind} disabled={busy} onChange={(e) => setKind(e.target.value as 'auto' | LearnMaterialKind)}>
-            <option value="auto">auto</option>
-            <option value="github">GitHub</option>
-            <option value="site">Site</option>
-          </select>
-          <select className="cell-select" value={priority} disabled={busy} onChange={(e) => setPriority(e.target.value as LearnPriority)}>
-            {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-          <label className="small"><input type="checkbox" checked={pinTop} disabled={busy} onChange={(e) => setPinTop(e.target.checked)} /> top</label>
-          <button className="btn primary" disabled={busy || !source.trim()} onClick={() => void addUrl()}>Add</button>
-          <button className="btn" disabled={busy} onClick={() => void addFolder()}>Folder</button>
-          <span className="muted small">Title</span>
-          <input style={{ gridColumn: 'span 3' }} value={title} disabled={busy} placeholder="optional title" onChange={(e) => setTitle(e.target.value)} />
-          <button className="btn" disabled={busy} onClick={() => void importPdfs()}>Import PDF</button>
-          <button className="btn" disabled={busy} onClick={() => void processNext()}>{busy ? 'Working...' : 'Process next'}</button>
-          <span className="muted small">{note}</span>
+        <div className="learn-intake-grid">
+          <label className="learn-field learn-source">
+            <span className="muted small">Source</span>
+            <input value={source} disabled={busy} placeholder="GitHub URL or site URL" onChange={(e) => setSource(e.target.value)} />
+          </label>
+          <label className="learn-field learn-kind">
+            <span className="muted small">Type</span>
+            <select className="cell-select" value={kind} disabled={busy} onChange={(e) => setKind(e.target.value as 'auto' | LearnMaterialKind)}>
+              <option value="auto">auto</option>
+              <option value="github">GitHub</option>
+              <option value="site">Site</option>
+            </select>
+          </label>
+          <label className="learn-field learn-priority">
+            <span className="muted small">Priority</span>
+            <select className="cell-select" value={priority} disabled={busy} onChange={(e) => setPriority(e.target.value as LearnPriority)}>
+              {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </label>
+          <label className="learn-pin small">
+            <input type="checkbox" checked={pinTop} disabled={busy} onChange={(e) => setPinTop(e.target.checked)} />
+            <span>Prioritize</span>
+          </label>
+          <div className="learn-actions">
+            <button className="btn primary" disabled={busy || !source.trim()} onClick={() => void addUrl()}>Add</button>
+            <button className="btn" disabled={busy} onClick={() => void addFolder()}>Folder</button>
+          </div>
+          <label className="learn-field learn-title">
+            <span className="muted small">Title</span>
+            <input value={title} disabled={busy} placeholder="optional title" onChange={(e) => setTitle(e.target.value)} />
+          </label>
+          <div className="learn-actions learn-actions-secondary">
+            <button className="btn" disabled={busy} onClick={() => void importPdfs()}>Import PDF</button>
+            <button className="btn" disabled={busy} onClick={() => void processNext()}>{busy ? 'Working...' : 'Process next'}</button>
+          </div>
         </div>
       </section>
 

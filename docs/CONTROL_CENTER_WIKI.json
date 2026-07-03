@@ -4989,6 +4989,11 @@
         "Claude Code curated fallback model choices now include claude-fable-5 and claude-sonnet-5 ahead of the older Opus, Sonnet, and Haiku entries.",
         "The runtime catalog regression test now asserts that the generated Claude Code catalog keeps Fable 5 and Sonnet 5 available for harness model dropdowns.",
         "Validation: idctl runtimeCatalog.test, npm run typecheck in idctl-desktop, wiki JSON parse, and npm run build in idctl-desktop passed before release validation."
+      ],
+      "implementedTwoHundredFiftySixthPass": [
+        "Work Learn intake now uses a dedicated responsive layout instead of a shallow inline grid, keeping Source, Type, Priority, Prioritize, Add, Folder, Title, Import PDF, and Process next aligned without clipping.",
+        "The Learn intake status note moved into the card header so action feedback no longer consumes an extra grid cell or crowds the form controls.",
+        "Validation: npm run typecheck in idctl-desktop, wiki JSON parse, and npm run build in idctl-desktop passed before release validation."
       ]
     },
     {
@@ -5052,5 +5057,5 @@
       "body": "# Wiki\n\nWiki is both the human documentation page and the editable schematic for the Control Center UI. Each article explains the operator purpose of a page; the structured sections below preserve tabs, tiles, fields, controls, displays, routes, and source files for implementation detail.\n\n## Use it for\n\n- Search pages, controls, routes, source files, and notes from inside the desktop app.\n- Confirm how a UI surface is intended to behave before editing code or filing follow-up work.\n- Keep app navigation metadata and human documentation in one reviewed JSON artifact.\n\n## Editing rule\n\nThe desktop app hot-reload polls CONTROL_CENTER_WIKI.json through the main-process wiki bridge. Sidebar labels, icons, order, and visibility still come from pages[].nav for implemented routes, so documentation edits must preserve that metadata and keep every page.body non-empty."
     }
   ],
-  "appVersion": "0.1.516"
+  "appVersion": "0.1.517"
 }

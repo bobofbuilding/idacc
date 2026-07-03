@@ -364,6 +364,35 @@ button.chip.incompat:hover { border-color: var(--line); }
 .skill-usage-note { margin-top: 6px; color: var(--warn); font-size: 11px; }
 .skill-desc { margin: 6px 0 0; }
 .skill-tags { margin-top: 8px; }
+
+/* Work > Learn intake */
+.learn-intake { display: flex; flex-direction: column; gap: 10px; }
+.learn-intake-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.learn-intake-head h3 { margin: 0; }
+.learn-intake-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) 92px 112px 96px auto;
+  gap: 10px;
+  align-items: end;
+}
+.learn-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.learn-field input, .learn-field select { width: 100%; max-width: none; }
+.learn-pin {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.learn-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; white-space: nowrap; }
+.learn-title { grid-column: 1 / span 3; }
+.learn-actions-secondary { grid-column: 4 / span 2; }
+@media (max-width: 1180px) {
+  .learn-intake-grid { grid-template-columns: minmax(260px, 1fr) 92px 112px; }
+  .learn-actions { justify-content: flex-start; }
+  .learn-actions, .learn-title, .learn-actions-secondary { grid-column: 1 / -1; }
+}
 .btn.icon-danger { color: var(--muted); padding: 2px 8px; }
 .btn.icon-danger:hover:not(:disabled) { color: var(--err); border-color: var(--err); }
 
