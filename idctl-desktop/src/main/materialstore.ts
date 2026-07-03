@@ -481,6 +481,26 @@ export function markRecommendation(materialId: string, recommendationId: string,
     r.id === recommendationId ? { ...r, reviewState: nextState, updatedAt: now() } : r
   ));
   material.progress.push({ stage: 'recommendations', status: 'done', note: `Recommendation ${recommendationId} marked ${nextState}`, at: now() });
+  const remainingBlockingDrafts = (material.recommendations ?? []).some((r) => r.blocking && r.reviewState === 'draft');
+  if (material.status === 'blocked' && !remainingBlockingDrafts) {
+    material.status = 'ready';
+    material.processingTag = 'review complete';
+    material.progress.push({
+      stage: 'recommendations',
+      status: 'done',
+      note: 'All blocking Learn recommendations were reviewed; material completed and left the active queue.',
+      at: now(),
+    });
+  } else if (material.status === 'ready' && remainingBlockingDrafts) {
+    material.status = 'blocked';
+    material.processingTag = 'review needed';
+    material.progress.push({
+      stage: 'recommendations',
+      status: 'warning',
+      note: 'A blocking Learn recommendation was returned to draft; material is back in review.',
+      at: now(),
+    });
+  }
   writeMaterial(material);
   return getMaterial(materialId) ?? material;
 }

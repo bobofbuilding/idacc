@@ -1052,10 +1052,16 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     }
     case 'materials:priority':
       return updateMaterialPriority(args[0] as string, args[1] as LearnPriority, args[2] as boolean | undefined);
-    case 'materials:processNext':
-      return processNextMaterial((args[0] as ProcessMaterialContext | undefined) ?? {});
-    case 'materials:process':
-      return processMaterial(args[0] as string, (args[1] as ProcessMaterialContext | undefined) ?? {});
+    case 'materials:processNext': {
+      const result = await processNextMaterial((args[0] as ProcessMaterialContext | undefined) ?? {});
+      kickLearnQueueRunner?.(250);
+      return result;
+    }
+    case 'materials:process': {
+      const result = await processMaterial(args[0] as string, (args[1] as ProcessMaterialContext | undefined) ?? {});
+      kickLearnQueueRunner?.(250);
+      return result;
+    }
     case 'materials:recoverStale': {
       const result = recoverStaleMaterials();
       kickLearnQueueRunner?.(250);

@@ -381,13 +381,22 @@ button.chip.incompat:hover { border-color: var(--line); }
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow: hidden;
+  overflow: visible;
   position: relative;
-  z-index: 1;
+  z-index: 2;
+  margin-bottom: 4px;
 }
 .learn-intake-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .learn-intake-head h3 { margin: 0; }
-.learn-workspace { margin-top: 4px; }
+.learn-workspace {
+  margin-top: 10px;
+  position: relative;
+  z-index: 1;
+}
+.learn-workspace > .card {
+  overflow: auto;
+  max-height: calc(100vh - 292px);
+}
 .learn-intake-grid {
   display: grid;
   grid-template-columns: minmax(280px, 1fr) minmax(340px, auto);
@@ -444,6 +453,7 @@ button.chip.incompat:hover { border-color: var(--line); }
   .learn-control-row { grid-template-columns: minmax(110px, 1fr) minmax(120px, 1fr) auto; align-items: end; }
   .learn-actions { justify-content: flex-start; }
   .learn-review-callout { align-items: stretch; flex-direction: column; }
+  .learn-workspace > .card { max-height: none; }
 }
 @media (max-width: 720px) {
   .learn-control-row { grid-template-columns: 1fr; align-items: stretch; }

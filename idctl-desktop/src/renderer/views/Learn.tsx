@@ -80,6 +80,11 @@ function blockedMaterialMessage(m: LearnMaterial): string {
   return 'This material has a review-gated recommendation. Review or dismiss the recommendation before using it to drive downstream automation.';
 }
 
+function firstActiveMaterialId(materials: LearnMaterial[], preferredId?: string): string {
+  const active = materials.filter((m) => m.status !== 'ready');
+  return (preferredId && active.some((m) => m.id === preferredId)) ? preferredId : (active[0]?.id ?? '');
+}
+
 function sourceKind(source: string, picked: 'auto' | LearnMaterialKind): LearnMaterialKind | undefined {
   if (picked !== 'auto') return picked;
   try {
@@ -105,9 +110,8 @@ export function Learn({ store }: { store: FleetStore }) {
 
   async function reload() {
     const list = await call<LearnMaterial[]>('materials:list').catch(() => []);
-    const active = list.filter((m) => m.status !== 'ready');
     setMaterials(list);
-    setSelectedId((cur) => (cur && active.some((m) => m.id === cur) ? cur : (active[0]?.id ?? '')));
+    setSelectedId((cur) => firstActiveMaterialId(list, cur));
   }
 
   useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [syncVersion, store.lastUpdated]);
@@ -252,7 +256,7 @@ export function Learn({ store }: { store: FleetStore }) {
     try {
       const recovered = await call<RecoverStaleResult>('materials:recoverStale');
       setMaterials(recovered.materials);
-      setSelectedId((cur) => (cur && recovered.materials.some((m) => m.id === cur) ? cur : (recovered.materials[0]?.id ?? '')));
+      setSelectedId((cur) => firstActiveMaterialId(recovered.materials, cur));
       setNote(`recovered ${recovered.recovered} stale material${recovered.recovered === 1 ? '' : 's'}`);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
@@ -264,7 +268,7 @@ export function Learn({ store }: { store: FleetStore }) {
   async function markRecommendation(rec: LearnRecommendation, state: LearnReviewState) {
     if (!selected) return;
     const updated = await call<LearnMaterial>('materials:markRecommendation', selected.id, rec.id, state);
-    setSelectedId(updated.id);
+    if (updated.status !== 'ready') setSelectedId(updated.id);
     await reload();
   }
 
