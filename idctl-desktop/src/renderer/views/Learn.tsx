@@ -74,6 +74,21 @@ function isStaleProcessing(m: LearnMaterial): boolean {
   return m.status === 'processing' && Date.now() - m.updatedAt > STALE_PROCESSING_MS;
 }
 
+function materialStageText(m: LearnMaterial): string {
+  if (m.status === 'blocked' && (m.injectionWarnings?.length ?? 0) > 0) return 'review source trust';
+  if (m.status === 'blocked') return 'review needed';
+  if (m.status === 'queued' && m.processingTag === 'requeued after stale processing') return 'queued after recovery';
+  if (m.status === 'ready') return 'ready for review';
+  return m.processingTag || m.stage;
+}
+
+function blockedMaterialMessage(m: LearnMaterial): string {
+  if ((m.injectionWarnings?.length ?? 0) > 0) {
+    return 'This material contains instruction-like text. IDACC treated it as untrusted source content, kept the extracted summary/recommendations for review, and paused only this material before downstream routing.';
+  }
+  return 'This material has a review-gated recommendation. Review or dismiss the recommendation before using it to drive downstream automation.';
+}
+
 function sourceKind(source: string, picked: 'auto' | LearnMaterialKind): LearnMaterialKind | undefined {
   if (picked !== 'auto') return picked;
   try {
@@ -329,38 +344,38 @@ export function Learn({ store }: { store: FleetStore }) {
         <div className="learn-intake-grid">
           <label className="learn-field learn-source">
             <span className="muted small">Source</span>
-            <input value={source} disabled={busy} placeholder="GitHub URL or site URL" onChange={(e) => setSource(e.target.value)} />
+            <input value={source} disabled={busy} placeholder="GitHub URL, site URL, or use Folder/PDF import" onChange={(e) => setSource(e.target.value)} />
           </label>
-          <label className="learn-field learn-kind">
-            <span className="muted small">Type</span>
-            <select className="cell-select" value={kind} disabled={busy} onChange={(e) => setKind(e.target.value as 'auto' | LearnMaterialKind)}>
-              <option value="auto">auto</option>
-              <option value="github">GitHub</option>
-              <option value="site">Site</option>
-            </select>
-          </label>
-          <label className="learn-field learn-priority">
-            <span className="muted small">Priority</span>
-            <select className="cell-select" value={priority} disabled={busy} onChange={(e) => setPriority(e.target.value as LearnPriority)}>
-              {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </label>
-          <label className="learn-pin small">
-            <input type="checkbox" checked={pinTop} disabled={busy} onChange={(e) => setPinTop(e.target.checked)} />
-            <span>Prioritize</span>
-          </label>
-          <div className="learn-actions">
-            <button className="btn primary" disabled={busy || !source.trim()} onClick={() => void addUrl()}>Add</button>
-            <button className="btn" disabled={busy} onClick={() => void addFolder()}>Folder</button>
+          <div className="learn-control-row">
+            <label className="learn-field learn-kind">
+              <span className="muted small">Type</span>
+              <select className="cell-select" value={kind} disabled={busy} onChange={(e) => setKind(e.target.value as 'auto' | LearnMaterialKind)}>
+                <option value="auto">auto</option>
+                <option value="github">GitHub</option>
+                <option value="site">Site</option>
+              </select>
+            </label>
+            <label className="learn-field learn-priority">
+              <span className="muted small">Priority</span>
+              <select className="cell-select" value={priority} disabled={busy} onChange={(e) => setPriority(e.target.value as LearnPriority)}>
+                {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </label>
+            <label className="learn-pin small">
+              <input type="checkbox" checked={pinTop} disabled={busy} onChange={(e) => setPinTop(e.target.checked)} />
+              <span>Prioritize</span>
+            </label>
+            <div className="learn-actions">
+              <button className="btn primary" disabled={busy || !source.trim()} onClick={() => void addUrl()}>Add</button>
+              <button className="btn" disabled={busy} onClick={() => void addFolder()}>Folder</button>
+              <button className="btn" disabled={busy} onClick={() => void importPdfs()}>Import PDF</button>
+              <button className="btn" disabled={busy} onClick={() => void processNext()}>{busy ? 'Working...' : 'Process next'}</button>
+            </div>
           </div>
           <label className="learn-field learn-title">
             <span className="muted small">Title</span>
             <input value={title} disabled={busy} placeholder="optional title" onChange={(e) => setTitle(e.target.value)} />
           </label>
-          <div className="learn-actions learn-actions-secondary">
-            <button className="btn" disabled={busy} onClick={() => void importPdfs()}>Import PDF</button>
-            <button className="btn" disabled={busy} onClick={() => void processNext()}>{busy ? 'Working...' : 'Process next'}</button>
-          </div>
         </div>
       </section>
 
@@ -391,7 +406,7 @@ export function Learn({ store }: { store: FleetStore }) {
                       </select>{' '}
                       <button className="btn small" disabled={busy} title={m.prioritized ? 'Remove top priority pin' : 'Prioritize to top'} onClick={() => void setMaterialPriority(m, m.priority, !m.prioritized)}>{m.prioritized ? 'Unpin' : 'Top'}</button>
                     </td>
-                    <td><span className={`status ${STATUS_CLASS[m.status] ?? ''}`}>{m.status}</span><div className="muted small">{m.processingTag || m.stage}</div></td>
+                    <td><span className={`status ${STATUS_CLASS[m.status] ?? ''}`}>{m.status}</span><div className="muted small">{materialStageText(m)}</div></td>
                     <td className="small">{m.classification?.routedTeams?.join(', ') || '-'}</td>
                     <td className="muted small" title={new Date(m.createdAt).toLocaleString()}>{ago(m.createdAt)}</td>
                   </tr>
@@ -409,13 +424,23 @@ export function Learn({ store }: { store: FleetStore }) {
             <div className="stack">
               <div className="row-actions" style={{ gap: 8, flexWrap: 'wrap' }}>
                 <button className="btn primary" disabled={busy || (selected.status === 'processing' && !isStaleProcessing(selected))} onClick={() => void processSelected()}>
-                  {selected.status === 'processing' && isStaleProcessing(selected) ? 'Recover selected' : selected.status === 'queued' || selected.status === 'failed' ? 'Process selected' : 'Reprocess'}
+                  {selected.status === 'processing' && isStaleProcessing(selected) ? 'Recover selected' : selected.status === 'queued' || selected.status === 'failed' ? 'Process selected' : selected.status === 'blocked' ? 'Reprocess after review' : 'Reprocess'}
                 </button>
                 <button className="btn" disabled={busy} onClick={() => void removeSelected()}>Remove</button>
                 {selected.snapshotPath ? <span className="muted small">snapshot: {selected.snapshotPath}</span> : null}
               </div>
+              {selected.status === 'blocked' ? (
+                <div className="learn-review-callout">
+                  <div>
+                    <b>Blocked for review</b>
+                    <div className="muted small">{blockedMaterialMessage(selected)}</div>
+                    <div className="muted small">Other queued Learn materials can still process. Use the recommendation controls below to create review work, or reprocess after reviewing the source.</div>
+                  </div>
+                  <button className="btn" disabled={busy} onClick={() => void processNext()}>Process next queued</button>
+                </div>
+              ) : null}
               <div className="kv" style={{ gridTemplateColumns: '92px 1fr', gap: '6px 12px' }}>
-                <span className="muted small">Status</span><b>{selected.status} / {selected.stage} {selected.processingTag ? `- ${selected.processingTag}` : ''}</b>
+                <span className="muted small">Status</span><b>{selected.status} / {materialStageText(selected)}</b>
                 <span className="muted small">Topics</span><span>{selected.classification?.topics?.join(', ') || '-'}</span>
                 <span className="muted small">Teams</span><span>{selected.classification?.routedTeams?.join(', ') || '-'}</span>
                 <span className="muted small">Goals</span><span>{selected.activeGoalMatches?.length ? selected.activeGoalMatches.map((g) => `${g.priority ?? 'general'} · ${g.team}/${g.title}`).join(', ') : '-'}</span>
