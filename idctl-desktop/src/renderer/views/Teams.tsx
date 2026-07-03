@@ -32,7 +32,8 @@ type RuntimeVerificationReport = {
 };
 
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
-type GoalSummary = { id: string; title: string; status: GoalStatus; agent?: string; team: string; updatedAt: number; autopilot?: boolean };
+type GoalPriority = 'primary' | 'secondary' | 'general';
+type GoalSummary = { id: string; title: string; status: GoalStatus; priority?: GoalPriority; agent?: string; team: string; updatedAt: number; autopilot?: boolean };
 type Goal = GoalSummary & {
   idea: string;
   content: string;
@@ -67,6 +68,11 @@ const PRIMARY_TEAM = 'default';
 const DEFAULT_LEAD = 'lead';
 const DEFAULT_VALIDATORS = ['coder', 'researcher'];
 const DEFAULT_BACKBONE_AGENTS = [DEFAULT_LEAD, ...DEFAULT_VALIDATORS];
+const GOAL_PRIORITIES: GoalPriority[] = ['primary', 'secondary', 'general'];
+const GOAL_PRIORITY_LABEL: Record<GoalPriority, string> = { primary: 'Primary', secondary: 'Secondary', general: 'General' };
+function goalPriority(input?: GoalPriority): GoalPriority {
+  return input === 'primary' || input === 'secondary' || input === 'general' ? input : 'general';
+}
 function validatorRank(agent: string): number {
   const i = DEFAULT_VALIDATORS.indexOf(slugName(agent));
   return i === -1 ? DEFAULT_VALIDATORS.length : i;
@@ -617,6 +623,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   const [sgGoalTitle, setSgGoalTitle] = useState('');
   const [sgGoalContent, setSgGoalContent] = useState('');
   const [sgGoalStatus, setSgGoalStatus] = useState<GoalStatus>('draft');
+  const [sgGoalPriority, setSgGoalPriority] = useState<GoalPriority>('general');
   const [sgGoalBusy, setSgGoalBusy] = useState(false);
   const selAgentName = selectedAgent?.agent.name ?? '';
   const selAgentTeam = selectedAgent?.team ?? '';
@@ -640,6 +647,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     setSgGoalTitle('');
     setSgGoalContent('');
     setSgGoalStatus('draft');
+    setSgGoalPriority('general');
   }, [selAgentName, selAgentTeam]);
   useEffect(() => {
     if (!selAgentName) { setSgGoals([]); return; }
@@ -662,6 +670,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
         setSgGoalTitle(detail.title);
         setSgGoalContent(detail.content);
         setSgGoalStatus(detail.status);
+        setSgGoalPriority(goalPriority(detail.priority));
       }
     }
   }
@@ -702,6 +711,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     setSgGoalTitle('');
     setSgGoalContent('');
     setSgGoalStatus('draft');
+    setSgGoalPriority('general');
     setSgMsg('');
   }
   async function openAgentGoal(id: string) {
@@ -723,6 +733,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       setSgGoalTitle(g.title);
       setSgGoalContent(g.content);
       setSgGoalStatus(g.status);
+      setSgGoalPriority(goalPriority(g.priority));
     } finally { setSgGoalBusy(false); }
   }
   async function saveAgentGoal() {
@@ -746,6 +757,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           setSgGoalTitle(fresh.title);
           setSgGoalContent(fresh.content);
           setSgGoalStatus(fresh.status);
+          setSgGoalPriority(goalPriority(fresh.priority));
           setSgMsg('goal save blocked — review newer Work-page edit first');
           await reloadSelectedAgentGoals();
           return;
@@ -765,6 +777,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
         title: (sgGoalTitle.trim() || clipText(sgGoalContent, 60)).slice(0, 200),
         content: sgGoalContent.trim(),
         status: sgGoalStatus,
+        priority: sgGoalPriority,
         team: selAgentTeam,
         agent: selAgentName,
         updatedAt: now,
@@ -786,6 +799,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
         setSgGoalTitle(current.title);
         setSgGoalContent(current.content);
         setSgGoalStatus(current.status);
+        setSgGoalPriority(goalPriority(current.priority));
       }
       setSgMsg('delete blocked — goal changed elsewhere; review refreshed text');
       await reloadSelectedAgentGoals();
@@ -800,6 +814,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       setSgGoalTitle('');
       setSgGoalContent('');
       setSgGoalStatus('draft');
+      setSgGoalPriority('general');
       await call('org:sync', { autoRebuild: false }).catch(() => {});
       await reloadSelectedAgentGoals();
       setSgMsg('goal removed ✓');
@@ -1661,11 +1676,12 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   }
 
   const sgGoalDirty = sgGoalEditing === 'new'
-    ? Boolean(sgGoalTitle.trim() || sgGoalContent.trim() || sgGoalStatus !== 'draft')
+    ? Boolean(sgGoalTitle.trim() || sgGoalContent.trim() || sgGoalStatus !== 'draft' || sgGoalPriority !== 'general')
     : Boolean(sgGoalDetail && (
       sgGoalTitle !== sgGoalDetail.title ||
       sgGoalContent !== sgGoalDetail.content ||
-      sgGoalStatus !== sgGoalDetail.status
+      sgGoalStatus !== sgGoalDetail.status ||
+      sgGoalPriority !== goalPriority(sgGoalDetail.priority)
     ));
   const selectedTeamMeta = selectedTeamName ? visibleTeams.find((t) => t.name === selectedTeamName) : undefined;
   const selectedTeamKnownTotal = selectedTeamAgents.length || Number(selectedTeamMeta?.agentCount) || 0;
@@ -1864,8 +1880,8 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
                 </div>
                 <div className="chips" style={{ marginTop: 8 }}>
                   {sgGoals.length ? sgGoals.map((g) => (
-                    <button key={g.id} className={`chip${sgGoalEditing === g.id ? ' on' : ''}`} disabled={sgGoalBusy} title={`${g.status}${g.autopilot ? ' · autopilot' : ''} · updated ${ago(g.updatedAt)}`} onClick={() => void openAgentGoal(g.id)}>
-                      {g.status}: {clipText(g.title, 42)}
+                    <button key={g.id} className={`chip${sgGoalEditing === g.id ? ' on' : ''}`} disabled={sgGoalBusy} title={`${GOAL_PRIORITY_LABEL[goalPriority(g.priority)]} · ${g.status}${g.autopilot ? ' · autopilot' : ''} · updated ${ago(g.updatedAt)}`} onClick={() => void openAgentGoal(g.id)}>
+                      {GOAL_PRIORITY_LABEL[goalPriority(g.priority)]}: {clipText(g.title, 42)}
                     </button>
                   )) : <span className="muted small">No saved goals for this agent yet.</span>}
                 </div>
@@ -1880,6 +1896,10 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
                         <option value="active">active</option>
                         <option value="done">done</option>
                         <option value="archived">archived</option>
+                      </select>
+                      <span className="muted small">tier</span>
+                      <select className="cell-select" value={sgGoalPriority} disabled={sgGoalBusy} onChange={(e) => setSgGoalPriority(e.target.value as GoalPriority)}>
+                        {GOAL_PRIORITIES.map((p) => <option key={p} value={p}>{GOAL_PRIORITY_LABEL[p]}</option>)}
                       </select>
                     </div>
                     <textarea style={{ width: '100%', minHeight: 120, marginTop: 8, fontFamily: 'var(--mono, ui-monospace, monospace)', fontSize: 12 }}

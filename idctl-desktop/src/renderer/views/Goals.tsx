@@ -8,19 +8,22 @@ import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../st
  */
 
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
+type GoalPriority = 'primary' | 'secondary' | 'general';
 interface Goal {
   id: string; title: string; idea: string; agent?: string; team: string;
-  status: GoalStatus; autopilot?: boolean; content: string;
+  status: GoalStatus; priority?: GoalPriority; autopilot?: boolean; content: string;
   driver?: { lastRunAt?: number; taskRefs?: string[]; note?: string };
   createdAt: number; updatedAt: number;
 }
-type GoalSummary = { id: string; title: string; status: GoalStatus; agent?: string; team: string; updatedAt: number; autopilot?: boolean };
-type GoalField = 'title' | 'status' | 'autopilot' | 'content' | 'updatedAt';
+type GoalSummary = { id: string; title: string; status: GoalStatus; priority?: GoalPriority; agent?: string; team: string; updatedAt: number; autopilot?: boolean };
+type GoalField = 'title' | 'status' | 'priority' | 'autopilot' | 'content' | 'updatedAt';
 interface GoalDriverConfig { enabled: boolean; cadenceMs: number; maxOpenTasksPerGoal: number }
 interface GoalDriverSummary { enabled: boolean; consideredGoals: number; drivenGoals: number; tasksSpawned: number; teamsSynced: number; errors: string[] }
 
 const STATUSES: GoalStatus[] = ['draft', 'active', 'done', 'archived'];
+const PRIORITIES: GoalPriority[] = ['primary', 'secondary', 'general'];
 const STATUS_CLASS: Record<GoalStatus, string> = { draft: 'st-paused', active: 'st-active', done: 'st-done', archived: 'st-blocked' };
+const PRIORITY_LABEL: Record<GoalPriority, string> = { primary: 'Primary', secondary: 'Secondary', general: 'General' };
 const DRIVER_DEFAULTS: GoalDriverConfig = { enabled: false, cadenceMs: 30 * 60 * 1000, maxOpenTasksPerGoal: 3 };
 const CADENCES = [
   { label: '15m', value: 15 * 60 * 1000 },
@@ -32,6 +35,7 @@ function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/
 function clip(s: string, n: number): string { const t = s.replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; }
 function cadenceLabel(ms: number): string { return CADENCES.find((c) => c.value === ms)?.label ?? `${Math.max(1, Math.round(ms / 60000))}m`; }
 function newId(): string { return `goal_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
+function goalPriority(p?: GoalPriority): GoalPriority { return p === 'primary' || p === 'secondary' || p === 'general' ? p : 'general'; }
 function ago(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
   if (s < 60) return `${s}s ago`; if (s < 3600) return `${Math.round(s / 60)}m ago`;
@@ -57,6 +61,7 @@ export function Goals({ store }: { store: FleetStore }) {
   const [idea, setIdea] = useState('');
   const [draft, setDraft] = useState('');     // the editable goal statement
   const [title, setTitle] = useState('');
+  const [priority, setPriority] = useState<GoalPriority>('general');
   const [agent, setAgent] = useState('');
   // edit-existing form
   const [refineInstr, setRefineInstr] = useState('');
@@ -71,7 +76,7 @@ export function Goals({ store }: { store: FleetStore }) {
   const names = useMemo(() => store.agents.map((a) => a.name), [store.agents]);
   const changedText = (before: string | number | boolean | undefined, after: string | number | boolean | undefined) => `${String(before ?? 'none')} -> ${String(after ?? 'none')}`;
   function goalStamp(g: Goal): Record<GoalField, string | number | boolean | undefined> {
-    return { title: g.title, status: g.status, autopilot: !!g.autopilot, content: g.content, updatedAt: g.updatedAt };
+    return { title: g.title, status: g.status, priority: goalPriority(g.priority), autopilot: !!g.autopilot, content: g.content, updatedAt: g.updatedAt };
   }
   async function ensureGoalFresh(g: Goal, action: string, fields: GoalField[] = ['updatedAt']): Promise<Goal | null> {
     const current = await call<Goal | null>('goals:get', g.id).catch(() => null);
@@ -141,12 +146,12 @@ export function Goals({ store }: { store: FleetStore }) {
     const now = Date.now();
     const goal: Goal = {
       id: newId(), title: (title.trim() || clip(content, 60)), idea: idea.trim(), agent: genAgent, team,
-      status: 'draft', autopilot: false, content, createdAt: now, updatedAt: now,
+      status: 'draft', priority, autopilot: false, content, createdAt: now, updatedAt: now,
     };
     await call('goals:save', goal);
     if (!aliveRef.current) return;
     const saved = await call<Goal | null>('goals:get', goal.id).catch(() => goal);
-    setIdea(''); setDraft(''); setTitle(''); setShowNew(false); setMsg('goal saved ✓');
+    setIdea(''); setDraft(''); setTitle(''); setPriority('general'); setShowNew(false); setMsg('goal saved ✓');
     await reload();
     setDetail(saved ?? goal);
   }
@@ -202,14 +207,14 @@ export function Goals({ store }: { store: FleetStore }) {
     };
   }
   function goalSummaryStamp(list: GoalSummary[]): string {
-    return [...list].map((g) => `${g.team}:${g.id}:${g.updatedAt}:${g.status}:${g.autopilot ? 1 : 0}`).sort().join('|');
+    return [...list].map((g) => `${g.team}:${g.id}:${g.updatedAt}:${g.status}:${goalPriority(g.priority)}:${g.autopilot ? 1 : 0}`).sort().join('|');
   }
   function driverConfigStamp(cfg: GoalDriverConfig): string {
     return `${cfg.enabled ? 1 : 0}:${cfg.cadenceMs}:${cfg.maxOpenTasksPerGoal}`;
   }
   function activeGoalPreview(list: GoalSummary[]): string {
     if (!list.length) return '- none';
-    const rows = list.slice(0, 8).map((g) => `- ${g.team || 'default'} / ${g.title}`);
+    const rows = list.slice(0, 8).map((g) => `- ${PRIORITY_LABEL[goalPriority(g.priority)]}: ${g.team || 'default'} / ${g.title}`);
     const rest = list.length - rows.length;
     return rest > 0 ? `${rows.join('\n')}\n- ... ${rest} more` : rows.join('\n');
   }
@@ -302,6 +307,15 @@ export function Goals({ store }: { store: FleetStore }) {
     await reload();
   }
 
+  const goalGroups = useMemo(() => ([
+    { priority: 'primary' as GoalPriority, label: 'Primary goals', empty: 'No primary goal set.' },
+    { priority: 'secondary' as GoalPriority, label: 'Secondary goals', empty: 'No secondary goals set.' },
+    { priority: 'general' as GoalPriority, label: 'General goals', empty: 'No general goals set.' },
+  ].map((group) => ({
+    ...group,
+    goals: goals.filter((g) => goalPriority(g.priority) === group.priority),
+  }))), [goals]);
+
   return (
     <>
       <div className="row-actions" style={{ marginBottom: 8, alignItems: 'center' }}>
@@ -346,6 +360,12 @@ export function Goals({ store }: { store: FleetStore }) {
             </b>
             <span>title</span>
             <b><input className="chat-title" style={{ width: '100%' }} placeholder="short name for this goal (optional — auto-filled)" value={title} disabled={busy} onChange={(e) => setTitle(e.target.value)} /></b>
+            <span>tier</span>
+            <b>
+              <select className="cell-select" value={priority} disabled={busy} onChange={(e) => setPriority(e.target.value as GoalPriority)}>
+                {PRIORITIES.map((p) => <option key={p} value={p}>{PRIORITY_LABEL[p]}</option>)}
+              </select>
+            </b>
             <span>idea</span>
             <b><textarea style={{ width: '100%', minHeight: 56 }} placeholder="describe what you want to achieve, in your own words — e.g. “make the brain learn from its own mistakes each night”" value={idea} disabled={busy} onChange={(e) => setIdea(e.target.value)} /></b>
             <span>goal</span>
@@ -360,61 +380,73 @@ export function Goals({ store }: { store: FleetStore }) {
       ) : null}
 
       <div className="skill-catalog">
-        {goals.map((g) => {
-          const isOpen = detail?.id === g.id;
-          return (
-            <div className={`skill-card${isOpen ? ' editing' : ''}`} key={g.id}>
-              <div className="skill-card-head" style={{ cursor: 'pointer' }} onClick={() => void open(g.id)}>
-                <span className={`st-badge ${STATUS_CLASS[g.status]}`}>{g.status}</span>
-                <span className="b">{g.title}</span>
-                {g.agent ? <span className="muted small">· {g.agent}</span> : null}
-                <span className="grow" />
-                <span className="muted small">{ago(g.updatedAt)}</span>
-                <span className="muted">{isOpen ? '▾' : '▸'}</span>
-              </div>
-
-              {isOpen && detail ? (
-                <div className="plan-detail">
-                  <div className="row-actions" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
-                    <input className="chat-title" style={{ flex: '0 1 320px' }} value={detail.title} disabled={busy} onChange={(e) => setDetail({ ...detail, title: e.target.value })} onBlur={(e) => void patchGoal({ title: e.target.value })} />
-                    <select className="cell-select small" value={detail.status} disabled={busy} onChange={(e) => void patchGoal({ status: e.target.value as GoalStatus })}>
-                      {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                    <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                      <input type="checkbox" checked={!!detail.autopilot} disabled={busy || detail.status !== 'active'} onChange={(e) => void patchGoal({ autopilot: e.target.checked })} />
-                      Autopilot
-                    </label>
+        {goalGroups.map((group) => (
+          <div key={group.priority} style={{ marginBottom: 12 }}>
+            <div className="row-actions" style={{ alignItems: 'center', gap: 8, margin: '8px 0 6px' }}>
+              <b>{group.label}</b>
+              <span className="muted small">{group.goals.length}</span>
+            </div>
+            {group.goals.map((g) => {
+              const isOpen = detail?.id === g.id;
+              return (
+                <div className={`skill-card${isOpen ? ' editing' : ''}`} key={g.id}>
+                  <div className="skill-card-head" style={{ cursor: 'pointer' }} onClick={() => void open(g.id)}>
+                    <span className={`st-badge ${STATUS_CLASS[g.status]}`}>{g.status}</span>
+                    <span className="muted small">{PRIORITY_LABEL[goalPriority(g.priority)]}</span>
+                    <span className="b">{g.title}</span>
+                    {g.agent ? <span className="muted small">· {g.agent}</span> : null}
                     <span className="grow" />
-                    {confirmDel ? (
-                      <>
-                        <button className="btn icon-danger small" disabled={busy} onClick={() => void remove()}>Delete?</button>
-                        <button className="btn small" disabled={busy} onClick={() => setConfirmDel(false)}>Cancel</button>
-                      </>
-                    ) : (
-                      <button className="btn icon-danger small" disabled={busy} title="Delete goal" onClick={() => setConfirmDel(true)}>✕</button>
-                    )}
+                    <span className="muted small">{ago(g.updatedAt)}</span>
+                    <span className="muted">{isOpen ? '▾' : '▸'}</span>
                   </div>
 
-                  <textarea className="plan-content" style={{ width: '100%', minHeight: 120 }} value={detail.content} disabled={busy} onChange={(e) => setDetail({ ...detail, content: e.target.value })} onBlur={(e) => void patchGoal({ content: e.target.value })} />
+                  {isOpen && detail ? (
+                    <div className="plan-detail">
+                      <div className="row-actions" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+                        <input className="chat-title" style={{ flex: '0 1 320px' }} value={detail.title} disabled={busy} onChange={(e) => setDetail({ ...detail, title: e.target.value })} onBlur={(e) => void patchGoal({ title: e.target.value })} />
+                        <select className="cell-select small" value={detail.status} disabled={busy} onChange={(e) => void patchGoal({ status: e.target.value as GoalStatus })}>
+                          {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                        <select className="cell-select small" value={goalPriority(detail.priority)} disabled={busy} onChange={(e) => void patchGoal({ priority: e.target.value as GoalPriority })}>
+                          {PRIORITIES.map((p) => <option key={p} value={p}>{PRIORITY_LABEL[p]}</option>)}
+                        </select>
+                        <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                          <input type="checkbox" checked={!!detail.autopilot} disabled={busy || detail.status !== 'active'} onChange={(e) => void patchGoal({ autopilot: e.target.checked })} />
+                          Autopilot
+                        </label>
+                        <span className="grow" />
+                        {confirmDel ? (
+                          <>
+                            <button className="btn icon-danger small" disabled={busy} onClick={() => void remove()}>Delete?</button>
+                            <button className="btn small" disabled={busy} onClick={() => setConfirmDel(false)}>Cancel</button>
+                          </>
+                        ) : (
+                          <button className="btn icon-danger small" disabled={busy} title="Delete goal" onClick={() => setConfirmDel(true)}>✕</button>
+                        )}
+                      </div>
 
-                  {detail.driver ? (
-                    <div className="muted small" style={{ marginTop: 6 }}>
-                      driver: {detail.driver.note ?? 'no note'}
-                      {detail.driver.lastRunAt ? ` · ${ago(detail.driver.lastRunAt)}` : ''}
-                      {detail.driver.taskRefs?.length ? ` · ${detail.driver.taskRefs.length} task(s)` : ''}
+                      <textarea className="plan-content" style={{ width: '100%', minHeight: 120 }} value={detail.content} disabled={busy} onChange={(e) => setDetail({ ...detail, content: e.target.value })} onBlur={(e) => void patchGoal({ content: e.target.value })} />
+
+                      {detail.driver ? (
+                        <div className="muted small" style={{ marginTop: 6 }}>
+                          driver: {detail.driver.note ?? 'no note'}
+                          {detail.driver.lastRunAt ? ` · ${ago(detail.driver.lastRunAt)}` : ''}
+                          {detail.driver.taskRefs?.length ? ` · ${detail.driver.taskRefs.length} task(s)` : ''}
+                        </div>
+                      ) : null}
+
+                      <div className="row-actions" style={{ gap: 6, marginTop: 8, alignItems: 'flex-start' }}>
+                        <textarea style={{ flex: 1, minHeight: 38 }} placeholder="refine with AI — e.g. “make the success criteria measurable” or “tighten to one sentence”" value={refineInstr} disabled={busy} onChange={(e) => setRefineInstr(e.target.value)} />
+                        <button className="btn primary" disabled={busy || !refineInstr.trim()} title="Ask an agent to refine the goal" onClick={() => void refine()}>{busy ? '…' : '✦ AI assist'}</button>
+                      </div>
                     </div>
                   ) : null}
-
-                  <div className="row-actions" style={{ gap: 6, marginTop: 8, alignItems: 'flex-start' }}>
-                    <textarea style={{ flex: 1, minHeight: 38 }} placeholder="refine with AI — e.g. “make the success criteria measurable” or “tighten to one sentence”" value={refineInstr} disabled={busy} onChange={(e) => setRefineInstr(e.target.value)} />
-                    <button className="btn primary" disabled={busy || !refineInstr.trim()} title="Ask an agent to refine the goal" onClick={() => void refine()}>{busy ? '…' : '✦ AI assist'}</button>
-                  </div>
                 </div>
-              ) : null}
-            </div>
-          );
-        })}
-        {goals.length === 0 ? <p className="muted center pad">No goals yet. <b>+ New goal</b> — describe what you want to achieve and let <b>✦ AI assist</b> help write it.</p> : null}
+              );
+            })}
+            {!group.goals.length ? <p className="muted pad" style={{ margin: 0 }}>{group.empty}</p> : null}
+          </div>
+        ))}
       </div>
     </>
   );

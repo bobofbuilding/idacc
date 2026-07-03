@@ -27,7 +27,7 @@ import { basename, dirname, extname, join, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { brain } from '../../../idctl/src/api/brain.ts';
 import { call as bridgeCall } from './bridge.ts';
-import { getGoal, listGoals, type Goal } from './goalstore.ts';
+import { getGoal, goalPriorityRank, listGoals, normalizeGoalPriority, type Goal, type GoalPriority } from './goalstore.ts';
 import { addQuestion } from './questionstore.ts';
 
 export type LearnMaterialKind = 'github' | 'folder' | 'site' | 'pdf';
@@ -58,6 +58,7 @@ export interface LearnGoalMatch {
   id: string;
   title: string;
   team: string;
+  priority?: GoalPriority;
   score: number;
   reason: string;
 }
@@ -149,6 +150,7 @@ interface ActiveGoal {
   id: string;
   title: string;
   team: string;
+  priority: GoalPriority;
   content: string;
 }
 
@@ -827,9 +829,15 @@ function loadActiveGoals(): ActiveGoal[] {
   for (const s of summaries) {
     const g = getGoal(s.id) as Goal | null;
     if (!g || g.status !== 'active') continue;
-    out.push({ id: g.id, title: g.title || s.title, team: g.team || s.team || 'default', content: g.content || g.idea || '' });
+    out.push({
+      id: g.id,
+      title: g.title || s.title,
+      team: g.team || s.team || 'default',
+      priority: normalizeGoalPriority(g.priority),
+      content: g.content || g.idea || '',
+    });
   }
-  return out;
+  return out.sort((a, b) => goalPriorityRank(a.priority) - goalPriorityRank(b.priority));
 }
 
 function classifyMaterial(material: LearnMaterial, text: string, activeGoals: ActiveGoal[], ctx: ProcessMaterialContext): { classification: LearnClassification; matches: LearnGoalMatch[] } {
@@ -852,10 +860,17 @@ function classifyMaterial(material: LearnMaterial, text: string, activeGoals: Ac
     .map((goal) => {
       const score = overlapScore(text, `${goal.title}\n${goal.content}`);
       if (score > 0) teamScores.set(goal.team, (teamScores.get(goal.team) ?? 0) + Math.min(8, score + 2));
-      return { id: goal.id, title: goal.title, team: goal.team, score, reason: score > 0 ? 'Keyword overlap with active goal title/content' : 'No meaningful overlap' };
+      return {
+        id: goal.id,
+        title: goal.title,
+        team: goal.team,
+        priority: goal.priority,
+        score,
+        reason: score > 0 ? `Keyword overlap with ${goal.priority} active goal title/content` : 'No meaningful overlap',
+      };
     })
     .filter((g) => g.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || goalPriorityRank(a.priority) - goalPriorityRank(b.priority))
     .slice(0, 8);
   const routed = [...teamScores.entries()]
     .filter(([, score]) => score > 0)
@@ -926,7 +941,7 @@ function compareAgainstActiveGoals(material: LearnMaterial, activeGoals: ActiveG
   return [
     `Compared against ${activeGoals.length} active Work goal(s); ${matches.length} match(es) found.`,
     '',
-    ...matches.map((m) => `- ${m.team}/${m.title}: score ${m.score} (${m.reason})`),
+    ...matches.map((m) => `- ${m.priority ?? 'general'} · ${m.team}/${m.title}: score ${m.score} (${m.reason})`),
   ].join('\n');
 }
 

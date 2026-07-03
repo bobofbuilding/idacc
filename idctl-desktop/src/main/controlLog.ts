@@ -93,7 +93,7 @@ const ACTIONS: Record<string, (args: unknown[], result: unknown) => Summary> = {
   // ── operator work state (local fs + manager schedules; otherwise brain learned it only incidentally) ──
   'plans:save': (a) => { const p = obj(a[0]); return { subject: `draft plan saved: ${clip(p.title, 80)}`, data: { id: p.id, status: p.status, team: p.team, agent: p.agent, version: p.version, tags: p.tags }, tags: ['plan', 'draft'] }; },
   'plans:remove': (a) => ({ subject: `draft plan removed: ${s(a[0])}`, data: { id: s(a[0]) }, tags: ['plan', 'draft'] }),
-  'goals:save': (a) => { const g = obj(a[0]); return { subject: `goal saved: ${clip(g.title, 80)}`, data: { id: g.id, status: g.status, team: g.team, agent: g.agent, autopilot: g.autopilot, driver: g.driver }, tags: ['goal'] }; },
+  'goals:save': (a) => { const g = obj(a[0]); return { subject: `goal saved: ${clip(g.title, 80)}`, data: { id: g.id, status: g.status, priority: g.priority, team: g.team, agent: g.agent, autopilot: g.autopilot, driver: g.driver }, tags: ['goal'] }; },
   'goals:remove': (a) => ({ subject: `goal removed: ${s(a[0])}`, data: { id: s(a[0]) }, tags: ['goal'] }),
   'loops:save': (a) => { const l = obj(a[0]); return { subject: `loop saved: ${clip(l.title, 80)}`, data: { id: l.id, team: l.team, steps: Array.isArray(l.steps) ? l.steps.length : 0, lastRunAt: l.lastRunAt }, tags: ['loop'] }; },
   'loops:remove': (a) => ({ subject: `loop removed: ${s(a[0])}`, data: { id: s(a[0]) }, tags: ['loop'] }),
@@ -220,20 +220,22 @@ const EXTRAS: Record<string, (args: unknown[], result: unknown) => void> = {
     const team = s(g.team) || 'default';
     const title = s(g.title) || s(g.id);
     const status = s(g.status) || 'draft';
+    const priority = s(g.priority) || 'general';
     void brain.entity({
       id, type: 'goal', name: title, status,
-      tags: ['goal', 'dashboard-state', g.autopilot ? 'autopilot' : 'manual'],
-      data: { team, agent: g.agent, autopilot: !!g.autopilot, driver: g.driver },
+      tags: ['goal', priority, 'dashboard-state', g.autopilot ? 'autopilot' : 'manual'],
+      data: { team, priority, agent: g.agent, autopilot: !!g.autopilot, driver: g.driver },
     });
     void brain.facts([
       { entity_id: id, field: 'team', value: team },
       { entity_id: id, field: 'status', value: status },
+      { entity_id: id, field: 'priority', value: priority },
       { entity_id: id, field: 'autopilot', value: !!g.autopilot },
       ...(g.agent ? [{ entity_id: id, field: 'agent', value: s(g.agent) }] : []),
     ]);
     void brain.memory('control-center', {
       key: id,
-      content: [`# Goal: ${title}`, `Status: ${status}`, `Team: ${team}`, `Autopilot: ${g.autopilot ? 'on' : 'off'}`, g.agent ? `Agent: ${s(g.agent)}` : '', '', s(g.content).slice(0, 12000)].filter(Boolean).join('\n'),
+      content: [`# Goal: ${title}`, `Status: ${status}`, `Tier: ${priority}`, `Team: ${team}`, `Autopilot: ${g.autopilot ? 'on' : 'off'}`, g.agent ? `Agent: ${s(g.agent)}` : '', '', s(g.content).slice(0, 12000)].filter(Boolean).join('\n'),
       tags: ['dashboard-state', 'goal'],
       shared: true,
       project: team,

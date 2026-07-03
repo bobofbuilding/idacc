@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.493] — 2026-07-03
+- Add primary, secondary, and general goal tiers across Work goals, HR agent goal editing, instruction sync, Learn comparisons, and brain audit records.
+
 ## [0.1.492] — 2026-07-03
 - Route Brain approval triage into the IDACC Inbox with guarded approve/reject decisions.
 

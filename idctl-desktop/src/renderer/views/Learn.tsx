@@ -25,6 +25,7 @@ interface Plan {
   updatedAt: number;
 }
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
+type GoalPriority = 'primary' | 'secondary' | 'general';
 interface Goal {
   id: string;
   title: string;
@@ -32,6 +33,7 @@ interface Goal {
   agent?: string;
   team: string;
   status: GoalStatus;
+  priority?: GoalPriority;
   autopilot?: boolean;
   content: string;
   createdAt: number;
@@ -246,6 +248,7 @@ export function Learn({ store }: { store: FleetStore }) {
           agent: coordinator,
           team,
           status: 'draft',
+          priority: 'general',
           autopilot: false,
           content: rec.body,
           createdAt: now,
@@ -357,7 +360,7 @@ export function Learn({ store }: { store: FleetStore }) {
                 <span className="muted small">Status</span><b>{selected.status} / {selected.stage} {selected.processingTag ? `- ${selected.processingTag}` : ''}</b>
                 <span className="muted small">Topics</span><span>{selected.classification?.topics?.join(', ') || '-'}</span>
                 <span className="muted small">Teams</span><span>{selected.classification?.routedTeams?.join(', ') || '-'}</span>
-                <span className="muted small">Goals</span><span>{selected.activeGoalMatches?.length ? selected.activeGoalMatches.map((g) => `${g.team}/${g.title}`).join(', ') : '-'}</span>
+                <span className="muted small">Goals</span><span>{selected.activeGoalMatches?.length ? selected.activeGoalMatches.map((g) => `${g.priority ?? 'general'} · ${g.team}/${g.title}`).join(', ') : '-'}</span>
               </div>
 
               {selected.injectionWarnings?.length || selected.extractionWarnings?.length ? (

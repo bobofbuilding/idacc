@@ -10,7 +10,7 @@ import type { ManagerClient } from '../../../idctl/src/api/client.ts';
 import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
 import { createAndDispatchPlan, decomposeWork, isActiveStatus, type SubTask } from './work.ts';
-import { getGoal, listGoals, saveGoal, type Goal } from './goalstore.ts';
+import { getGoal, goalPriorityRank, listGoals, normalizeGoalPriority, saveGoal, type Goal } from './goalstore.ts';
 
 export interface GoalDriverConfig {
   enabled: boolean;
@@ -113,13 +113,15 @@ function clip(s: string, n: number): string {
 function activeAutopilotGoals(): Goal[] {
   return listGoals()
     .map((g) => getGoal(g.id))
-    .filter((g): g is Goal => !!g && g.status === 'active' && g.autopilot === true);
+    .filter((g): g is Goal => !!g && g.status === 'active' && g.autopilot === true)
+    .sort((a, b) => goalPriorityRank(a.priority) - goalPriorityRank(b.priority) || b.updatedAt - a.updatedAt);
 }
 
 function activeWorkGoals(): Goal[] {
   return listGoals()
     .map((g) => getGoal(g.id))
-    .filter((g): g is Goal => !!g && g.status === 'active');
+    .filter((g): g is Goal => !!g && g.status === 'active')
+    .sort((a, b) => goalPriorityRank(a.priority) - goalPriorityRank(b.priority) || b.updatedAt - a.updatedAt);
 }
 
 function goalDriverStamp(goal: Goal): string {
@@ -127,6 +129,7 @@ function goalDriverStamp(goal: Goal): string {
     goal.id,
     goal.team,
     goal.status,
+    normalizeGoalPriority(goal.priority),
     goal.autopilot ? '1' : '0',
     goal.updatedAt,
     goal.title || '',
@@ -152,9 +155,17 @@ function saveGoalDriverMetadata(goalId: string, driver: NonNullable<Goal['driver
   return true;
 }
 
+function goalPriorityLabel(goal: Goal): string {
+  const priority = normalizeGoalPriority(goal.priority);
+  return priority === 'primary' ? 'Primary' : priority === 'secondary' ? 'Secondary' : 'General';
+}
+
 function teamGoalInstructions(team: string, goals: Goal[]): string {
   if (!goals.length) return '';
-  const lines = goals.map((g) => `- ${g.title || g.id} (${g.id}): ${clip(g.content || g.idea || '', 220)}`);
+  const lines = goals
+    .slice()
+    .sort((a, b) => goalPriorityRank(a.priority) - goalPriorityRank(b.priority) || b.updatedAt - a.updatedAt)
+    .map((g) => `- [${goalPriorityLabel(g)}] ${g.title || g.id} (${g.id}): ${clip(g.content || g.idea || '', 220)}`);
   return [
     '## Active autopilot goals',
     '',
@@ -164,9 +175,9 @@ function teamGoalInstructions(team: string, goals: Goal[]): string {
 }
 
 function teamActiveWorkGoalInstructions(team: string, goals: Goal[]): string {
-  const lines = goals.map((g) => {
+  const lines = goals.slice().sort((a, b) => goalPriorityRank(a.priority) - goalPriorityRank(b.priority) || b.updatedAt - a.updatedAt).map((g) => {
     const owner = g.agent ? ` · agent: ${g.agent}` : '';
-    return `- ${g.title || g.id} (${g.id}${owner}): ${clip(g.content || g.idea || '', 220)}`;
+    return `- [${goalPriorityLabel(g)}] ${g.title || g.id} (${g.id}${owner}): ${clip(g.content || g.idea || '', 220)}`;
   });
   return [
     '## Active Work goals',
