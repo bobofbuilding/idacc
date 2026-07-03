@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import type {
   LearnMaterial,
@@ -110,6 +110,10 @@ export function Learn({ store }: { store: FleetStore }) {
   const [kind, setKind] = useState<'auto' | LearnMaterialKind>('auto');
   const [priority, setPriority] = useState<LearnPriority>('normal');
   const [pinTop, setPinTop] = useState(false);
+  const [autoProcess, setAutoProcess] = useState(() => {
+    try { return window.localStorage.getItem('idacc.learn.autoProcess') !== '0'; } catch { return true; }
+  });
+  const autoProcessInFlight = useRef(false);
   const coordinator = resolveCoordinator(store.agents, store.coordinator) ?? store.agents[0]?.name ?? '';
 
   async function reload() {
@@ -123,10 +127,31 @@ export function Learn({ store }: { store: FleetStore }) {
   const selected = useMemo(() => materials.find((m) => m.id === selectedId) ?? materials[0] ?? null, [materials, selectedId]);
   const processing = materials.find((m) => m.status === 'processing');
   const staleProcessing = useMemo(() => materials.filter(isStaleProcessing), [materials]);
+  const queuedCount = useMemo(() => materials.filter((m) => m.status === 'queued').length, [materials]);
   const context = {
     knownTeams: store.teams.map((t) => t.name).filter(Boolean),
     defaultTeam: store.team ?? 'default',
   };
+
+  useEffect(() => {
+    try { window.localStorage.setItem('idacc.learn.autoProcess', autoProcess ? '1' : '0'); } catch { /* ignore */ }
+  }, [autoProcess]);
+
+  useEffect(() => {
+    if (!autoProcess || busy || queuedCount < 1 || staleProcessing.length > 0) return;
+    if (processing && !isStaleProcessing(processing)) return;
+    if (autoProcessInFlight.current) return;
+    autoProcessInFlight.current = true;
+    const timer = window.setTimeout(() => {
+      void processNext(true).finally(() => { autoProcessInFlight.current = false; });
+    }, 500);
+    return () => {
+      window.clearTimeout(timer);
+      autoProcessInFlight.current = false;
+    };
+    // The queue runner intentionally keys off material state, not the processNext function identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoProcess, busy, queuedCount, processing?.id, processing?.updatedAt, staleProcessing.length, syncVersion, store.lastUpdated]);
 
   async function addUrl() {
     const src = source.trim();
@@ -193,13 +218,19 @@ export function Learn({ store }: { store: FleetStore }) {
     }
   }
 
-  async function processNext() {
-    if (processing && !isStaleProcessing(processing)) { setSelectedId(processing.id); setNote('a material is already processing'); return; }
-    setBusy(true); setNote('processing next material...');
+  async function processNext(auto = false) {
+    if (processing && !isStaleProcessing(processing)) {
+      if (!auto) {
+        setSelectedId(processing.id);
+        setNote('a material is already processing');
+      }
+      return;
+    }
+    setBusy(true); setNote(auto ? 'auto-processing next material...' : 'processing next material...');
     try {
       if (processing) await call<RecoverStaleResult>('materials:recoverStale').catch(() => null);
       const material = await call<LearnMaterial | null>('materials:processNext', context);
-      setNote(material ? `processed ${material.title}` : 'queue is empty');
+      setNote(material ? `${auto ? 'auto-processed' : 'processed'} ${material.title}` : 'queue is empty');
       if (material) setSelectedId(material.id);
       await reload();
     } catch (e) {
@@ -327,8 +358,15 @@ export function Learn({ store }: { store: FleetStore }) {
     <div className="stack">
       <section className="card learn-intake">
         <div className="learn-intake-head">
-          <h3>Learn intake</h3>
-          {note ? <span className="muted small">{note}</span> : null}
+          <div>
+            <h3>Learn intake</h3>
+            {note ? <div className="muted small">{note}</div> : null}
+          </div>
+          <label className="learn-auto small" title="When enabled, queued materials are processed one at a time. Review-gated or blocked materials still stop before downstream automation.">
+            <input type="checkbox" checked={autoProcess} onChange={(e) => setAutoProcess(e.target.checked)} />
+            <span>Auto-process queue</span>
+            {queuedCount ? <span className="muted">({queuedCount})</span> : null}
+          </label>
         </div>
         {staleProcessing.length ? (
           <div className="review-box" style={{ marginBottom: 10 }}>
@@ -342,10 +380,16 @@ export function Learn({ store }: { store: FleetStore }) {
           </div>
         ) : null}
         <div className="learn-intake-grid">
-          <label className="learn-field learn-source">
-            <span className="muted small">Source</span>
-            <input value={source} disabled={busy} placeholder="GitHub URL, site URL, or use Folder/PDF import" onChange={(e) => setSource(e.target.value)} />
-          </label>
+          <div className="learn-main-fields">
+            <label className="learn-field learn-source">
+              <span className="muted small">Source</span>
+              <input value={source} disabled={busy} placeholder="GitHub URL, site URL, or use Folder/PDF import" onChange={(e) => setSource(e.target.value)} />
+            </label>
+            <label className="learn-field learn-title">
+              <span className="muted small">Title</span>
+              <input value={title} disabled={busy} placeholder="optional title" onChange={(e) => setTitle(e.target.value)} />
+            </label>
+          </div>
           <div className="learn-control-row">
             <label className="learn-field learn-kind">
               <span className="muted small">Type</span>
@@ -369,13 +413,9 @@ export function Learn({ store }: { store: FleetStore }) {
               <button className="btn primary" disabled={busy || !source.trim()} onClick={() => void addUrl()}>Add</button>
               <button className="btn" disabled={busy} onClick={() => void addFolder()}>Folder</button>
               <button className="btn" disabled={busy} onClick={() => void importPdfs()}>Import PDF</button>
-              <button className="btn" disabled={busy} onClick={() => void processNext()}>{busy ? 'Working...' : 'Process next'}</button>
+              <button className="btn" disabled={busy} onClick={() => void processNext(false)}>{busy ? 'Working...' : 'Process next'}</button>
             </div>
           </div>
-          <label className="learn-field learn-title">
-            <span className="muted small">Title</span>
-            <input value={title} disabled={busy} placeholder="optional title" onChange={(e) => setTitle(e.target.value)} />
-          </label>
         </div>
       </section>
 
