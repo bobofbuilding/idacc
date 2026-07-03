@@ -1210,6 +1210,7 @@ const COALESCED_READ_METHODS = new Set([
   'runtime:models',
   'runtime:freshness',
   'runtime:cooldowns',
+  'providers:list',
   'work:teamLeads',
   'libraryPluginInspections',
   'query:poll',
@@ -1235,6 +1236,10 @@ const READ_CACHE_TTL_MS = new Map<string, number>([
   ['checkins', 10000],
   ['schedules', 10000],
   ['schedules:allTeams', 10000],
+  ['runtime:models', 60000],
+  ['runtime:freshness', 60000],
+  ['runtime:cooldowns', 15000],
+  ['providers:list', 15000],
   ['work:teamLeads', 5000],
 ]);
 const READ_ONLY_SYNC_METHODS = new Set([

@@ -199,6 +199,10 @@ function fleetPollDelay(baseMs: number): number {
   return typeof document !== 'undefined' && document.hidden ? Math.max(baseMs, HIDDEN_POLL_MS) : baseMs;
 }
 
+function viewNeedsAllTeamsAgents(view?: string): boolean {
+  return !view || ['dashboard', 'tasks', 'schedule', 'teams', 'health', 'modules', 'projects', 'identity', 'computer'].includes(view);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -222,7 +226,7 @@ function writeStoredEventCursor(team: string | undefined, seq: number): void {
   try { localStorage.setItem(eventCursorKey(team), String(Math.floor(seq))); } catch { /* storage unavailable */ }
 }
 
-export function useFleet(): FleetStore {
+export function useFleet(activeView?: string): FleetStore {
   const [connection, setConnection] = useState<Connection>('connecting');
   // Fires once per offline→online transition so we re-push persisted settings
   // (e.g. local-model concurrency) to the manager on connect AND after a restart.
@@ -249,6 +253,7 @@ export function useFleet(): FleetStore {
   const [streamEpoch, setStreamEpoch] = useState(0); // bumped ONLY on team change → never resets the event cursor on a plain refresh
   const epoch = useRef(0); // bump on team change to reset the event cursor loop
   const teamRef = useRef<string | undefined>(undefined);
+  const needsAllTeamsAgents = viewNeedsAllTeamsAgents(activeView);
   useEffect(() => { teamRef.current = team; }, [team]);
 
   const refresh = useCallback(() => {
@@ -393,6 +398,7 @@ export function useFleet(): FleetStore {
   // Holistic aggregate (always on): fetch every team's agents (each tagged with its team) so the
   // fleet grid + Dashboard + Work board + status bar always show all teams at once.
   useEffect(() => {
+    if (!needsAllTeamsAgents) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
@@ -409,7 +415,7 @@ export function useFleet(): FleetStore {
     };
     void load();
     return () => { alive = false; clearTimeout(timer); };
-  }, [tick]);
+  }, [tick, needsAllTeamsAgents]);
 
   return { connection, managerUrl, team, coordinator, agents, teams, events, inbox, chatUnread, lastError, lastUpdated, viewAll, allAgents, refresh, refreshChatUnread, setTeam };
 }

@@ -95,7 +95,6 @@ interface UpdateStatus {
 }
 
 export function App() {
-  const store = useFleet();
   const [initialTarget] = useState<string | null>(() => {
     const v = new URLSearchParams(window.location.search).get('view');
     if (v) return v;
@@ -108,6 +107,7 @@ export function App() {
     return isViewId(initialTarget) ? initialTarget : 'dashboard';
   });
   const [teamsFocus, setTeamsFocus] = useState<TeamsFocus | undefined>(() => initialTarget === 'health' ? 'health' : undefined);
+  const store = useFleet(view);
   useEffect(() => { try { localStorage.setItem('idctl.view', view); } catch { /* no storage */ } }, [view]);
   const [version, setVersion] = useState<string>('');
   const [update, setUpdate] = useState<UpdateStatus | null>(null);

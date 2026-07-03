@@ -233,8 +233,10 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   const [freshness, setFreshness] = useState<RuntimeFreshness[]>([]);
   const [runtimeCooldowns, setRuntimeCooldowns] = useState<RuntimeCooldown[]>([]);
   const [showModels, setShowModels] = useState(false);
+  const [runtimeDetailsRequested, setRuntimeDetailsRequested] = useState(false);
   const [configDrafts, setConfigDrafts] = useState<Record<string, AgentConfigDraft>>({});
   const configDraftList = Object.values(configDrafts);
+  const runtimeDetailsActive = runtimeDetailsRequested || showModels || configDraftList.length > 0;
   const viewAll = store.viewAll;
   const orderedAgents = agentsLeadFirst(store.agents, store.coordinator);
   const shown: TeamAgent[] = viewAll ? store.allAgents : orderedAgents;
@@ -283,12 +285,26 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     runtimes.filter((rt) => runtimePickerGroup(rt) === group);
 
   useEffect(() => {
-    call<Record<string, string[]>>('runtime:models').then(setCatalog).catch(() => setCatalog({}));
-    call<ProviderRow[]>('providers:list').then(setProviders).catch(() => setProviders([]));
-    call<Record<string, ManagedRuntimeStatus>>('subs:status').then(setManagedRuntimes).catch(() => setManagedRuntimes({}));
-    call<RuntimeFreshness[]>('runtime:freshness').then(setFreshness).catch(() => setFreshness([]));
-    call<RuntimeCooldown[]>('runtime:cooldowns').then(setRuntimeCooldowns).catch(() => setRuntimeCooldowns([]));
-  }, [runtimeCatalogVersion]);
+    if (!runtimeDetailsActive) return;
+    let live = true;
+    const load = async () => {
+      const [nextCatalog, nextProviders, nextManaged, nextFreshness, nextCooldowns] = await Promise.all([
+        call<Record<string, string[]>>('runtime:models').catch(() => ({})),
+        call<ProviderRow[]>('providers:list').catch(() => []),
+        call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => ({})),
+        call<RuntimeFreshness[]>('runtime:freshness').catch(() => []),
+        call<RuntimeCooldown[]>('runtime:cooldowns').catch(() => []),
+      ]);
+      if (!live) return;
+      setCatalog(nextCatalog);
+      setProviders(nextProviders);
+      setManagedRuntimes(nextManaged);
+      setFreshness(nextFreshness);
+      setRuntimeCooldowns(nextCooldowns);
+    };
+    void load();
+    return () => { live = false; };
+  }, [runtimeCatalogVersion, runtimeDetailsActive]);
 
   useEffect(() => {
     call<{ coordinators?: Record<string, string> }>('coordinator:hierarchy').then((h) => setCoords(h.coordinators ?? {})).catch(() => {});
@@ -498,17 +514,13 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     const active = isActive(a) ? '\n\nThis agent is currently running; the change may restart or redirect live work.' : '';
     return window.confirm(`${label} for ${team}/${a.name}?\n\n${detail}\n\n${state}${diff}${impact}${active}`);
   }
-  useEffect(() => {
-    call<Record<string, string[]>>('runtime:probe').then(setCatalog).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   async function probeRuntimes() {
     setBusy('probe runtimes');
     try {
       setCatalog(await call<Record<string, string[]>>('runtime:probe'));
       setManagedRuntimes(await call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => managedRuntimes));
       setFreshness(await call<RuntimeFreshness[]>('runtime:freshness').catch(() => freshness));
+      setRuntimeDetailsRequested(true);
       setShowModels(true);
     }
     catch (err) { window.alert(`probe failed: ${err instanceof Error ? err.message : String(err)}`); }
@@ -631,7 +643,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         <td><span className={`dot ${statusClass(a.status)}`} /> {a.status}</td>
         <td onClick={(e) => e.stopPropagation()}>
           {isLocal ? (
-            <select className="cell-select" value={displayRuntime ?? ''} onChange={(e) => stageRuntime(a, e.target.value)}
+            <select className="cell-select" value={displayRuntime ?? ''} onFocus={() => setRuntimeDetailsRequested(true)} onChange={(e) => stageRuntime(a, e.target.value)}
               title="Settings-available subscription CLIs, synced local provider lanes, and synced API provider lanes are selectable.">
               {currentProviderLane ? <option value={currentProviderLane}>{runtimeLabel(currentProviderLane)} (current model lane)</option> : null}
               {subscriptionRuntimeOpts.length ? (
@@ -686,7 +698,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
           {cooling ? <span className="warn-text" title={cooldown ? cooldownTitle(cooldown) : 'runtime rate limit cooling'} style={{ marginLeft: 4, cursor: 'help' }}>⚠</span> : null}
         </td>
         <td onClick={(e) => e.stopPropagation()}>
-          <select className={`cell-select${mismatch ? ' mismatch' : ''}`} value={displayModel ?? ''} onChange={(e) => stageConfig(a, { model: e.target.value })} title={mismatch ?? undefined}>
+          <select className={`cell-select${mismatch ? ' mismatch' : ''}`} value={displayModel ?? ''} onFocus={() => setRuntimeDetailsRequested(true)} onChange={(e) => stageConfig(a, { model: e.target.value })} title={mismatch ?? undefined}>
             {!displayModel ? <option value="" disabled={modelDrift}>{modelDrift ? 'choose model' : '(default model)'}</option> : null}
             {modelOpts.map((m) => <option key={m} value={m}>{short(m)}</option>)}
           </select>
@@ -750,7 +762,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
               runtime cooldowns {coolingRows.length}
             </span>
           ) : null}
-          <button className="btn small" onClick={() => setShowModels((v) => !v)} title="Show each execution harness and configured provider model lane, where its model list comes from, and when it was last refreshed">
+          <button className="btn small" onClick={() => { setRuntimeDetailsRequested(true); setShowModels((v) => !v); }} title="Show each execution harness and configured provider model lane, where its model list comes from, and when it was last refreshed">
             {showModels ? 'Hide model lanes' : `Model lanes${visibleFreshness.length ? ` (${visibleFreshness.length})` : ''}`}
           </button>
           {navigate ? <button className="btn small" onClick={() => navigate('teams:route')} title="Change team coordinators and primary routing in HR Manager Manage → Hierarchy & sync">Open HR Manage</button> : null}

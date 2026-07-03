@@ -1313,7 +1313,11 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     setOrgCfg(await call<{ enabled?: boolean; autoRebuild?: boolean }>('org:getConfig').catch(() => ({ enabled: true, autoRebuild: true })));
     setSecondaries(normalizeSecondaryRows(await call<{ secondaries: SecLead[] }>('org:hierarchy').then((h) => h.secondaries ?? []).catch(() => [])));
   }
-  useEffect(() => { void loadOrg(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeTeam, hrStructureVersion]);
+  useEffect(() => {
+    if (tab !== 'route' || routePane !== 'hierarchy') return;
+    void loadOrg();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, routePane, activeTeam, hrStructureVersion]);
   async function ensureOrgConfigFresh(action: string): Promise<OrgCfg | null> {
     const fresh = await call<OrgCfg>('org:getConfig').catch(() => ({ enabled: true, autoRebuild: true }));
     if (orgConfigStamp(fresh) !== orgConfigStamp(orgCfg)) {

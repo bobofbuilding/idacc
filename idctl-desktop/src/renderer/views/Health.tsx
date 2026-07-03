@@ -107,6 +107,7 @@ function UsageSection({
   error: string | null;
   onRefresh: () => void;
 }) {
+  const [, setTick] = useState(0);
   const recentAt = epochMs(usage?.recent?.at);
   const recentAge = elapsedMs(recentAt);
   const recentFresh = Boolean(usage?.recent?.tps != null && recentAge != null && recentAge <= FRESH_SAMPLE_MS);
@@ -114,6 +115,11 @@ function UsageSection({
   const gaugeMax = usage ? niceMax(Math.max(gaugeVal, usage.day.avgTps, usage.week.avgTps)) : 100;
   const localAgents = usage?.day.agents ?? [];
   const localModels = usage?.day.models ?? [];
+
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 5000);
+    return () => clearInterval(t);
+  }, []);
 
   return (
     <section className="card health-section">
@@ -163,7 +169,6 @@ export function Health({ store, navigate, embedded = false }: { store: FleetStor
   const [usage, setUsage] = useState<UsageReport | null | undefined>(undefined); // undefined = loading
   const [usageError, setUsageError] = useState<string | null>(null);
   const [usageAt, setUsageAt] = useState<number>(0); // when usage was last refreshed
-  const [, setTick] = useState(0); // 1 Hz re-render so "updated Ns ago" stays live
 
   const loadUsage = useCallback(async () => {
     try {
@@ -182,8 +187,7 @@ export function Health({ store, navigate, embedded = false }: { store: FleetStor
 
   useEffect(() => {
     const iv = setInterval(() => void loadUsage(), 15000);
-    const t = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => { clearInterval(iv); clearInterval(t); };
+    return () => clearInterval(iv);
   }, [loadUsage]);
 
   // The fleet roster is the shared, live AgentTable below. Probing routes to the agent's
