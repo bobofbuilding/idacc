@@ -122,7 +122,7 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
   return (
     <div className="inbox-row">
       <div className="inbox-from">{q.team ? `${q.team} · ` : ''}{from}{subject ? ` · ${subject}` : ''}{q.seenCount && q.seenCount > 1 ? ` · raised ${q.seenCount} times` : ''}</div>
-      <div className="inbox-msg b">{q.question}</div>
+      <div className="inbox-msg b" style={{ whiteSpace: 'pre-line' }}>{q.question}</div>
       {/* Options stacked top-to-bottom, hugging the left. */}
       {q.options.length ? (
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>

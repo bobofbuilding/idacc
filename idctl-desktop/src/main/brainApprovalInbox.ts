@@ -11,7 +11,7 @@ type BrainApproval = {
   payload?: Record<string, unknown>;
   governance?: {
     human_attention?: { reason?: string; level?: string };
-    risk?: { level?: string; action?: string };
+    risk?: { level?: string; action?: string; reversible?: boolean };
   };
 };
 
@@ -45,6 +45,14 @@ function asMs(value: unknown): number {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return Date.now();
   return n < 1_000_000_000_000 ? n * 1000 : n;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 async function brainJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -82,6 +90,104 @@ function resolutionPath(kind: string): string {
   }
 }
 
+function candidateLabels(approval: BrainApproval): string[] {
+  const candidates = asArray(approval.payload?.['candidates'])
+    .map((candidate) => {
+      const row = asRecord(candidate);
+      return clip(row.name || row.entity_id || row.id || row.subject, 180);
+    })
+    .filter(Boolean);
+  if (candidates.length) return candidates.slice(0, 6);
+  return String(approval.subject || '')
+    .split('|')
+    .map((part) => clip(part, 180))
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+function percent(value: unknown): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '';
+  const scaled = n <= 1 ? n * 100 : n;
+  return `${Math.round(scaled)}%`;
+}
+
+function booleanLabel(value: unknown): string {
+  return value === true ? 'yes' : value === false ? 'no' : 'unknown';
+}
+
+function approvalPlainLanguage(approval: BrainApproval, kind: string, subject: string, reason: string): string[] {
+  const payload = approval.payload ?? {};
+  const candidates = candidateLabels(approval);
+  const risk = clip(approval.risk_level || approval.governance?.risk?.level || 'medium', 80);
+  const similarity = percent(payload['similarity']);
+  const reversible = payload['reversible'] ?? approval.governance?.risk?.reversible;
+  const hardDelete = payload['hard_delete'];
+  const common = [
+    `Risk: ${risk}.`,
+    reason ? `Why Brain is asking: ${reason}.` : '',
+  ].filter(Boolean);
+
+  switch (kind) {
+    case 'entity.alias.fuzzy_merge':
+      return [
+        'Plain-English meaning: Brain found two records whose names look similar and wants a human to decide whether they refer to the same thing.',
+        candidates.length ? `Records to compare:\n${candidates.map((c) => `- ${c}`).join('\n')}` : `Record names: ${subject}.`,
+        [...common, similarity ? `Name similarity: ${similarity}.` : '', `Reversible: ${booleanLabel(reversible)}.`, hardDelete === false ? 'No record will be hard-deleted.' : 'Deletion behavior: review before approving.'].filter(Boolean).join(' '),
+        'Approve if: these records really describe the same agent, team, project, contract, wallet, or concept and should be linked in Brain memory.',
+        'Reject if: they are different things, you are unsure, or linking them would make future memory/search results less clear.',
+      ];
+    case 'memory.retire':
+      return [
+        'Plain-English meaning: Brain thinks this memory is stale, noisy, or no longer useful and wants permission to retire it from active use.',
+        `Memory/topic: ${subject}.`,
+        common.join(' '),
+        'Approve if: the memory should stop influencing future answers or routing.',
+        'Reject if: the memory is still accurate, useful, or should remain available.',
+      ];
+    case 'team.instruction.supersede':
+      return [
+        'Plain-English meaning: Brain found an older team instruction that appears to be replaced by newer guidance.',
+        `Instruction/topic: ${subject}.`,
+        common.join(' '),
+        'Approve if: the newer instruction should become the source of truth.',
+        'Reject if: the older instruction is still valid or needs manual consolidation first.',
+      ];
+    case 'fact.contradiction':
+      return [
+        'Plain-English meaning: Brain found two facts that conflict and needs review before it trusts one over the other.',
+        `Fact/topic: ${subject}.`,
+        common.join(' '),
+        'Approve only if this specific approval clearly identifies the correct fact. If it does not, open Brain Health and resolve the contradiction there.',
+        'Reject if: there is not enough evidence to pick a winner.',
+      ];
+    case 'skill.publish':
+      return [
+        'Plain-English meaning: Brain has a skill proposal that may be ready to publish into the skill catalog.',
+        `Skill/proposal: ${subject}.`,
+        common.join(' '),
+        'Approve if: the skill has enough evidence, a clear scope, and should become searchable/assignable.',
+        'Reject if: the skill is incomplete, redundant, unsafe, or not useful yet.',
+      ];
+    case 'skill.proposal.evidence_invalid':
+      return [
+        'Plain-English meaning: Brain found a skill proposal whose supporting evidence looks weak or invalid.',
+        `Skill/proposal: ${subject}.`,
+        common.join(' '),
+        'Approve if: you agree the evidence is invalid and the proposal should be held back or repaired.',
+        'Reject if: the evidence is actually valid and Brain should not mark it as an evidence problem.',
+      ];
+    default:
+      return [
+        'Plain-English meaning: Brain is asking for human review before changing its memory, catalog, or governance state.',
+        `Item: ${subject}.`,
+        common.join(' '),
+        'Approve if: the proposed change is correct and safe to queue.',
+        'Reject if: the current state should remain unchanged.',
+      ];
+  }
+}
+
 function questionForApproval(approval: BrainApproval): BlockerQuestion {
   const id = String(approval.id);
   const kind = clip(approval.kind || 'approval', 120);
@@ -89,21 +195,27 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
   const risk = clip(approval.risk_level || approval.governance?.risk?.level || 'medium', 80);
   const reason = clip(approval.governance?.human_attention?.reason || approval.payload?.['recommendation'] || '', 240);
   const detail = [
-    `Brain approval #${id} needs review.`,
-    `${kind} · ${subject}`,
-    `Risk: ${risk}.`,
-    reason ? `Reason: ${reason}.` : '',
+    `Brain approval #${id}`,
+    '',
+    'What this number means: this is an internal Brain review ticket. It is not a blockchain transaction, not a key action, and not an agent command by itself.',
+    '',
+    `Review type: ${kind}`,
+    `Short label: ${subject}`,
+    '',
+    ...approvalPlainLanguage(approval, kind, subject, reason).filter(Boolean),
+    '',
     `Resolution path: ${resolutionPath(kind)}.`,
-    'Approve only after reviewing; applying remains a separate guarded Brain step.',
-  ].filter(Boolean).join(' ');
+    'What happens after approval: IDACC marks this approval as approved and Brain may place it into its guarded apply queue. The actual apply step remains separate and auditable.',
+    'What happens after rejection: IDACC marks this approval as rejected and Brain keeps the current state.',
+  ].join('\n');
 
   return {
     id: `brain-approval-${id}`,
     question: detail,
-    options: ['Approve for Brain apply queue', 'Reject / keep current state'],
+    options: ['Approve after review — queue Brain change', 'Reject — keep current Brain state'],
     agent: '',
     taskRef: `brain-approval:${id}`,
-    taskTitle: `${kind}: ${subject}`,
+    taskTitle: `Brain approval #${id}`,
     team: 'brain',
     createdAt: asMs(approval.created_at),
     dedupeKey: `brain-approval:${id}`,
@@ -116,6 +228,7 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
       requestedBy: approval.requested_by ?? 'brain',
       status: approval.status ?? 'pending',
       sourceUrl: `${brainBaseUrl()}/dashboard/health`,
+      detailVersion: 2,
     },
   };
 }
@@ -125,7 +238,7 @@ async function doSync(limit = 100): Promise<BrainApprovalSyncResult> {
   const approvals = response.approvals ?? response.data?.approvals ?? [];
   const pendingKeys = new Set(approvals.map((approval) => `brain-approval:${approval.id}`));
   const existing = listQuestions().filter((q) => q.dedupeKey?.startsWith('brain-approval:') || q.taskRef?.startsWith('brain-approval:'));
-  const existingKeys = new Set(existing.map((q) => q.dedupeKey || q.taskRef).filter(Boolean));
+  const existingByKey = new Map(existing.map((q) => [q.dedupeKey || q.taskRef || q.id, q]));
 
   let removed = 0;
   for (const q of existing) {
@@ -139,8 +252,25 @@ async function doSync(limit = 100): Promise<BrainApprovalSyncResult> {
   let synced = 0;
   for (const approval of approvals) {
     const key = `brain-approval:${approval.id}`;
-    if (existingKeys.has(key)) continue;
-    addQuestion(questionForApproval(approval));
+    const next = questionForApproval(approval);
+    const current = existingByKey.get(key);
+    if (current) {
+      const stale = current.question !== next.question
+        || current.taskTitle !== next.taskTitle
+        || current.options.join('\u001f') !== next.options.join('\u001f')
+        || current.metadata?.detailVersion !== next.metadata?.detailVersion;
+      if (!stale) continue;
+      removeQuestion(current.id);
+      addQuestion({
+        ...next,
+        createdAt: current.createdAt || next.createdAt,
+        seenCount: current.seenCount,
+        lastSeenAt: current.lastSeenAt,
+      });
+      synced++;
+      continue;
+    }
+    addQuestion(next);
     synced++;
   }
   lastSyncAt = Date.now();
