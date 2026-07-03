@@ -378,6 +378,22 @@ button.chip.incompat:hover { border-color: var(--line); }
   background: var(--bg-1);
 }
 .draft-proposal-main { min-width: 0; }
+.draft-proposal-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.task-card-title {
+  font-size: 13px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 760px) {
   .draft-proposal-row { grid-template-columns: 1fr; align-items: stretch; }
 }

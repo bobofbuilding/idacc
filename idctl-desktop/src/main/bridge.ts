@@ -6,7 +6,7 @@
  */
 
 import { inspectLibraryPluginMetadata, ManagerClient } from '../../../idctl/src/api/client.ts';
-import type { Agent } from '../../../idctl/src/api/types.ts';
+import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
 import type { BrainAgentsReport, BrainControllerReport, BrainCoreHealthReport, BrainFleetReport, BrainGraphReport, BrainSkillIndex, BrainSkillNode } from '../../../idctl/src/api/brain.ts';
 import { runOnboarding, type OnboardPlan, type PreparedRuntime } from '../../../idctl/src/api/onboard.ts';
@@ -896,6 +896,60 @@ function requireCurrentComputerUseAgent(agents: Agent[], agentId: string, agentN
 let cfg: Config = loadConfig({ team: 'default', admin: true });
 let client = new ManagerClient(cfg);
 const keys = getKeyProvider();
+const RECENT_DONE_TASK_LIMIT = 25;
+let doneTaskLimitUnsupportedAt = 0;
+
+function taskDedupeKey(t: Task): string {
+  return String(t.shortId ?? t.uuid ?? t.name ?? `${t.teamName ?? ''}:${t.title}:${t.createdAt ?? ''}`);
+}
+
+function dedupeTasks(rows: Task[]): Task[] {
+  const seen = new Set<string>();
+  const out: Task[] = [];
+  for (const t of rows) {
+    const id = taskDedupeKey(t);
+    if (id && seen.has(id)) continue;
+    if (id) seen.add(id);
+    out.push(t);
+  }
+  return out;
+}
+
+async function managerTaskRows(team: string, status: 'todo' | 'doing' | 'done', limit?: number): Promise<Task[]> {
+  if (status === 'done' && limit && doneTaskLimitUnsupportedAt && Date.now() - doneTaskLimitUnsupportedAt < 60_000) {
+    return [];
+  }
+  const url = new URL('/tasks', client.managerUrl);
+  url.searchParams.set('status', status);
+  if (limit) url.searchParams.set('limit', String(limit));
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', 'X-Id-Team': team, 'X-Id-Admin': '1' };
+  if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`GET /tasks?status=${status} -> ${res.status}`);
+  const data = await res.json() as { tasks?: Task[] };
+  const rows = data.tasks ?? [];
+  if (status === 'done' && limit) {
+    if (rows.length > limit) {
+      doneTaskLimitUnsupportedAt = Date.now();
+      return rows.slice(0, limit).map((t) => ({ ...t, teamName: t.teamName ?? team }));
+    }
+    doneTaskLimitUnsupportedAt = 0;
+  }
+  return rows.map((t) => ({ ...t, teamName: t.teamName ?? team }));
+}
+
+async function boardTasksForTeam(team: string): Promise<Task[]> {
+  try {
+    const [todo, doing, done] = await Promise.all([
+      managerTaskRows(team, 'todo'),
+      managerTaskRows(team, 'doing'),
+      managerTaskRows(team, 'done', RECENT_DONE_TASK_LIMIT),
+    ]);
+    return dedupeTasks([...todo, ...doing, ...done]);
+  } catch {
+    return (await client.withTeam(team).tasks().catch(() => [])).map((t) => ({ ...t, teamName: t.teamName ?? team }));
+  }
+}
 
 const COALESCED_READ_METHODS = new Set([
   'health',
@@ -1062,26 +1116,16 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'inbox:dismiss': (queryId: string) => client.inboxRespond(String(queryId), '(dismissed via control center)'),
 
   // tasks
-  tasks: () => client.tasks(),
-  // Holistic task board: every team's tasks, each tagged with its teamName. Some managers keep
-  // a SINGLE global task pool (every team's /tasks returns the same rows) — so DEDUPE by stable
-  // id (shortId → uuid → name) to avoid showing each task once per team. For a genuinely
-  // per-team manager, ids don't collide across teams, so nothing is dropped.
+  // Task board read model: open tasks plus bounded recent completions. The manager can hold
+  // thousands of done rows; pulling all of them every live refresh makes Dashboard/Tasks lag.
+  tasks: async () => boardTasksForTeam(client.team ?? cfg.team ?? 'default'),
+  // Holistic task board: every team's open tasks plus recent done rows, each tagged with
+  // teamName. Dedupe by stable id so global-pool managers do not show duplicate rows.
   'tasks:allTeams': async () => {
     const teams = await client.teams().catch(() => []);
     const names = teams.length ? teams.map((t) => t.name) : [cfg.team ?? 'default'];
-    const per = await Promise.all(
-      names.map(async (name) => (await client.withTeam(name).tasks().catch(() => [])).map((t) => ({ ...t, teamName: t.teamName ?? name }))),
-    );
-    const seen = new Set<string>();
-    const out: typeof per[number] = [];
-    for (const t of per.flat()) {
-      const id = String(t.shortId ?? t.uuid ?? t.name ?? t.title ?? '');
-      if (id && seen.has(id)) continue;
-      if (id) seen.add(id);
-      out.push(t);
-    }
-    return out;
+    const per = await Promise.all(names.map((name) => boardTasksForTeam(name)));
+    return dedupeTasks(per.flat());
   },
   // app-side Kanban lane overlay (task ref → fine-grained lane; never sent to the manager)
   'tasks:lanes': () => Promise.resolve(loadSettings().taskLanes ?? {}),

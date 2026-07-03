@@ -1091,7 +1091,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
               <div className="draft-proposal-row" key={draft.id}>
                 <div className="draft-proposal-main">
                   <b>{draft.team} · {draft.actor}</b>
-                  <div className="muted small">{draft.subtasks.length} proposed task{draft.subtasks.length === 1 ? '' : 's'} · {ago(draft.at)} · {draft.subtasks.slice(0, 3).map((s) => s.title).join('; ')}{draft.subtasks.length > 3 ? ` +${draft.subtasks.length - 3} more` : ''}</div>
+                  <div className="muted small draft-proposal-summary" title={draft.subtasks.map((s) => s.title).join('\n')}>
+                    {draft.subtasks.length} proposed task{draft.subtasks.length === 1 ? '' : 's'} · {ago(draft.at)} · {draft.subtasks.slice(0, 3).map((s) => s.title).join('; ')}{draft.subtasks.length > 3 ? ` +${draft.subtasks.length - 3} more` : ''}
+                  </div>
                 </div>
                 <button className="btn small primary" disabled={proposing} onClick={() => reviewDraftProposal(draft)}>Review in Create Work</button>
               </div>
@@ -1360,7 +1362,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
               className="kanban-card"
               style={{ border: `1px solid ${blocked ? 'rgba(96,165,250,0.5)' : working ? 'rgba(60,203,120,0.55)' : stale ? 'rgba(224,163,60,0.55)' : 'var(--border, #2a2a2a)'}`, borderRadius: 6, padding: '6px 8px', background: 'var(--bg, #141414)', cursor: busy ? 'default' : 'grab' }}
             >
-              <div className="b" style={{ fontSize: 13 }}>{t.title}</div>
+              <div className="task-card-title b" title={t.title}>{t.title}</div>
               <div className="muted small mono">{t.shortId ?? ref(t)}{isRoutine(t) ? ' · routine' : ''}{store.viewAll && t.teamName ? ` · ${t.teamName}` : ''}{(() => { const n = blocksCount(t); return n ? ` · blocks ${n}` : ''; })()}</div>
               {(() => {
                 const u = taskUsage[ref(t)];

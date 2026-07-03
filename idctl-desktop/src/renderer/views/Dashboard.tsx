@@ -448,17 +448,43 @@ export function Dashboard({ store }: { store: FleetStore }) {
         title: `${t.status}${t.description ? ` — ${t.description}` : ''}`,
       });
     }
+    const draftBuckets = new Map<string, { team?: string; agent?: string; at: number; batches: number; examples: string[] }>();
     for (const n of news) {
       const draft = newsWorkDraftDesc(n);
+      if (draft) {
+        const at = toMs(n.timestamp);
+        const agent = str(n.data?.from) || str(n.data?.sender) || str(n.data?.agent) || str(n.data?.source) || undefined;
+        const bucketKey = `${n.teamName ?? ''}:${agent ?? ''}:${Math.floor(at / (10 * 60 * 1000))}`;
+        const bucket = draftBuckets.get(bucketKey) ?? { team: n.teamName, agent, at, batches: 0, examples: [] };
+        bucket.at = Math.max(bucket.at, at);
+        bucket.batches += 1;
+        if (bucket.examples.length < 3) bucket.examples.push(draft.replace(/^.*? — /, ''));
+        draftBuckets.set(bucketKey, bucket);
+        continue;
+      }
       items.push({
         key: `comms:${n.teamName ?? ''}:${n.id ?? `${n.timestamp}:${n.type}:${n.message ?? ''}`}`,
-        topic: draft ? 'draft' : 'comms',
-        className: draft ? 'warn' : newsClass(n),
-        desc: draft ?? newsDesc(n),
+        topic: 'comms',
+        className: newsClass(n),
+        desc: newsDesc(n),
         team: n.teamName,
         agent: str(n.data?.from) || str(n.data?.sender) || str(n.data?.agent) || str(n.data?.source) || undefined,
         at: toMs(n.timestamp),
-        title: draft ? `Autopilot decomposition draft · ${n.type}` : n.type,
+        title: n.type,
+      });
+    }
+    for (const [key, bucket] of draftBuckets) {
+      const actor = bucket.agent ? `${bucket.agent} → remote` : 'agent → remote';
+      const noun = bucket.batches === 1 ? 'draft batch' : 'related draft batches';
+      items.push({
+        key: `draft:${key}`,
+        topic: 'draft',
+        className: 'warn',
+        desc: `${actor} proposed ${bucket.batches} ${noun}${bucket.examples.length ? `: ${bucket.examples.join(' · ')}` : ''}`,
+        team: bucket.team,
+        agent: bucket.agent,
+        at: bucket.at,
+        title: 'Autopilot decomposition drafts grouped by team, actor, and 10-minute window',
       });
     }
     for (const i of store.inbox) {

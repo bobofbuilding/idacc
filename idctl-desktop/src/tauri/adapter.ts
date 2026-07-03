@@ -7,7 +7,7 @@
  */
 
 import { inspectLibraryPluginMetadata, ManagerClient } from '../../../idctl/src/api/client.ts';
-import type { Agent } from '../../../idctl/src/api/types.ts';
+import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { ProviderClient } from '../../../idctl/src/settings/ProviderClient.ts';
 import { discoverLocalServers, mergeLocalDiscoveryCandidates, type DiscoveredServer } from '../../../idctl/src/settings/localDiscovery.ts';
 import { SCOPE_PRESETS, TTL_PRESETS } from '../../../idctl/src/keys/types.ts';
@@ -27,6 +27,8 @@ let team = localStorage.getItem('idctl.team') || 'default';
 let client = makeClient();
 const PRIMARY_TEAM = 'default';
 const DEFAULT_PRIMARY_AGENT = 'lead';
+const RECENT_DONE_TASK_LIMIT = 25;
+let doneTaskLimitUnsupportedAt = 0;
 
 function assertDefaultPrimaryWrite(targetTeam: string, agent: string): void {
   if (targetTeam !== PRIMARY_TEAM || agent !== DEFAULT_PRIMARY_AGENT) {
@@ -50,6 +52,46 @@ interface WikiPayload {
 function makeClient(): ManagerClient {
   // Local control center on loopback → legitimate admin client.
   return new ManagerClient({ managerUrl, team, refreshMs: 3000, waitSeconds: 25, admin: true });
+}
+
+async function managerTaskRows(targetTeam: string, status: 'todo' | 'doing' | 'done', limit?: number): Promise<Task[]> {
+  if (status === 'done' && limit && doneTaskLimitUnsupportedAt && Date.now() - doneTaskLimitUnsupportedAt < 60_000) {
+    return [];
+  }
+  const url = new URL('/tasks', managerUrl);
+  url.searchParams.set('status', status);
+  if (limit) url.searchParams.set('limit', String(limit));
+  const res = await fetch(url, { headers: { 'Content-Type': 'application/json', 'X-Id-Team': targetTeam, 'X-Id-Admin': '1' } });
+  if (!res.ok) throw new Error(`GET /tasks?status=${status} -> ${res.status}`);
+  const data = await res.json() as { tasks?: Task[] };
+  const rows = data.tasks ?? [];
+  if (status === 'done' && limit) {
+    if (rows.length > limit) {
+      doneTaskLimitUnsupportedAt = Date.now();
+      return rows.slice(0, limit).map((t) => ({ ...t, teamName: t.teamName ?? targetTeam }));
+    }
+    doneTaskLimitUnsupportedAt = 0;
+  }
+  return rows.map((t) => ({ ...t, teamName: t.teamName ?? targetTeam }));
+}
+
+async function boardTasksForTeam(targetTeam: string): Promise<Task[]> {
+  try {
+    const [todo, doing, done] = await Promise.all([
+      managerTaskRows(targetTeam, 'todo'),
+      managerTaskRows(targetTeam, 'doing'),
+      managerTaskRows(targetTeam, 'done', RECENT_DONE_TASK_LIMIT),
+    ]);
+    const seen = new Set<string>();
+    return [...todo, ...doing, ...done].filter((t) => {
+      const id = String(t.shortId ?? t.uuid ?? t.name ?? `${t.teamName ?? ''}:${t.title}:${t.createdAt ?? ''}`);
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  } catch {
+    return client.withTeam(targetTeam).tasks().catch(() => []);
+  }
 }
 
 function scopedAgentKey(agent: string, selectedTeam?: string): string {
@@ -753,7 +795,7 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   'wiki:get': () => fetchWiki(),
   events: (since: number) => client.events(Number(since) || 0, { wait: 20, limit: 100 }),
   inboxPending: () => client.inboxPending(),
-  tasks: () => client.tasks(),
+  tasks: () => boardTasksForTeam(team || 'default'),
   dispatch: (cmd: string) => client.dispatch(budgetTauriCommand(String(cmd), 'tauri:dispatch', team)),
   remote: (cmd: string, agent?: string, selectedTeam?: string) => {
     const c = clientFor(selectedTeam);
