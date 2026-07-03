@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { call, agentsLeadFirst, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
-import { buildProviderModelLanes, offerableRuntimes, runtimeDisplayLabel, type RuntimeModelLane } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import { buildProviderModelLanes, offerableRuntimes, runtimeDisplayLabel, runtimePickerGroup, type RuntimeModelLane } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 import type { ConfigEntry, DeployPreflight, DesignedTeam, LibrarySkillEntry, McpServerSpec, TeamTemplate } from '../../../../idctl/src/api/client.ts';
 import type { OnboardPlan, OnboardResult } from '../../../../idctl/src/api/onboard.ts';
 import { MCP_CATALOG, buildFromCatalog } from '../../../../idctl/src/settings/mcpCatalog.ts';
@@ -11,7 +11,7 @@ import { TeamGraph, type GraphSelection } from './TeamGraph.tsx';
 import { Health } from './Health.tsx';
 
 type ProviderRow = ProviderProfile & { keySource?: string; needsKey?: boolean };
-type ManagedRuntimeStatus = { runtime?: string; installed?: boolean; loggedIn?: boolean; statusSupported?: boolean };
+type ManagedRuntimeStatus = { runtime?: string; installed?: boolean; loggedIn?: boolean; linked?: boolean; statusSupported?: boolean };
 type RuntimeVerificationRow = {
   name: string;
   runtime: string;
@@ -2286,6 +2286,14 @@ function TeamBuilder({
   onDone: (createdTeam?: string) => void;
 }) {
   const harnessRuntimes = useMemo(() => offerableRuntimes(providers, undefined, managedRuntimes), [providers, managedRuntimes]);
+  const subscriptionRuntimes = useMemo(
+    () => harnessRuntimes.filter((rt) => runtimePickerGroup(rt) === 'subscription'),
+    [harnessRuntimes],
+  );
+  const localRuntimes = useMemo(
+    () => harnessRuntimes.filter((rt) => runtimePickerGroup(rt) === 'local'),
+    [harnessRuntimes],
+  );
   const apiProviderLanes = useMemo(
     () => buildProviderModelLanes(providers).filter((lane) => lane.kind === 'api' && lane.selectable),
     [providers],
@@ -3012,13 +3020,18 @@ function TeamBuilder({
                         style={{ fontSize: 12 }}
                         disabled={locked || !runtimes.length}
                         value={r.runtime}
-                        title="Settings-available manager harnesses and synced API provider lanes are selectable for new agents."
+                        title="Settings-available subscription CLIs, local model runtimes, and synced API provider lanes are selectable for new agents."
                         onChange={(e) => updateRow(i, { runtime: e.target.value, model: '' })}
                       >
                         <option value="" disabled>{runtimes.length ? 'Choose runtime' : 'No Settings runtime available'}</option>
-                        {harnessRuntimes.length ? (
-                          <optgroup label="Assignable harnesses">
-                            {harnessRuntimes.map((rt) => <option key={rt} value={rt}>{runtimeLabel(rt)}</option>)}
+                        {subscriptionRuntimes.length ? (
+                          <optgroup label="Subscription CLI runtimes">
+                            {subscriptionRuntimes.map((rt) => <option key={rt} value={rt}>{runtimeLabel(rt)}</option>)}
+                          </optgroup>
+                        ) : null}
+                        {localRuntimes.length ? (
+                          <optgroup label="Local model runtimes">
+                            {localRuntimes.map((rt) => <option key={rt} value={rt}>{runtimeLabel(rt)}</option>)}
                           </optgroup>
                         ) : null}
                         {apiProviderLanes.length ? (

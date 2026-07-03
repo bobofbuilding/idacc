@@ -76,7 +76,7 @@ export interface RuntimeModelLane {
 const RUNTIME_LABELS: Record<string, string> = {
   'claude-agent-sdk': 'Claude API',
   'claude-code-cli': 'Claude Code',
-  'claude-code-local': 'Claude local',
+  'claude-code-local': 'Claude Code (local alias)',
   codex: 'Codex',
   'cursor-cli': 'Cursor',
   grok: 'Grok Build',
@@ -85,7 +85,7 @@ const RUNTIME_LABELS: Record<string, string> = {
   copilot: 'GitHub Copilot',
   'kiro-cli': 'Kiro',
   q: 'Amazon Q',
-  ollama: 'Ollama / local',
+  ollama: 'Ollama',
 };
 
 export function runtimeDisplayLabel(runtime: string): string {
@@ -93,6 +93,17 @@ export function runtimeDisplayLabel(runtime: string): string {
     try { return decodeURIComponent(runtime.slice('provider:'.length)); } catch { return runtime.slice('provider:'.length); }
   }
   return RUNTIME_LABELS[runtime] ?? runtime.replace('claude-code-', 'claude-').replace('claude-agent-sdk', 'claude-sdk').replace('-cli', '');
+}
+
+export type RuntimePickerGroup = 'subscription' | 'local';
+
+/**
+ * Group manager harnesses in operator-facing runtime pickers. Only `ollama` is
+ * a local-model runtime; `claude-code-local` is a legacy alias for the Claude
+ * Code subscription CLI running as a local process.
+ */
+export function runtimePickerGroup(runtime: string | undefined): RuntimePickerGroup {
+  return runtime === 'ollama' ? 'local' : 'subscription';
 }
 
 export function runtimeHasManagerHarness(runtime: string | undefined): boolean {
@@ -182,6 +193,7 @@ export type ManagedRuntimeForOffer = {
   runtime?: string;
   installed?: boolean;
   loggedIn?: boolean;
+  linked?: boolean;
   statusSupported?: boolean;
 };
 
@@ -214,7 +226,7 @@ export function managedRuntimeHasEvidence(s: ManagedRuntimeForOffer): boolean {
   // runtime lanes. Settings may still show it when installed, and existing q
   // agent assignments remain visible through the current-runtime keep path.
   if (s.runtime === 'q') return false;
-  return s.installed === true || s.loggedIn === true;
+  return s.installed === true || s.loggedIn === true || s.linked === true;
 }
 
 function providerKeyReady(p: ProviderForRuntime): boolean {
@@ -289,7 +301,6 @@ export function offerableRuntimes(
   for (const s of managed) {
     if (!managedRuntimeReady(s)) continue;
     addRuntime(out, s.runtime);
-    if (s.runtime === 'claude-code-cli') addRuntime(out, 'claude-code-local');
   }
 
   for (const p of providers) {

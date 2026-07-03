@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.502] — 2026-07-03
+- Simplify runtime picker grouping and make Antigravity adapter assignable after live agy model checks
+
 ## [0.1.501] — 2026-07-03
 - Fix MLX server install and start command
 

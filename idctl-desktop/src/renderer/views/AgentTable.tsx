@@ -3,7 +3,7 @@ import { call, agentsLeadFirst, type FleetStore, type TeamAgent } from '../store
 import { statusClass } from '../agentStatus.ts';
 import type { RuntimeCooldown } from '../../../../idctl/src/api/client.ts';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
-import { RUNTIMES, offerableRuntimes, effortOptions, runtimeHasEffort, speedOptions, runtimeHasSpeed, runtimeDisplayLabel, managedRuntimeHasEvidence, type RuntimeModelLaneKind } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import { RUNTIMES, offerableRuntimes, effortOptions, runtimeHasEffort, speedOptions, runtimeHasSpeed, runtimeDisplayLabel, runtimePickerGroup, runtimeHasManagerHarness, managedRuntimeHasEvidence, type RuntimeModelLaneKind } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 
 /**
  * The fleet agent grid — per-agent runtime/model switching + lifecycle actions, with a
@@ -13,7 +13,7 @@ import { RUNTIMES, offerableRuntimes, effortOptions, runtimeHasEffort, speedOpti
  */
 
 type ProviderRow = { name?: string; kind: string; baseUrl?: string; enabled?: boolean; keySource?: string; needsKey?: boolean; lastSync?: { status?: string; modelCount?: number; models?: string[] } };
-type ManagedRuntimeStatus = { runtime?: string; installed?: boolean; loggedIn?: boolean; statusSupported?: boolean };
+type ManagedRuntimeStatus = { runtime?: string; installed?: boolean; loggedIn?: boolean; linked?: boolean; statusSupported?: boolean };
 type RuntimeFreshness = {
   runtime: string;
   label?: string;
@@ -275,6 +275,8 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     .filter((f) => f.kind === 'api')
     .sort((a, b) => (a.label ?? a.runtime).localeCompare(b.label ?? b.runtime));
   const selectableApiLaneOpts = apiModelLaneOpts.filter((f) => f.selectable !== false);
+  const groupRuntimeOpts = (runtimes: string[], group: ReturnType<typeof runtimePickerGroup>) =>
+    runtimes.filter((rt) => runtimePickerGroup(rt) === group);
 
   useEffect(() => {
     call<Record<string, string[]>>('runtime:models').then(setCatalog).catch(() => setCatalog({}));
@@ -498,6 +500,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     setBusy('probe runtimes');
     try {
       setCatalog(await call<Record<string, string[]>>('runtime:probe'));
+      setManagedRuntimes(await call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => managedRuntimes));
       setFreshness(await call<RuntimeFreshness[]>('runtime:freshness').catch(() => freshness));
       setShowModels(true);
     }
@@ -594,6 +597,8 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     const currentProviderLane = currentRuntime?.startsWith('provider:') ? currentRuntime : undefined;
     const currentHarness = currentProviderLane ? undefined : currentRuntime;
     const runtimeOpts = Array.from(new Set([currentHarness, ...offerableRuntimes(providers, currentHarness, Object.values(managedRuntimes))].filter(Boolean))) as string[];
+    const subscriptionRuntimeOpts = groupRuntimeOpts(runtimeOpts, 'subscription');
+    const localRuntimeOpts = groupRuntimeOpts(runtimeOpts, 'local');
     const providerLaneOpts = selectableApiLaneOpts.filter((f) => f.runtime !== currentProviderLane);
     const readonlyApiLaneOpts = apiModelLaneOpts.filter((f) => f.runtime !== currentProviderLane && f.selectable === false);
     const linkedSubscriptionLaneOpts = visibleFreshness
@@ -616,13 +621,20 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         <td onClick={(e) => e.stopPropagation()}>
           {isLocal ? (
             <select className="cell-select" value={displayRuntime ?? ''} onChange={(e) => stageRuntime(a, e.target.value)}
-              title="Settings-available manager harnesses and synced API provider lanes are selectable. Linked subscriptions without manager adapters stay read-only.">
-              <optgroup label="Assignable harnesses">
-                {currentProviderLane ? <option value={currentProviderLane}>{runtimeLabel(currentProviderLane)} (current model lane)</option> : null}
-                {runtimeOpts.map((r) => <option key={r} value={r}>{runtimeLabel(r)}</option>)}
-              </optgroup>
+              title="Settings-available subscription CLIs, local model runtimes, and synced API provider lanes are selectable.">
+              {currentProviderLane ? <option value={currentProviderLane}>{runtimeLabel(currentProviderLane)} (current model lane)</option> : null}
+              {subscriptionRuntimeOpts.length ? (
+                <optgroup label="Subscription CLI runtimes">
+                  {subscriptionRuntimeOpts.map((r) => <option key={r} value={r}>{runtimeLabel(r)}</option>)}
+                </optgroup>
+              ) : null}
+              {localRuntimeOpts.length ? (
+                <optgroup label="Local model runtimes">
+                  {localRuntimeOpts.map((r) => <option key={r} value={r}>{runtimeLabel(r)}</option>)}
+                </optgroup>
+              ) : null}
               {linkedSubscriptionLaneOpts.length ? (
-                <optgroup label="Linked subscriptions (adapter needed)">
+                <optgroup label="Linked subscriptions (re-check needed)">
                   {linkedSubscriptionLaneOpts.map((f) => (
                     <option key={f.runtime} value={`readonly:${f.runtime}`} disabled>{runtimeLabel(f.runtime)}</option>
                   ))}
@@ -722,7 +734,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         {showModels ? (
           <div className="card model-lanes-panel">
             <div className="muted small" style={{ marginBottom: 4 }}>
-              Assignable harnesses, linked subscriptions, and provider model lanes — auto-refreshed on boot + every 6h, or hit <b>Probe runtimes</b> now.
+              Subscription CLIs, local model runtimes, and provider model lanes — auto-refreshed on boot + every 6h, or hit <b>Probe runtimes</b> now.
             </div>
             {visibleFreshness.length ? (
               <div className="model-lanes-grid">
@@ -735,8 +747,9 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
                   const kind = f.kind ?? 'harness';
                   const unavailableHarness = kind === 'harness' && f.selectable === false;
                   const linkedSubscription = unavailableHarness && linkedManagedRuntimeSet.has(f.runtime);
-                  const chipText = unavailableHarness ? (linkedSubscription ? 'adapter needed' : 'current only') : KIND_LABEL[kind];
-                  const sourceText = unavailableHarness ? (linkedSubscription ? 'linked subscription' : 'not available in Settings') : `${SOURCE_LABEL[f.source]}${f.provider ? ` · ${f.provider}` : ''}`;
+                  const linkedHasHarness = linkedSubscription && runtimeHasManagerHarness(f.runtime);
+                  const chipText = unavailableHarness ? (linkedSubscription ? (linkedHasHarness ? 're-check needed' : 'adapter needed') : 'current only') : KIND_LABEL[kind];
+                  const sourceText = unavailableHarness ? (linkedSubscription ? (linkedHasHarness ? 'linked; re-check status' : 'linked subscription') : 'not available in Settings') : `${SOURCE_LABEL[f.source]}${f.provider ? ` · ${f.provider}` : ''}`;
                   return (
                     <div key={f.runtime} className="model-lanes-row">
                       <b className="model-lane-name" title={f.label ?? runtimeLabel(f.runtime)}>{f.label ?? runtimeLabel(f.runtime)}</b>

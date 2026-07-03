@@ -22,8 +22,14 @@ const managed = [
 
 assert.deepEqual(
   offerableRuntimes(providers, undefined, managed),
-  ['codex', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'claude-code-cli', 'claude-code-local', 'claude-agent-sdk', 'ollama'],
-  'runtime pickers should list Settings-proven manager harnesses, with linked subscription CLIs only after adapters ship',
+  ['codex', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'claude-code-cli', 'claude-agent-sdk', 'ollama'],
+  'runtime pickers should list Settings-proven manager harnesses without duplicate Claude Code aliases',
+);
+
+assert.deepEqual(
+  offerableRuntimes(providers, 'claude-code-local', managed),
+  ['claude-code-local', 'codex', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'claude-code-cli', 'claude-agent-sdk', 'ollama'],
+  'existing claude-code-local assignments should remain visible even though new selections use Claude Code',
 );
 
 const providerLanes = buildProviderModelLanes([
