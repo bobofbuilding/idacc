@@ -543,7 +543,8 @@ Manager; this is the plumbing.)
   start-here/easy/guided/advanced stacks, reviewed Run-in-Terminal/Uninstall actions, setup notes,
   docs ↗, host-platform and unresolved-template guards for advanced stacks such as vLLM and TGI,
   Docker readiness checks before container commands, `python3 -m pip` Python stack commands, Start
-  actions and mapped-host-port detection for existing stopped containers such as LocalAI,
+  actions and mapped-host-port detection for existing stopped containers such as LocalAI, LM Studio
+  Start server handoff through its `lms server start` CLI when installed,
   live/configured/shared-default port warnings with alternate-port hints, local backend presets for
   shared-port stacks such as LocalAI, MLX, and TGI, automatic conflict-safe install command rewrites
   for Docker `-p`, `--port`, and `--tcp` port flags, automatic pending backend rows for installed
@@ -559,8 +560,8 @@ Manager; this is the plumbing.)
   **Connect & sync**, searchable Health model selection, ✕), API/cloud-focused **Add a backend**
   catalog or custom API endpoint, provider-specific key requirements, NVIDIA API Catalog preset
   models, pending installed local stack rows, successful local Connect & sync promotion to enabled,
-  and cloud keys auto-detected from env, including `PERPLEXITY_API_KEY` for Perplexity. Local server
-  setup belongs to Local LLM stacks above.
+  startable unreachable local-stack rows such as LM Studio, and cloud keys auto-detected from env,
+  including `PERPLEXITY_API_KEY` for Perplexity. Local server setup belongs to Local LLM stacks above.
 - **Local backend readiness**: a local provider that answers but returns no model list is displayed as
   `live · no models` and is not route-ready until a probe/sync produces at least one model. Local
   stack port warnings suppress a stack's own configured/discovered port so an installed LocalAI-style

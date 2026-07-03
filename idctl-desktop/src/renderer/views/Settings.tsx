@@ -1376,6 +1376,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       return `${label} answered, but its model list is empty. Load or download a model in ${label}, then re-check models. Agents cannot route here until at least one model is synced.`;
     }
     if (status === 'unreachable') {
+      if (stack?.id === 'lm-studio') {
+        return 'LM Studio is saved as a backend, but its local API server is off. The app can be open without serving models; start the server, load or download a model if needed, then re-check.';
+      }
       return `${label} is saved as a backend, but no API server is listening at ${p.baseUrl}. Start its local API server, then re-check.`;
     }
     if (status === 'auth-error') {
@@ -2695,6 +2698,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
               const offeredModels = savedProviderModels(p);
               const apiModelFilterable = !isLocalProvider(p) && syncedModels.length > 0;
               const localHint = localProviderStatusHint(p, installedStack);
+              const startableLocalStack = localHint && installedStack && providerStatus(p) === 'unreachable' && stackStartCmd(installedStack)
+                ? installedStack
+                : undefined;
               const statusText = pendingInstalledStack
                 ? 'installed · start server + connect'
                 : o
@@ -2753,10 +2759,15 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                       {localHint ? <div className="muted small provider-status-hint">{localHint}</div> : null}
                     </td>
                     <td className="row-actions">
-                      <button className="btn primary" disabled={busy} onClick={() => void connect(p.name)} title="Validate the key live and sync the model list">
+                      {startableLocalStack ? (
+                        <button className="btn primary" disabled={busy} onClick={() => void runStackCmd(startableLocalStack, 'start')} title={`Start ${startableLocalStack.name}'s local API server`}>
+                          Start server
+                        </button>
+                      ) : null}
+                      <button className={startableLocalStack ? 'btn' : 'btn primary'} disabled={busy} onClick={() => void connect(p.name)} title="Validate the key live and sync the model list">
                         {localProviderConnectLabel(p)}
                       </button>
-                      {localHint ? (
+                      {localHint && !startableLocalStack ? (
                         <button className="btn" type="button" onClick={openStackSetup} title="Jump to Local LLM stacks for install/start guidance">
                           Stack setup
                         </button>
