@@ -39,6 +39,7 @@ type HrBuildSkillCatalogCache = {
   skillCatalog: string[];
 };
 let hrBuildSkillCatalogCache: HrBuildSkillCatalogCache | null = null;
+const HR_RUNTIME_CATALOG_UI_CACHE_MS = 60_000;
 
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 type GoalPriority = 'primary' | 'secondary' | 'general';
@@ -269,6 +270,20 @@ function leadershipBackboneIssues(backbone: LeadershipBackbone): string[] {
 }
 function agentNameKey(agents: Agent[]): string {
   return sortedKey(agents.map((a) => slugName(a.name)));
+}
+function hrGraphGroupsSig(groups: TeamAgentsGroup[]): string {
+  return JSON.stringify(groups.map((g) => [
+    g.team,
+    g.agents.map((a) => [
+      a.id,
+      a.name,
+      a.status,
+      a.health,
+      a.pid ?? a.metadata?.pid ?? null,
+      a.runtime ?? '',
+      a.model ?? '',
+    ]),
+  ]));
 }
 function metadataDelegates(a: { metadata?: unknown }): string[] | null {
   const raw = (a.metadata as { delegates_to?: unknown } | undefined)?.delegates_to;
@@ -516,10 +531,13 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     if (store.allAgents.length) {
       const byTeam: Record<string, Agent[]> = {};
       for (const a of store.allAgents) (byTeam[a.team ?? '—'] ??= []).push(a);
-      setGraphGroups(Object.entries(byTeam).map(([team, agents]) => ({ team, agents })));
+      const nextGroups = Object.entries(byTeam).map(([team, agents]) => ({ team, agents }));
+      setGraphGroups((prev) => hrGraphGroupsSig(prev) === hrGraphGroupsSig(nextGroups) ? prev : nextGroups);
       return;
     }
-    call<{ team: string; agents: Agent[] }[]>('agents:allTeams').then(setGraphGroups).catch(() => setGraphGroups([]));
+    call<{ team: string; agents: Agent[] }[]>('agents:allTeams')
+      .then((nextGroups) => setGraphGroups((prev) => hrGraphGroupsSig(prev) === hrGraphGroupsSig(nextGroups) ? prev : nextGroups))
+      .catch(() => setGraphGroups((prev) => prev.length ? [] : prev));
   }, [store.allAgents, store.agents, activeTeam, hrStructureVersion]);
 
   // Cross-team relay policy (delegates_to) for the active team.
@@ -974,7 +992,9 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   }
 
   // Catalogs for the Onboard modal (runtimes/models, library skills, providers).
-  const cachedRuntimeCatalog = getRuntimeCatalogSnapshot(hrRuntimeCatalogVersion);
+  const cachedRuntimeCatalog = getRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
+    maxAgeMs: HR_RUNTIME_CATALOG_UI_CACHE_MS,
+  });
   const [modelCatalog, setModelCatalog] = useState<Record<string, string[]>>(() => cachedRuntimeCatalog?.modelCatalog ?? {});
   const [skillCatalog, setSkillCatalog] = useState<string[]>(() => hrBuildSkillCatalogCache?.skillCatalog ?? []);
   const [providers, setProviders] = useState<ProviderRow[]>(() => cachedRuntimeCatalog?.providers ?? []);
@@ -982,7 +1002,9 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
 
   useEffect(() => {
     if (tab !== 'build') return;
-    const cached = getRuntimeCatalogSnapshot(hrRuntimeCatalogVersion);
+    const cached = getRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
+      maxAgeMs: HR_RUNTIME_CATALOG_UI_CACHE_MS,
+    });
     if (cached) {
       setModelCatalog(cached.modelCatalog);
       setProviders(cached.providers);
@@ -990,7 +1012,9 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       return;
     }
     let live = true;
-    loadRuntimeCatalogSnapshot(hrRuntimeCatalogVersion).then((nextCache) => {
+    loadRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
+      maxAgeMs: HR_RUNTIME_CATALOG_UI_CACHE_MS,
+    }).then((nextCache) => {
       if (!live) return;
       setModelCatalog(nextCache.modelCatalog);
       setProviders(nextCache.providers);

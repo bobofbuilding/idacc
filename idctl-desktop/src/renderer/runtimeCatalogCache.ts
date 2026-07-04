@@ -38,13 +38,32 @@ export type RuntimeCatalogSnapshot = {
 };
 
 type RuntimeCatalogPatch = Partial<Omit<RuntimeCatalogSnapshot, 'version' | 'at'>>;
+type RuntimeCatalogSnapshotOptions = {
+  maxAgeMs?: number;
+  freshness?: boolean;
+};
 
 let snapshot: RuntimeCatalogSnapshot | null = null;
 let inFlight: Promise<RuntimeCatalogSnapshot> | null = null;
 
-export function getRuntimeCatalogSnapshot(version?: number): RuntimeCatalogSnapshot | null {
+function snapshotMatches(
+  candidate: RuntimeCatalogSnapshot | null,
+  version: number | undefined,
+  options: RuntimeCatalogSnapshotOptions = {},
+): candidate is RuntimeCatalogSnapshot {
+  if (!candidate) return false;
+  if (options.freshness && !candidate.freshness) return false;
+  if (version == null || candidate.version === version) return true;
+  const maxAgeMs = options.maxAgeMs ?? 0;
+  return maxAgeMs > 0 && Date.now() - candidate.at <= maxAgeMs;
+}
+
+export function getRuntimeCatalogSnapshot(
+  version?: number,
+  options: RuntimeCatalogSnapshotOptions = {},
+): RuntimeCatalogSnapshot | null {
   if (version == null) return snapshot;
-  return snapshot?.version === version ? snapshot : null;
+  return snapshotMatches(snapshot, version, options) ? snapshot : null;
 }
 
 export function primeRuntimeCatalogSnapshot(
@@ -73,15 +92,15 @@ export function primeCurrentRuntimeCatalogSnapshot(patch: RuntimeCatalogPatch): 
 
 export async function loadRuntimeCatalogSnapshot(
   version: number,
-  options: { freshness?: boolean } = {},
+  options: RuntimeCatalogSnapshotOptions = {},
 ): Promise<RuntimeCatalogSnapshot> {
   const wantsFreshness = Boolean(options.freshness);
-  const cached = getRuntimeCatalogSnapshot(version);
-  if (cached && (!wantsFreshness || cached.freshness)) return cached;
+  const cached = getRuntimeCatalogSnapshot(version, options);
+  if (cached) return cached;
 
   if (inFlight) {
     const pending = await inFlight;
-    if (pending.version === version && (!wantsFreshness || pending.freshness)) return pending;
+    if (snapshotMatches(pending, version, options)) return pending;
   }
 
   inFlight = Promise.all([
@@ -90,7 +109,7 @@ export async function loadRuntimeCatalogSnapshot(
     call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => ({})),
     wantsFreshness
       ? call<RuntimeFreshnessRow[]>('runtime:freshness').catch(() => [] as RuntimeFreshnessRow[])
-      : Promise.resolve(cached?.freshness),
+      : Promise.resolve(snapshot?.freshness),
   ]).then(([modelCatalog, providers, managedRuntimes, freshness]) =>
     primeRuntimeCatalogSnapshot(version, {
       modelCatalog,

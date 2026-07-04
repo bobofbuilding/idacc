@@ -26,6 +26,7 @@ type RuntimeCooldownCache = {
 };
 let runtimeCooldownCache: RuntimeCooldownCache | null = null;
 const RUNTIME_DETAILS_HOLD_MS = 45_000;
+const RUNTIME_CATALOG_UI_CACHE_MS = 60_000;
 
 type AgentConfigState = { runtime?: string; model?: string; effort: string; speed: string };
 type RuntimeRateLimitMeta = { laneId?: string; coolingUntilMs?: number; reason?: string; observedAtMs?: number; queryId?: string; resetText?: string; message?: string };
@@ -302,7 +303,10 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
 
   useEffect(() => {
     if (!runtimeDetailsActive) return;
-    const cached = getRuntimeCatalogSnapshot(runtimeCatalogVersion);
+    const cached = getRuntimeCatalogSnapshot(runtimeCatalogVersion, {
+      maxAgeMs: RUNTIME_CATALOG_UI_CACHE_MS,
+      freshness: true,
+    });
     if (cached?.freshness) {
       setCatalog(cached.modelCatalog);
       setProviders(cached.providers);
@@ -312,7 +316,10 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     }
     let live = true;
     const load = async () => {
-      const next = await loadRuntimeCatalogSnapshot(runtimeCatalogVersion, { freshness: true });
+      const next = await loadRuntimeCatalogSnapshot(runtimeCatalogVersion, {
+        freshness: true,
+        maxAgeMs: RUNTIME_CATALOG_UI_CACHE_MS,
+      });
       if (!live) return;
       setCatalog(next.modelCatalog);
       setProviders(next.providers);
