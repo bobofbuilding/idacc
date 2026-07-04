@@ -68,6 +68,18 @@ function taskRef(t: Task): string {
   return t.shortId ?? t.name ?? t.uuid ?? t.title;
 }
 
+async function tasksForGoalScope(baseClient: ManagerClient, goalTeam: string): Promise<Task[]> {
+  if (goalTeam && goalTeam !== 'default') {
+    return baseClient.withTeam(goalTeam).tasks().catch(() => [] as Task[]);
+  }
+  const teams = await baseClient.teams().catch(() => []);
+  const teamNames = teams.length ? teams.map((team) => team.name).filter(Boolean) : [baseClient.team ?? 'default'];
+  const rows = await Promise.all(
+    Array.from(new Set(teamNames)).map((team) => baseClient.withTeam(team).tasks().catch(() => [] as Task[])),
+  );
+  return rows.flat();
+}
+
 function agentNameKey(name?: string): string {
   return String(name || '').trim().toLowerCase();
 }
@@ -331,7 +343,7 @@ async function createGoalLeadTasks(
 async function driveGoal(baseClient: ManagerClient, goal: Goal, cfg: GoalDriverConfig): Promise<{ spawned: number; refs: string[]; note: string }> {
   const teamClient = baseClient.withTeam(goal.team);
   const goalTeam = goal.team || baseClient.team || 'default';
-  const tasks = await teamClient.tasks().catch(() => [] as Task[]);
+  const tasks = await tasksForGoalScope(baseClient, goalTeam);
   const openTagged = tasks.filter((t) => taskBelongsToGoal(t, goal.id) && !taskDone(t));
   const openRefs = openTagged.map(taskRef).filter(Boolean);
   const slots = Math.max(0, cfg.maxOpenTasksPerGoal - openTagged.length);
