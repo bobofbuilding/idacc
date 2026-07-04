@@ -60,6 +60,7 @@ import { contextBudgetDryRun, contextBudgetReport, loadRecentContextBudgetRecord
 import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayOptions } from './contextReplay.ts';
 import { decomposeWork, createAndDispatchPlan, fanOutObjective, teamLeads, triageUnassigned, type SubTask } from './work.ts';
 import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, type GoalDriverConfig } from './goaldriver.ts';
+import { processDraftProposalsOnce, startDraftDispatcherLoop } from './draftDispatcher.ts';
 import { buildOrgHierarchy, previewOrgSync, syncOrg, startOrgSyncLoop } from './orgSync.ts';
 import { syncDomainsForMethod } from '../shared/syncDomains.ts';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
@@ -1289,6 +1290,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     fanOutObjective(client, String(objective), Array.isArray(teams) ? teams.map(String) : []),
   // Lead triages unassigned To-Do tasks: assign each to the best active agent + dispatch.
   'work:triage': (lead: string, team?: string) => triageUnassigned(team ? client.withTeam(String(team)) : client, String(lead)),
+  'draftDispatcher:runOnce': () => processDraftProposalsOnce(client),
   'goalDriver:getConfig': async () => goalDriverConfig(),
   'goalDriver:setConfig': async (partial: Partial<GoalDriverConfig>) => {
     setGoalDriver(normalizeGoalDriverConfig({ ...goalDriverConfig(), ...(partial ?? {}) }));
@@ -1852,6 +1854,11 @@ export function startOrgSync(): () => void {
 /** Start the disabled-by-default goal driver loop against the live manager client. */
 export function startGoalDriver(): () => void {
   return startGoalDriverLoop(() => client, goalDriverConfig);
+}
+
+/** Promote task-shaped draft replies into manager-routed tasks in the background. */
+export function startDraftDispatcher(): () => void {
+  return startDraftDispatcherLoop(() => client);
 }
 
 /**

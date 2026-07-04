@@ -9,7 +9,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, chmodSync, renameSync, unlinkSync } from 'node:fs';
 import { resolveConfigPath, configDir } from './paths.ts';
-import { emptyConfig, defaultHeadroomPilotSettings, defaultUpdateSettings, DEFAULT_TEAM, type EvmRpcProfile, type EvmRpcRequest, type GoalDriverSettings, type HeadroomPilotSettings, type IdctlConfig, type ImageServerConfig, type LocalModelCatalogEntry, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderModelSelection, type ProviderProfile, type ProviderSync, type UpdateSettings } from './schema.ts';
+import { emptyConfig, defaultHeadroomPilotSettings, defaultUpdateSettings, DEFAULT_TEAM, type DraftDispatcherSettings, type EvmRpcProfile, type EvmRpcRequest, type GoalDriverSettings, type HeadroomPilotSettings, type IdctlConfig, type ImageServerConfig, type LocalModelCatalogEntry, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderModelSelection, type ProviderProfile, type ProviderSync, type UpdateSettings } from './schema.ts';
 import { filterParkedMcpServers, isParkedMcpServer } from './mcpCatalog.ts';
 
 function normalizeGoalDriver(input: unknown): GoalDriverSettings | undefined {
@@ -20,6 +20,35 @@ function normalizeGoalDriver(input: unknown): GoalDriverSettings | undefined {
   if (typeof raw.cadenceMs === 'number' && Number.isFinite(raw.cadenceMs) && raw.cadenceMs > 0) out.cadenceMs = Math.floor(raw.cadenceMs);
   if (typeof raw.maxOpenTasksPerGoal === 'number' && Number.isFinite(raw.maxOpenTasksPerGoal) && raw.maxOpenTasksPerGoal > 0) out.maxOpenTasksPerGoal = Math.floor(raw.maxOpenTasksPerGoal);
   return out;
+}
+
+function normalizeDraftDispatcher(input: unknown): DraftDispatcherSettings | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = input as Record<string, unknown>;
+  const out: DraftDispatcherSettings = {};
+  if (typeof raw.enabled === 'boolean') out.enabled = raw.enabled;
+  if (typeof raw.lastRunAt === 'number' && Number.isFinite(raw.lastRunAt) && raw.lastRunAt > 0) out.lastRunAt = Math.floor(raw.lastRunAt);
+  if (raw.processed && typeof raw.processed === 'object' && !Array.isArray(raw.processed)) {
+    const rows: Array<[string, NonNullable<DraftDispatcherSettings['processed']>[string]]> = [];
+    for (const [key, value] of Object.entries(raw.processed as Record<string, unknown>)) {
+      if (!key || !value || typeof value !== 'object') continue;
+      const rec = value as Record<string, unknown>;
+      const at = typeof rec.at === 'number' && Number.isFinite(rec.at) ? Math.floor(rec.at) : 0;
+      const team = cleanOptionalString(rec.team, 80);
+      if (!at || !team) continue;
+      rows.push([key.slice(0, 240), {
+        at,
+        team,
+        sourceNewsId: cleanOptionalString(rec.sourceNewsId, 120),
+        taskRefs: Array.isArray(rec.taskRefs) ? rec.taskRefs.map((x) => cleanOptionalString(x, 120)).filter((x): x is string => Boolean(x)).slice(0, 80) : undefined,
+        title: cleanOptionalString(rec.title, 160),
+        count: typeof rec.count === 'number' && Number.isFinite(rec.count) && rec.count > 0 ? Math.floor(rec.count) : undefined,
+      }]);
+    }
+    rows.sort((a, b) => b[1].at - a[1].at);
+    if (rows.length) out.processed = Object.fromEntries(rows.slice(0, 1000));
+  }
+  return out.enabled === undefined && !out.lastRunAt && !out.processed ? undefined : out;
 }
 
 function clampPercent(value: unknown, fallback: number): number {
@@ -141,6 +170,7 @@ export function loadSettings(file = resolveConfigPath()): IdctlConfig {
       coordinators: raw.coordinators ?? {},
       primaryCoordinator: raw.primaryCoordinator,
       goalDriver: normalizeGoalDriver(raw.goalDriver),
+      draftDispatcher: normalizeDraftDispatcher(raw.draftDispatcher),
       defaultTeam: raw.defaultTeam ?? DEFAULT_TEAM,
       // Absent → scope to just the default team (the shipped behaviour). An
       // explicit null/[] means "show all teams" (filtering disabled).

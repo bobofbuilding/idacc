@@ -62,6 +62,12 @@ export interface IdctlConfig {
    */
   goalDriver?: GoalDriverSettings;
   /**
+   * Background bridge from manager news draft proposals into real manager tasks.
+   * `enabled` defaults to true; `processed` is a bounded dedupe ledger keyed by
+   * team + news id/hash so restart does not redispatch the same draft batch.
+   */
+  draftDispatcher?: DraftDispatcherSettings;
+  /**
    * The team idctl scopes to on startup (the repo's shipped team). Defaults to
    * "default" — the canonical id-agents team (configs/default.yaml).
    */
@@ -159,6 +165,21 @@ export interface LocalModelCatalogEntry {
   source?: 'ollama-library' | 'manual';
   discoveredAt?: number;
   updatedAt?: number;
+}
+
+export interface DraftDispatcherProcessedRecord {
+  at: number;
+  team: string;
+  sourceNewsId?: string;
+  taskRefs?: string[];
+  title?: string;
+  count?: number;
+}
+
+export interface DraftDispatcherSettings {
+  enabled?: boolean;
+  processed?: Record<string, DraftDispatcherProcessedRecord>;
+  lastRunAt?: number;
 }
 
 export type ProjectStatus = 'active' | 'paused' | 'blocked' | 'done';

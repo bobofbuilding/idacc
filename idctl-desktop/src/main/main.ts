@@ -6,7 +6,7 @@
 import { app, BrowserWindow, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage } from 'electron';
 import { join } from 'node:path';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { call as bridgeCall, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
+import { call as bridgeCall, startDraftDispatcher, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
 import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
 import { invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubProvider } from './subscriptions.ts';
@@ -41,6 +41,7 @@ let stopGoalDriver: (() => void) | null = null;
 let stopLearnQueueRunner: (() => void) | null = null;
 let stopMaterialChangeBridge: (() => void) | null = null;
 let kickLearnQueueRunner: ((delayMs?: number) => void) | null = null;
+let stopDraftDispatcher: (() => void) | null = null;
 let rendererSafeMode = false;
 let rendererRecoveryFirstAt = 0;
 let rendererRecoveryAttempts = 0;
@@ -1232,6 +1233,8 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
       });
     } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }
     try { stopLearnQueueRunner = startLearnQueueRunner(); } catch (e) { console.warn('[learn] failed to start queue runner:', e); }
+    // Draft dispatcher: promote task-shaped manager news proposals into routed tasks.
+    try { stopDraftDispatcher = startDraftDispatcher(); } catch (e) { console.warn('[draft-dispatcher] failed to start:', e); }
     // Computer Use broker: loopback controller + live frame pump + approval prompts → the renderer.
     void startBroker(
       (frame) => { try { win?.webContents.send('computeruse:frame', frame); } catch { /* window gone */ } },
@@ -1257,6 +1260,7 @@ app.on('will-quit', stopBroker);
 app.on('will-quit', () => { try { stopGoalDriver?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopLearnQueueRunner?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopMaterialChangeBridge?.(); } catch { /* */ } });
+app.on('will-quit', () => { try { stopDraftDispatcher?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* */ } });
 app.on('child-process-gone', (_event, details) => {
   logProcessExit('child-process', details as unknown as Record<string, unknown>);

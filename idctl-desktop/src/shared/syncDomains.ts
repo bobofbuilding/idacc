@@ -16,6 +16,7 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^brain:(createPlan|setPlanStatus)$/, ['brain', 'brain-plans', 'plans', 'work']],
   [/^goals:(save|remove)$/, ['goals', 'work', 'brain']],
   [/^goalDriver:(setConfig|runOnce)$/, ['goals', 'tasks', 'work', 'brain']],
+  [/^draftDispatcher:runOnce$/, ['tasks', 'work', 'dashboard', 'brain']],
   [/^loops:(save|remove)$/, ['loops', 'work', 'brain']],
   [/^dreams:(save|remove)$/, ['dreams', 'work', 'brain']],
   [/^materials:changed$/, ['materials']],
