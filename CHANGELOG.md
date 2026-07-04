@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.570] — 2026-07-04
+- Derive status bar counts from cached fleet roster
+
 ## [0.1.569] — 2026-07-04
 - Reduce Settings local runtime refresh churn
 

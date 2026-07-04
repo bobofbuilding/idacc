@@ -1,4 +1,4 @@
-import { Component, useCallback, useEffect, useState, type ReactNode } from 'react';
+import { Component, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useFleet, call, useSyncVersion } from './store.ts';
 import { PromptProvider } from './components/prompt.tsx';
 import { ToastProvider } from './components/toast.tsx';
@@ -306,13 +306,35 @@ function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled, wiki, 
 
 type TeamLeadInfo = { team: string; lead: string | null; activeCount: number; totalCount: number };
 
+function isActiveStatus(status?: string): boolean {
+  const s = String(status || '').toLowerCase();
+  return !!s && !/stop|offline|dead|exit|error|crash|down|disabled|sleep/.test(s);
+}
+
 function StatusBar({ store }: { store: ReturnType<typeof useFleet> }) {
   const dot =
     store.connection === 'online' ? 'ok' : store.connection === 'offline' ? 'err' : 'warn';
   // Running/total agents per team — drives "active teams / active agents" in the bar.
   const [leads, setLeads] = useState<TeamLeadInfo[]>([]);
   const names = store.teams.map((t) => t.name).filter(Boolean).join(',');
+  const derivedLeads = useMemo<TeamLeadInfo[] | null>(() => {
+    if (!store.allAgents.length) return null;
+    const byTeam = new Map<string, TeamLeadInfo>();
+    for (const team of store.teams) {
+      if (!team.name) continue;
+      byTeam.set(team.name, { team: team.name, lead: null, activeCount: 0, totalCount: 0 });
+    }
+    for (const agent of store.allAgents) {
+      const team = agent.team || store.team || 'default';
+      const row = byTeam.get(team) ?? { team, lead: null, activeCount: 0, totalCount: 0 };
+      row.totalCount += 1;
+      if (isActiveStatus(agent.status)) row.activeCount += 1;
+      byTeam.set(team, row);
+    }
+    return [...byTeam.values()];
+  }, [store.allAgents, store.teams, store.team]);
   useEffect(() => {
+    if (derivedLeads) return;
     const list = names ? names.split(',') : [];
     if (!list.length) { setLeads([]); return; }
     let live = true;
@@ -320,10 +342,11 @@ function StatusBar({ store }: { store: ReturnType<typeof useFleet> }) {
     void load();
     const iv = setInterval(load, 20000); // refresh running counts every 20s
     return () => { live = false; clearInterval(iv); };
-  }, [names, store.team]);
+  }, [derivedLeads, names, store.team]);
 
-  const liveTeams = leads.filter((l) => l.activeCount > 0).length;
-  const totalActive = leads.reduce((s, l) => s + l.activeCount, 0);
+  const statusRows = derivedLeads ?? leads;
+  const liveTeams = statusRows.filter((l) => l.activeCount > 0).length;
+  const totalActive = statusRows.reduce((s, l) => s + l.activeCount, 0);
 
   return (
     <footer className="statusbar">

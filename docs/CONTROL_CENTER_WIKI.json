@@ -35,7 +35,7 @@
       ],
       "purpose": "Operator home: view the current routed team lead, talk to that lead, watch cross-team coordination, and read the live activity feed.",
       "scope": "All-team observation with a read-only chat target. The embedded chat dispatches to the routed team lead; the activity feed merges events across teams.",
-      "body": "# Dashboard\n\nDashboard is the operator home for live fleet status, routed lead chat, and recent activity. Keep this page lightweight; detailed behavioral history belongs in release notes, not the live wiki manifest. The renderer store coalesces and version-stamps sync domains so page remounts observe the latest invalidation state without extra broad refreshes. Electron builds use the main-process sync stream as the single mutation invalidation source, while non-Electron transports retain local fallback invalidation. Broad all-team roster polling is kept on a moderate cadence while the event stream keeps activity fresh."
+      "body": "# Dashboard\n\nDashboard is the operator home for live fleet status, routed lead chat, and recent activity. Keep this page lightweight; detailed behavioral history belongs in release notes, not the live wiki manifest. The renderer store coalesces and version-stamps sync domains so page remounts observe the latest invalidation state without extra broad refreshes. Electron builds use the main-process sync stream as the single mutation invalidation source, while non-Electron transports retain local fallback invalidation. Broad all-team roster polling is kept on a moderate cadence while the event stream keeps activity fresh. The shared status bar derives active agent and team counts from the already-loaded all-team roster when available, falling back to the team-lead IPC poll only on views without that roster."
     },
     {
       "id": "inbox",
@@ -307,5 +307,5 @@
       "body": "# Wiki\n\nThis page now reads a compact app manifest. The replacement authoring contract is being rebuilt in docs/CONTROL_CENTER_WIKI.md as Markdown-first schema documentation. The renderer loads and polls the wiki manifest only while the Wiki page is open, keeping the rest of the app free from idle wiki refresh work."
     }
   ],
-  "appVersion": "0.1.569"
+  "appVersion": "0.1.570"
 }
