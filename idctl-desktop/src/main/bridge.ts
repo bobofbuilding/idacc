@@ -895,6 +895,7 @@ async function projectPluginSkill(name: string): Promise<ProjectPluginSkillResul
   return { ok: true, plugin: pluginName, projected: true, entry, inspection };
 }
 import type { LibrarySkillEntry, McpServerSpec, CreateSkillInput, LibraryPluginInspection, ProjectPluginSkillResult } from '../../../idctl/src/api/client.ts';
+import { filterParkedMcpServers } from '../../../idctl/src/settings/mcpCatalog.ts';
 import { brokerServerPath, mintAgentToken, revokeAgentToken, brokerUrl } from './computeruse/broker.ts';
 // The Computer Use MCP server name. NEVER "computer-use" — Claude Code reserves that
 // name and rejects the entire MCP config, breaking every dispatch. CU_MCP_ALIASES
@@ -1532,7 +1533,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   deleteSkill: (name: string) => client.deleteSkill(String(name)),
   uninstallSkill: (skill: string, agent: string, team?: string) => (team ? client.withTeam(String(team)) : client).uninstallSkill(String(skill), String(agent)),
   usage: () => client.usage(),
-  setAgentMcp: (agentId: string, servers: McpServerSpec[], team?: string) => (team ? client.withTeam(String(team)) : client).setAgentMcp(String(agentId), servers ?? []),
+  setAgentMcp: (agentId: string, servers: McpServerSpec[], team?: string) => (team ? client.withTeam(String(team)) : client).setAgentMcp(String(agentId), filterParkedMcpServers(servers ?? [])),
   rebuildAgent: (agent: string, team?: string) => (team ? client.withTeam(String(team)) : client).remote(`/agent ${agent} rebuild`),
 
   // Computer Use: attach/detach the bundled computer-use MCP server to an agent
@@ -1555,7 +1556,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     // server name MUST NOT be "computer-use" — Claude Code reserves that and rejects
     // the WHOLE MCP config, breaking every dispatch to the agent.
     const spec: McpServerSpec = { name: CU_MCP_NAME, command: 'node', args: [brokerServerPath()], env: { ID_CU_AGENT: authority, ID_CU_AGENT_NAME: String(a.name), ID_CU_TEAM: authorityTeam, ID_CU_TOKEN: mintAgentToken(authority), ID_CU_URL: brokerUrl() } };
-    const next = [...cur.filter((s) => !CU_MCP_ALIASES.includes(s.name)), spec]; // also strips the old broken name
+    const next = filterParkedMcpServers([...cur.filter((s) => !CU_MCP_ALIASES.includes(s.name)), spec]); // also strips the old broken name
     return scopedClient.setAgentMcp(a.id, next);
   },
   'cu:detach': async (agentId: string, agentName?: string, team?: string) => {
@@ -1565,7 +1566,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const a = requireCurrentComputerUseAgent(agents, agentId, agentName);
     revokeAgentToken(scopedAgentKey(a.name, teamName ?? client.team ?? 'default'));
     const cur = (((a.metadata as any)?.mcpServers) ?? []) as McpServerSpec[];
-    return scopedClient.setAgentMcp(a.id, cur.filter((s) => !CU_MCP_ALIASES.includes(s.name)));
+    return scopedClient.setAgentMcp(a.id, filterParkedMcpServers(cur.filter((s) => !CU_MCP_ALIASES.includes(s.name))));
   },
   // Agents that have computer-use attached (for the view's "blessed" list) — detects
   // the old reserved name too, so a previously-broken agent shows up to be removed/re-blessed.

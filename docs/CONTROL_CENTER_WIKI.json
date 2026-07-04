@@ -222,7 +222,7 @@
       ],
       "purpose": "Capability workbench for MCP tool servers, skills, and bundled plugins.",
       "scope": "Active team, all teams, or all leads depending on scope selector. Runtime support is advisory; capability assignment remains runtime-neutral while stale target rows are still blocked by fresh-read guards.",
-      "body": "# Capabilities\n\nCapabilities owns skills, MCP servers, plugins, runtime-neutral capability wiring, and guarded Brain sync handoffs. Provider and runtime catalog reads stay cached/non-invalidating; provider connects, subscription account mutations, local model install/remove actions, and explicit runtime probes still refresh dependent views without passive CLI command execution. Material/Learn progress sync is scoped away from modules so Capabilities does not reload during queue processing. Dashboard draft/proposal reads are review-only; they do not auto-promote agent output into Tasks or dispatch assignments."
+      "body": "# Capabilities\n\nCapabilities owns skills, MCP servers, plugins, runtime-neutral capability wiring, and guarded Brain sync handoffs. Provider and runtime catalog reads stay cached/non-invalidating; provider connects, subscription account mutations, local model install/remove actions, and explicit runtime probes still refresh dependent views without passive CLI command execution. MCP attachment starts with no selected targets, because every attached server can spawn helper processes per active harness; skills and plugins still default to the current scope. The reference/test `everything` MCP server is parked and filtered from the catalog, local settings, and outgoing attach payloads. Material/Learn progress sync is scoped away from modules so Capabilities does not reload during queue processing. Dashboard draft/proposal reads are review-only; they do not auto-promote agent output into Tasks or dispatch assignments."
     },
     {
       "id": "computer",
@@ -307,5 +307,5 @@
       "body": "# Wiki\n\nThis page now reads a compact app manifest. The replacement authoring contract is being rebuilt in docs/CONTROL_CENTER_WIKI.md as Markdown-first schema documentation. The renderer loads and polls the wiki manifest only while the Wiki page is open, keeping the rest of the app free from idle wiki refresh work."
     }
   ],
-  "appVersion": "0.1.563"
+  "appVersion": "0.1.564"
 }

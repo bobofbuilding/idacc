@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, chmodSync, renameSync, unlinkSync } from 'node:fs';
 import { resolveConfigPath, configDir } from './paths.ts';
 import { emptyConfig, defaultHeadroomPilotSettings, defaultUpdateSettings, DEFAULT_TEAM, type EvmRpcProfile, type EvmRpcRequest, type GoalDriverSettings, type HeadroomPilotSettings, type IdctlConfig, type ImageServerConfig, type LocalModelCatalogEntry, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderModelSelection, type ProviderProfile, type ProviderSync, type UpdateSettings } from './schema.ts';
+import { filterParkedMcpServers, isParkedMcpServer } from './mcpCatalog.ts';
 
 function normalizeGoalDriver(input: unknown): GoalDriverSettings | undefined {
   if (!input || typeof input !== 'object') return undefined;
@@ -133,7 +134,7 @@ export function loadSettings(file = resolveConfigPath()): IdctlConfig {
       managers: Array.isArray(raw.managers) ? raw.managers : [],
       providers: Array.isArray(raw.providers) ? raw.providers : [],
       evmRpcs: Array.isArray(raw.evmRpcs) ? raw.evmRpcs : [],
-      mcpServers: Array.isArray(raw.mcpServers) ? raw.mcpServers : [],
+      mcpServers: Array.isArray(raw.mcpServers) ? filterParkedMcpServers(raw.mcpServers) : [],
       defaultManager: raw.defaultManager,
       // Merge so an absent block → defaults (autoUpgrade true), per-field overridable.
       update: { ...defaultUpdateSettings(), ...(raw.update ?? {}) },
@@ -409,6 +410,9 @@ export function setHeadroomPilot(partial: Partial<HeadroomPilotSettings>, file =
 // ---- MCP servers (Modules catalog) ----------------------------------------
 
 export function upsertMcpServer(s: McpServerProfile, file = resolveConfigPath()): IdctlConfig {
+  if (isParkedMcpServer(s)) {
+    throw new Error(`MCP server "${s.name}" is parked because it is a reference/test server and should not be attached to production agents.`);
+  }
   const cfg = loadSettings(file);
   const list = cfg.mcpServers ?? [];
   const i = list.findIndex((x) => x.name === s.name);

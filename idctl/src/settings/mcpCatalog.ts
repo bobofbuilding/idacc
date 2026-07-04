@@ -5,7 +5,7 @@
  * The Test button verifies whatever is built actually launches and lists tools,
  * so a slightly-stale package name is self-correcting rather than silent.
  *
- * The filesystem/memory/sequential-thinking/everything entries are verified to
+ * The filesystem/memory/sequential-thinking entries are verified to
  * launch + list tools; the token-gated ones (github/brave/postgres) need the
  * operator's secret and should be Tested after filling it in.
  */
@@ -33,6 +33,25 @@ export interface McpCatalogEntry {
   inputs?: McpCatalogInput[];
 }
 
+type McpLike = {
+  name?: string;
+  command?: string;
+  args?: string[];
+};
+
+const PARKED_MCP_SERVER_NAMES = new Set(['everything']);
+const PARKED_MCP_PACKAGES = new Set(['@modelcontextprotocol/server-everything']);
+
+export function isParkedMcpServer(server: McpLike | null | undefined): boolean {
+  if (!server) return false;
+  if (server.name && PARKED_MCP_SERVER_NAMES.has(server.name.trim().toLowerCase())) return true;
+  return (server.args ?? []).some((arg) => PARKED_MCP_PACKAGES.has(String(arg).trim()));
+}
+
+export function filterParkedMcpServers<T extends McpLike>(servers: readonly T[] | null | undefined): T[] {
+  return (servers ?? []).filter((server) => !isParkedMcpServer(server));
+}
+
 export const MCP_CATALOG: McpCatalogEntry[] = [
   {
     id: 'filesystem',
@@ -55,13 +74,6 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     description: 'A structured step-by-step reasoning tool for complex problems.',
     command: 'npx',
     baseArgs: ['-y', '@modelcontextprotocol/server-sequential-thinking'],
-  },
-  {
-    id: 'everything',
-    name: 'Everything (reference/test)',
-    description: 'The reference MCP server — echo, sampling, prompts. Great for testing the wiring.',
-    command: 'npx',
-    baseArgs: ['-y', '@modelcontextprotocol/server-everything'],
   },
   {
     id: 'headroom',

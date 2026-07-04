@@ -734,14 +734,18 @@ export function Modules({ store }: { store: FleetStore }) {
     setTouched(false);
     setExplicit(new Set());
   }, [tab]);
-  // Default (untouched) = every current agent in scope. Runtime-specific feature
-  // readiness is advisory; stale rows are still blocked by fresh-read stamps.
-  const selectedIds: Set<string> = touched ? explicit : new Set(eligibleAgents.map((a) => a.id));
-  // Team scope honors the chip selection; cross-team scopes target every eligible agent.
-  const targetAgents = scope === 'team' ? eligibleAgents.filter((a) => selectedIds.has(a.id)) : eligibleAgents;
+  // Skills/plugins default to every current agent in scope. MCP server attachment
+  // starts empty because each attached server can spawn a helper process for
+  // every active harness; require an explicit target choice before bulk changes.
+  const selectedIds: Set<string> = touched ? explicit : new Set(tab === 'mcp' ? [] : eligibleAgents.map((a) => a.id));
+  // Team scope honors the chip selection; cross-team scopes target every eligible
+  // agent only after the operator has explicitly chosen the MCP scope.
+  const targetAgents = scope === 'team'
+    ? eligibleAgents.filter((a) => selectedIds.has(a.id))
+    : (tab === 'mcp' && !touched) ? [] : eligibleAgents;
   const targetCount = targetAgents.length;
   function baseSet(): Set<string> {
-    return touched ? new Set(explicit) : new Set(eligibleAgents.map((a) => a.id));
+    return touched ? new Set(explicit) : new Set(tab === 'mcp' ? [] : eligibleAgents.map((a) => a.id));
   }
   function toggleAgent(id: string) {
     const n = baseSet();

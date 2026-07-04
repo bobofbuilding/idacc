@@ -402,13 +402,15 @@ browse/create/install **Skills**, inspect/digest neutral **Plugins** — applied
 selection in the active team.
 
 **What you can do**
-- **Shared header**: team dropdown + an **"apply to" agent chip row** (default = all in scope; click
-  to make an explicit set; all/none). Runtime support is advisory, so local/API/subscription
-  runtimes can receive neutral MCP/skill/plugin metadata while execution adapters remain explicit.
+- **Shared header**: team dropdown + an **"apply to" agent chip row**. Skills/plugins default to all
+  in scope; MCP starts with no selected targets so tool-server attachment is always explicit. Runtime
+  support is advisory, so local/API/subscription runtimes can receive neutral MCP/skill/plugin metadata
+  while execution adapters remain explicit.
 - **MCP servers**: compact server table (server/endpoint, attached `have/target`, status, actions),
   per-row **Attach / Detach / Test / ✕**, **Rebuild <targets>**, and a hidden **Add server** panel
-  for catalog/custom MCP profiles. `mcp:list` and `mcp:test` stay read-only; only add/remove emit
-  cross-page sync.
+  for catalog/custom MCP profiles. The reference/test `everything` server is parked and filtered from
+  settings/attach payloads so it cannot be bulk-attached to production agents. `mcp:list` and
+  `mcp:test` stay read-only; only add/remove emit cross-page sync.
 - **Skills**: catalog cards (license, install `have/target`, tags incl. **auto-categorized**),
   **Install / Uninstall** per selection, two-step **delete**, search + tag filter, batch
   **auto-categorize** (+ ↻ re-categorize), **Create skill**, low-noise Brain skill count/sync chip,
