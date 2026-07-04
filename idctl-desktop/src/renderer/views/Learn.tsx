@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import type {
+  LearnBrainBackfillResult,
   LearnMaterial,
   LearnMaterialKind,
   LearnPriority,
@@ -30,6 +31,7 @@ type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: 
 const PRIORITIES: LearnPriority[] = ['urgent', 'high', 'normal'];
 const KIND_LABEL: Record<LearnMaterialKind, string> = { github: 'GitHub', folder: 'Folder', site: 'Site', pdf: 'PDF' };
 const STALE_PROCESSING_MS = 20 * 60 * 1000;
+const LEARN_BRAIN_SYNC_SCHEMA_VERSION = 3;
 const STATUS_CLASS: Record<string, string> = {
   queued: 'st-paused',
   processing: 'st-active',
@@ -60,6 +62,29 @@ function isStaleProcessing(m: LearnMaterial): boolean {
   return m.status === 'processing' && Date.now() - m.updatedAt > STALE_PROCESSING_MS;
 }
 
+function hasCurrentBrainGraphSync(m: LearnMaterial): boolean {
+  const sync = m.brainSync;
+  if (!sync) return false;
+  if (sync.schemaVersion !== LEARN_BRAIN_SYNC_SCHEMA_VERSION || sync.exactEntity !== true) return false;
+  if (!sync.entity || !sync.sourceEntity || !sync.facts || !sync.edges) return false;
+  const expected = Math.max(0, Number(sync.expectedEdgeCount ?? 0) || 0);
+  const actual = Math.max(0, Number(sync.edgeCount ?? 0) || 0);
+  return expected === 0 || actual >= expected;
+}
+
+function isLearnMaterialComplete(m: LearnMaterial): boolean {
+  return m.status === 'ready' && hasCurrentBrainGraphSync(m);
+}
+
+function isLearnMaterialActive(m: LearnMaterial): boolean {
+  return !isLearnMaterialComplete(m);
+}
+
+function materialStatusClass(m: LearnMaterial): string {
+  if (m.status === 'ready' && !hasCurrentBrainGraphSync(m)) return 'st-paused';
+  return STATUS_CLASS[m.status] ?? '';
+}
+
 function safeLearnTeam(team: string): string {
   const t = String(team || '').trim();
   return !t || t === 'public' ? 'default' : t;
@@ -69,6 +94,14 @@ function materialStageText(m: LearnMaterial): string {
   if (m.status === 'blocked' && (m.injectionWarnings?.length ?? 0) > 0) return 'review source trust';
   if (m.status === 'blocked') return 'review needed';
   if (m.status === 'queued' && m.processingTag === 'requeued after stale processing') return 'queued after recovery';
+  if (m.status === 'ready' && !hasCurrentBrainGraphSync(m)) {
+    if (!m.brainSync) return 'syncing Brain graph';
+    const expected = Math.max(0, Number(m.brainSync.expectedEdgeCount ?? 0) || 0);
+    const actual = Math.max(0, Number(m.brainSync.edgeCount ?? 0) || 0);
+    if (expected > 0 && actual < expected) return `Brain edges ${actual}/${expected}`;
+    if (m.brainSync.schemaVersion !== LEARN_BRAIN_SYNC_SCHEMA_VERSION) return 'Brain sync upgrade pending';
+    return `Brain sync ${m.brainSync.status}`;
+  }
   if (m.status === 'ready') return 'ready for review';
   return m.processingTag || m.stage;
 }
@@ -81,7 +114,7 @@ function blockedMaterialMessage(m: LearnMaterial): string {
 }
 
 function firstActiveMaterialId(materials: LearnMaterial[], preferredId?: string): string {
-  const active = materials.filter((m) => m.status !== 'ready');
+  const active = materials.filter(isLearnMaterialActive);
   return (preferredId && active.some((m) => m.id === preferredId)) ? preferredId : (active[0]?.id ?? '');
 }
 
@@ -124,12 +157,13 @@ export function Learn({ store }: { store: FleetStore }) {
 
   useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [syncVersion, store.lastUpdated]);
 
-  const activeMaterials = useMemo(() => materials.filter((m) => m.status !== 'ready'), [materials]);
-  const selected = useMemo(() => materials.find((m) => m.id === selectedId && m.status !== 'ready') ?? activeMaterials[0] ?? null, [activeMaterials, materials, selectedId]);
+  const activeMaterials = useMemo(() => materials.filter(isLearnMaterialActive), [materials]);
+  const selected = useMemo(() => materials.find((m) => m.id === selectedId && isLearnMaterialActive(m)) ?? activeMaterials[0] ?? null, [activeMaterials, materials, selectedId]);
   const processing = materials.find((m) => m.status === 'processing');
   const staleProcessing = useMemo(() => materials.filter(isStaleProcessing), [materials]);
   const queuedCount = useMemo(() => materials.filter((m) => m.status === 'queued').length, [materials]);
-  const completedCount = useMemo(() => materials.filter((m) => m.status === 'ready').length, [materials]);
+  const completedCount = useMemo(() => materials.filter(isLearnMaterialComplete).length, [materials]);
+  const syncPendingCount = useMemo(() => materials.filter((m) => m.status === 'ready' && !hasCurrentBrainGraphSync(m)).length, [materials]);
   const context = {
     knownTeams: store.teams.map((t) => t.name).filter(Boolean),
     defaultTeam: store.team ?? 'default',
@@ -213,7 +247,7 @@ export function Learn({ store }: { store: FleetStore }) {
       if (processing) await call<RecoverStaleResult>('materials:recoverStale').catch(() => null);
       const material = await call<LearnMaterial | null>('materials:processNext', context);
       setNote(material ? `${auto ? 'auto-processed' : 'processed'} ${material.title}` : 'queue is empty');
-      if (material && material.status !== 'ready') setSelectedId(material.id);
+      if (material && isLearnMaterialActive(material)) setSelectedId(material.id);
       await reload();
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
@@ -235,7 +269,7 @@ export function Learn({ store }: { store: FleetStore }) {
       }
       const material = await call<LearnMaterial>('materials:process', selected.id, context);
       setNote(`processed ${material.title}`);
-      if (material.status !== 'ready') setSelectedId(material.id);
+      if (isLearnMaterialActive(material)) setSelectedId(material.id);
       await reload();
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
@@ -276,8 +310,21 @@ export function Learn({ store }: { store: FleetStore }) {
   async function markRecommendation(rec: LearnRecommendation, state: LearnReviewState) {
     if (!selected) return;
     const updated = await call<LearnMaterial>('materials:markRecommendation', selected.id, rec.id, state);
-    if (updated.status !== 'ready') setSelectedId(updated.id);
+    if (isLearnMaterialActive(updated)) setSelectedId(updated.id);
     await reload();
+  }
+
+  async function syncBrainNow() {
+    setBusy(true); setNote('syncing Learn materials to Brain...');
+    try {
+      const result = await call<LearnBrainBackfillResult>('materials:syncBrain', 4, 0);
+      setNote(result.attempted ? `Brain sync attempted ${result.attempted}; ${result.remaining} remaining` : 'Brain sync is current');
+      await reload();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function acceptRecommendation(rec: LearnRecommendation) {
@@ -346,9 +393,10 @@ export function Learn({ store }: { store: FleetStore }) {
             <h3>Learn intake</h3>
             {note ? <div className="muted small">{note}</div> : null}
           </div>
-          <div className="learn-auto small" title="Queued materials are processed in the background one at a time. Ready materials drop off the active queue; blocked materials stay for review.">
+          <div className="learn-auto small" title="Queued materials are processed in the background one at a time. Rows are hidden only after their Brain graph sync is current; blocked materials stay for review.">
             <span className="status st-active">Auto-processing on</span>
             {queuedCount ? <span className="muted">({queuedCount})</span> : null}
+            {syncPendingCount ? <span className="muted">{syncPendingCount} Brain sync pending</span> : null}
             {completedCount ? <span className="muted">{completedCount} completed hidden</span> : null}
           </div>
         </div>
@@ -430,7 +478,7 @@ export function Learn({ store }: { store: FleetStore }) {
                       </select>{' '}
                       <button className="btn small" disabled={busy} title={m.prioritized ? 'Remove top priority pin' : 'Prioritize to top'} onClick={() => void setMaterialPriority(m, m.priority, !m.prioritized)}>{m.prioritized ? 'Unpin' : 'Top'}</button>
                     </td>
-                    <td><span className={`status ${STATUS_CLASS[m.status] ?? ''}`}>{m.status}</span><div className="muted small">{materialStageText(m)}</div></td>
+                    <td><span className={`status ${materialStatusClass(m)}`}>{m.status}</span><div className="muted small">{materialStageText(m)}</div></td>
                     <td className="small">{m.classification?.routedTeams?.join(', ') || '-'}</td>
                     <td className="muted small" title={new Date(m.createdAt).toLocaleString()}>{ago(m.createdAt)}</td>
                   </tr>
@@ -450,6 +498,9 @@ export function Learn({ store }: { store: FleetStore }) {
                 <button className="btn primary" disabled={busy || (selected.status === 'processing' && !isStaleProcessing(selected))} onClick={() => void processSelected()}>
                   {selected.status === 'processing' && isStaleProcessing(selected) ? 'Recover selected' : selected.status === 'queued' || selected.status === 'failed' ? 'Process selected' : selected.status === 'blocked' ? 'Reprocess after review' : 'Reprocess'}
                 </button>
+                {selected.status === 'ready' && !hasCurrentBrainGraphSync(selected) ? (
+                  <button className="btn" disabled={busy} onClick={() => void syncBrainNow()}>Sync Brain</button>
+                ) : null}
                 <button className="btn" disabled={busy} onClick={() => void removeSelected()}>Remove</button>
                 {selected.snapshotPath ? <span className="muted small learn-snapshot-path" title={selected.snapshotPath}>snapshot: {selected.snapshotPath}</span> : null}
               </div>

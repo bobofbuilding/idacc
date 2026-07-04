@@ -42,6 +42,7 @@ let stopLearnQueueRunner: (() => void) | null = null;
 let stopLearnBrainBackfillRunner: (() => void) | null = null;
 let stopMaterialChangeBridge: (() => void) | null = null;
 let kickLearnQueueRunner: ((delayMs?: number) => void) | null = null;
+let kickLearnBrainBackfillRunner: ((delayMs?: number) => void) | null = null;
 let stopDraftDispatcher: (() => void) | null = null;
 let rendererSafeMode = false;
 let rendererRecoveryFirstAt = 0;
@@ -502,9 +503,11 @@ function startLearnBrainBackfillRunner(): () => void {
     }
   };
 
+  kickLearnBrainBackfillRunner = schedule;
   schedule(12_000);
   return () => {
     stopped = true;
+    kickLearnBrainBackfillRunner = null;
     if (timer) clearTimeout(timer);
   };
 }
@@ -1113,8 +1116,11 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
         limit: Number(args[0] ?? 2),
         retryMs: Number(args[1] ?? undefined),
       });
-    case 'materials:markRecommendation':
-      return markRecommendation(args[0] as string, args[1] as string, args[2] as LearnReviewState);
+    case 'materials:markRecommendation': {
+      const result = markRecommendation(args[0] as string, args[1] as string, args[2] as LearnReviewState);
+      kickLearnBrainBackfillRunner?.(250);
+      return result;
+    }
     case 'image:generate':
       return generateImage(args[0] as string, args[1] as string | undefined);
     case 'image:read':
@@ -1273,6 +1279,9 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
         publishStoreChange('materials:changed');
         if (reason === 'write' && 'status' in material && material.status === 'queued') {
           kickLearnQueueRunner?.(100);
+        }
+        if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked')) {
+          kickLearnBrainBackfillRunner?.(500);
         }
       });
     } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }

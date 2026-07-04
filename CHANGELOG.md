@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.576] — 2026-07-04
+- Keep Learn materials visible until Brain graph sync is current
+
 ## [0.1.575] — 2026-07-04
 - Harden Learn material Brain graph sync
 

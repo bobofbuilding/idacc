@@ -666,7 +666,8 @@ function failedBrainSync(material: LearnMaterial): LearnBrainSync {
 }
 
 export async function syncUnsyncedMaterialsToBrain(opts: { limit?: number; retryMs?: number } = {}): Promise<LearnBrainBackfillResult> {
-  const retryMs = Math.max(60_000, Number(opts.retryMs ?? BRAIN_SYNC_RETRY_MS) || BRAIN_SYNC_RETRY_MS);
+  const rawRetryMs = Number(opts.retryMs ?? BRAIN_SYNC_RETRY_MS);
+  const retryMs = rawRetryMs <= 0 ? 0 : Math.max(60_000, rawRetryMs || BRAIN_SYNC_RETRY_MS);
   const due = () => listMaterials().filter((material) => isBrainSyncDue(material, retryMs));
   if (processing) {
     return { attempted: 0, synced: 0, remaining: due().length, skipped: 'processor-running', materials: [] };
