@@ -19,8 +19,9 @@ type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: 
 type TeamLead = { team: string; lead: string | null; activeCount: number; totalCount: number };
 type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
 type TriageResult = { considered: number; assigned: { ref: string; agent: string }[]; skipped: number; dispatched: number; error?: string };
-type StalledTriageItem = { team?: string; owner?: string; blockers?: string[]; triage?: { status?: string; taskRef?: string; actor?: string } | null };
+type StalledTriageItem = { team?: string; owner?: string; blockers?: string[]; triage?: { status?: string; taskRef?: string; actor?: string; actorTeam?: string } | null };
 type StalledTriageReport = { triagedOwners?: number; items?: StalledTriageItem[] };
+type JumpstartResult = { ok: boolean; status?: string; taskRef?: string; actor?: string; message: string };
 type AssignScope = 'team' | 'selected-teams' | 'team-leads' | 'all-agents';
 type TaskSnapshot = { status: string; owner?: string; team?: string; lane: Lane };
 type TeamAgentsGroup = { team: string; agents: TeamAgent[] };
@@ -701,28 +702,45 @@ function TasksPanel({ store }: { store: FleetStore }) {
     const status = item.triage?.status ?? '';
     return ['sent_owner', 'owner_wake_prompt_sent', 'sent_lead', 'sent_task_manager'].includes(status);
   }
+  function jumpstartResultMessage(t: Task, item?: StalledTriageItem | null): JumpstartResult {
+    const status = item?.triage?.status ?? '';
+    const taskRef = item?.triage?.taskRef ?? ref(t);
+    const actor = item?.triage?.actor ?? item?.owner;
+    if (item && triageDelivered(item)) {
+      return { ok: true, status, taskRef, actor, message: `jump-started ${taskRef} via ${actor || 'manager'} ✓` };
+    }
+    if (status === 'owner_busy') return { ok: false, status, taskRef, actor, message: `${actor || 'owner'} is already processing a manager prompt for ${taskRef}` };
+    if (status === 'lead_busy') return { ok: false, status, taskRef, actor, message: `${actor || 'lead'} is already processing stalled-task triage for ${taskRef}` };
+    if (status === 'task_manager_busy') return { ok: false, status, taskRef, actor, message: `${actor || 'task manager'} is already processing stalled-task triage` };
+    if (status === 'throttled') return { ok: false, status, taskRef, actor, message: `${taskRef} was already nudged recently; waiting for an update` };
+    if (status === 'send_failed' || status === 'owner_wake_prompt_failed') return { ok: false, status, taskRef, actor, message: `manager could not deliver the stalled-task prompt for ${taskRef}` };
+    if (status === 'no_lead') return { ok: false, status, taskRef, actor, message: `no live lead or task manager is available for ${taskRef}` };
+    if (!item) return { ok: false, status, taskRef, actor, message: `no stalled task was found for ${ref(t)}` };
+    return { ok: false, status, taskRef, actor, message: `manager returned ${status || 'no action'} for ${taskRef}` };
+  }
 
   // Ask the manager to jump-start stalled owner work. The UI used to reassign and /ask directly;
   // that bypassed the manager's stalled-owner guard and could add work on top of a blocked owner.
-  async function jumpstartCore(t: Task, _load: Record<string, number>, notifyStale = false): Promise<boolean> {
+  async function jumpstartCore(t: Task, _load: Record<string, number>, notifyStale = false, force = false): Promise<JumpstartResult> {
     const fresh = await ensureFreshTask(t, `Jump-start ${ref(t)}`, ['status', 'owner', 'team'], !notifyStale);
     if (!fresh) {
       if (!notifyStale) setNote('skipped stale jump-start; board refreshed');
-      return false;
+      return { ok: false, message: 'skipped stale jump-start; board refreshed' };
     }
     t = fresh;
     const tteam = taskTeam(t);
-    if (!t.ownerName) return false;
-    const report = await call<StalledTriageReport>('remote', `/task jumpstart-stalled --owner ${qArg(t.ownerName)} --limit 1`, undefined, tteam);
-    return (report.items ?? []).some(triageDelivered);
+    if (!t.ownerName) return { ok: false, message: `no owner is assigned to ${ref(t)}` };
+    const report = await call<StalledTriageReport>('remote', `/task jumpstart-stalled --owner ${qArg(t.ownerName)} --limit 1${force ? ' --force' : ''}`, undefined, tteam);
+    const item = (report.items ?? [])[0] ?? null;
+    return jumpstartResultMessage(t, item);
   }
   async function jumpstart(t: Task) {
     if (!window.confirm(`Jump-start ${ref(t)}?\n\nThe manager will triage the stalled owner before accepting more work for that agent.`)) return;
     const tt = toast({ kind: 'progress', text: `Jump-starting ${ref(t)}…` });
     try {
-      const ok = await jumpstartCore(t, {}, true);
-      tt.update(ok ? { kind: 'success', text: `jump-started ${ref(t)} ✓` } : { kind: 'error', text: 'manager could not jump-start this stalled task yet' });
-      if (ok) await reload();
+      const res = await jumpstartCore(t, {}, true, true);
+      tt.update(res.ok ? { kind: 'success', text: res.message } : { kind: res.status === 'owner_busy' || res.status === 'lead_busy' || res.status === 'task_manager_busy' || res.status === 'throttled' ? 'info' : 'error', text: res.message });
+      if (res.ok) await reload();
     } catch (e) { tt.update({ kind: 'error', text: `jump-start failed: ${e instanceof Error ? e.message : String(e)}` }); }
   }
   async function jumpstartAll(silent = false, confirmFirst = true) {
@@ -735,7 +753,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
       const report = await call<StalledTriageReport>('remote', `/task jumpstart-stalled --all --limit ${Math.min(50, Math.max(1, n))}`);
       ok = (report.items ?? []).filter(triageDelivered).length;
     } catch {
-      for (const t of stalledTasks) { try { if (await jumpstartCore(t, {}, false)) ok++; } catch { /* keep going */ } }
+      for (const t of stalledTasks) { try { if ((await jumpstartCore(t, {}, false)).ok) ok++; } catch { /* keep going */ } }
     }
     if (tt) tt.update({ kind: ok ? 'success' : 'error', text: `jump-started ${ok}/${n} stalled ✓` });
     else if (ok) toast({ kind: 'info', text: `⚙ auto-jump-started ${ok} stalled task${ok === 1 ? '' : 's'}` });
