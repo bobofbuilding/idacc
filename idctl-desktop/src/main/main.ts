@@ -446,7 +446,11 @@ function startLearnQueueRunner(): () => void {
       const current = listMaterials();
       const activeProcessing = current.some((m) => m.status === 'processing');
       const hasQueued = current.some((m) => m.status === 'queued');
-      if (!activeProcessing && hasQueued) {
+      if (activeProcessing) {
+        schedule(hasQueued ? 15_000 : idleMs);
+        return;
+      }
+      if (hasQueued) {
         const material = await processNextMaterial({});
         if (material) {
           publishStoreChange('materials:processNext');
@@ -1279,6 +1283,9 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
         publishStoreChange('materials:changed');
         if (reason === 'write' && 'status' in material && material.status === 'queued') {
           kickLearnQueueRunner?.(100);
+        }
+        if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked' || material.status === 'failed')) {
+          kickLearnQueueRunner?.(250);
         }
         if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked')) {
           kickLearnBrainBackfillRunner?.(500);
