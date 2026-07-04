@@ -87,8 +87,16 @@ function firstActiveMaterialId(materials: LearnMaterial[], preferredId?: string)
 
 function sourceKind(source: string, picked: 'auto' | LearnMaterialKind): LearnMaterialKind | undefined {
   if (picked !== 'auto') return picked;
+  const src = source.trim();
+  if (!src || /^\/|^~(?:\/|$)|^\.\.?(?:\/|$)/.test(src) || /\s/.test(src)) return undefined;
+  const host = src.split(/[/?#]/, 1)[0] || '';
+  const hostWithoutPort = host.replace(/:\d+$/, '');
+  const looksWeb = /^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(hostWithoutPort) || /^localhost$/i.test(hostWithoutPort);
+  const withScheme = src.startsWith('//')
+    ? `https:${src}`
+    : (/^[a-z][a-z0-9+.-]*:/i.test(src) ? src : (looksWeb ? `https://${src}` : src));
   try {
-    const u = new URL(source);
+    const u = new URL(withScheme);
     return /(^|\.)github\.com$|(^|\.)githubusercontent\.com$/i.test(u.hostname) ? 'github' : 'site';
   } catch {
     return undefined;

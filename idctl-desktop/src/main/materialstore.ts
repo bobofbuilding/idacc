@@ -282,9 +282,25 @@ function uniquePath(dir: string, name: string): string {
   return join(dir, `${stem}-${Date.now().toString(36)}${ext}`);
 }
 
+function sourceWithDefaultScheme(source: string, explicit?: LearnMaterialKind): string {
+  const src = String(source || '').trim();
+  if (!src || explicit === 'folder' || explicit === 'pdf') return src;
+  if (/^\/|^~(?:\/|$)|^\.\.?(?:\/|$)/.test(src)) return src;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(src)) return src;
+  if (/\s/.test(src)) return src;
+  if (src.startsWith('//')) return `https:${src}`;
+
+  const host = src.split(/[/?#]/, 1)[0] || '';
+  const hostWithoutPort = host.replace(/:\d+$/, '');
+  if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(hostWithoutPort) || /^localhost$/i.test(hostWithoutPort)) {
+    return `https://${src}`;
+  }
+  return src;
+}
+
 function kindFromSource(source: string, explicit?: LearnMaterialKind): LearnMaterialKind {
   if (explicit) return explicit;
-  const src = String(source || '').trim();
+  const src = sourceWithDefaultScheme(source);
   try {
     const u = new URL(src);
     return /(^|\.)github\.com$|(^|\.)githubusercontent\.com$/i.test(u.hostname) ? 'github' : 'site';
@@ -297,7 +313,7 @@ function kindFromSource(source: string, explicit?: LearnMaterialKind): LearnMate
 }
 
 function titleFromSource(source: string, kind: LearnMaterialKind): string {
-  const src = String(source || '').trim();
+  const src = sourceWithDefaultScheme(source, kind);
   try {
     const u = new URL(src);
     const last = u.pathname.split('/').filter(Boolean).pop();
@@ -324,13 +340,14 @@ function normalizeStage(s: unknown): LearnStage {
 function normalizeMaterial(input: CreateMaterialInput): LearnMaterial {
   const ts = now();
   const id = safeId(input.id || newId());
-  const kind = kindFromSource(input.source, input.kind);
-  const title = String(input.title || '').trim() || titleFromSource(input.source, kind);
+  const source = sourceWithDefaultScheme(input.source, input.kind);
+  const kind = kindFromSource(source, input.kind);
+  const title = String(input.title || '').trim() || titleFromSource(source, kind);
   return {
     id,
     title: title.slice(0, 180),
     kind,
-    source: String(input.source || '').trim(),
+    source,
     storedPath: input.storedPath ? String(input.storedPath) : undefined,
     snapshotPath: input.snapshotPath ? String(input.snapshotPath) : undefined,
     priority: normalizePriority(input.priority),
