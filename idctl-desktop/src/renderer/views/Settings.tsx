@@ -6,7 +6,8 @@ import type { DiscoveredServer, LocalServerCandidate } from '../../../../idctl/s
 import { PROVIDER_CATALOG, findProvider, providerNeedsKey } from '../../../../idctl/src/settings/providerCatalog.ts';
 import { LOCAL_MODEL_CATALOG, TOP_LOCAL_MODEL_CATALOG, type ModelCapability, type LocalModelEntry } from '../../../../idctl/src/settings/modelCatalog.ts';
 import { TOP_LOCAL_STACKS, type LocalStackEntry } from '../../../../idctl/src/settings/localStacks.ts';
-import { refreshCurrentRuntimeCatalogSnapshot } from '../runtimeCatalogCache.ts';
+import { primeCurrentRuntimeCatalogSnapshot, refreshCurrentRuntimeCatalogSnapshot, type ManagedRuntimeStatus } from '../runtimeCatalogCache.ts';
+import { buildRuntimeCatalog } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 import {
   CONTROL_CENTER_API_VERSION,
   CONTROL_CENTER_REQUIRED_FEATURES,
@@ -20,6 +21,7 @@ const SUB_NOTICE_TTL_MS = 18_000;
 const SUB_AUTO_REFRESH_MS = 5 * 60 * 1000;
 const OLLAMA_CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
 const SETTINGS_FOCUS_REFRESH_MIN_MS = 60 * 1000;
+const SETTINGS_RUNTIME_CATALOG_WARM_MS = 5 * 60 * 1000;
 const API_FIRST_PROVIDER = PROVIDER_CATALOG.find((e) => !e.local) ?? findProvider('openai');
 const DISCOVERY_MAX_AGE_MS = 2 * 60 * 1000;
 const STACK_BACKEND_PRESET_FILTER = 'backend-presets';
@@ -202,8 +204,20 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     setBaseUrl(e.baseUrl);
     setName(e.id);
   }
-  function warmRuntimeCatalog(): void {
-    void refreshCurrentRuntimeCatalogSnapshot({ freshness: true }).catch(() => null);
+  function warmRuntimeCatalog(
+    nextProviders: ProviderRow[] = providers,
+    nextManagedRuntimes?: Record<string, ManagedRuntimeStatus> | null,
+  ): void {
+    const managed = nextManagedRuntimes ?? (subs as Record<string, ManagedRuntimeStatus> | null) ?? {};
+    primeCurrentRuntimeCatalogSnapshot({
+      providers: nextProviders,
+      modelCatalog: buildRuntimeCatalog(nextProviders),
+      managedRuntimes: managed,
+    });
+    void refreshCurrentRuntimeCatalogSnapshot({
+      freshness: true,
+      maxAgeMs: SETTINGS_RUNTIME_CATALOG_WARM_MS,
+    }).catch(() => null);
   }
   // self-update
   const [version, setVersion] = useState('');
@@ -260,7 +274,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         setSubsCheckedAt(Date.now());
       }
       if (options.force) {
-        warmRuntimeCatalog();
+        warmRuntimeCatalog(providers, next ?? undefined);
       }
       if (options.notice) setSubNotice('Managed runtimes refreshed. Account status and model freshness were checked.');
     } finally {
@@ -344,7 +358,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         const current = next[provider];
         if (current?.installed) {
           setSubNotice(`${label} detected. It is now available in IDACC; use Manage account here when you want to sign in or switch accounts.`);
-          warmRuntimeCatalog();
+          warmRuntimeCatalog(providers, next);
         } else if (idx === arr.length - 1) {
           setSubNotice(`${label} was not detected yet. Finish the installer, make sure the CLI is on PATH, then Re-check.`);
         }
@@ -458,8 +472,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           return;
         }
       }
-      setProviders(await call<ProviderRow[]>('providers:add', p));
-      warmRuntimeCatalog();
+      const next = await call<ProviderRow[]>('providers:add', p);
+      setProviders(next);
+      warmRuntimeCatalog(next);
       setProviderMsg(existing ? `replaced "${p.name}"` : `added "${p.name}"`);
       after?.();
     } finally {
@@ -504,7 +519,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       const r = await call<{ providers: ProviderRow[]; outcome: ProbeOutcome }>('providers:connect', n, providerStamp(fresh.current));
       setProviders(r.providers);
       setProbe((m) => ({ ...m, [n]: r.outcome }));
-      warmRuntimeCatalog();
+      warmRuntimeCatalog(r.providers);
     } finally {
       setBusy(false);
     }
@@ -528,8 +543,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       window.alert(`Set default backend blocked: "${n}" is no longer route-ready. Run Connect & sync, then try again.`);
       return;
     }
-    setProviders(await call<ProviderRow[]>('providers:setDefault', n));
-    warmRuntimeCatalog();
+    const next = await call<ProviderRow[]>('providers:setDefault', n);
+    setProviders(next);
+    warmRuntimeCatalog(next);
   }
   async function toggle(n: string) {
     const fresh = await ensureProviderFresh(n, 'Toggle backend');
@@ -548,8 +564,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setProviders(latest);
       return;
     }
-    setProviders(await call<ProviderRow[]>('providers:toggle', n));
-    warmRuntimeCatalog();
+    const next = await call<ProviderRow[]>('providers:toggle', n);
+    setProviders(next);
+    warmRuntimeCatalog(next);
   }
   async function removeProviderProfile(n: string) {
     const fresh = await ensureProviderFresh(n, 'Remove backend');
@@ -569,8 +586,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setProviders(latest);
       return;
     }
-    setProviders(await call<ProviderRow[]>('providers:remove', n));
-    warmRuntimeCatalog();
+    const next = await call<ProviderRow[]>('providers:remove', n);
+    setProviders(next);
+    warmRuntimeCatalog(next);
   }
   function rpcIdFromNetwork(network: string): string {
     return network.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'evm-rpc';
@@ -822,7 +840,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setProviders(nextProviders);
       setProviderMsg(`added pending local backend${addedNames.length === 1 ? '' : 's'}: ${addedNames.join(', ')}`);
       setStackMsg(`added pending backend${addedNames.length === 1 ? '' : 's'}: ${addedNames.join(', ')} — start the server, then Connect & sync`);
-      warmRuntimeCatalog();
+      warmRuntimeCatalog(nextProviders);
     }
     return added;
   }
@@ -858,7 +876,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setProviders(nextProviders ?? latest);
       setProviderMsg(`auto-added local backend${addedNames.length === 1 ? '' : 's'}: ${addedNames.join(', ')}`);
       setStackMsg(`auto-added backend${addedNames.length === 1 ? '' : 's'}: ${addedNames.join(', ')}`);
-      warmRuntimeCatalog();
+      warmRuntimeCatalog(nextProviders ?? latest);
       return addedUrls;
     } finally {
       setBusy(false);
@@ -1108,9 +1126,10 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         ? { lastSync: { at: Date.now(), status: 'live', modelCount: rows.length, models: rows.map((m) => m.name).slice(0, 200) } }
         : {}),
     };
-    await call('providers:add', profile);
+    const next = await call<ProviderRow[]>('providers:add', profile);
+    setProviders(next);
+    warmRuntimeCatalog(next);
     await reload();
-    warmRuntimeCatalog();
   }
   async function pull(modelId: string) {
     const m = modelId.trim();
@@ -1483,7 +1502,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setProviderMsg(selection.mode === 'selected'
         ? `"${current.name}" Health dropdown now shows ${selected.length} selected model${selected.length === 1 ? '' : 's'}`
         : `"${current.name}" Health dropdown now shows all synced models`);
-      warmRuntimeCatalog();
+      warmRuntimeCatalog(next);
     } finally {
       setBusy(false);
     }

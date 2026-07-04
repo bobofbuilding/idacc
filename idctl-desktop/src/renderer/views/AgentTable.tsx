@@ -25,8 +25,8 @@ type RuntimeCooldownCache = {
   rows: RuntimeCooldown[];
 };
 let runtimeCooldownCache: RuntimeCooldownCache | null = null;
-const RUNTIME_DETAILS_HOLD_MS = 45_000;
-const RUNTIME_CATALOG_UI_CACHE_MS = 60_000;
+const RUNTIME_DETAILS_HOLD_MS = 5 * 60_000;
+const RUNTIME_CATALOG_UI_CACHE_MS = 5 * 60_000;
 
 type AgentConfigState = { runtime?: string; model?: string; effort: string; speed: string };
 type RuntimeRateLimitMeta = { laneId?: string; coolingUntilMs?: number; reason?: string; observedAtMs?: number; queryId?: string; resetText?: string; message?: string };

@@ -39,7 +39,7 @@ type HrBuildSkillCatalogCache = {
   skillCatalog: string[];
 };
 let hrBuildSkillCatalogCache: HrBuildSkillCatalogCache | null = null;
-const HR_RUNTIME_CATALOG_UI_CACHE_MS = 60_000;
+const HR_RUNTIME_CATALOG_UI_CACHE_MS = 5 * 60_000;
 
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 type GoalPriority = 'primary' | 'secondary' | 'general';

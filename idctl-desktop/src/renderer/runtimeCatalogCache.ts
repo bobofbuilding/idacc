@@ -125,7 +125,7 @@ export async function loadRuntimeCatalogSnapshot(
 }
 
 export async function refreshCurrentRuntimeCatalogSnapshot(
-  options: { freshness?: boolean } = {},
+  options: RuntimeCatalogSnapshotOptions = {},
 ): Promise<RuntimeCatalogSnapshot> {
   return loadRuntimeCatalogSnapshot(currentRuntimeCatalogVersion(), options);
 }
