@@ -500,7 +500,7 @@ ${COORDINATION_TAIL}`;
 }
 
 export function Teams({ store, focus, onFocusHandled, navigate }: { store: FleetStore; focus?: HrFocus; onFocusHandled?: () => void; navigate?: (target: string) => void }) {
-  const syncVersion = useSyncVersion(['goals', 'work', 'org', 'agents']);
+  const syncVersion = useSyncVersion(['goals', 'org', 'agents']);
   const hrStructureVersion = useSyncVersion(['org', 'agents', 'teams']);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string>('');

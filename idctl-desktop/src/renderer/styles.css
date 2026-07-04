@@ -380,11 +380,12 @@ button.chip.incompat:hover { border-color: var(--line); }
 .learn-intake {
   display: flex;
   flex-direction: column;
+  flex: 0 0 auto;
   gap: 12px;
   overflow: visible;
   position: relative;
   z-index: 2;
-  margin-bottom: 4px;
+  margin-bottom: 12px;
 }
 .learn-intake-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .learn-intake-head h3 { margin: 0; }
@@ -393,7 +394,8 @@ button.chip.incompat:hover { border-color: var(--line); }
   grid-template-columns: minmax(320px, .95fr) minmax(380px, 1.15fr);
   gap: 14px;
   align-items: start;
-  margin-top: 10px;
+  flex: 0 0 auto;
+  margin-top: 0;
   position: relative;
   z-index: 1;
   min-width: 0;

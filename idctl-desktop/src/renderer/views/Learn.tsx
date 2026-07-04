@@ -104,7 +104,7 @@ function sourceKind(source: string, picked: 'auto' | LearnMaterialKind): LearnMa
 }
 
 export function Learn({ store }: { store: FleetStore }) {
-  const syncVersion = useSyncVersion(['materials', 'work', 'brain', 'inbox']);
+  const syncVersion = useSyncVersion(['materials']);
   const [materials, setMaterials] = useState<LearnMaterial[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [busy, setBusy] = useState(false);

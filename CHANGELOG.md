@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.563] — 2026-07-04
+- Reduce Learn and HR sync churn
+
 ## [0.1.562] — 2026-07-04
 - Reduce HR runtime selector Settings cache churn
 
