@@ -1233,7 +1233,8 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
       });
     } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }
     try { stopLearnQueueRunner = startLearnQueueRunner(); } catch (e) { console.warn('[learn] failed to start queue runner:', e); }
-    // Draft dispatcher: promote task-shaped manager news proposals into routed tasks.
+    // Draft dispatcher: opt-in only. Draft/proposal rows are review-only unless
+    // the operator explicitly enables this bridge in settings.
     try { stopDraftDispatcher = startDraftDispatcher(); } catch (e) { console.warn('[draft-dispatcher] failed to start:', e); }
     // Computer Use broker: loopback controller + live frame pump + approval prompts → the renderer.
     void startBroker(

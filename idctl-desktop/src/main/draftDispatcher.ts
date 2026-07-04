@@ -347,7 +347,7 @@ function saveProcessed(processed: Record<string, DraftDispatcherProcessedRecord>
 export async function processDraftProposalsOnce(client: ManagerClient, opts: { now?: number; maxAgeMs?: number; maxDrafts?: number } = {}): Promise<DraftDispatchRunResult> {
   const now = opts.now ?? Date.now();
   const cfg = loadSettings();
-  if (cfg.draftDispatcher?.enabled === false) {
+  if (cfg.draftDispatcher?.enabled !== true) {
     return { enabled: false, scanned: 0, candidates: 0, dispatched: 0, createdTasks: 0, skippedProcessed: 0, failed: 0, details: [] };
   }
   const rawProcessed = { ...(cfg.draftDispatcher?.processed ?? {}) };
@@ -417,6 +417,7 @@ export async function processDraftProposalsOnce(client: ManagerClient, opts: { n
 }
 
 export function startDraftDispatcherLoop(clientProvider: () => ManagerClient): () => void {
+  if (loadSettings().draftDispatcher?.enabled !== true) return () => {};
   let stopped = false;
   let running = false;
   const tick = async (): Promise<void> => {

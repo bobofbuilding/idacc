@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.572] — 2026-07-04
+- Disable draft dispatcher by default
+
 ## [0.1.571] — 2026-07-04
 - Add draft dispatcher: promote task-shaped news proposals into manager tasks
 

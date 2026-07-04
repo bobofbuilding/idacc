@@ -63,7 +63,7 @@ export interface IdctlConfig {
   goalDriver?: GoalDriverSettings;
   /**
    * Background bridge from manager news draft proposals into real manager tasks.
-   * `enabled` defaults to true; `processed` is a bounded dedupe ledger keyed by
+   * `enabled` defaults to false; `processed` is a bounded dedupe ledger keyed by
    * team + news id/hash so restart does not redispatch the same draft batch.
    */
   draftDispatcher?: DraftDispatcherSettings;
