@@ -14,7 +14,7 @@ import { Learn } from './Learn.tsx';
 // Auto-decompose IPC shapes (mirror main/work.ts).
 type SubTask = { title: string; description: string; agent: string; dependsOn: number[] };
 type DecomposeResult = { ok: boolean; subtasks: SubTask[]; raw: string; error?: string };
-type CreatedTask = { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; dependsOn: number[]; dispatched: boolean };
+type CreatedTask = { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; warning?: string; dependsOn: number[]; dispatched: boolean; deferred?: boolean };
 type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: number };
 type TeamLead = { team: string; lead: string | null; activeCount: number; totalCount: number };
 type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
@@ -862,8 +862,10 @@ function TasksPanel({ store }: { store: FleetStore }) {
     try {
       const res = await call<CreatePlanResult>('work:createPlan', objective.trim(), dispatchProposal, { team: activeTeam });
       const okCount = res.created.filter((c) => c.ok).length;
-      const failed = res.created.length - okCount;
-      const summary = `created ${okCount} task${okCount === 1 ? '' : 's'} · dispatched ${res.dispatched} now${res.deferred ? ` · ${res.deferred} queued on deps` : ''}${failed ? ` · ${failed} failed` : ''}`;
+      const capacityDeferred = res.created.filter((c) => !c.ok && c.deferred).length;
+      const failed = res.created.length - okCount - capacityDeferred;
+      const dependencyDeferred = Math.max(0, res.deferred - capacityDeferred);
+      const summary = `created ${okCount} task${okCount === 1 ? '' : 's'} · dispatched ${res.dispatched} now${dependencyDeferred ? ` · ${dependencyDeferred} queued on deps` : ''}${capacityDeferred ? ` · ${capacityDeferred} deferred by capacity` : ''}${failed ? ` · ${failed} failed` : ''}`;
       t.update({ kind: failed && !okCount ? 'error' : 'success', text: `${activeTeam}: ${summary}` });
       setAssignNote(`${summary} ✓`);
       setProposal(null); setObjective(''); setShowAssign(false);

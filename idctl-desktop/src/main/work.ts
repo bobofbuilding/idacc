@@ -44,11 +44,14 @@ function isTaskDone(status?: string): boolean { return /done|complete/i.test(sta
 function taskKeys(t: Task): string[] {
   return [t.shortId, t.name, t.uuid, t.title].filter(Boolean) as string[];
 }
+function taskRef(t: Task): string { return t.shortId ?? t.name ?? t.uuid ?? t.title; }
 function clip(s: string, n: number): string { const t = (s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; }
 
 const MAX_SUBTASKS = 12;
 const WORK_LEAD_QUEUE_MAX = positiveEnvInt('IDACC_WORK_LEAD_QUEUE_MAX', 2);
 const WORK_LEAD_GUARD_TTL_MS = positiveEnvInt('IDACC_WORK_LEAD_GUARD_TTL_MINUTES', 45) * 60 * 1000;
+const WORK_OWNER_OPEN_TASK_CAP = positiveEnvInt('IDACC_WORK_OWNER_OPEN_TASK_CAP', 1);
+const WORK_QUEUE_TODO_CAP = positiveEnvInt('IDACC_WORK_QUEUE_TODO_CAP', 1);
 const WORK_PLANNER_TEAM = process.env.IDACC_WORK_PLANNER_TEAM || 'ops-team';
 const WORK_PLANNER_NAMES = (process.env.IDACC_WORK_PLANNER_NAMES || 'task-manager,task-master')
   .split(',')
@@ -298,6 +301,122 @@ function extractJsonArray(text: string): unknown[] | null {
   }
 }
 
+type PlanCapacity = {
+  ownerSlots: Map<string, number>;
+  ownerOpen: Map<string, number>;
+  ownerActiveQueries: Map<string, number>;
+  queueTodoSlots: number;
+  queueTodoCount: number;
+};
+
+function isOpenTaskStatus(status?: string): boolean {
+  const s = String(status || '').toLowerCase();
+  return !!s && !/done|complete|cancel|archive|reject/.test(s);
+}
+
+function isTodoStatus(status?: string): boolean {
+  const s = String(status || '').toLowerCase();
+  return isOpenTaskStatus(s) && !/doing|claim|progress|start|active|block|stall/.test(s);
+}
+
+function taskLanesSnapshot(): Record<string, string> {
+  try {
+    return (loadSettings().taskLanes ?? {}) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function liveTaskLane(t: Task, lanes: Record<string, string>): boolean {
+  const lane = lanes[taskRef(t)];
+  return !lane || lane === 'todo' || lane === 'doing';
+}
+
+async function activeQueryCount(client: ManagerClient, agent: string): Promise<number> {
+  const getter = (client as unknown as {
+    activeAgentQueries?: (agentIdOrName: string) => Promise<{ count?: number } | null>;
+  }).activeAgentQueries;
+  if (typeof getter !== 'function') return 0;
+  try {
+    const active = await getter.call(client, agent);
+    return Number(active?.count) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function planCapacity(client: ManagerClient, pool: Agent[]): Promise<PlanCapacity> {
+  const [tasks, queryCounts] = await Promise.all([
+    client.tasks().catch(() => [] as Task[]),
+    Promise.all(pool.map(async (agent) => [agentNameKey(agent.name), await activeQueryCount(client, agent.name)] as const)),
+  ]);
+  const lanes = taskLanesSnapshot();
+  const open = tasks.filter((task) => isOpenTaskStatus(task.status) && liveTaskLane(task, lanes));
+  const ownerOpen = new Map<string, number>();
+  for (const task of open) {
+    const owner = agentNameKey(task.ownerName || '');
+    if (!owner) continue;
+    ownerOpen.set(owner, (ownerOpen.get(owner) ?? 0) + 1);
+  }
+  const ownerActiveQueries = new Map<string, number>(queryCounts);
+  const ownerSlots = new Map<string, number>();
+  for (const agent of pool) {
+    const key = agentNameKey(agent.name);
+    const used = (ownerOpen.get(key) ?? 0) + (ownerActiveQueries.get(key) ?? 0);
+    ownerSlots.set(key, Math.max(0, WORK_OWNER_OPEN_TASK_CAP - used));
+  }
+  const queueTodoCount = open.filter((task) => !task.ownerName && isTodoStatus(task.status)).length;
+  return {
+    ownerSlots,
+    ownerOpen,
+    ownerActiveQueries,
+    queueTodoSlots: Math.max(0, WORK_QUEUE_TODO_CAP - queueTodoCount),
+    queueTodoCount,
+  };
+}
+
+function capacityDeferredTask(i: number, st: SubTask, reason: string): CreatedTask {
+  return {
+    idx: i,
+    ref: st.title,
+    title: st.title,
+    agent: st.agent,
+    ok: false,
+    error: reason,
+    warning: reason,
+    dependsOn: st.dependsOn,
+    dispatched: false,
+    deferred: true,
+  };
+}
+
+function consumeOwnerCapacity(capacity: PlanCapacity, team: string | undefined, agent: string): { ok: true } | { ok: false; reason: string } {
+  const key = agentNameKey(agent);
+  const slots = capacity.ownerSlots.get(key) ?? 0;
+  if (slots > 0) {
+    capacity.ownerSlots.set(key, slots - 1);
+    return { ok: true };
+  }
+  const open = capacity.ownerOpen.get(key) ?? 0;
+  const active = capacity.ownerActiveQueries.get(key) ?? 0;
+  return {
+    ok: false,
+    reason: `capacity deferred: ${team ?? 'default'}/${agent} already has ${open} open task${open === 1 ? '' : 's'} and ${active} active quer${active === 1 ? 'y' : 'ies'}; no live task was created`,
+  };
+}
+
+function consumeQueueCapacity(capacity: PlanCapacity, team: string | undefined): { ok: true } | { ok: false; reason: string } {
+  if (capacity.queueTodoSlots > 0) {
+    capacity.queueTodoSlots--;
+    capacity.queueTodoCount++;
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    reason: `capacity deferred: ${team ?? 'default'} already has ${capacity.queueTodoCount} unassigned todo task${capacity.queueTodoCount === 1 ? '' : 's'} (limit ${WORK_QUEUE_TODO_CAP}); no live task was created`,
+  };
+}
+
 const DECOMP_PROMPT = (objective: string, agentLines: string, plannerKind: DecompositionPlanner['kind']) =>
   `${plannerKind === 'task-manager' ? 'You are the fleet task manager.' : 'You are the team lead.'} Break the objective below into a small set of concrete, independently-actionable sub-tasks for the fleet, and assign each to the best-suited agent.
 
@@ -422,10 +541,25 @@ export async function createAndDispatchPlan(
   // Don't pile every task on one agent - spread across the active roster (best-fit up to a cap).
   // respectOwners=true keeps explicit execution owners, but still blocks coordinator/validator bypasses.
   if (!opts.respectOwners) balanceOwners(list, [...names]);
+  const capacity = await planCapacity(client, pool);
+  const deferredIndexes = new Set<number>();
 
-  // 1) Create all tasks (assigned to their owner) — fast, synchronous-ish.
+  // 1) Create only tasks that have immediate capacity; defer the rest without
+  // materializing extra live manager rows.
   for (let i = 0; i < list.length; i++) {
     const st = list[i];
+    const blockedDep = (st.dependsOn || []).find((d) => d >= 0 && d < i && deferredIndexes.has(d));
+    if (blockedDep != null) {
+      deferredIndexes.add(i);
+      created.push(capacityDeferredTask(i, st, `capacity deferred: prerequisite #${blockedDep + 1} was deferred; no live task was created`));
+      continue;
+    }
+    const gate = dispatch ? consumeOwnerCapacity(capacity, client.team, st.agent) : consumeQueueCapacity(capacity, client.team);
+    if (!gate.ok) {
+      deferredIndexes.add(i);
+      created.push(capacityDeferredTask(i, st, gate.reason));
+      continue;
+    }
     // Dispatching: assign the owner now (manager sets owned→doing). Queuing: create
     // unowned (stays todo) and record the lead's suggested owner in the description.
     const desc = dispatch ? st.description : `${st.description}${st.description ? '\n\n' : ''}(suggested owner: ${st.agent})`.trim();
@@ -471,7 +605,7 @@ export async function createAndDispatchPlan(
   } catch { /* overlay is best-effort */ }
 
   // Queue-only: tasks created in the lane, not farmed out — the lead works them later.
-  if (!dispatch) return { created, dispatched: 0, deferred: created.filter((c) => c.ok).length };
+  if (!dispatch) return { created, dispatched: 0, deferred: created.filter((c) => c.ok || c.deferred).length };
 
   // 2) Background wave-dispatch. A dependent waits for its prerequisites to actually
   // COMPLETE (not merely be dispatched) before it runs — otherwise the manager, which
@@ -534,7 +668,8 @@ export async function createAndDispatchPlan(
   const ok = created.filter((c) => c.ok);
   const runnable = ok.filter((c) => !c.deferred);
   const ready = runnable.filter((c) => list[c.idx].dependsOn.filter((d) => d < c.idx).every((d) => created[d]?.ok && !created[d]?.deferred));
-  return { created, dispatched: ready.length, deferred: ok.length - ready.length };
+  const capacityDeferred = created.filter((c) => !c.ok && c.deferred).length;
+  return { created, dispatched: ready.length, deferred: ok.length - ready.length + capacityDeferred };
 }
 
 // ---- Cross-team fan-out -------------------------------------------------
@@ -608,7 +743,6 @@ function statusCol(status: string): 'todo' | 'doing' | 'done' {
   if (/doing|claim|progress|start|active/i.test(status)) return 'doing';
   return 'todo';
 }
-function taskRef(t: Task): string { return t.shortId ?? t.name ?? t.uuid ?? t.title; }
 
 const TRIAGE_PROMPT = (taskLines: string, agentLines: string) =>
   `You are the team lead. Assign each UNASSIGNED to-do task below to the best-suited ACTIVE agent on your team.

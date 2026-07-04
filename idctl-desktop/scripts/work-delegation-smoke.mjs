@@ -80,3 +80,50 @@ assert.equal(result.created[0].deferred, true, 'coordinator-owned parent should 
 assert.match(result.created[0].warning || '', /manager delegation kickoff/);
 assert.equal(result.dispatched, 0);
 assert.equal(result.deferred, 1);
+
+remoteCommands.length = 0;
+dispatchCommands.length = 0;
+
+const busyOwnerClient = {
+  ...client,
+  async tasks() {
+    return [
+      {
+        title: 'Existing writer work',
+        status: 'doing',
+        ownerName: 'writer',
+        shortId: '#busy001',
+        createdAt: Date.now(),
+      },
+    ];
+  },
+  async activeAgentQueries() {
+    return { count: 0, queries: [] };
+  },
+};
+
+const guarded = await createAndDispatchPlan(
+  busyOwnerClient,
+  'Write another report.',
+  [
+    {
+      title: 'Write second report',
+      description: 'Should wait until the writer has capacity.',
+      agent: 'writer',
+      dependsOn: [],
+    },
+  ],
+  {
+    dispatch: true,
+    respectOwners: true,
+  },
+);
+
+assert.equal(remoteCommands.length, 0, 'busy owner guard must not create a queued live task');
+assert.equal(dispatchCommands.length, 0, 'busy owner guard must not dispatch deferred work');
+assert.equal(guarded.created.length, 1);
+assert.equal(guarded.created[0].ok, false);
+assert.equal(guarded.created[0].deferred, true);
+assert.match(guarded.created[0].error || '', /capacity deferred/);
+assert.equal(guarded.dispatched, 0);
+assert.equal(guarded.deferred, 1);
