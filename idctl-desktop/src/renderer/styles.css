@@ -395,16 +395,20 @@ button.chip.incompat:hover { border-color: var(--line); }
   gap: 14px;
   align-items: start;
   flex: 0 0 auto;
+  clear: both;
   margin-top: 0;
   position: relative;
   z-index: 1;
   min-width: 0;
+  isolation: isolate;
 }
 .learn-workspace > .card {
   overflow: auto;
   max-height: clamp(340px, calc(100vh - 320px), 760px);
   min-width: 0;
   overscroll-behavior: contain;
+  position: relative;
+  z-index: 0;
 }
 .learn-queue-card,
 .learn-review-card {
@@ -459,6 +463,18 @@ button.chip.incompat:hover { border-color: var(--line); }
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+.learn-review-actions {
+  align-items: flex-start;
+  max-width: 100%;
+}
+.learn-snapshot-path {
+  flex: 1 1 260px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .learn-review-callout {
   display: flex;

@@ -1223,7 +1223,14 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     // Disabled by default: when enabled, active+autopilot goals gap-fill fleet tasks.
     try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
     // Work > Learn queue: process newly-added materials even when the Learn tab is not mounted.
-    try { stopMaterialChangeBridge = subscribeMaterialChanges(() => publishStoreChange('materials:changed')); } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }
+    try {
+      stopMaterialChangeBridge = subscribeMaterialChanges((reason, material) => {
+        publishStoreChange('materials:changed');
+        if (reason === 'write' && 'status' in material && material.status === 'queued') {
+          kickLearnQueueRunner?.(100);
+        }
+      });
+    } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }
     try { stopLearnQueueRunner = startLearnQueueRunner(); } catch (e) { console.warn('[learn] failed to start queue runner:', e); }
     // Computer Use broker: loopback controller + live frame pump + approval prompts → the renderer.
     void startBroker(

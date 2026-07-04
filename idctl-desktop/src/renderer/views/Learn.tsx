@@ -446,12 +446,12 @@ export function Learn({ store }: { store: FleetStore }) {
           <h3>Review <span className="muted small">{selected ? `- ${selected.title}` : ''}</span></h3>
           {selected ? (
             <div className="stack">
-              <div className="row-actions" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <div className="row-actions learn-review-actions" style={{ gap: 8, flexWrap: 'wrap' }}>
                 <button className="btn primary" disabled={busy || (selected.status === 'processing' && !isStaleProcessing(selected))} onClick={() => void processSelected()}>
                   {selected.status === 'processing' && isStaleProcessing(selected) ? 'Recover selected' : selected.status === 'queued' || selected.status === 'failed' ? 'Process selected' : selected.status === 'blocked' ? 'Reprocess after review' : 'Reprocess'}
                 </button>
                 <button className="btn" disabled={busy} onClick={() => void removeSelected()}>Remove</button>
-                {selected.snapshotPath ? <span className="muted small">snapshot: {selected.snapshotPath}</span> : null}
+                {selected.snapshotPath ? <span className="muted small learn-snapshot-path" title={selected.snapshotPath}>snapshot: {selected.snapshotPath}</span> : null}
               </div>
               {selected.status === 'blocked' ? (
                 <div className="learn-review-callout">
