@@ -26,6 +26,7 @@ export function setTransport(t: Transport): void {
 type StoreChangeListener = (event: StoreChangeEvent) => void;
 const storeChangeListeners = new Set<StoreChangeListener>();
 let transportEventsBound = false;
+let transportStoreEventsAvailable = false;
 let pendingStoreChange: StoreChangeEvent | null = null;
 let pendingStoreChangeTimer: ReturnType<typeof setTimeout> | null = null;
 const recentStoreChanges = new Map<string, number>();
@@ -102,6 +103,7 @@ export function subscribeStoreChanges(listener: StoreChangeListener): () => void
 export function bindStoreEvents(api?: { onStoreChange?: (cb: (event: StoreChangeEvent) => void) => () => void }): void {
   if (transportEventsBound) return;
   transportEventsBound = true;
+  transportStoreEventsAvailable = Boolean(api?.onStoreChange);
   api?.onStoreChange?.((event) => emitStoreChange(event));
 }
 
@@ -127,7 +129,7 @@ export async function call<T = unknown>(method: string, ...args: unknown[]): Pro
   const res = await transport(method, args);
   if (!res.ok) throw new Error(res.error || 'manager error');
   const domains = syncDomainsForMethod(method);
-  if (domains.length) emitStoreChange({ method, domains, at: Date.now() });
+  if (domains.length && !transportStoreEventsAvailable) emitStoreChange({ method, domains, at: Date.now() });
   return res.result as T;
 }
 

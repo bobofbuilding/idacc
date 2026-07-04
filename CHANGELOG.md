@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.559] — 2026-07-04
+- Fix manager delegation guard bypasses and HR runtime sync churn
+
 ## [0.1.558] — 2026-07-04
 - Automated release of outstanding ID Agents Control Center code.
 

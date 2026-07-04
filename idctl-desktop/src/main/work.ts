@@ -14,7 +14,7 @@ import { setTaskLane, setTaskDeps, loadSettings } from '../../../idctl/src/setti
 import { optimizeAskCommand } from './contextBudget.ts';
 
 export interface SubTask { title: string; description: string; agent: string; dependsOn: number[] }
-export interface CreatedTask { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; dependsOn: number[]; dispatched: boolean }
+export interface CreatedTask { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; warning?: string; dependsOn: number[]; dispatched: boolean; deferred?: boolean }
 export interface DecomposeResult { ok: boolean; subtasks: SubTask[]; raw: string; error?: string }
 export interface CreatePlanResult { created: CreatedTask[]; dispatched: number; deferred: number }
 
@@ -88,17 +88,45 @@ export function isActiveStatus(status?: string): boolean {
   if (!s) return false;
   return !/stop|offline|dead|exit|error|crash|down|disabled|sleep/.test(s);
 }
-/** Pick a team's coordinator among its ACTIVE agents: prefer a *-lead / manager
- *  name, else the first running agent. null when nothing is active. */
-function pickActiveLead(agents: { name: string; status?: string }[]): string | null {
+/** Pick a team's coordinator among its ACTIVE agents using explicit lead metadata,
+ *  lead-like names, and coordinator/router roles before generic manager names. */
+function roleText(a: { metadata?: unknown }): string {
+  const meta = a.metadata && typeof a.metadata === 'object' ? a.metadata as Record<string, unknown> : {};
+  const catalog = meta.catalog && typeof meta.catalog === 'object' ? meta.catalog as Record<string, unknown> : {};
+  return [
+    meta.primaryLead === true ? 'primary lead' : '',
+    meta.role,
+    catalog.role,
+    meta.description,
+    catalog.description,
+  ].map((v) => String(v || '').toLowerCase()).join('\n');
+}
+
+function roleNameText(a: { metadata?: unknown }): string {
+  const meta = a.metadata && typeof a.metadata === 'object' ? a.metadata as Record<string, unknown> : {};
+  const catalog = meta.catalog && typeof meta.catalog === 'object' ? meta.catalog as Record<string, unknown> : {};
+  return [meta.role, catalog.role].map((v) => String(v || '').toLowerCase()).join('\n');
+}
+
+function leadRank(a: { name: string; metadata?: unknown }): number {
+  const name = agentNameKey(a.name);
+  const role = roleText(a);
+  const roleName = roleNameText(a);
+  if (role.includes('primary lead')) return 0;
+  if (name === 'lead' || /(^|[-_\s])(lead|coordinator|router)$/.test(name)) return 1;
+  if (/\b(team coordinator|coordinator|router|lead)\b/.test(roleName)) return 2;
+  if (/\bcounsel\b/.test(name) && /\b(coordinat|team lead)\b/.test(role)) return 2;
+  if (/^hr[-_\s]?manager$/.test(name)) return 3;
+  if (/manager|coordinator/.test(name)) return 4;
+  return 5;
+}
+
+function pickActiveLead(agents: { name: string; status?: string; metadata?: unknown }[]): string | null {
   const active = agents.filter((a) => isActiveStatus(a.status));
   if (!active.length) return null;
-  return (
-    active.find((a) => /(^|[-_ ])lead$/i.test(a.name)) ??
-    active.find((a) => /lead/i.test(a.name)) ??
-    active.find((a) => /manager|coordinator/i.test(a.name)) ??
-    active[0]
-  ).name;
+  return active
+    .slice()
+    .sort((a, b) => leadRank(a) - leadRank(b) || a.name.localeCompare(b.name))[0].name;
 }
 
 function agentNameKey(name?: string): string {
@@ -375,11 +403,12 @@ export async function createAndDispatchPlan(
     const desc = dispatch ? st.description : `${st.description}${st.description ? '\n\n' : ''}(suggested owner: ${st.agent})`.trim();
     const cmd = `/task create ${qArg(st.title)}${dispatch ? ` --owner ${st.agent}` : ''}${desc ? ` --description ${qArg(desc)}` : ''} ${taskBriefFlags(objective, st)}`;
     try {
-      const env = await client.remote<{ task?: { shortId?: string; name?: string } }>(cmd);
+      const env = await client.remote<{ task?: { shortId?: string; name?: string }; warning?: string }>(cmd);
       const task = env.result?.task;
+      const warning = typeof env.result?.warning === 'string' && env.result.warning.trim() ? env.result.warning.trim() : undefined;
       const ref = task?.shortId ?? task?.name ?? st.title;
       if (opts.lane && ref) { try { setTaskLane(ref, opts.lane); } catch { /* overlay is best-effort */ } }
-      created.push({ idx: i, ref, title: st.title, agent: st.agent, ok: true, dependsOn: st.dependsOn, dispatched: false });
+      created.push({ idx: i, ref, title: st.title, agent: st.agent, ok: true, warning, dependsOn: st.dependsOn, dispatched: false, deferred: Boolean(warning) });
     } catch (e) {
       created.push({ idx: i, ref: st.title, title: st.title, agent: st.agent, ok: false, error: e instanceof Error ? e.message : String(e), dependsOn: st.dependsOn, dispatched: false });
     }
@@ -439,9 +468,9 @@ export async function createAndDispatchPlan(
   const ownerChain: Record<string, Promise<void> | undefined> = {};
   const startSub = (i: number): Promise<void> => {
     const c = created[i];
-    if (!c.ok) return Promise.resolve();
+    if (!c.ok || c.deferred) return Promise.resolve();
     const backDeps = (list[i].dependsOn || []).filter((d) => d >= 0 && d < i);
-    if (backDeps.some((d) => !created[d]?.ok)) { c.dispatched = false; return Promise.resolve(); } // prereq never created
+    if (backDeps.some((d) => !created[d]?.ok || created[d]?.deferred)) { c.dispatched = false; return Promise.resolve(); } // prereq never created or manager-queued
     const deps = backDeps.map((d) => done[d]).filter(Boolean); // each resolves on prereq COMPLETION
     const prevForOwner = ownerChain[c.agent];
     const waits = prevForOwner ? [...deps, prevForOwner] : deps;
@@ -460,7 +489,8 @@ export async function createAndDispatchPlan(
   void Promise.allSettled(done);
 
   const ok = created.filter((c) => c.ok);
-  const ready = ok.filter((c) => list[c.idx].dependsOn.filter((d) => d < c.idx).length === 0);
+  const runnable = ok.filter((c) => !c.deferred);
+  const ready = runnable.filter((c) => list[c.idx].dependsOn.filter((d) => d < c.idx).every((d) => created[d]?.ok && !created[d]?.deferred));
   return { created, dispatched: ready.length, deferred: ok.length - ready.length };
 }
 

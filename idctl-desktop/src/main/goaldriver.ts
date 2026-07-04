@@ -68,15 +68,47 @@ function taskRef(t: Task): string {
   return t.shortId ?? t.name ?? t.uuid ?? t.title;
 }
 
-function pickActiveLead(agents: Pick<Agent, 'name' | 'status'>[]): string | null {
+function agentNameKey(name?: string): string {
+  return String(name || '').trim().toLowerCase();
+}
+
+function roleText(a: Pick<Agent, 'metadata'>): string {
+  const meta = a.metadata && typeof a.metadata === 'object' ? a.metadata as Record<string, unknown> : {};
+  const catalog = meta.catalog && typeof meta.catalog === 'object' ? meta.catalog as Record<string, unknown> : {};
+  return [
+    meta.primaryLead === true ? 'primary lead' : '',
+    meta.role,
+    catalog.role,
+    meta.description,
+    catalog.description,
+  ].map((v) => String(v || '').toLowerCase()).join('\n');
+}
+
+function roleNameText(a: Pick<Agent, 'metadata'>): string {
+  const meta = a.metadata && typeof a.metadata === 'object' ? a.metadata as Record<string, unknown> : {};
+  const catalog = meta.catalog && typeof meta.catalog === 'object' ? meta.catalog as Record<string, unknown> : {};
+  return [meta.role, catalog.role].map((v) => String(v || '').toLowerCase()).join('\n');
+}
+
+function leadRank(a: Pick<Agent, 'name' | 'metadata'>): number {
+  const name = agentNameKey(a.name);
+  const role = roleText(a);
+  const roleName = roleNameText(a);
+  if (role.includes('primary lead')) return 0;
+  if (name === 'lead' || /(^|[-_\s])(lead|coordinator|router)$/.test(name)) return 1;
+  if (/\b(team coordinator|coordinator|router|lead)\b/.test(roleName)) return 2;
+  if (/\bcounsel\b/.test(name) && /\b(coordinat|team lead)\b/.test(role)) return 2;
+  if (/^hr[-_\s]?manager$/.test(name)) return 3;
+  if (/manager|coordinator/.test(name)) return 4;
+  return 5;
+}
+
+function pickActiveLead(agents: Pick<Agent, 'name' | 'status' | 'metadata'>[]): string | null {
   const active = agents.filter((a) => isActiveStatus(a.status));
   if (!active.length) return null;
-  return (
-    active.find((a) => /(^|[-_ ])lead$/i.test(a.name)) ??
-    active.find((a) => /lead/i.test(a.name)) ??
-    active.find((a) => /manager|coordinator/i.test(a.name)) ??
-    active[0]
-  ).name;
+  return active
+    .slice()
+    .sort((a, b) => leadRank(a) - leadRank(b) || a.name.localeCompare(b.name))[0].name;
 }
 
 function isDefaultValidator(name: string): boolean {
