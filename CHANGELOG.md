@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.588] — 2026-07-04
+- fix(learn): back off queue runner while processing
+
 ## [0.1.587] — 2026-07-04
 - Route advisory work decomposition through task-manager before lead fallback
 
