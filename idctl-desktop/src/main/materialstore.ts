@@ -28,6 +28,7 @@ import { basename, dirname, extname, join, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { brain } from '../../../idctl/src/api/brain.ts';
 import { call as bridgeCall } from './bridge.ts';
+import { recordLearnMaterial } from './controlLog.ts';
 import { getGoal, goalPriorityRank, listGoals, normalizeGoalPriority, type Goal, type GoalPriority } from './goalstore.ts';
 import { addQuestion } from './questionstore.ts';
 
@@ -698,7 +699,9 @@ export async function syncUnsyncedMaterialsToBrain(opts: { limit?: number; retry
       at: now(),
     });
     writeMaterial(next);
-    materials.push(getMaterial(next.id) ?? next);
+    const saved = getMaterial(next.id) ?? next;
+    await recordLearnMaterial(saved);
+    materials.push(saved);
     if (brainSync.status === 'ok' || brainSync.status === 'partial') synced++;
   }
 

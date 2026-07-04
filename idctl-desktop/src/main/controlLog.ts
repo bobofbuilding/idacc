@@ -445,96 +445,104 @@ const ACTIONS: Record<string, (args: unknown[], result: unknown) => Summary> = {
 
 const keyPart = (v: unknown): string => (s(v) || 'default').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'default';
 
-function recordLearnMaterial(value: unknown): void {
-  const m = obj(value);
-  if (!m.id) return;
-  const id = `learn:${s(m.id)}`;
-  const title = s(m.title) || s(m.id);
-  const status = s(m.status) || 'queued';
-  const classification = obj(m.classification);
-  const routedTeams = Array.isArray(classification.routedTeams) ? classification.routedTeams.map(String) : [];
-  const topics = Array.isArray(classification.topics) ? classification.topics.map(String) : [];
-  const activeGoalMatches = Array.isArray(m.activeGoalMatches)
-    ? m.activeGoalMatches.map((goal) => {
-        const g = obj(goal);
-        return { id: s(g.id), team: s(g.team), score: Number(g.score ?? 0) || 0 };
-      }).filter((goal) => goal.id)
-    : [];
-  const recommendations = Array.isArray(m.recommendations) ? m.recommendations : [];
-  const brainSync = obj(m.brainSync);
-  const hasDigestOutput = Boolean(s(m.summary).trim() || s(m.comparison).trim() || brainSync.status);
-  const canPublishDigestMemory = (status === 'ready' || status === 'blocked') && hasDigestOutput;
-  void brain.entity({
-    id,
-    type: 'learn-material',
-    name: title,
-    status,
-    tags: ['learn', 'material', 'dashboard-state', s(m.kind) || 'unknown'],
-    exactId: true,
-    mergeAliases: false,
-    data: {
-      kind: m.kind,
-      priority: m.priority,
-      prioritized: !!m.prioritized,
-      stage: m.stage,
-      source: m.source,
-      status,
-      trusted_source: false,
-      review_required: true,
-      teams: routedTeams,
-      topics,
-      activeGoalMatches,
-      recommendations: recommendations.length,
-      blockingRecommendations: recommendations.filter((rec) => obj(rec).blocking === true && s(obj(rec).reviewState) === 'draft').length,
-      brainSync: brainSync.status ? {
-        status: brainSync.status,
-        sourceId: brainSync.sourceId,
-        at: brainSync.at,
-        schemaVersion: brainSync.schemaVersion,
-        exactEntity: brainSync.exactEntity,
-        entity: brainSync.entity,
-        sourceEntity: brainSync.sourceEntity,
-        facts: brainSync.facts,
-        edges: brainSync.edges,
-        edgeCount: brainSync.edgeCount,
-        expectedEdgeCount: brainSync.expectedEdgeCount,
-        text: brainSync.text,
-        memory: brainSync.memory,
-        timeline: brainSync.timeline,
-      } : null,
-      packetReady: canPublishDigestMemory,
-    },
-  });
-  if (!canPublishDigestMemory) return;
-  void brain.memory('control-center', {
-    key: id,
-    content: [
-      `# Learn material: ${title}`,
-      `Status: ${status}`,
-      `Stage: ${s(m.stage) || 'submitted'}`,
-      `Priority: ${s(m.priority) || 'normal'}${m.prioritized ? ' (pinned)' : ''}`,
-      s(m.source) ? `Source: ${s(m.source)}` : '',
-      routedTeams.length ? `Teams: ${routedTeams.join(', ')}` : '',
-      '',
-      s(m.summary).slice(0, 12000),
-      '',
-      s(m.comparison).slice(0, 8000),
-    ].filter(Boolean).join('\n'),
-    tags: ['dashboard-state', 'learn', 'material'],
-    shared: true,
-    project: routedTeams[0] ?? 'default',
-  });
+export async function recordLearnMaterial(value: unknown): Promise<void> {
+  try {
+    const m = obj(value);
+    if (!m.id) return;
+    const id = `learn:${s(m.id)}`;
+    const title = s(m.title) || s(m.id);
+    const status = s(m.status) || 'queued';
+    const classification = obj(m.classification);
+    const routedTeams = Array.isArray(classification.routedTeams) ? classification.routedTeams.map(String) : [];
+    const topics = Array.isArray(classification.topics) ? classification.topics.map(String) : [];
+    const activeGoalMatches = Array.isArray(m.activeGoalMatches)
+      ? m.activeGoalMatches.map((goal) => {
+          const g = obj(goal);
+          return { id: s(g.id), team: s(g.team), score: Number(g.score ?? 0) || 0 };
+        }).filter((goal) => goal.id)
+      : [];
+    const recommendations = Array.isArray(m.recommendations) ? m.recommendations : [];
+    const brainSync = obj(m.brainSync);
+    const hasDigestOutput = Boolean(s(m.summary).trim() || s(m.comparison).trim() || brainSync.status);
+    const canPublishDigestMemory = (status === 'ready' || status === 'blocked') && hasDigestOutput;
+    const writes: Array<Promise<unknown>> = [
+      brain.entity({
+        id,
+        type: 'learn-material',
+        name: title,
+        status,
+        tags: ['learn', 'material', 'dashboard-state', s(m.kind) || 'unknown'],
+        exactId: true,
+        mergeAliases: false,
+        data: {
+          kind: m.kind,
+          priority: m.priority,
+          prioritized: !!m.prioritized,
+          stage: m.stage,
+          source: m.source,
+          status,
+          trusted_source: false,
+          review_required: true,
+          teams: routedTeams,
+          topics,
+          activeGoalMatches,
+          recommendations: recommendations.length,
+          blockingRecommendations: recommendations.filter((rec) => obj(rec).blocking === true && s(obj(rec).reviewState) === 'draft').length,
+          brainSync: brainSync.status ? {
+            status: brainSync.status,
+            sourceId: brainSync.sourceId,
+            at: brainSync.at,
+            schemaVersion: brainSync.schemaVersion,
+            exactEntity: brainSync.exactEntity,
+            entity: brainSync.entity,
+            sourceEntity: brainSync.sourceEntity,
+            facts: brainSync.facts,
+            edges: brainSync.edges,
+            edgeCount: brainSync.edgeCount,
+            expectedEdgeCount: brainSync.expectedEdgeCount,
+            text: brainSync.text,
+            memory: brainSync.memory,
+            timeline: brainSync.timeline,
+          } : null,
+          packetReady: canPublishDigestMemory,
+        },
+      }),
+    ];
+    if (canPublishDigestMemory) {
+      writes.push(brain.memory('control-center', {
+        key: id,
+        content: [
+          `# Learn material: ${title}`,
+          `Status: ${status}`,
+          `Stage: ${s(m.stage) || 'submitted'}`,
+          `Priority: ${s(m.priority) || 'normal'}${m.prioritized ? ' (pinned)' : ''}`,
+          s(m.source) ? `Source: ${s(m.source)}` : '',
+          routedTeams.length ? `Teams: ${routedTeams.join(', ')}` : '',
+          '',
+          s(m.summary).slice(0, 12000),
+          '',
+          s(m.comparison).slice(0, 8000),
+        ].filter(Boolean).join('\n'),
+        tags: ['dashboard-state', 'learn', 'material'],
+        shared: true,
+        project: routedTeams[0] ?? 'default',
+      }));
+    }
+    await Promise.allSettled(writes);
+  } catch {
+    /* Brain mirroring must never break control actions or Learn processing. */
+  }
 }
 
 /** Actions that ALSO warrant a richer write (entity upsert / text ingest) beyond the timeline. */
 const EXTRAS: Record<string, (args: unknown[], result: unknown) => void> = {
-  'materials:save': (_a, r) => recordLearnMaterial(r),
-  'materials:priority': (_a, r) => recordLearnMaterial(r),
-  'materials:process': (_a, r) => recordLearnMaterial(r),
-  'materials:processNext': (_a, r) => recordLearnMaterial(r),
-  'materials:markRecommendation': (_a, r) => recordLearnMaterial(r),
+  'materials:save': (_a, r) => { void recordLearnMaterial(r); },
+  'materials:priority': (_a, r) => { void recordLearnMaterial(r); },
+  'materials:process': (_a, r) => { void recordLearnMaterial(r); },
+  'materials:processNext': (_a, r) => { void recordLearnMaterial(r); },
+  'materials:markRecommendation': (_a, r) => { void recordLearnMaterial(r); },
   'materials:importFiles': (_a, r) => {
-    if (Array.isArray(r)) for (const material of r) recordLearnMaterial(material);
+    if (Array.isArray(r)) for (const material of r) void recordLearnMaterial(material);
   },
   'materials:remove': (a) => {
     const id = s(a[0]);
