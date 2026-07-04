@@ -49,6 +49,11 @@ function clip(s: string, n: number): string { const t = (s || '').replace(/\s+/g
 const MAX_SUBTASKS = 12;
 const WORK_LEAD_QUEUE_MAX = positiveEnvInt('IDACC_WORK_LEAD_QUEUE_MAX', 2);
 const WORK_LEAD_GUARD_TTL_MS = positiveEnvInt('IDACC_WORK_LEAD_GUARD_TTL_MINUTES', 45) * 60 * 1000;
+const WORK_PLANNER_TEAM = process.env.IDACC_WORK_PLANNER_TEAM || 'ops-team';
+const WORK_PLANNER_NAMES = (process.env.IDACC_WORK_PLANNER_NAMES || 'task-manager,task-master')
+  .split(',')
+  .map((name) => agentNameKey(name))
+  .filter(Boolean);
 
 function positiveEnvInt(name: string, fallback: number): number {
   const raw = Number(process.env[name]);
@@ -193,6 +198,25 @@ function recordLeadDispatch(client: ManagerClient, lead: string, queryId: string
   leadDispatches.set(key, rows.slice(-WORK_LEAD_QUEUE_MAX));
 }
 
+type DecompositionPlanner = {
+  client: ManagerClient;
+  agent: string;
+  kind: 'task-manager' | 'lead';
+};
+
+async function resolveDecompositionPlanner(client: ManagerClient, fallbackLead: string): Promise<DecompositionPlanner> {
+  const candidateTeams = [...new Set([client.team ?? 'default', WORK_PLANNER_TEAM].filter(Boolean))];
+  for (const team of candidateTeams) {
+    const scoped = team === client.team ? client : client.withTeam(team);
+    const roster = await scoped.agents().catch(() => [] as Agent[]);
+    const planner = roster.find((agent) =>
+      isActiveStatus(agent.status) && WORK_PLANNER_NAMES.includes(agentNameKey(agent.name)),
+    );
+    if (planner) return { client: scoped, agent: planner.name, kind: 'task-manager' };
+  }
+  return { client, agent: fallbackLead, kind: 'lead' };
+}
+
 function isDefaultTeamName(team?: string): boolean {
   return !team || team === 'default';
 }
@@ -274,8 +298,8 @@ function extractJsonArray(text: string): unknown[] | null {
   }
 }
 
-const DECOMP_PROMPT = (objective: string, agentLines: string) =>
-  `You are the team lead. Break the objective below into a small set of concrete, independently-actionable sub-tasks for your fleet, and assign each to the best-suited agent.
+const DECOMP_PROMPT = (objective: string, agentLines: string, plannerKind: DecompositionPlanner['kind']) =>
+  `${plannerKind === 'task-manager' ? 'You are the fleet task manager.' : 'You are the team lead.'} Break the objective below into a small set of concrete, independently-actionable sub-tasks for the fleet, and assign each to the best-suited agent.
 
 This is an ADVISORY decomposition request only. Do not create, claim, or close manager tasks for yourself while answering it. The control center will create the live tasks and dispatch them after parsing your JSON.
 
@@ -318,9 +342,10 @@ export async function decomposeWork(
 
   let raw = '';
   try {
-    const guard = await guardLeadQueue(client, lead, 'decomposition');
+    const planner = await resolveDecompositionPlanner(client, lead);
+    const guard = await guardLeadQueue(planner.client, planner.agent, planner.kind === 'task-manager' ? 'task-manager decomposition' : 'decomposition');
     if (!guard.ok) return { ok: false, subtasks: [], raw: '', error: guard.detail };
-    raw = await dispatchBudgeted(client, `/ask ${lead} ${qArg(DECOMP_PROMPT(obj, agentLines))}`, 'work:decompose');
+    raw = await dispatchBudgeted(planner.client, `/ask ${planner.agent} ${qArg(DECOMP_PROMPT(obj, agentLines, planner.kind))}`, 'work:decompose');
   } catch (e) {
     return { ok: false, subtasks: [], raw: '', error: e instanceof Error ? e.message : String(e) };
   }
