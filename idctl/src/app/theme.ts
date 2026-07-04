@@ -47,7 +47,7 @@ export function shortRuntime(r: string | undefined): string {
   return r.replace('claude-code-cli', 'claude').replace('-cli', '').replace('public-agent-remote', 'remote');
 }
 
-/** Compact a model id: claude-opus-4-8 → opus-4-8, claude-sonnet-4-6 → sonnet-4-6. */
+/** Compact a model id: claude-opus-4-8 → opus-4-8, claude-sonnet-5 → sonnet-5. */
 export function shortModel(m: string | undefined): string {
   if (!m) return '—';
   return m.replace(/^claude-/, '');
