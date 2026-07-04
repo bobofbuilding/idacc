@@ -312,7 +312,7 @@ async function createAndDispatchRoutedDraft(client: ManagerClient, draft: Parsed
     const p = Promise.allSettled(waits).then(async () => {
       c.dispatched = true;
       const tc = client.withTeam(c.team);
-      await tc.dispatch(budgetedCommand(tc, `/ask ${c.agent} ${qArg(taskPrompt(draft.objective, routed[i], c.ref))}`, 'draftDispatcher:task-dispatch')).then(() => {}, () => {});
+      await tc.remote<{ queryId?: string; status?: string }>(budgetedCommand(tc, `/ask ${c.agent} ${qArg(taskPrompt(draft.objective, routed[i], c.ref))}`, 'draftDispatcher:task-dispatch')).then(() => {}, () => {});
       await waitForTaskDone(c.team, c.ref);
     });
     ownerChain[ownerKey] = p;

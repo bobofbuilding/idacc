@@ -32,6 +32,9 @@ function dispatchBudgeted(client: ManagerClient, command: string, source: string
 function remoteBudgeted<T = unknown>(client: ManagerClient, command: string, source: string): Promise<RemoteEnvelope<T>> {
   return client.remote<T>(budgetedAskCommand(client, command, source));
 }
+function enqueueBudgeted(client: ManagerClient, command: string, source: string): Promise<RemoteEnvelope<{ queryId?: string; status?: string }>> {
+  return remoteBudgeted<{ queryId?: string; status?: string }>(client, command, source);
+}
 
 /** A task is complete once the manager reports a done/complete status. */
 function isTaskDone(status?: string): boolean { return /done|complete/i.test(status ?? ''); }
@@ -491,7 +494,7 @@ export async function createAndDispatchPlan(
     const waits = prevForOwner ? [...deps, prevForOwner] : deps;
     const p = Promise.allSettled(waits).then(async () => {
       c.dispatched = true;
-      await dispatchBudgeted(client, `/ask ${c.agent} ${qArg(WORK_PROMPT(objective, list[i], c.ref))}`, 'work:createPlan:task-dispatch').then(() => {}, () => {});
+      await enqueueBudgeted(client, `/ask ${c.agent} ${qArg(WORK_PROMPT(objective, list[i], c.ref))}`, 'work:createPlan:task-dispatch').then(() => {}, () => {});
       // Hold this task's done-promise open until the task itself finishes — that's what gates
       // its dependents (and its owner's next task).
       await waitForTaskDone(c.ref);
@@ -674,7 +677,7 @@ export async function triageUnassigned(client: ManagerClient, lead: string, opts
       if (!t) continue;
       dispatched++;
       const prev = ownerChain[agent] ?? Promise.resolve();
-      ownerChain[agent] = prev.then(() => dispatchBudgeted(client, `/ask ${agent} ${qArg(TRIAGE_WORK(ref, t.title, clip(t.description ?? '', 400)))}`, 'work:triage:task-dispatch').then(() => {}, () => {}));
+      ownerChain[agent] = prev.then(() => enqueueBudgeted(client, `/ask ${agent} ${qArg(TRIAGE_WORK(ref, t.title, clip(t.description ?? '', 400)))}`, 'work:triage:task-dispatch').then(() => {}, () => {}));
     }
   }
   return { considered: unassigned.length, assigned, skipped: unassigned.length - assigned.length, dispatched };
