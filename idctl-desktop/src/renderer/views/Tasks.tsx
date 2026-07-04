@@ -19,6 +19,8 @@ type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: 
 type TeamLead = { team: string; lead: string | null; activeCount: number; totalCount: number };
 type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
 type TriageResult = { considered: number; assigned: { ref: string; agent: string }[]; skipped: number; dispatched: number; error?: string };
+type StalledTriageItem = { team?: string; owner?: string; blockers?: string[]; triage?: { status?: string; taskRef?: string; actor?: string } | null };
+type StalledTriageReport = { triagedOwners?: number; items?: StalledTriageItem[] };
 type AssignScope = 'team' | 'selected-teams' | 'team-leads' | 'all-agents';
 type TaskSnapshot = { status: string; owner?: string; team?: string; lane: Lane };
 type TeamAgentsGroup = { team: string; agents: TeamAgent[] };
@@ -213,10 +215,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const [fanTeams, setFanTeams] = useState<Set<string>>(new Set()); // other teams to fan the objective out to
   const [teamInfo, setTeamInfo] = useState<TeamLead[]>([]);          // active-lead + running counts per team
   const [triaging, setTriaging] = useState(false);                  // a triage pass is in flight (guards re-entry)
-  // The board self-manages: triage / re-dispatch-stalled / surface-blockers all run
+  // The board self-manages: triage / jump-start-stalled / surface-blockers all run
   // automatically (no buttons). Per-action cooldown clocks + a serialize lock.
   const lastTriageRef = useRef(0);                                  // cooldown: auto-triage (90s)
-  const lastRedispatchRef = useRef(0);                              // cooldown: auto-re-dispatch stalled (6m)
   const lastBlockersRef = useRef(0);                                // cooldown: auto-surface-blockers (30m)
   const autoRef = useRef(false);                                    // single-flight lock so auto-actions never overlap
   const prompt = usePrompt();
@@ -683,69 +684,61 @@ function TasksPanel({ store }: { store: FleetStore }) {
   // Phase 2 of the CC refactor: the GUI no longer autonomously orchestrates. Stalled tasks are
   // supervised by the MANAGER (auto check-ins + the stalled-task sweeper) — one supervisor, not
   // three — so the board's old auto-pilot (which re-dispatched on every poll and was a major
-  // source of redundant token spend) is gone. Triage / re-dispatch / surface-blockers now run
-  // ONLY when you click "Reconcile" (you initiate); the per-card ↻ stays for one-off re-dispatch.
+  // source of redundant token spend) is gone. Triage / jump-start / surface-blockers now run
+  // ONLY when you click "Reconcile" (you initiate); the per-card ↻ stays for one-off jump-start.
   async function reconcileNow() {
     if (autoRef.current) return;
-    if (!window.confirm(`Reconcile work now?\n\nThis can assign unowned tasks, re-dispatch ${stalledTasks.length} stalled task${stalledTasks.length === 1 ? '' : 's'}, and create blocker questions in Inbox.`)) return;
+    if (!window.confirm(`Reconcile work now?\n\nThis can assign unowned tasks, jump-start ${stalledTasks.length} stalled task${stalledTasks.length === 1 ? '' : 's'}, and create blocker questions in Inbox.`)) return;
     autoRef.current = true;
     try {
       await triage(false);
-      if (stalledTasks.length) await redispatchAll(false, false);
+      if (stalledTasks.length) await jumpstartAll(false, false);
       await surfaceBlockers(false);
     } finally { autoRef.current = false; }
   }
 
-  // Re-send a stalled task to its owner (reassigning to an active agent first if the owner is
-  // stopped) so a stuck "doing" task gets picked back up. Returns false if nothing's active.
-  // A stalled task isn't progressing on its current owner — and the owner can be WEDGED even
-  // while it still reports "running". So re-dispatch hands the task to a DIFFERENT active agent
-  // whenever one exists (load-balanced via `load`), only falling back to the same owner if it's
-  // the lone active agent. Returns false if no agent in the team is active.
-  function pickRedispatchTarget(t: Task, load: Record<string, number>): string | null {
-    const pool = store.viewAll ? store.allAgents.filter((a) => a.team === t.teamName) : store.agents;
-    const active = pool.filter((a) => liveAgent(a.status));
-    if (!active.length) return null;
-    const others = active.filter((a) => a.name !== t.ownerName);
-    const cands = others.length ? others : active; // prefer someone other than the stuck owner
-    const target = cands.reduce((a, b) => ((load[b.name] ?? 0) < (load[a.name] ?? 0) ? b : a), cands[0]);
-    load[target.name] = (load[target.name] ?? 0) + 1;
-    return target.name;
+  function triageDelivered(item: StalledTriageItem): boolean {
+    const status = item.triage?.status ?? '';
+    return ['sent_owner', 'owner_wake_prompt_sent', 'sent_lead', 'sent_task_manager'].includes(status);
   }
-  async function redispatchCore(t: Task, load: Record<string, number>, notifyStale = false): Promise<boolean> {
-    const fresh = await ensureFreshTask(t, `Re-dispatch ${ref(t)}`, ['status', 'owner', 'team'], !notifyStale);
+
+  // Ask the manager to jump-start stalled owner work. The UI used to reassign and /ask directly;
+  // that bypassed the manager's stalled-owner guard and could add work on top of a blocked owner.
+  async function jumpstartCore(t: Task, _load: Record<string, number>, notifyStale = false): Promise<boolean> {
+    const fresh = await ensureFreshTask(t, `Jump-start ${ref(t)}`, ['status', 'owner', 'team'], !notifyStale);
     if (!fresh) {
-      if (!notifyStale) setNote('skipped stale re-dispatch; board refreshed');
+      if (!notifyStale) setNote('skipped stale jump-start; board refreshed');
       return false;
     }
     t = fresh;
     const tteam = taskTeam(t);
-    const target = pickRedispatchTarget(t, load);
-    if (!target) return false;
-    if (target !== t.ownerName) await call('remote', `/task assign ${ref(t)} ${target}`, undefined, tteam);
-    const msg = `Resume and complete task ${ref(t)}: ${t.title}. ${t.description ?? ''} When finished: /task done ${ref(t)}. If you're blocked, mark it done with a brief note.`;
-    await call('remote', `/ask ${target} ${qArg(msg)}`, undefined, tteam); // returns once accepted (queryId); agent runs in background
-    return true;
+    if (!t.ownerName) return false;
+    const report = await call<StalledTriageReport>('remote', `/task jumpstart-stalled --owner ${qArg(t.ownerName)} --limit 1`, undefined, tteam);
+    return (report.items ?? []).some(triageDelivered);
   }
-  async function redispatch(t: Task) {
-    if (!window.confirm(`Re-dispatch ${ref(t)}?\n\nThis may reassign the task from ${t.ownerName ?? 'unassigned'} to another active agent and sends the agent a new background request.`)) return;
-    const tt = toast({ kind: 'progress', text: `Re-dispatching ${ref(t)}…` });
+  async function jumpstart(t: Task) {
+    if (!window.confirm(`Jump-start ${ref(t)}?\n\nThe manager will triage the stalled owner before accepting more work for that agent.`)) return;
+    const tt = toast({ kind: 'progress', text: `Jump-starting ${ref(t)}…` });
     try {
-      const ok = await redispatchCore(t, {}, true);
-      tt.update(ok ? { kind: 'success', text: `re-dispatched ${ref(t)} ✓` } : { kind: 'error', text: 'no active agent to take this task' });
+      const ok = await jumpstartCore(t, {}, true);
+      tt.update(ok ? { kind: 'success', text: `jump-started ${ref(t)} ✓` } : { kind: 'error', text: 'manager could not jump-start this stalled task yet' });
       if (ok) await reload();
-    } catch (e) { tt.update({ kind: 'error', text: `re-dispatch failed: ${e instanceof Error ? e.message : String(e)}` }); }
+    } catch (e) { tt.update({ kind: 'error', text: `jump-start failed: ${e instanceof Error ? e.message : String(e)}` }); }
   }
-  async function redispatchAll(silent = false, confirmFirst = true) {
+  async function jumpstartAll(silent = false, confirmFirst = true) {
     if (!stalledTasks.length) return;
     const n = stalledTasks.length;
-    if (!silent && confirmFirst && !window.confirm(`Re-dispatch ${n} stalled task${n === 1 ? '' : 's'}?\n\nEach task may be reassigned to another active agent and receives a fresh background request.`)) return;
-    const tt = silent ? null : toast({ kind: 'progress', text: `Re-dispatching ${n} stalled task${n === 1 ? '' : 's'}…` });
+    if (!silent && confirmFirst && !window.confirm(`Jump-start ${n} stalled task${n === 1 ? '' : 's'}?\n\nThe manager will triage stalled owners before accepting more work for those agents.`)) return;
+    const tt = silent ? null : toast({ kind: 'progress', text: `Jump-starting ${n} stalled task${n === 1 ? '' : 's'}…` });
     let ok = 0;
-    const load: Record<string, number> = {}; // shared so the batch spreads across active agents
-    for (const t of stalledTasks) { try { if (await redispatchCore(t, load, false)) ok++; } catch { /* keep going */ } }
-    if (tt) tt.update({ kind: ok ? 'success' : 'error', text: `re-dispatched ${ok}/${n} stalled ✓` });
-    else if (ok) toast({ kind: 'info', text: `⚙ auto-re-dispatched ${ok} stalled task${ok === 1 ? '' : 's'}` });
+    try {
+      const report = await call<StalledTriageReport>('remote', `/task jumpstart-stalled --all --limit ${Math.min(50, Math.max(1, n))}`);
+      ok = (report.items ?? []).filter(triageDelivered).length;
+    } catch {
+      for (const t of stalledTasks) { try { if (await jumpstartCore(t, {}, false)) ok++; } catch { /* keep going */ } }
+    }
+    if (tt) tt.update({ kind: ok ? 'success' : 'error', text: `jump-started ${ok}/${n} stalled ✓` });
+    else if (ok) toast({ kind: 'info', text: `⚙ auto-jump-started ${ok} stalled task${ok === 1 ? '' : 's'}` });
     await reload();
   }
 
@@ -966,7 +959,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
   // Unassigned To-Do tasks the lead can triage/assign. Triage runs on the ACTIVE team's lead,
   // so in holistic view the count is scoped to the active team (avoids a misleading total).
   const unassignedTodo = tasks.filter((t) => !t.ownerName && laneOf(t) === 'todo' && (!store.viewAll || t.teamName === activeTeam)).length;
-  // Owned "doing" tasks with no status change in 30m+ → stalled (re-dispatchable).
+  // Owned "doing" tasks with no status change in 30m+ → stalled (jump-startable).
   const stalledTasks = tasks.filter((t) => {
     if (colOf(t.status) !== 'doing' || !t.ownerName) return false;
     if (isBlocked(t)) return false; // a blocked task isn't stalled — it's waiting on a prerequisite
@@ -1003,11 +996,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
           {visibleOpenCount} visible open{hiddenOpenCount ? ` · ${hiddenOpenCount} hidden open` : ''} · {visibleDoneCount} visible done{hiddenDoneCount ? ` · ${doneCount} done total` : ''}
         </span>
         {/* The MANAGER supervises stalled work now (auto check-ins + sweeper) — the board just shows it. */}
-        <span className="muted small" title="The manager supervises stalled tasks (auto check-ins + the stalled-task sweeper). Use Reconcile to triage unassigned work, re-dispatch stalled tasks, and surface blocker decisions on demand.">
+        <span className="muted small" title="The manager supervises stalled tasks (auto check-ins + the stalled-task sweeper). Use Reconcile to triage unassigned work, jump-start stalled tasks, and surface blocker decisions on demand.">
           · ⛭ manager-supervised{triaging ? ' · triaging…' : unassignedTodo ? ` · ${unassignedTodo} unassigned` : ''}{stalledTasks.length ? ` · ${stalledTasks.length} stalled` : ''}
         </span>
         <span className="grow" />
-        <button className="btn" disabled={busy || triaging} title="Triage unassigned work, re-dispatch stalled tasks, and surface blocker decisions — on demand (no longer automatic)" onClick={() => void reconcileNow()}>⟳ Reconcile</button>
+        <button className="btn" disabled={busy || triaging} title="Triage unassigned work, jump-start stalled tasks, and surface blocker decisions — on demand (no longer automatic)" onClick={() => void reconcileNow()}>⟳ Reconcile</button>
         <button className="btn" disabled={busy || proposing} title="Create work: auto-plan, direct assignment, schedule, loop, or dream" onClick={() => { setShowAssign((v) => !v); setAssignNote(''); setProposal(null); }}>{showAssign ? '− Close' : '⚡ Create work'}</button>
         <button className="btn primary" disabled={busy} onClick={() => void newTask()}>+ New task</button>
       </div>
@@ -1317,7 +1310,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     {t.ownerName} · working
                   </span>
                 ) : stale ? (
-                  <span className="small" title={`${t.ownerName} has held this in Doing for ${ago(t.updatedAt)} with no status change — it may be stalled. Re-assign it, hit ↻ to re-dispatch, or drag it back to To Do.`}
+                  <span className="small" title={`${t.ownerName} has held this in Doing for ${ago(t.updatedAt)} with no status change — it may be stalled. Hit ↻ to ask the manager to jump-start it, or drag it back to To Do.`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
                     ⏳ {t.ownerName} · stalled {ago(t.updatedAt)}
                   </span>
@@ -1330,7 +1323,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
                   </select>
                 ) : <span className="muted small">—</span>}
                 <span className="grow" />
-                {stale ? <button className="btn small" disabled={busy} title={`Re-dispatch ${ref(t)} to ${t.ownerName} (it's stalled)`} onClick={(e) => { e.stopPropagation(); void redispatch(t); }}>↻</button> : null}
+                {stale ? <button className="btn small" disabled={busy} title={`Jump-start ${ref(t)} through the manager`} onClick={(e) => { e.stopPropagation(); void jumpstart(t); }}>↻</button> : null}
                 {confirmDel === ref(t) ? (
                   <>
                     <button className="btn icon-danger small" disabled={busy} onClick={() => void del(t)}>Delete?</button>
