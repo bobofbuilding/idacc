@@ -22,6 +22,7 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^materials:changed$/, ['materials']],
   [/^materials:(save|remove|importFiles|priority|recoverStale|markRecommendation)$/, ['materials']],
   [/^materials:(process|processNext)$/, ['materials', 'brain', 'inbox']],
+  [/^materials:(syncBrain|brainSync)$/, ['materials', 'brain']],
   [/^questions:(add|remove)$/, ['questions', 'inbox', 'tasks', 'work', 'brain']],
   [/^brainApprovals:syncInbox$/, ['questions', 'inbox', 'brain']],
   [/^brainApproval:resolve$/, ['questions', 'inbox', 'brain']],

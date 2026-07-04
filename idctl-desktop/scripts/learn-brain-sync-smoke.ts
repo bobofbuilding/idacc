@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { brain, type BrainEntity } from '../../idctl/src/api/brain.ts';
 import { getMaterial, saveMaterial, syncUnsyncedMaterialsToBrain } from '../src/main/materialstore.ts';
+import { syncDomainsForMethod } from '../src/shared/syncDomains.ts';
 
 const tempRoot = mkdtempSync(join(tmpdir(), 'idacc-learn-sync-'));
 const previousConfig = process.env.IDCTL_CONFIG;
@@ -82,6 +83,8 @@ async function main(): Promise<void> {
   const learnEntities = entities.filter((entity) => entity.id === 'learn:syncsmoke');
   const mirroredEntity = [...learnEntities].reverse().find((entity) => entity.data?.brainSync);
 
+  assert.deepEqual(syncDomainsForMethod('materials:brainSync').sort(), ['brain', 'materials']);
+  assert.deepEqual(syncDomainsForMethod('materials:syncBrain').sort(), ['brain', 'materials']);
   assert.equal(result.attempted, 1);
   assert.equal(result.synced, 1);
   assert.equal(material?.brainSync?.status, 'ok');
