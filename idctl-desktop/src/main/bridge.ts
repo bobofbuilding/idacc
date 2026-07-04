@@ -63,6 +63,7 @@ import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, sync
 import { processDraftProposalsOnce, startDraftDispatcherLoop } from './draftDispatcher.ts';
 import { buildOrgHierarchy, previewOrgSync, syncOrg, startOrgSyncLoop } from './orgSync.ts';
 import { syncDomainsForMethod } from '../shared/syncDomains.ts';
+import { COALESCED_READ_METHODS, ReadCallCache } from '../shared/readCallCache.ts';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -984,71 +985,7 @@ async function boardTasksForTeam(team: string): Promise<Task[]> {
   }
 }
 
-const COALESCED_READ_METHODS = new Set([
-  'health',
-  'agents',
-  'teams',
-  'agents:allTeams',
-  'events',
-  'events:tail',
-  'events:multi',
-  'news:allTeams',
-  'activity:get',
-  'inboxPending',
-  'tasks',
-  'tasks:allTeams',
-  'tasks:lanes',
-  'tasks:deps',
-  'tasks:review',
-  'tasks:usage',
-  'usage',
-  'org:hierarchy',
-  'checkins',
-  'schedules',
-  'schedules:allTeams',
-  'runtime:models',
-  'runtime:freshness',
-  'runtime:cooldowns',
-  'subs:status',
-  'providers:list',
-  'librarySkills',
-  'libraryTeams',
-  'configs',
-  'work:teamLeads',
-  'libraryPluginInspections',
-  'query:poll',
-]);
-const inFlightReadCalls = new Map<string, Promise<unknown>>();
-const readResultCache = new Map<string, { at: number; result: unknown }>();
-const READ_CACHE_TTL_MS = new Map<string, number>([
-  ['agents', 3000],
-  ['teams', 5000],
-  ['agents:allTeams', 8000],
-  ['events:tail', 1000],
-  ['events:multi', 8000],
-  ['news:allTeams', 8000],
-  ['inboxPending', 5000],
-  ['tasks', 5000],
-  ['tasks:allTeams', 10000],
-  ['tasks:lanes', 10000],
-  ['tasks:deps', 10000],
-  ['tasks:review', 10000],
-  ['tasks:usage', 15000],
-  ['usage', 15000],
-  ['org:hierarchy', 10000],
-  ['checkins', 10000],
-  ['schedules', 10000],
-  ['schedules:allTeams', 10000],
-  ['runtime:models', 5 * 60000],
-  ['runtime:freshness', 5 * 60000],
-  ['runtime:cooldowns', 15000],
-  ['subs:status', 5 * 60000],
-  ['providers:list', 60000],
-  ['librarySkills', 60000],
-  ['libraryTeams', 60000],
-  ['configs', 15000],
-  ['work:teamLeads', 5000],
-]);
+const readCallCache = new ReadCallCache();
 const READ_ONLY_SYNC_METHODS = new Set([
   'configs',
   'librarySkills',
@@ -1061,34 +998,6 @@ const READ_ONLY_SYNC_METHODS = new Set([
   'runtime:verifyAssignments',
   'subs:status',
 ]);
-
-function coalescedCallKey(method: string, args: unknown[]): string {
-  try {
-    return `${method}:${JSON.stringify(args)}`;
-  } catch {
-    return `${method}:${args.map((a) => String(a)).join('\u0001')}`;
-  }
-}
-
-async function coalesceReadCall(method: string, args: unknown[], run: () => Promise<unknown>): Promise<unknown> {
-  const key = coalescedCallKey(method, args);
-  const cacheable = !(method === 'subs:status' && args[0] === true);
-  const ttl = cacheable ? READ_CACHE_TTL_MS.get(method) ?? 0 : 0;
-  if (ttl > 0) {
-    const cached = readResultCache.get(key);
-    if (cached && Date.now() - cached.at < ttl) return cached.result;
-  }
-  const current = inFlightReadCalls.get(key);
-  if (current) return current;
-  const next = run()
-    .then((result) => {
-      if (ttl > 0) readResultCache.set(key, { at: Date.now(), result });
-      return result;
-    })
-    .finally(() => { inFlightReadCalls.delete(key); });
-  inFlightReadCalls.set(key, next);
-  return next;
-}
 
 function goalDriverConfig(): GoalDriverConfig {
   return normalizeGoalDriverConfig(loadSettings().goalDriver);
@@ -1774,14 +1683,12 @@ function normUrl(u: string): string {
 
 async function callRaw(method: string, args: unknown[] = []): Promise<unknown> {
   if (method === 'setTeam') {
-    inFlightReadCalls.clear();
-    readResultCache.clear();
+    readCallCache.clear();
     client = client.withTeam(String(args[0]) || undefined);
     return info();
   }
   if (method === 'setManager') {
-    inFlightReadCalls.clear();
-    readResultCache.clear();
+    readCallCache.clear();
     cfg = { ...cfg, managerUrl: String(args[0]) };
     client = new ManagerClient(cfg);
     return info();
@@ -1832,11 +1739,11 @@ async function callRaw(method: string, args: unknown[] = []): Promise<unknown> {
 
 export async function call(method: string, args: unknown[] = []): Promise<unknown> {
   if (COALESCED_READ_METHODS.has(method)) {
-    return coalesceReadCall(method, args, () => callRaw(method, args));
+    return readCallCache.run(method, args, () => callRaw(method, args));
   }
   const result = await callRaw(method, args);
   if (!READ_ONLY_SYNC_METHODS.has(method) && syncDomainsForMethod(method).length > 0) {
-    readResultCache.clear();
+    readCallCache.clear();
   }
   return result;
 }

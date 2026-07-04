@@ -19,6 +19,8 @@ import type { LibraryPluginInspection, LibrarySkillEntry, McpServerSpec, CreateS
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { auditPreview, optimizeAskCommandCore, type ContextBudgetDecision } from '../shared/contextBudget.ts';
+import { syncDomainsForMethod } from '../shared/syncDomains.ts';
+import { COALESCED_READ_METHODS, ReadCallCache } from '../shared/readCallCache.ts';
 
 const MGR_DEFAULT = 'http://127.0.0.1:4100';
 const WIKI_URL = 'docs/CONTROL_CENTER_WIKI.json';
@@ -1102,15 +1104,23 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   'cu:legacyAuthority': async () => [],
 };
 
+const readCallCache = new ReadCallCache();
+
+function clearReadCache(): void {
+  readCallCache.clear();
+}
+
 export async function tauriCall(method: string, args: unknown[] = []): Promise<{ ok: boolean; result?: unknown; error?: string }> {
   try {
     if (method === 'setTeam') {
+      clearReadCache();
       team = String(args[0]) || 'default';
       localStorage.setItem('idctl.team', team);
       client = makeClient();
       return { ok: true, result: { managerUrl, team, coordinator: lsGet<Record<string, string>>('idctl.coordinators', {})[team] ?? null } };
     }
     if (method === 'setManager') {
+      clearReadCache();
       managerUrl = String(args[0]);
       localStorage.setItem('idctl.managerUrl', managerUrl);
       client = makeClient();
@@ -1126,6 +1136,7 @@ export async function tauriCall(method: string, args: unknown[] = []): Promise<{
       const map = lsGet<Record<string, string>>('idctl.coordinators', {});
       map[targetTeam] = agent;
       lsSet('idctl.coordinators', map);
+      clearReadCache();
       return { ok: true, result: { ok: true } };
     }
     if (method === 'coordinator:setPrimary') {
@@ -1136,6 +1147,7 @@ export async function tauriCall(method: string, args: unknown[] = []): Promise<{
       const map = lsGet<Record<string, string>>('idctl.coordinators', {});
       map[t] = a; // primary is also its team's lead
       lsSet('idctl.coordinators', map);
+      clearReadCache();
       return { ok: true, result: { managerUrl, team, coordinator: lsGet<Record<string, string>>('idctl.coordinators', {})[team] ?? null } };
     }
     if (method === 'coordinator:hierarchy') {
@@ -1149,7 +1161,13 @@ export async function tauriCall(method: string, args: unknown[] = []): Promise<{
     }
     const fn = M[method];
     if (!fn) throw new Error('unknown method: ' + method);
-    return { ok: true, result: await fn(...args) };
+    const result = COALESCED_READ_METHODS.has(method)
+      ? await readCallCache.run(method, args, () => fn(...args))
+      : await fn(...args);
+    if (!COALESCED_READ_METHODS.has(method) && syncDomainsForMethod(method).length > 0) {
+      clearReadCache();
+    }
+    return { ok: true, result };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
