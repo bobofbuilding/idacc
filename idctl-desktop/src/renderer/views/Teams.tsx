@@ -585,7 +585,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   const [mode, setMode] = useState<RelayMode>('permissive');
   const [relayBusy, setRelayBusy] = useState(false);
   const [relayMsg, setRelayMsg] = useState<string>(''); // inline feedback next to Save
-  const otherTeams = visibleTeams.map((t) => t.name).filter((n) => n !== activeTeam);
+  const otherTeams = useMemo(() => visibleTeams.map((t) => t.name).filter((n) => n !== activeTeam), [visibleTeams, activeTeam]);
 
   /** A node (or team title) was clicked in the structure graph: just select it. We do NOT
    *  switch the active team — the side editor loads/saves the selected agent by name+team
@@ -594,14 +594,14 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     setSelectedKey(sel.kind === 'agent' ? `agent:${sel.team}:${sel.agent.name}` : `team:${sel.team}`);
   }, []);
   // The agent currently selected in the graph (for the structure-tab side panel).
-  const selectedAgent = (() => {
+  const selectedAgent = useMemo(() => {
     if (!selectedKey?.startsWith('agent:')) return null;
     const rest = selectedKey.slice('agent:'.length);
     const sep = rest.indexOf(':');
     const team = rest.slice(0, sep); const name = rest.slice(sep + 1);
     const a = visibleGraphGroups.find((g) => g.team === team)?.agents.find((x) => x.name === name);
     return a ? { team, agent: a, reassignTargets: allKnownTeamNames.filter((n) => n !== team) } : null;
-  })();
+  }, [selectedKey, visibleGraphGroups, allKnownTeamNames]);
   // The team currently selected in the graph (team-title click) — and its agents — resolved
   // from the all-teams roster, so the team panel shows the SELECTED team without switching.
   const selectedTeamName = selectedKey?.startsWith('team:') ? selectedKey.slice('team:'.length) : null;
@@ -614,7 +614,10 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
         : '';
     if (team && !allKnownTeamSet.has(team)) setSelectedKey(null);
   }, [selectedKey, allKnownTeamSet]);
-  const selectedTeamAgents = selectedTeamName ? (visibleGraphGroups.find((g) => g.team === selectedTeamName)?.agents ?? []) : [];
+  const selectedTeamAgents = useMemo(
+    () => selectedTeamName ? (visibleGraphGroups.find((g) => g.team === selectedTeamName)?.agents ?? []) : [],
+    [selectedTeamName, visibleGraphGroups],
+  );
   const selectedAgentLocked = selectedAgent ? isDefaultBackboneAgent(selectedAgent.team, selectedAgent.agent.name) : false;
 
   async function ensureRenderedAgentFresh(action: string, ref: { id?: string; name: string; team: string; stamp?: string }): Promise<Agent | null> {

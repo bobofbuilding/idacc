@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
 import { runtimeDisplayLabel } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 
@@ -25,6 +25,16 @@ type Placed = {
   title: string;
   sub: string;
   role: 'primary' | 'lead' | 'worker';
+};
+
+type Layout = {
+  primaryTeam?: string;
+  teams: GraphGroup[];
+  nodes: Placed[];
+  edges: { x1: number; y1: number; x2: number; y2: number }[];
+  hierArcs: { from: { team: string; x: number; y: number }; to: { team: string; x: number; y: number } }[];
+  width: number;
+  height: number;
 };
 
 /** Is this agent live? Mirrors the Health view's isUp(). */
@@ -60,61 +70,68 @@ export const TeamGraph = memo(function TeamGraph({
   selectedKey: string | null;
   onSelect: (sel: GraphSelection) => void;
 }) {
-  // Primary team's column first — the org's top lead reads left-to-right, then the rest.
-  // Keep empty/offline teams visible so HR can inspect structure even before agents run.
-  const primaryTeam = hier.primary?.team;
-  const teams = [...groups]
-    .sort((a, b) => (a.team === primaryTeam ? -1 : b.team === primaryTeam ? 1 : a.team.localeCompare(b.team)));
-  if (teams.length === 0) {
+  const layout = useMemo<Layout | null>(() => {
+    // Primary team's column first — the org's top lead reads left-to-right, then the rest.
+    // Keep empty/offline teams visible so HR can inspect structure even before agents run.
+    const primaryTeam = hier.primary?.team;
+    const teams = [...groups]
+      .sort((a, b) => (a.team === primaryTeam ? -1 : b.team === primaryTeam ? 1 : a.team.localeCompare(b.team)));
+    if (teams.length === 0) return null;
+
+    // Headroom above the lead row for the cross-team hierarchy arcs (primary → each team lead).
+    const HIER_HEADROOM = hier.primary && teams.length > 1 ? 34 : 0;
+    const leadY = PAD + TITLE_H + HIER_HEADROOM;
+    const workerY0 = leadY + NODE_H + LEVEL_GAP;
+    const primaryKey = hier.primary ? `agent:${hier.primary.team}:${hier.primary.agent}` : null;
+
+    const nodes: Placed[] = [];
+    const edges: { x1: number; y1: number; x2: number; y2: number }[] = [];
+    const leadCenters: { team: string; x: number; y: number }[] = []; // for the hierarchy arcs
+
+    let maxWorkers = 0;
+    teams.forEach((g, i) => {
+      const colX = PAD + i * (NODE_W + COL_GAP);
+      const cx = colX + NODE_W / 2;
+      const leadName = leadOf(g.team, g.agents);
+      const lead = g.agents.find((a) => a.name === leadName) ?? g.agents[0];
+      if (!lead) return;
+      const leadKey = `agent:${g.team}:${lead.name}`;
+      const isPrimary = leadKey === primaryKey;
+      leadCenters.push({ team: g.team, x: cx, y: leadY });
+      const liveWorkers = g.agents.filter((a) => a.name !== lead.name && up(a)).length;
+      nodes.push({
+        key: leadKey, sel: { kind: 'agent', team: g.team, agent: lead }, agent: lead,
+        x: colX, y: leadY, title: lead.name,
+        sub: `${isPrimary ? 'primary · ' : ''}lead · ${liveWorkers}/${g.agents.length - 1} live`,
+        role: isPrimary ? 'primary' : 'lead',
+      });
+      const workers = g.agents.filter((a) => a.name !== lead.name);
+      maxWorkers = Math.max(maxWorkers, workers.length);
+      workers.forEach((w, j) => {
+        const wy = workerY0 + j * (NODE_H + ROW_GAP);
+        nodes.push({
+          key: `agent:${g.team}:${w.name}`, sel: { kind: 'agent', team: g.team, agent: w }, agent: w,
+          x: colX, y: wy, title: w.name, sub: `${up(w) ? '● ' : '○ '}${runtimeShort(w.runtime)}`, role: 'worker',
+        });
+        edges.push({ x1: cx, y1: leadY + NODE_H, x2: cx, y2: wy });
+      });
+    });
+    // Cross-team hierarchy: the primary lead coordinates every other team's lead.
+    const primaryCenter = primaryTeam ? leadCenters.find((c) => c.team === primaryTeam) : undefined;
+    const hierArcs = primaryCenter
+      ? leadCenters.filter((c) => c.team !== primaryTeam).map((c) => ({ from: primaryCenter, to: c }))
+      : [];
+
+    const width = PAD * 2 + teams.length * NODE_W + (teams.length - 1) * COL_GAP;
+    const height = (maxWorkers > 0 ? workerY0 + maxWorkers * (NODE_H + ROW_GAP) - ROW_GAP : leadY + NODE_H) + PAD;
+
+    return { primaryTeam, teams, nodes, edges, hierArcs, width, height };
+  }, [groups, hier, leadOf]);
+
+  if (!layout) {
     return <div className="muted center pad">No teams yet — build a team to see its structure here.</div>;
   }
-
-  // Headroom above the lead row for the cross-team hierarchy arcs (primary → each team lead).
-  const HIER_HEADROOM = hier.primary && teams.length > 1 ? 34 : 0;
-  const leadY = PAD + TITLE_H + HIER_HEADROOM;
-  const workerY0 = leadY + NODE_H + LEVEL_GAP;
-  const primaryKey = hier.primary ? `agent:${hier.primary.team}:${hier.primary.agent}` : null;
-
-  const nodes: Placed[] = [];
-  const edges: { x1: number; y1: number; x2: number; y2: number }[] = [];
-  const leadCenters: { team: string; x: number; y: number }[] = []; // for the hierarchy arcs
-
-  let maxWorkers = 0;
-  teams.forEach((g, i) => {
-    const colX = PAD + i * (NODE_W + COL_GAP);
-    const cx = colX + NODE_W / 2;
-    const leadName = leadOf(g.team, g.agents);
-    const lead = g.agents.find((a) => a.name === leadName) ?? g.agents[0];
-    if (!lead) return;
-    const leadKey = `agent:${g.team}:${lead.name}`;
-    const isPrimary = leadKey === primaryKey;
-    leadCenters.push({ team: g.team, x: cx, y: leadY });
-    const liveWorkers = g.agents.filter((a) => a.name !== lead.name && up(a)).length;
-    nodes.push({
-      key: leadKey, sel: { kind: 'agent', team: g.team, agent: lead }, agent: lead,
-      x: colX, y: leadY, title: lead.name,
-      sub: `${isPrimary ? 'primary · ' : ''}lead · ${liveWorkers}/${g.agents.length - 1} live`,
-      role: isPrimary ? 'primary' : 'lead',
-    });
-    const workers = g.agents.filter((a) => a.name !== lead.name);
-    maxWorkers = Math.max(maxWorkers, workers.length);
-    workers.forEach((w, j) => {
-      const wy = workerY0 + j * (NODE_H + ROW_GAP);
-      nodes.push({
-        key: `agent:${g.team}:${w.name}`, sel: { kind: 'agent', team: g.team, agent: w }, agent: w,
-        x: colX, y: wy, title: w.name, sub: `${up(w) ? '● ' : '○ '}${runtimeShort(w.runtime)}`, role: 'worker',
-      });
-      edges.push({ x1: cx, y1: leadY + NODE_H, x2: cx, y2: wy });
-    });
-  });
-  // Cross-team hierarchy: the primary lead coordinates every other team's lead.
-  const primaryCenter = primaryTeam ? leadCenters.find((c) => c.team === primaryTeam) : undefined;
-  const hierArcs = primaryCenter
-    ? leadCenters.filter((c) => c.team !== primaryTeam).map((c) => ({ from: primaryCenter, to: c }))
-    : [];
-
-  const width = PAD * 2 + teams.length * NODE_W + (teams.length - 1) * COL_GAP;
-  const height = (maxWorkers > 0 ? workerY0 + maxWorkers * (NODE_H + ROW_GAP) - ROW_GAP : leadY + NODE_H) + PAD;
+  const { primaryTeam, teams, nodes, edges, hierArcs, width, height } = layout;
 
   function nodeFill(n: Placed): string {
     if (n.key === selectedKey) return 'var(--bg-3)';
