@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.582] — 2026-07-04
+- fix(work): defer coordinator parents to manager kickoff
+- fix(learn): keep review panel below intake
+
 ## [0.1.581] — 2026-07-04
 - chore(desktop): drop stale root bundles
 - fix(tasks): align stalled cards with delegation audit
