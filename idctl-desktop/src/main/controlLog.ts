@@ -462,6 +462,8 @@ function recordLearnMaterial(value: unknown): void {
     : [];
   const recommendations = Array.isArray(m.recommendations) ? m.recommendations : [];
   const brainSync = obj(m.brainSync);
+  const hasDigestOutput = Boolean(s(m.summary).trim() || s(m.comparison).trim() || brainSync.status);
+  const canPublishDigestMemory = (status === 'ready' || status === 'blocked') && hasDigestOutput;
   void brain.entity({
     id,
     type: 'learn-material',
@@ -494,12 +496,16 @@ function recordLearnMaterial(value: unknown): void {
         sourceEntity: brainSync.sourceEntity,
         facts: brainSync.facts,
         edges: brainSync.edges,
+        edgeCount: brainSync.edgeCount,
+        expectedEdgeCount: brainSync.expectedEdgeCount,
         text: brainSync.text,
         memory: brainSync.memory,
         timeline: brainSync.timeline,
       } : null,
+      packetReady: canPublishDigestMemory,
     },
   });
+  if (!canPublishDigestMemory) return;
   void brain.memory('control-center', {
     key: id,
     content: [

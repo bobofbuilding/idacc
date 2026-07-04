@@ -96,6 +96,8 @@ export interface LearnBrainSync {
   goalEntities: number;
   facts: boolean;
   edges: boolean;
+  edgeCount?: number;
+  expectedEdgeCount?: number;
   text: boolean;
   memory: boolean;
   timeline: boolean;
@@ -205,6 +207,7 @@ const MAX_FOLDER_FILES = 160;
 const MAX_FOLDER_BYTES = 1_250_000;
 const MAX_FILE_BYTES = 90_000;
 const MAX_TEXT_FOR_BRAIN = 50_000;
+const LEARN_BRAIN_SYNC_SCHEMA_VERSION = 3;
 const TEXT_EXTS = new Set([
   '.c', '.cc', '.conf', '.cpp', '.css', '.csv', '.go', '.h', '.html', '.ini', '.java', '.js', '.json',
   '.jsx', '.md', '.mdx', '.mjs', '.py', '.rb', '.rs', '.sh', '.sql', '.toml', '.ts', '.tsx', '.txt',
@@ -448,6 +451,8 @@ function normalizeBrainSync(value: unknown): LearnBrainSync | undefined {
     goalEntities: Math.max(0, Number(raw.goalEntities ?? raw.goal_entities ?? 0) || 0),
     facts: raw.facts === true,
     edges: raw.edges === true,
+    edgeCount: raw.edgeCount === undefined && raw.edge_count === undefined ? undefined : Math.max(0, Number(raw.edgeCount ?? raw.edge_count ?? 0) || 0),
+    expectedEdgeCount: raw.expectedEdgeCount === undefined && raw.expected_edge_count === undefined ? undefined : Math.max(0, Number(raw.expectedEdgeCount ?? raw.expected_edge_count ?? 0) || 0),
     text: raw.text === true,
     memory: raw.memory === true,
     timeline: raw.timeline === true,
@@ -625,7 +630,8 @@ function isBrainSyncDue(material: LearnMaterial, retryMs = BRAIN_SYNC_RETRY_MS):
   if (material.status !== 'ready' && material.status !== 'blocked') return false;
   if (material.stage !== 'recommendations') return false;
   if (!material.brainSync) return true;
-  if (material.brainSync.schemaVersion !== 2 || material.brainSync.exactEntity !== true) return true;
+  if (material.brainSync.schemaVersion !== LEARN_BRAIN_SYNC_SCHEMA_VERSION || material.brainSync.exactEntity !== true) return true;
+  if (material.brainSync.expectedEdgeCount !== undefined && material.brainSync.edgeCount !== undefined && material.brainSync.edgeCount < material.brainSync.expectedEdgeCount) return true;
   if (material.brainSync.status === 'ok') return false;
   return now() - material.brainSync.at >= retryMs;
 }
@@ -643,7 +649,7 @@ function failedBrainSync(material: LearnMaterial): LearnBrainSync {
     status: 'failed',
     sourceId: `learn:${material.id}`,
     at: now(),
-    schemaVersion: 2,
+    schemaVersion: LEARN_BRAIN_SYNC_SCHEMA_VERSION,
     exactEntity: false,
     entity: false,
     sourceEntity: false,
@@ -651,6 +657,8 @@ function failedBrainSync(material: LearnMaterial): LearnBrainSync {
     goalEntities: 0,
     facts: false,
     edges: false,
+    edgeCount: 0,
+    expectedEdgeCount: 0,
     text: false,
     memory: false,
     timeline: false,
@@ -676,7 +684,7 @@ export async function syncUnsyncedMaterialsToBrain(opts: { limit?: number; retry
     attempted++;
     let brainSync: LearnBrainSync;
     try {
-      brainSync = await syncMaterialToBrain(material, backfillTextForMaterial(material));
+      brainSync = await syncMaterialToBrain(material, backfillTextForMaterial(material), { reuseExistingText: true });
     } catch {
       brainSync = failedBrainSync(material);
     }
@@ -685,7 +693,7 @@ export async function syncUnsyncedMaterialsToBrain(opts: { limit?: number; retry
     next.progress.push({
       stage: next.stage,
       status: brainSync.status === 'ok' ? 'done' : brainSync.status === 'partial' ? 'warning' : 'failed',
-      note: `Backfilled Brain graph sync ${brainSync.status}: entity=${brainSync.entity ? 'yes' : 'no'}, facts=${brainSync.facts ? 'yes' : 'no'}, edges=${brainSync.edges ? 'yes' : 'no'}, text=${brainSync.text ? 'yes' : 'no'}, memory=${brainSync.memory ? 'yes' : 'no'}`,
+      note: `Backfilled Brain graph sync ${brainSync.status}: entity=${brainSync.entity ? 'yes' : 'no'}, facts=${brainSync.facts ? 'yes' : 'no'}, edges=${brainSync.edgeCount ?? 0}/${brainSync.expectedEdgeCount ?? 0}, text=${brainSync.text ? 'yes' : 'no'}, memory=${brainSync.memory ? 'yes' : 'no'}`,
       at: now(),
     });
     writeMaterial(next);
@@ -835,7 +843,7 @@ export async function processMaterial(id: string, ctx: ProcessMaterialContext = 
     material.progress.push({
       stage: 'recommendations',
       status: brainSync.status === 'ok' ? 'done' : brainSync.status === 'partial' ? 'warning' : 'failed',
-      note: `Brain graph sync ${brainSync.status}: entity=${brainSync.entity ? 'yes' : 'no'}, facts=${brainSync.facts ? 'yes' : 'no'}, edges=${brainSync.edges ? 'yes' : 'no'}, text=${brainSync.text ? 'yes' : 'no'}, memory=${brainSync.memory ? 'yes' : 'no'}`,
+      note: `Brain graph sync ${brainSync.status}: entity=${brainSync.entity ? 'yes' : 'no'}, facts=${brainSync.facts ? 'yes' : 'no'}, edges=${brainSync.edgeCount ?? 0}/${brainSync.expectedEdgeCount ?? 0}, text=${brainSync.text ? 'yes' : 'no'}, memory=${brainSync.memory ? 'yes' : 'no'}`,
       at: now(),
     });
     writeMaterial(material);
@@ -1336,7 +1344,7 @@ function syncStatus(flags: Array<boolean | number>): LearnBrainSync['status'] {
   return 'failed';
 }
 
-async function syncMaterialToBrain(material: LearnMaterial, extractedText: string): Promise<LearnBrainSync> {
+async function syncMaterialToBrain(material: LearnMaterial, extractedText: string, opts: { reuseExistingText?: boolean } = {}): Promise<LearnBrainSync> {
   const sourceId = `learn:${material.id}`;
   const sourceEntity = sourceEntityId(material.source);
   const routedTeams = material.classification?.routedTeams ?? [];
@@ -1419,7 +1427,7 @@ async function syncMaterialToBrain(material: LearnMaterial, extractedText: strin
     { entity_id: sourceId, field: 'recommendation_count', value: material.recommendations?.length ?? 0 },
     { entity_id: sourceId, field: 'blocking_recommendations', value: material.recommendations?.filter((r) => r.blocking && r.reviewState === 'draft').length ?? 0 },
   ]);
-  const edges = await brain.entityEdges([
+  const requiredEdges = [
     {
       from: sourceId,
       to: sourceEntity,
@@ -1441,18 +1449,23 @@ async function syncMaterialToBrain(material: LearnMaterial, extractedText: strin
       weight: Math.max(0.2, Math.min(1, (matchedGoals[index]?.score ?? 1) / 12)),
       description: matchedGoals[index]?.reason ?? 'Learn material matched this active goal.',
     })),
-  ]);
-  const text = await brain.ingestText({
+  ];
+  const edgeResult = await brain.entityEdgesDetailed(requiredEdges);
+  const textContent = [
+    material.summary ?? '',
+    '',
+    material.comparison ?? '',
+    '',
+    extractedText.slice(0, MAX_TEXT_FOR_BRAIN),
+  ].filter(Boolean).join('\n');
+  const reuseExistingText = opts.reuseExistingText === true
+    && material.brainSync?.sourceId === sourceId
+    && material.brainSync.text === true;
+  const text = reuseExistingText ? true : await brain.ingestText({
       sourceKind: 'idacc-learn-material',
       sourceId,
       title: material.title,
-      content: [
-        material.summary ?? '',
-        '',
-        material.comparison ?? '',
-        '',
-        extractedText.slice(0, MAX_TEXT_FOR_BRAIN),
-      ].filter(Boolean).join('\n'),
+      content: textContent,
       metadata: {
         kind: material.kind,
         source: material.source,
@@ -1486,12 +1499,16 @@ async function syncMaterialToBrain(material: LearnMaterial, extractedText: strin
   const preTimeline: Omit<LearnBrainSync, 'timeline' | 'status'> = {
     sourceId,
     at: now(),
+    schemaVersion: LEARN_BRAIN_SYNC_SCHEMA_VERSION,
+    exactEntity: true,
     entity,
     sourceEntity: sourceEntityOk,
     teamEntities: teamEntityResults.filter(Boolean).length,
     goalEntities: goalEntityResults.filter(Boolean).length,
     facts,
-    edges,
+    edges: edgeResult.ok,
+    edgeCount: edgeResult.count,
+    expectedEdgeCount: edgeResult.expected,
     text,
     memory,
   };
@@ -1512,8 +1529,6 @@ async function syncMaterialToBrain(material: LearnMaterial, extractedText: strin
   });
   const result: LearnBrainSync = {
     ...preTimeline,
-    schemaVersion: 2,
-    exactEntity: true,
     timeline,
     status: syncStatus([
       preTimeline.entity,
@@ -1522,6 +1537,9 @@ async function syncMaterialToBrain(material: LearnMaterial, extractedText: strin
       matchedGoals.length ? preTimeline.goalEntities === matchedGoals.length : true,
       preTimeline.facts,
       preTimeline.edges,
+      preTimeline.expectedEdgeCount !== undefined && preTimeline.edgeCount !== undefined
+        ? preTimeline.edgeCount >= preTimeline.expectedEdgeCount
+        : false,
       preTimeline.text,
       preTimeline.memory,
       timeline,

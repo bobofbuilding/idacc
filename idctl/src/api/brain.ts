@@ -79,6 +79,11 @@ export interface BrainEntityEdge {
   description?: string;
   textUnitIds?: number[];
 }
+export interface BrainEntityEdgeResult {
+  ok: boolean;
+  count: number;
+  expected: number;
+}
 export interface BrainSkillNode {
   skillId: number;
   name: string;
@@ -376,8 +381,8 @@ export class BrainClient {
     return r !== null;
   }
 
-  /** Upsert entity graph edges so app-side records appear connected in Brain Graph. */
-  async entityEdges(edges: BrainEntityEdge[]): Promise<boolean> {
+  /** Upsert entity graph edges with the count Brain accepted. */
+  async entityEdgesDetailed(edges: BrainEntityEdge[]): Promise<BrainEntityEdgeResult> {
     const filtered = edges
       .filter((e) => e.from && e.to && e.kind)
       .map((e) => ({
@@ -388,9 +393,19 @@ export class BrainClient {
         description: e.description ?? '',
         textUnitIds: e.textUnitIds ?? [],
       }));
-    if (!filtered.length) return false;
-    const r = await this.req('POST', '/entity-edges/bulk', { edges: filtered });
-    return r !== null;
+    if (!filtered.length) return { ok: true, count: 0, expected: 0 };
+    const r = await this.req<{ ok?: boolean; count?: number }>('POST', '/entity-edges/bulk', { edges: filtered });
+    const count = Number(r?.count ?? 0) || 0;
+    return {
+      ok: !!r && r.ok !== false && count >= filtered.length,
+      count,
+      expected: filtered.length,
+    };
+  }
+
+  /** Upsert entity graph edges so app-side records appear connected in Brain Graph. */
+  async entityEdges(edges: BrainEntityEdge[]): Promise<boolean> {
+    return (await this.entityEdgesDetailed(edges)).ok;
   }
 
   /** Ingest a markdown/text artifact (dreams, plan bodies) so the brain chunks + learns it. */
