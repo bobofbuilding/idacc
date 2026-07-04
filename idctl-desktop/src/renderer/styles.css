@@ -377,6 +377,11 @@ button.chip.incompat:hover { border-color: var(--line); }
   overflow-wrap: anywhere;
 }
 /* Work > Learn intake */
+.learn-root {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: visible;
+}
 .learn-intake {
   display: flex;
   flex-direction: column;
@@ -396,7 +401,7 @@ button.chip.incompat:hover { border-color: var(--line); }
   align-items: start;
   flex: 0 0 auto;
   clear: both;
-  margin-top: 0;
+  margin-top: 8px;
   position: relative;
   z-index: 1;
   min-width: 0;
@@ -404,7 +409,7 @@ button.chip.incompat:hover { border-color: var(--line); }
 }
 .learn-workspace > .card {
   overflow: auto;
-  max-height: clamp(340px, calc(100vh - 320px), 760px);
+  max-height: clamp(320px, calc(100vh - 360px), 760px);
   min-width: 0;
   overscroll-behavior: contain;
   position: relative;

@@ -386,7 +386,7 @@ export function Learn({ store }: { store: FleetStore }) {
   }
 
   return (
-    <div className="stack">
+    <div className="stack learn-root">
       <section className="card learn-intake">
         <div className="learn-intake-head">
           <div>
@@ -486,7 +486,7 @@ export function Learn({ store }: { store: FleetStore }) {
               </tbody>
             </table>
           ) : (
-            <div className="muted center pad">No Learn materials yet.</div>
+            <div className="muted center pad">{completedCount ? 'No active Learn materials.' : 'No Learn materials yet.'}</div>
           )}
         </section>
 
