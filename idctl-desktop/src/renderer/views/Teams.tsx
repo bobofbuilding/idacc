@@ -271,20 +271,6 @@ function leadershipBackboneIssues(backbone: LeadershipBackbone): string[] {
 function agentNameKey(agents: Agent[]): string {
   return sortedKey(agents.map((a) => slugName(a.name)));
 }
-function hrGraphGroupsSig(groups: TeamAgentsGroup[]): string {
-  return JSON.stringify(groups.map((g) => [
-    g.team,
-    g.agents.map((a) => [
-      a.id,
-      a.name,
-      a.status,
-      a.health,
-      a.pid ?? a.metadata?.pid ?? null,
-      a.runtime ?? '',
-      a.model ?? '',
-    ]),
-  ]));
-}
 function metadataDelegates(a: { metadata?: unknown }): string[] | null {
   const raw = (a.metadata as { delegates_to?: unknown } | undefined)?.delegates_to;
   return Array.isArray(raw) ? raw.map(String) : null;
@@ -319,6 +305,17 @@ function secondaryStamp(list: { agent: string; team: string; leadsTeams: string[
 }
 async function freshHrGroups(): Promise<TeamAgentsGroup[]> {
   return call<TeamAgentsGroup[]>('agents:allTeams').catch(() => []);
+}
+function hrGraphGroupsFromStore(store: FleetStore, activeTeam: string): TeamAgentsGroup[] {
+  if (store.allAgents.length) {
+    const byTeam: Record<string, Agent[]> = {};
+    for (const agent of store.allAgents) {
+      const team = agent.team || activeTeam;
+      (byTeam[team] ??= []).push(agent);
+    }
+    return Object.entries(byTeam).map(([team, agents]) => ({ team, agents }));
+  }
+  return store.agents.length ? [{ team: activeTeam, agents: store.agents }] : [];
 }
 function agentsForTeam(groups: TeamAgentsGroup[], team: string): Agent[] {
   return groups.find((g) => g.team === team)?.agents ?? [];
@@ -512,9 +509,14 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   const hrSkillCatalogVersion = useSyncVersion(tab === 'build' ? ['modules'] : []);
   const [routePane, setRoutePane] = useState<'operations' | 'overview' | 'hierarchy'>('operations');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [graphGroups, setGraphGroups] = useState<{ team: string; agents: Agent[] }[]>([]);
   const [locallyDeletedTeams, setLocallyDeletedTeams] = useState<string[]>([]);
   const activeTeam = store.team ?? 'default';
+  const graphGroups = useMemo(() => hrGraphGroupsFromStore(store, activeTeam), [store.allAgents, store.agents, activeTeam]);
+  const agentsByTeam = useMemo(() => {
+    const byTeam: Record<string, Agent[]> = {};
+    for (const group of graphGroups) byTeam[group.team] = group.agents;
+    return byTeam;
+  }, [graphGroups]);
   useEffect(() => {
     if (!focus) return;
     if (focus === 'route-hierarchy') {
@@ -525,20 +527,6 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     }
     onFocusHandled?.();
   }, [focus, onFocusHandled]);
-  useEffect(() => {
-    // Prefer the store's live all-teams poll (holistic view) so the graph reacts in lock-step
-    // with the rest of the app; fall back to a direct fetch when that isn't populated.
-    if (store.allAgents.length) {
-      const byTeam: Record<string, Agent[]> = {};
-      for (const a of store.allAgents) (byTeam[a.team ?? '—'] ??= []).push(a);
-      const nextGroups = Object.entries(byTeam).map(([team, agents]) => ({ team, agents }));
-      setGraphGroups((prev) => hrGraphGroupsSig(prev) === hrGraphGroupsSig(nextGroups) ? prev : nextGroups);
-      return;
-    }
-    call<{ team: string; agents: Agent[] }[]>('agents:allTeams')
-      .then((nextGroups) => setGraphGroups((prev) => hrGraphGroupsSig(prev) === hrGraphGroupsSig(nextGroups) ? prev : nextGroups))
-      .catch(() => setGraphGroups((prev) => prev.length ? [] : prev));
-  }, [store.allAgents, store.agents, activeTeam, hrStructureVersion]);
 
   // Cross-team relay policy (delegates_to) for the active team.
   useEffect(() => {
@@ -554,8 +542,8 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   );
   // Teams with at least one RUNNING agent — used to keep team pickers to active teams only.
   const activeTeamNames = useMemo(
-    () => visibleTeams.map((t) => t.name).filter((n) => store.allAgents.some((a) => a.team === n && !!a.status && !/stop|offline|dead|exit|error|crash|down|disabled|sleep/i.test(a.status))),
-    [visibleTeams, store.allAgents],
+    () => visibleTeams.map((t) => t.name).filter((n) => (agentsByTeam[n] ?? []).some(isRunnableAgent)),
+    [visibleTeams, agentsByTeam],
   );
   const allKnownTeamNames = useMemo(() => {
     const authorityNames = visibleTeams.length
@@ -571,17 +559,21 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     () => graphGroups.filter((g) => allKnownTeamSet.has(g.team)),
     [graphGroups, allKnownTeamSet],
   );
+  const fleetAgentsForBuilder = useMemo(
+    () => store.allAgents.length ? store.allAgents : store.agents.map((a) => ({ ...a, team: activeTeam })),
+    [store.allAgents, store.agents, activeTeam],
+  );
+  const visibleTeamNames = useMemo(() => visibleTeams.map((t) => t.name), [visibleTeams]);
   // team → its current agent names (live roster) — lets the Build tab skip agents that
   // already exist instead of hard-erroring the whole batch.
   const existingAgentsByTeam = useMemo(() => {
     const m: Record<string, string[]> = {};
-    for (const a of store.allAgents) {
-      const team = a.team ?? '';
+    for (const [team, agents] of Object.entries(agentsByTeam)) {
       if (team && !allKnownTeamSet.has(team)) continue;
-      (m[team] ??= []).push(a.name);
+      m[team] = agents.map((agent) => agent.name);
     }
     return m;
-  }, [store.allAgents, allKnownTeamSet]);
+  }, [agentsByTeam, allKnownTeamSet]);
   // Structure/Routing visualize every known team, even if the roster is empty/offline. Running
   // state is evidence, not the authority for whether a team exists.
   const structureGroups = useMemo(
@@ -1196,7 +1188,6 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       setMsg(`deleting team ${name}…`);
       await call('team:delete', name);
       setLocallyDeletedTeams((prev) => (prev.includes(name) ? prev : [...prev, name]));
-      setGraphGroups((prev) => prev.filter((g) => g.team !== name));
       setRelayMatrix((prev) => prev.filter((row) => row.team !== name));
       if (selectedKey === `team:${name}` || selectedKey?.startsWith(`agent:${name}:`)) setSelectedKey(null);
       if (name === store.team) await store.setTeam('default');
@@ -2045,8 +2036,8 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           </thead>
           <tbody>
             {visibleTeams.map((t) => {
-              const teamAgents = store.allAgents.filter((a) => a.team === t.name);
-              const running = teamAgents.filter((a) => !!a.status && !/stop|offline|dead|exit|error|crash|down|disabled|sleep/i.test(a.status)).length;
+              const teamAgents = agentsByTeam[t.name] ?? [];
+              const running = teamAgents.filter(isRunnableAgent).length;
               const total = teamAgents.length || Number(t.agentCount) || 0;
               const isPrimary = hier.primary?.team === t.name;
               const canStart = total > 0 && running < total;
@@ -2083,10 +2074,10 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           <TeamBuilder
             inline
             team=""
-            existingTeams={visibleTeams.map((t) => t.name)}
+            existingTeams={visibleTeamNames}
             activeTeams={activeTeamNames}
             existingAgents={existingAgentsByTeam}
-            fleetAgents={store.allAgents.length ? store.allAgents : store.agents.map((a) => ({ ...a, team: activeTeam }))}
+            fleetAgents={fleetAgentsForBuilder}
             hierarchy={hier}
             hrOwner={hrOwner}
             providers={providers}
