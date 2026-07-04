@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
 import { runtimeDisplayLabel } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 
@@ -45,7 +46,7 @@ function runtimeShort(r?: string): string {
  * workers below. Click any node (or a team title) to select it — the parent opens
  * an inline editor for goals, instructions, runtime, and routing. Pure layout.
  */
-export function TeamGraph({
+export const TeamGraph = memo(function TeamGraph({
   groups,
   hier,
   leadOf,
@@ -62,7 +63,7 @@ export function TeamGraph({
   // Primary team's column first — the org's top lead reads left-to-right, then the rest.
   // Keep empty/offline teams visible so HR can inspect structure even before agents run.
   const primaryTeam = hier.primary?.team;
-  const teams = groups
+  const teams = [...groups]
     .sort((a, b) => (a.team === primaryTeam ? -1 : b.team === primaryTeam ? 1 : a.team.localeCompare(b.team)));
   if (teams.length === 0) {
     return <div className="muted center pad">No teams yet — build a team to see its structure here.</div>;
@@ -171,4 +172,4 @@ export function TeamGraph({
       </svg>
     </div>
   );
-}
+});

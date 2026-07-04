@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { call, agentsLeadFirst, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import { buildProviderModelLanes, offerableRuntimes, runtimeDisplayLabel, runtimePickerGroup, type RuntimeModelLane } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 import type { ConfigEntry, DeployPreflight, DesignedTeam, LibrarySkillEntry, McpServerSpec, TeamTemplate } from '../../../../idctl/src/api/client.ts';
@@ -590,9 +590,9 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   /** A node (or team title) was clicked in the structure graph: just select it. We do NOT
    *  switch the active team — the side editor loads/saves the selected agent by name+team
    *  directly, so browsing the structure never hijacks your active-team context. */
-  function onGraphSelect(sel: GraphSelection) {
+  const onGraphSelect = useCallback((sel: GraphSelection) => {
     setSelectedKey(sel.kind === 'agent' ? `agent:${sel.team}:${sel.agent.name}` : `team:${sel.team}`);
-  }
+  }, []);
   // The agent currently selected in the graph (for the structure-tab side panel).
   const selectedAgent = (() => {
     if (!selectedKey?.startsWith('agent:')) return null;
@@ -1218,6 +1218,10 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   }
   // Lead hierarchy (#10): the primary coordinator across teams.
   const [hier, setHier] = useState<HrHierarchy>({ primary: null, coordinators: {} });
+  const graphLeadOf = useCallback(
+    (t: string, ag: Agent[]) => hier.coordinators[t] ?? resolveCoordinator(ag, undefined) ?? ag[0]?.name,
+    [hier.coordinators],
+  );
   async function loadHier() {
     setHier(await call<typeof hier>('coordinator:hierarchy').catch(() => ({ primary: null, coordinators: {} })));
   }
@@ -1892,7 +1896,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           <TeamGraph
             groups={structureGroups}
             hier={hier}
-            leadOf={(t, ag) => hier.coordinators[t] ?? resolveCoordinator(ag, undefined) ?? ag[0]?.name}
+            leadOf={graphLeadOf}
             selectedKey={selectedKey}
             onSelect={onGraphSelect}
           />
