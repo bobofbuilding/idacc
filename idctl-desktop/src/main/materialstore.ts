@@ -370,12 +370,46 @@ function normalizeStage(s: unknown): LearnStage {
     : 'submitted';
 }
 
+function hasBlockingDraftRecommendation(recommendations: LearnRecommendation[] | undefined): boolean {
+  return (recommendations ?? []).some((r) => r.blocking && r.reviewState === 'draft');
+}
+
+function reviewedBlockedMaterialStatus(input: {
+  status: LearnStatus;
+  stage: LearnStage;
+  recommendations: LearnRecommendation[];
+  processingTag?: string;
+}): { status: LearnStatus; processingTag?: string } {
+  if (
+    input.status === 'blocked'
+    && input.stage === 'recommendations'
+    && input.recommendations.length > 0
+    && !hasBlockingDraftRecommendation(input.recommendations)
+  ) {
+    return {
+      status: 'ready',
+      processingTag: input.processingTag === 'review needed' || input.processingTag === 'blocked on review'
+        ? 'review complete'
+        : input.processingTag,
+    };
+  }
+  return { status: input.status, processingTag: input.processingTag };
+}
+
 function normalizeMaterial(input: CreateMaterialInput): LearnMaterial {
   const ts = now();
   const id = safeId(input.id || newId());
   const source = sourceWithDefaultScheme(input.source, input.kind);
   const kind = kindFromSource(source, input.kind);
   const title = String(input.title || '').trim() || titleFromSource(source, kind);
+  const stage = normalizeStage(input.stage);
+  const recommendations = Array.isArray(input.recommendations) ? input.recommendations.map(normalizeRecommendation).slice(0, 24) : [];
+  const statusState = reviewedBlockedMaterialStatus({
+    status: normalizeStatus(input.status),
+    stage,
+    recommendations,
+    processingTag: input.processingTag ? String(input.processingTag).slice(0, 80) : undefined,
+  });
   return {
     id,
     title: title.slice(0, 180),
@@ -385,9 +419,9 @@ function normalizeMaterial(input: CreateMaterialInput): LearnMaterial {
     snapshotPath: input.snapshotPath ? String(input.snapshotPath) : undefined,
     priority: normalizePriority(input.priority),
     prioritized: !!input.prioritized,
-    status: normalizeStatus(input.status),
-    stage: normalizeStage(input.stage),
-    processingTag: input.processingTag ? String(input.processingTag).slice(0, 80) : undefined,
+    status: statusState.status,
+    stage,
+    processingTag: statusState.processingTag,
     submittedOrder: Number(input.submittedOrder || input.createdAt || ts),
     excerpt: input.excerpt ? String(input.excerpt).slice(0, 5000) : undefined,
     summary: input.summary ? String(input.summary).slice(0, 12000) : undefined,
@@ -396,7 +430,7 @@ function normalizeMaterial(input: CreateMaterialInput): LearnMaterial {
     deepResearchRecommended: !!input.deepResearchRecommended,
     researchBrief: input.researchBrief ? String(input.researchBrief).slice(0, 12000) : undefined,
     comparison: input.comparison ? String(input.comparison).slice(0, 12000) : undefined,
-    recommendations: Array.isArray(input.recommendations) ? input.recommendations.map(normalizeRecommendation).slice(0, 24) : [],
+    recommendations,
     routing: Array.isArray(input.routing) ? input.routing.slice(0, 16) : [],
     brainSync: normalizeBrainSync(input.brainSync),
     injectionWarnings: Array.isArray(input.injectionWarnings) ? input.injectionWarnings.map(String).slice(0, 20) : [],
@@ -574,7 +608,7 @@ export function markRecommendation(materialId: string, recommendationId: string,
     r.id === recommendationId ? { ...r, reviewState: nextState, updatedAt: now() } : r
   ));
   material.progress.push({ stage: 'recommendations', status: 'done', note: `Recommendation ${recommendationId} marked ${nextState}`, at: now() });
-  const remainingBlockingDrafts = (material.recommendations ?? []).some((r) => r.blocking && r.reviewState === 'draft');
+  const remainingBlockingDrafts = hasBlockingDraftRecommendation(material.recommendations);
   if (material.status === 'blocked' && !remainingBlockingDrafts) {
     material.status = 'ready';
     material.processingTag = 'review complete';
@@ -601,7 +635,7 @@ export function markRecommendation(materialId: string, recommendationId: string,
 function recoverMaterialIfStale(material: LearnMaterial, maxAgeMs = STALE_PROCESSING_MS): LearnMaterial {
   if (material.status !== 'processing' || Date.now() - material.updatedAt < maxAgeMs) return material;
   const hasReviewArtifacts = Boolean(material.recommendations?.length || material.summary || material.comparison);
-  const hasBlockingDraft = (material.recommendations ?? []).some((r) => r.blocking && r.reviewState !== 'dismissed');
+  const hasBlockingDraft = hasBlockingDraftRecommendation(material.recommendations);
   material.status = hasReviewArtifacts ? (hasBlockingDraft ? 'blocked' : 'ready') : 'queued';
   material.stage = hasReviewArtifacts ? 'recommendations' : material.stage;
   material.processingTag = hasReviewArtifacts ? 'recovered for review' : 'requeued after stale processing';
