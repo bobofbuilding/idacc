@@ -468,6 +468,10 @@ export function Learn({ store }: { store: FleetStore }) {
                 <span className="muted small">Topics</span><span>{selected.classification?.topics?.join(', ') || '-'}</span>
                 <span className="muted small">Teams</span><span>{selected.classification?.routedTeams?.join(', ') || '-'}</span>
                 <span className="muted small">Goals</span><span>{selected.activeGoalMatches?.length ? selected.activeGoalMatches.map((g) => `${g.priority ?? 'general'} · ${g.team}/${g.title}`).join(', ') : '-'}</span>
+                <span className="muted small">Brain</span>
+                <span title={selected.brainSync ? `entity=${selected.brainSync.entity}; facts=${selected.brainSync.facts}; edges=${selected.brainSync.edges}; text=${selected.brainSync.text}; memory=${selected.brainSync.memory}; timeline=${selected.brainSync.timeline}` : 'No Brain sync result recorded yet'}>
+                  {selected.brainSync ? `${selected.brainSync.status} · ${selected.brainSync.sourceId}` : '-'}
+                </span>
               </div>
 
               {selected.injectionWarnings?.length || selected.extractionWarnings?.length ? (

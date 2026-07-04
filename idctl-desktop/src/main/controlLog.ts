@@ -453,21 +453,51 @@ function recordLearnMaterial(value: unknown): void {
   const status = s(m.status) || 'queued';
   const classification = obj(m.classification);
   const routedTeams = Array.isArray(classification.routedTeams) ? classification.routedTeams.map(String) : [];
+  const topics = Array.isArray(classification.topics) ? classification.topics.map(String) : [];
+  const activeGoalMatches = Array.isArray(m.activeGoalMatches)
+    ? m.activeGoalMatches.map((goal) => {
+        const g = obj(goal);
+        return { id: s(g.id), team: s(g.team), score: Number(g.score ?? 0) || 0 };
+      }).filter((goal) => goal.id)
+    : [];
+  const recommendations = Array.isArray(m.recommendations) ? m.recommendations : [];
+  const brainSync = obj(m.brainSync);
   void brain.entity({
     id,
     type: 'learn-material',
     name: title,
     status,
     tags: ['learn', 'material', 'dashboard-state', s(m.kind) || 'unknown'],
+    exactId: true,
+    mergeAliases: false,
     data: {
       kind: m.kind,
       priority: m.priority,
       prioritized: !!m.prioritized,
       stage: m.stage,
       source: m.source,
+      status,
+      trusted_source: false,
+      review_required: true,
       teams: routedTeams,
-      topics: Array.isArray(classification.topics) ? classification.topics : [],
-      recommendations: Array.isArray(m.recommendations) ? m.recommendations.length : 0,
+      topics,
+      activeGoalMatches,
+      recommendations: recommendations.length,
+      blockingRecommendations: recommendations.filter((rec) => obj(rec).blocking === true && s(obj(rec).reviewState) === 'draft').length,
+      brainSync: brainSync.status ? {
+        status: brainSync.status,
+        sourceId: brainSync.sourceId,
+        at: brainSync.at,
+        schemaVersion: brainSync.schemaVersion,
+        exactEntity: brainSync.exactEntity,
+        entity: brainSync.entity,
+        sourceEntity: brainSync.sourceEntity,
+        facts: brainSync.facts,
+        edges: brainSync.edges,
+        text: brainSync.text,
+        memory: brainSync.memory,
+        timeline: brainSync.timeline,
+      } : null,
     },
   });
   void brain.memory('control-center', {

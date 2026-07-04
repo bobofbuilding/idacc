@@ -15,7 +15,7 @@
  *
  * Endpoint shapes verified against the live brain (brain-listener.mjs / brain-client.mjs):
  *   POST /timeline           { source, type, subject, data, tags }
- *   POST /entities           { id, type, name, source, status, tags, data }
+ *   POST /entities           { id, type, name, source, status, tags, data, exactId?, mergeAliases? }
  *   POST /facts/bulk         { facts: [{ entity_id, field, value, source }] }
  *   POST /text-units/ingest  { source_kind, source_id, title, content, metadata, process_config }
  *   POST /memory/:agentId    { key, content, tags, shared?, project? }
@@ -62,12 +62,22 @@ export interface BrainEntity {
   tags?: string[];
   data?: Record<string, unknown>;
   source?: string;
+  exactId?: boolean;
+  mergeAliases?: boolean;
 }
 export interface BrainFact {
   entity_id: string;
   field: string;
   value: unknown;
   source?: string;
+}
+export interface BrainEntityEdge {
+  from: string;
+  to: string;
+  kind: string;
+  weight?: number;
+  description?: string;
+  textUnitIds?: number[];
 }
 export interface BrainSkillNode {
   skillId: number;
@@ -350,6 +360,8 @@ export class BrainClient {
       status: e.status ?? '',
       tags: e.tags ?? [],
       data: e.data ?? {},
+      exactId: e.exactId,
+      mergeAliases: e.mergeAliases,
     });
     return r !== null;
   }
@@ -361,6 +373,23 @@ export class BrainClient {
       .map((f) => ({ entity_id: f.entity_id, field: f.field, value: f.value, source: f.source || this.source }));
     if (!filtered.length) return false;
     const r = await this.req('POST', '/facts/bulk', { facts: filtered });
+    return r !== null;
+  }
+
+  /** Upsert entity graph edges so app-side records appear connected in Brain Graph. */
+  async entityEdges(edges: BrainEntityEdge[]): Promise<boolean> {
+    const filtered = edges
+      .filter((e) => e.from && e.to && e.kind)
+      .map((e) => ({
+        from: e.from,
+        to: e.to,
+        kind: e.kind,
+        weight: e.weight ?? 1,
+        description: e.description ?? '',
+        textUnitIds: e.textUnitIds ?? [],
+      }));
+    if (!filtered.length) return false;
+    const r = await this.req('POST', '/entity-edges/bulk', { edges: filtered });
     return r !== null;
   }
 

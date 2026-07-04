@@ -22,7 +22,7 @@ import { listGoals, getGoal, saveGoal, removeGoal, type Goal } from './goalstore
 import { listDreams, getDream, saveDream, removeDream, type Dream } from './dreamstore.ts';
 import { listQuestions, addQuestion, removeQuestion, type BlockerQuestion } from './questionstore.ts';
 import { resolveBrainApprovalFromInbox, syncBrainApprovalInbox } from './brainApprovalInbox.ts';
-import { getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, recoverStaleMaterials, removeMaterial, saveMaterial, subscribeMaterialChanges, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
+import { getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, recoverStaleMaterials, removeMaterial, saveMaterial, subscribeMaterialChanges, syncUnsyncedMaterialsToBrain, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
 import { generateImage, readImage, imageModels, getImageServer, detectImageServer, probeImageServer } from './images.ts';
 import { readWiki } from './wiki.ts';
 import { listLocalModelCatalog, loadSettings, mergeLocalModelCatalog, removeEvmRpc, saveSettings, setUpdateSettings, setImageServer, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
@@ -39,6 +39,7 @@ let win: BrowserWindow | null = null;
 let brainDashboardWin: BrowserWindow | null = null;
 let stopGoalDriver: (() => void) | null = null;
 let stopLearnQueueRunner: (() => void) | null = null;
+let stopLearnBrainBackfillRunner: (() => void) | null = null;
 let stopMaterialChangeBridge: (() => void) | null = null;
 let kickLearnQueueRunner: ((delayMs?: number) => void) | null = null;
 let stopDraftDispatcher: (() => void) | null = null;
@@ -466,6 +467,44 @@ function startLearnQueueRunner(): () => void {
   return () => {
     stopped = true;
     kickLearnQueueRunner = null;
+    if (timer) clearTimeout(timer);
+  };
+}
+
+function startLearnBrainBackfillRunner(): () => void {
+  let stopped = false;
+  let running = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const idleMs = 10 * 60_000;
+  const activeMs = 45_000;
+  const retryMs = 5 * 60_000;
+
+  const schedule = (delayMs = idleMs) => {
+    if (stopped) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => void tick(), Math.max(0, delayMs));
+    timer.unref?.();
+  };
+
+  const tick = async () => {
+    if (stopped) return;
+    if (running) { schedule(15_000); return; }
+    running = true;
+    try {
+      const result = await syncUnsyncedMaterialsToBrain({ limit: 2 });
+      if (result.attempted > 0) publishStoreChange('materials:brainSync');
+      schedule(result.remaining > 0 ? activeMs : idleMs);
+    } catch (e) {
+      console.warn('[learn] brain backfill failed:', e);
+      schedule(retryMs);
+    } finally {
+      running = false;
+    }
+  };
+
+  schedule(12_000);
+  return () => {
+    stopped = true;
     if (timer) clearTimeout(timer);
   };
 }
@@ -1069,6 +1108,11 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       kickLearnQueueRunner?.(250);
       return result;
     }
+    case 'materials:syncBrain':
+      return syncUnsyncedMaterialsToBrain({
+        limit: Number(args[0] ?? 2),
+        retryMs: Number(args[1] ?? undefined),
+      });
     case 'materials:markRecommendation':
       return markRecommendation(args[0] as string, args[1] as string, args[2] as LearnReviewState);
     case 'image:generate':
@@ -1233,6 +1277,7 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
       });
     } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }
     try { stopLearnQueueRunner = startLearnQueueRunner(); } catch (e) { console.warn('[learn] failed to start queue runner:', e); }
+    try { stopLearnBrainBackfillRunner = startLearnBrainBackfillRunner(); } catch (e) { console.warn('[learn] failed to start brain backfill runner:', e); }
     // Draft dispatcher: opt-in only. Draft/proposal rows are review-only unless
     // the operator explicitly enables this bridge in settings.
     try { stopDraftDispatcher = startDraftDispatcher(); } catch (e) { console.warn('[draft-dispatcher] failed to start:', e); }
@@ -1260,6 +1305,7 @@ app.on('will-quit', stopUpdater);
 app.on('will-quit', stopBroker);
 app.on('will-quit', () => { try { stopGoalDriver?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopLearnQueueRunner?.(); } catch { /* */ } });
+app.on('will-quit', () => { try { stopLearnBrainBackfillRunner?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopMaterialChangeBridge?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopDraftDispatcher?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* */ } });

@@ -23,6 +23,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { basename, dirname, extname, join, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { brain } from '../../../idctl/src/api/brain.ts';
@@ -83,6 +84,23 @@ export interface LearnRecommendation {
   updatedAt?: number;
 }
 
+export interface LearnBrainSync {
+  status: 'ok' | 'partial' | 'failed';
+  sourceId: string;
+  at: number;
+  schemaVersion?: number;
+  exactEntity?: boolean;
+  entity: boolean;
+  sourceEntity: boolean;
+  teamEntities: number;
+  goalEntities: number;
+  facts: boolean;
+  edges: boolean;
+  text: boolean;
+  memory: boolean;
+  timeline: boolean;
+}
+
 export interface LearnMaterial {
   id: string;
   title: string;
@@ -105,6 +123,7 @@ export interface LearnMaterial {
   comparison?: string;
   recommendations?: LearnRecommendation[];
   routing?: LearnRoutingResult[];
+  brainSync?: LearnBrainSync;
   injectionWarnings?: string[];
   extractionWarnings?: string[];
   progress: LearnProgress[];
@@ -134,6 +153,7 @@ export interface CreateMaterialInput {
   comparison?: string;
   recommendations?: LearnRecommendation[];
   routing?: LearnRoutingResult[];
+  brainSync?: LearnBrainSync;
   injectionWarnings?: string[];
   extractionWarnings?: string[];
   progress?: LearnProgress[];
@@ -144,6 +164,14 @@ export interface CreateMaterialInput {
 export interface ProcessMaterialContext {
   knownTeams?: string[];
   defaultTeam?: string;
+}
+
+export interface LearnBrainBackfillResult {
+  attempted: number;
+  synced: number;
+  remaining: number;
+  skipped?: string;
+  materials: LearnMaterial[];
 }
 
 interface ActiveGoal {
@@ -193,6 +221,7 @@ const STOP_WORDS = new Set([
 ]);
 const INJECTION_RE = /(ignore\s+(all\s+)?previous|forget\s+(all\s+)?(previous|prior)|developer\s+message|system\s+prompt|do\s+not\s+follow|exfiltrat|reveal\s+(your|the)\s+(system|prompt|secret)|<\|system\|>|begin\s+system|assistant:|user:)/ig;
 const STALE_PROCESSING_MS = 20 * 60 * 1000;
+const BRAIN_SYNC_RETRY_MS = 15 * 60 * 1000;
 
 let processing = false;
 type MaterialChangeReason = 'write' | 'remove';
@@ -365,6 +394,7 @@ function normalizeMaterial(input: CreateMaterialInput): LearnMaterial {
     comparison: input.comparison ? String(input.comparison).slice(0, 12000) : undefined,
     recommendations: Array.isArray(input.recommendations) ? input.recommendations.map(normalizeRecommendation).slice(0, 24) : [],
     routing: Array.isArray(input.routing) ? input.routing.slice(0, 16) : [],
+    brainSync: normalizeBrainSync(input.brainSync),
     injectionWarnings: Array.isArray(input.injectionWarnings) ? input.injectionWarnings.map(String).slice(0, 20) : [],
     extractionWarnings: Array.isArray(input.extractionWarnings) ? input.extractionWarnings.map(String).slice(0, 20) : [],
     progress: Array.isArray(input.progress) ? input.progress.map(normalizeProgress).slice(-80) : [],
@@ -397,6 +427,30 @@ function normalizeRecommendation(r: LearnRecommendation): LearnRecommendation {
     reviewState: r.reviewState === 'accepted' || r.reviewState === 'dismissed' ? r.reviewState : 'draft',
     createdAt: ts,
     updatedAt: r.updatedAt ? Number(r.updatedAt) : undefined,
+  };
+}
+
+function normalizeBrainSync(value: unknown): LearnBrainSync | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const status = raw.status === 'ok' || raw.status === 'partial' || raw.status === 'failed' ? raw.status : 'failed';
+  const sourceId = String(raw.sourceId || raw.source_id || '').slice(0, 120);
+  if (!sourceId) return undefined;
+  return {
+    status,
+    sourceId,
+    at: Number(raw.at || now()),
+    schemaVersion: Number(raw.schemaVersion ?? raw.schema_version ?? 0) || undefined,
+    exactEntity: raw.exactEntity === true || raw.exact_entity === true,
+    entity: raw.entity === true,
+    sourceEntity: raw.sourceEntity === true || raw.source_entity === true,
+    teamEntities: Math.max(0, Number(raw.teamEntities ?? raw.team_entities ?? 0) || 0),
+    goalEntities: Math.max(0, Number(raw.goalEntities ?? raw.goal_entities ?? 0) || 0),
+    facts: raw.facts === true,
+    edges: raw.edges === true,
+    text: raw.text === true,
+    memory: raw.memory === true,
+    timeline: raw.timeline === true,
   };
 }
 
@@ -567,6 +621,81 @@ export function recoverStaleMaterials(maxAgeMs = STALE_PROCESSING_MS): { recover
   return { recovered, materials: listMaterials() };
 }
 
+function isBrainSyncDue(material: LearnMaterial, retryMs = BRAIN_SYNC_RETRY_MS): boolean {
+  if (material.status !== 'ready' && material.status !== 'blocked') return false;
+  if (material.stage !== 'recommendations') return false;
+  if (!material.brainSync) return true;
+  if (material.brainSync.schemaVersion !== 2 || material.brainSync.exactEntity !== true) return true;
+  if (material.brainSync.status === 'ok') return false;
+  return now() - material.brainSync.at >= retryMs;
+}
+
+function backfillTextForMaterial(material: LearnMaterial): string {
+  return [
+    material.summary ?? '',
+    material.comparison ?? '',
+    material.excerpt ?? '',
+  ].filter(Boolean).join('\n\n').slice(0, MAX_TEXT_FOR_BRAIN);
+}
+
+function failedBrainSync(material: LearnMaterial): LearnBrainSync {
+  return {
+    status: 'failed',
+    sourceId: `learn:${material.id}`,
+    at: now(),
+    schemaVersion: 2,
+    exactEntity: false,
+    entity: false,
+    sourceEntity: false,
+    teamEntities: 0,
+    goalEntities: 0,
+    facts: false,
+    edges: false,
+    text: false,
+    memory: false,
+    timeline: false,
+  };
+}
+
+export async function syncUnsyncedMaterialsToBrain(opts: { limit?: number; retryMs?: number } = {}): Promise<LearnBrainBackfillResult> {
+  const retryMs = Math.max(60_000, Number(opts.retryMs ?? BRAIN_SYNC_RETRY_MS) || BRAIN_SYNC_RETRY_MS);
+  const due = () => listMaterials().filter((material) => isBrainSyncDue(material, retryMs));
+  if (processing) {
+    return { attempted: 0, synced: 0, remaining: due().length, skipped: 'processor-running', materials: [] };
+  }
+
+  const limit = Math.max(1, Math.min(8, Math.floor(Number(opts.limit ?? 2) || 2)));
+  const candidates = due().slice(0, limit);
+  const materials: LearnMaterial[] = [];
+  let attempted = 0;
+  let synced = 0;
+
+  for (const candidate of candidates) {
+    const material = getMaterial(candidate.id) ?? candidate;
+    if (!isBrainSyncDue(material, retryMs)) continue;
+    attempted++;
+    let brainSync: LearnBrainSync;
+    try {
+      brainSync = await syncMaterialToBrain(material, backfillTextForMaterial(material));
+    } catch {
+      brainSync = failedBrainSync(material);
+    }
+    const next = getMaterial(material.id) ?? material;
+    next.brainSync = brainSync;
+    next.progress.push({
+      stage: next.stage,
+      status: brainSync.status === 'ok' ? 'done' : brainSync.status === 'partial' ? 'warning' : 'failed',
+      note: `Backfilled Brain graph sync ${brainSync.status}: entity=${brainSync.entity ? 'yes' : 'no'}, facts=${brainSync.facts ? 'yes' : 'no'}, edges=${brainSync.edges ? 'yes' : 'no'}, text=${brainSync.text ? 'yes' : 'no'}, memory=${brainSync.memory ? 'yes' : 'no'}`,
+      at: now(),
+    });
+    writeMaterial(next);
+    materials.push(getMaterial(next.id) ?? next);
+    if (brainSync.status === 'ok' || brainSync.status === 'partial') synced++;
+  }
+
+  return { attempted, synced, remaining: due().length, materials };
+}
+
 function compareQueue(a: LearnMaterial, b: LearnMaterial): number {
   return Number(!!b.prioritized) - Number(!!a.prioritized)
     || PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
@@ -699,7 +828,17 @@ export async function processMaterial(id: string, ctx: ProcessMaterialContext = 
     material.status = hasBlocking ? 'blocked' : 'ready';
     material.processingTag = hasBlocking ? 'review needed' : 'recommendations ready';
     writeMaterial(material);
-    await syncMaterialToBrain(getMaterial(id) ?? material, extraction.text);
+
+    const brainSync = await syncMaterialToBrain(getMaterial(id) ?? material, extraction.text);
+    material = getMaterial(id) ?? material;
+    material.brainSync = brainSync;
+    material.progress.push({
+      stage: 'recommendations',
+      status: brainSync.status === 'ok' ? 'done' : brainSync.status === 'partial' ? 'warning' : 'failed',
+      note: `Brain graph sync ${brainSync.status}: entity=${brainSync.entity ? 'yes' : 'no'}, facts=${brainSync.facts ? 'yes' : 'no'}, edges=${brainSync.edges ? 'yes' : 'no'}, text=${brainSync.text ? 'yes' : 'no'}, memory=${brainSync.memory ? 'yes' : 'no'}`,
+      at: now(),
+    });
+    writeMaterial(material);
     return getMaterial(id) ?? material;
   } catch (e) {
     const failed = getMaterial(id) ?? material;
@@ -1177,10 +1316,133 @@ function obj(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 }
 
-async function syncMaterialToBrain(material: LearnMaterial, extractedText: string): Promise<void> {
+function entityKeyPart(value: string): string {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'unknown';
+}
+
+function sourceEntityId(source: string): string {
+  const digest = createHash('sha256').update(source || '').digest('hex').slice(0, 16);
+  return `source:${digest}`;
+}
+
+function syncStatus(flags: Array<boolean | number>): LearnBrainSync['status'] {
+  const values = flags.map((flag) => typeof flag === 'number' ? flag > 0 : flag);
+  if (values.every(Boolean)) return 'ok';
+  if (values.some(Boolean)) return 'partial';
+  return 'failed';
+}
+
+async function syncMaterialToBrain(material: LearnMaterial, extractedText: string): Promise<LearnBrainSync> {
   const sourceId = `learn:${material.id}`;
-  try {
-    await brain.ingestText({
+  const sourceEntity = sourceEntityId(material.source);
+  const routedTeams = material.classification?.routedTeams ?? [];
+  const topics = material.classification?.topics ?? [];
+  const matchedGoals = material.activeGoalMatches ?? [];
+  const teamIds = routedTeams.map((team) => `team:${entityKeyPart(team)}`);
+  const goalIds = matchedGoals.map((goal) => `goal:${goal.id}`);
+
+  const entity = await brain.entity({
+    id: sourceId,
+    type: 'learn-material',
+    name: material.title,
+    status: material.status,
+    tags: ['learn', 'material', material.kind, material.status, 'dashboard-state'],
+    exactId: true,
+    mergeAliases: false,
+    data: {
+      kind: material.kind,
+      source: material.source,
+      priority: material.priority,
+      stage: material.stage,
+      status: material.status,
+      trusted_source: false,
+      review_required: true,
+      teams: routedTeams,
+      topics,
+      activeGoalMatches: matchedGoals.map((goal) => ({ id: goal.id, team: goal.team, score: goal.score })),
+    },
+  });
+  const sourceEntityOk = await brain.entity({
+    id: sourceEntity,
+    type: 'source',
+    name: material.source,
+    status: 'active',
+    tags: ['source', 'learn', material.kind],
+    exactId: true,
+    mergeAliases: false,
+    data: {
+      source: material.source,
+      kind: material.kind,
+      materialId: material.id,
+    },
+  });
+  const teamEntityResults = await Promise.all(routedTeams.map((team, index) => brain.entity({
+    id: teamIds[index],
+    type: 'team',
+    name: team,
+    status: 'active',
+    tags: ['team', 'learn-route'],
+    exactId: true,
+    mergeAliases: false,
+    data: { team },
+  })));
+  const goalEntityResults = await Promise.all(matchedGoals.map((goal, index) => brain.entity({
+    id: goalIds[index],
+    type: 'goal',
+    name: goal.title,
+    status: 'active',
+    tags: ['goal', goal.priority ?? 'general', 'learn-match'],
+    exactId: true,
+    mergeAliases: false,
+    data: {
+      team: goal.team,
+      priority: goal.priority ?? 'general',
+      score: goal.score,
+      reason: goal.reason,
+    },
+  })));
+  const facts = await brain.facts([
+    { entity_id: sourceId, field: 'kind', value: material.kind },
+    { entity_id: sourceId, field: 'source', value: material.source },
+    { entity_id: sourceId, field: 'status', value: material.status },
+    { entity_id: sourceId, field: 'stage', value: material.stage },
+    { entity_id: sourceId, field: 'priority', value: material.priority },
+    { entity_id: sourceId, field: 'trusted_source', value: false },
+    { entity_id: sourceId, field: 'review_required', value: true },
+    { entity_id: sourceId, field: 'topics', value: topics },
+    { entity_id: sourceId, field: 'routed_teams', value: routedTeams },
+    { entity_id: sourceId, field: 'matched_goals', value: matchedGoals.map((goal) => ({ id: goal.id, team: goal.team, score: goal.score })) },
+    { entity_id: sourceId, field: 'recommendation_count', value: material.recommendations?.length ?? 0 },
+    { entity_id: sourceId, field: 'blocking_recommendations', value: material.recommendations?.filter((r) => r.blocking && r.reviewState === 'draft').length ?? 0 },
+  ]);
+  const edges = await brain.entityEdges([
+    {
+      from: sourceId,
+      to: sourceEntity,
+      kind: 'derived-from',
+      weight: 1,
+      description: 'Learn material was extracted from this external/local source.',
+    },
+    ...teamIds.map((teamId, index) => ({
+      from: sourceId,
+      to: teamId,
+      kind: 'routed-to',
+      weight: Math.max(0.2, 1 - index * 0.1),
+      description: 'Learn classifier routed this material to the team.',
+    })),
+    ...goalIds.map((goalId, index) => ({
+      from: sourceId,
+      to: goalId,
+      kind: 'supports-goal',
+      weight: Math.max(0.2, Math.min(1, (matchedGoals[index]?.score ?? 1) / 12)),
+      description: matchedGoals[index]?.reason ?? 'Learn material matched this active goal.',
+    })),
+  ]);
+  const text = await brain.ingestText({
       sourceKind: 'idacc-learn-material',
       sourceId,
       title: material.title,
@@ -1204,9 +1466,7 @@ async function syncMaterialToBrain(material: LearnMaterial, extractedText: strin
         activeGoalMatches: material.activeGoalMatches ?? [],
       },
     });
-  } catch { /* BrainClient is best-effort, but keep the processor defensive too. */ }
-  try {
-    await brain.memory('control-center', {
+  const memory = await brain.memory('control-center', {
       key: sourceId,
       content: [
         `# Learn material: ${material.title}`,
@@ -1223,5 +1483,49 @@ async function syncMaterialToBrain(material: LearnMaterial, extractedText: strin
       shared: true,
       project: material.classification?.routedTeams?.[0] ?? 'default',
     });
-  } catch { /* best-effort */ }
+  const preTimeline: Omit<LearnBrainSync, 'timeline' | 'status'> = {
+    sourceId,
+    at: now(),
+    entity,
+    sourceEntity: sourceEntityOk,
+    teamEntities: teamEntityResults.filter(Boolean).length,
+    goalEntities: goalEntityResults.filter(Boolean).length,
+    facts,
+    edges,
+    text,
+    memory,
+  };
+  const timeline = await brain.timeline({
+    type: 'learn:material-synced',
+    subject: sourceId,
+    data: {
+      material_id: material.id,
+      title: material.title,
+      status: material.status,
+      stage: material.stage,
+      source: material.source,
+      routed_teams: routedTeams,
+      matched_goal_ids: matchedGoals.map((goal) => goal.id),
+      sync: preTimeline,
+    },
+    tags: ['learn', 'material', 'brain-sync'],
+  });
+  const result: LearnBrainSync = {
+    ...preTimeline,
+    schemaVersion: 2,
+    exactEntity: true,
+    timeline,
+    status: syncStatus([
+      preTimeline.entity,
+      preTimeline.sourceEntity,
+      routedTeams.length ? preTimeline.teamEntities === routedTeams.length : true,
+      matchedGoals.length ? preTimeline.goalEntities === matchedGoals.length : true,
+      preTimeline.facts,
+      preTimeline.edges,
+      preTimeline.text,
+      preTimeline.memory,
+      timeline,
+    ]),
+  };
+  return result;
 }
