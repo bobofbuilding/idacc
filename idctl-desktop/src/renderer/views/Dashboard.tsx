@@ -223,16 +223,23 @@ function recentWorkingKeys(events: TeamEvent[]): Set<string> {
  * leads → team leads → workers, each with its live state (working / idle / stopped) and current
  * task. The observation half of the CC refactor (Phase 4): the agents orchestrate, this just shows it.
  */
-function CoordinationTree({ store, events, activeTeams }: { store: FleetStore; events: TeamEvent[]; activeTeams: string[] }) {
-  const syncVersion = useSyncVersion(['org', 'agents', 'tasks', 'work', 'dashboard']);
-  const [hier, setHier] = useState<OrgHier>({ primary: null, secondaries: [], coordinators: {}, teams: [] });
-  const [tasks, setTasks] = useState<LiteTask[]>([]);
+function CoordinationTree({
+  store,
+  events,
+  activeTeams,
+  hier,
+  tasks,
+}: {
+  store: FleetStore;
+  events: TeamEvent[];
+  activeTeams: string[];
+  hier: OrgHier;
+  tasks: LiteTask[];
+}) {
   const [spend, setSpend] = useState<{ total: number; count: number; top?: { agent: string; total: number } } | null>(null);
   const liveRef = useRef(true);
   useEffect(() => () => { liveRef.current = false; }, []);
-  const load = useCallback(() => {
-    void call<OrgHier>('org:hierarchy').then((h) => { if (liveRef.current && h) setHier(h); }).catch(() => {});
-    void call<LiteTask[]>('tasks:allTeams').then((t) => { if (liveRef.current) setTasks(Array.isArray(t) ? t : []); }).catch(() => {});
+  const loadUsage = useCallback(() => {
     void call<{ day?: { total?: number; count?: number; agents?: { agent: string; total?: number; output: number }[] } }>('usage').then((u) => {
       if (!liveRef.current || !u?.day) return;
       const agents = u.day.agents ?? [];
@@ -240,11 +247,11 @@ function CoordinationTree({ store, events, activeTeams }: { store: FleetStore; e
       setSpend({ total: u.day.total ?? 0, count: u.day.count ?? 0, top });
     }).catch(() => {});
   }, []);
-  useEffect(() => { load(); }, [load, store.lastUpdated, syncVersion]);
+  useEffect(() => { loadUsage(); }, [loadUsage, store.lastUpdated]);
   useEffect(() => {
-    const iv = setInterval(() => { load(); }, 15000);
+    const iv = setInterval(() => { loadUsage(); }, 15000);
     return () => clearInterval(iv);
-  }, [load]);
+  }, [loadUsage]);
 
   const workingKeys = recentWorkingKeys(events);
   const taskOf = (name?: string) => (name ? tasks.find((t) => t.ownerName === name && DOING_RE.test(t.status) && !DONE_RE.test(t.status)) : undefined);
@@ -522,7 +529,7 @@ export function Dashboard({ store }: { store: FleetStore }) {
         </div>
       </header>
 
-      <CoordinationTree store={store} events={events} activeTeams={activeTeams} />
+      <CoordinationTree store={store} events={events} activeTeams={activeTeams} hier={hier} tasks={tasks} />
 
       {/* Explicit flex row so the chat fills the left and the activity tile always shows on the right. */}
       <div style={{ display: 'flex', gap: 14, flex: 1, minHeight: 0, alignItems: 'stretch' }}>
