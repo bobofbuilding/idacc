@@ -177,6 +177,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [discovered, setDiscovered] = useState<Discovered[] | null>(null);
   const [discoveredAt, setDiscoveredAt] = useState<number | null>(null);
   const discoverPromiseRef = useRef<Promise<Discovered[]> | null>(null);
+  const stackInstallPromiseRef = useRef<Promise<Record<string, LocalStackInstallStatus>> | null>(null);
+  const stackBackgroundPromiseRef = useRef<Promise<Record<string, BackgroundStackStatus>> | null>(null);
   const localRefreshRunningRef = useRef(false);
   const localRefreshLastAtRef = useRef(0);
   const subRefreshRunningRef = useRef(false);
@@ -294,7 +296,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     // Settings (the cached status above can lag a release until the next check).
     void call<typeof updStatus>('update:check').then((s) => { if (s) setUpdStatus(s); }).catch(() => {});
     await refreshManagedSubscriptions();
-    void checkStackInstalls();
   }
   async function reloadManagerCapabilities() {
     setManagerCaps(undefined);
@@ -717,14 +718,27 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
 
   // Local LLM discovery: scan localhost for running servers, then one-click add.
   async function checkBackgroundStacks(): Promise<Record<string, BackgroundStackStatus>> {
-    const status = await call<Record<string, BackgroundStackStatus>>('stack:backgroundStatus', TOP_LOCAL_STACKS.map((s) => s.id)).catch((): Record<string, BackgroundStackStatus> => ({}));
-    setStackBackgroundStatus(status);
-    return status;
+    if (stackBackgroundPromiseRef.current) return stackBackgroundPromiseRef.current;
+    let task: Promise<Record<string, BackgroundStackStatus>>;
+    task = call<Record<string, BackgroundStackStatus>>('stack:backgroundStatus', TOP_LOCAL_STACKS.map((s) => s.id))
+      .catch((): Record<string, BackgroundStackStatus> => ({}))
+      .then((status) => {
+        setStackBackgroundStatus(status);
+        return status;
+      })
+      .finally(() => {
+        if (stackBackgroundPromiseRef.current === task) stackBackgroundPromiseRef.current = null;
+      });
+    stackBackgroundPromiseRef.current = task;
+    return task;
   }
   async function checkStackInstalls(): Promise<Record<string, LocalStackInstallStatus>> {
+    if (stackInstallPromiseRef.current) return stackInstallPromiseRef.current;
     setStackInstallChecking(true);
-    try {
-      const status = await call<Record<string, LocalStackInstallStatus>>('stack:installStatus', TOP_LOCAL_STACKS.map((s) => s.id)).catch((): Record<string, LocalStackInstallStatus> => ({}));
+    let task: Promise<Record<string, LocalStackInstallStatus>>;
+    task = (async () => {
+      const status = await call<Record<string, LocalStackInstallStatus>>('stack:installStatus', TOP_LOCAL_STACKS.map((s) => s.id))
+        .catch((): Record<string, LocalStackInstallStatus> => ({}));
       setStackInstallStatus(status);
       setStackPortOverrides((prev) => {
         const next = { ...prev };
@@ -735,9 +749,14 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       });
       await autoAddInstalledStackBackendPlaceholders(status);
       return status;
-    } finally {
-      setStackInstallChecking(false);
-    }
+    })().finally(() => {
+      if (stackInstallPromiseRef.current === task) {
+        stackInstallPromiseRef.current = null;
+        setStackInstallChecking(false);
+      }
+    });
+    stackInstallPromiseRef.current = task;
+    return task;
   }
   async function runDiscover(opts: { autoAddKnownStacks?: boolean } = {}): Promise<Discovered[]> {
     if (discoverPromiseRef.current) return discoverPromiseRef.current;
@@ -2059,7 +2078,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       void Promise.allSettled([
         loadLocalModelCatalog(),
         loadOllama(),
-        checkBackgroundStacks(),
         runDiscover(),
       ]).finally(() => {
         localRefreshRunningRef.current = false;

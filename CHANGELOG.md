@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.569] — 2026-07-04
+- Reduce Settings local runtime refresh churn
+
 ## [0.1.568] — 2026-07-04
 - Reduce dashboard duplicate polling
 
