@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.565] — 2026-07-04
+- Route Work assignment controls to execution targets
+
 ## [0.1.564] — 2026-07-04
 - Park demo MCP server and require explicit MCP targets
 

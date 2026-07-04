@@ -208,8 +208,9 @@ three statuses (`todo|doing|done`) via an app-side **lane overlay**.
   **auto** checkbox keeps the lead doing this for new unassigned To-Do tasks (~90s throttle).
 - **⚡ Assign work to fleet** — describe an objective → the lead decomposes it into sub-tasks
   (owners + dependencies), preview/edit owners → **Decompose for <team>** then create + dispatch
-  (independent tasks run in parallel; dependents follow). Or **⇄ Fan out to N teams** to hand the
-  same objective to other teams' active leads.
+  (independent tasks run in parallel; dependents follow). Normal assignment scopes and proposal
+  owner dropdowns show execution targets rather than coordinators/default validators; use **⇄ Fan
+  out to N teams** to hand the same objective to other teams' active leads for delegation.
 - **⚠ Surface blockers** — the lead surfaces task decisions that need **your** call as
   option-questions in the **Inbox**.
 - **Done auto-archives** (hidden by default) with a **show archived (N)** toggle and a Done-lane
