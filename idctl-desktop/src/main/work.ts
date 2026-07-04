@@ -405,10 +405,25 @@ export async function createAndDispatchPlan(
     try {
       const env = await client.remote<{ task?: { shortId?: string; name?: string }; warning?: string }>(cmd);
       const task = env.result?.task;
-      const warning = typeof env.result?.warning === 'string' && env.result.warning.trim() ? env.result.warning.trim() : undefined;
+      const remoteWarning = typeof env.result?.warning === 'string' && env.result.warning.trim() ? env.result.warning.trim() : undefined;
       const ref = task?.shortId ?? task?.name ?? st.title;
       if (opts.lane && ref) { try { setTaskLane(ref, opts.lane); } catch { /* overlay is best-effort */ } }
-      created.push({ idx: i, ref, title: st.title, agent: st.agent, ok: true, warning, dependsOn: st.dependsOn, dispatched: false, deferred: Boolean(warning) });
+      const managerDelegated = dispatch
+        && opts.allowCoordinatorOwners === true
+        && agentNameKey(st.agent) === agentNameKey(coordinator);
+      const localWarning = managerDelegated ? 'coordinator-owned parent deferred to manager delegation kickoff' : undefined;
+      const warning = [remoteWarning, localWarning].filter(Boolean).join('; ') || undefined;
+      created.push({
+        idx: i,
+        ref,
+        title: st.title,
+        agent: st.agent,
+        ok: true,
+        warning,
+        dependsOn: st.dependsOn,
+        dispatched: false,
+        deferred: Boolean(remoteWarning) || managerDelegated,
+      });
     } catch (e) {
       created.push({ idx: i, ref: st.title, title: st.title, agent: st.agent, ok: false, error: e instanceof Error ? e.message : String(e), dependsOn: st.dependsOn, dispatched: false });
     }
