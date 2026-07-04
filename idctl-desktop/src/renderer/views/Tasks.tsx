@@ -23,7 +23,7 @@ type StalledTriageItem = { team?: string; owner?: string; blockers?: string[]; t
 type StalledTriageReport = { triagedOwners?: number; items?: StalledTriageItem[] };
 type JumpstartResult = { ok: boolean; status?: string; taskRef?: string; actor?: string; message: string };
 type AssignScope = 'team' | 'selected-teams' | 'team-leads' | 'all-agents';
-type TaskSnapshot = { status: string; owner?: string; team?: string; lane: Lane };
+type TaskSnapshot = { status: string; owner?: string; team?: string; lane: Lane; delegation?: string };
 type TeamAgentsGroup = { team: string; agents: TeamAgent[] };
 type WorkSchedule = ScheduleEntry & { team?: string };
 type WorkOrgHierarchy = {
@@ -59,6 +59,21 @@ const SURFACE_BLOCKERS_PROMPT = (taskList: string) =>
 /** Stable reference the manager accepts for a task: #shortid, name, then fallbacks. */
 function ref(t: Task): string {
   return t.shortId ?? t.name ?? t.uuid ?? t.title;
+}
+function delegationStatus(t: Task): string {
+  return String(t.delegationAudit?.status ?? '');
+}
+function delegatedChildRefs(t: Task): string[] {
+  const refs = t.delegationAudit?.childTaskRefs;
+  return Array.isArray(refs) ? refs.filter((r): r is string => typeof r === 'string' && !!r.trim()) : [];
+}
+function delegationSnapshot(t: Task): string {
+  const status = delegationStatus(t);
+  const children = delegatedChildRefs(t);
+  return status || children.length ? `${status}:${children.join(',')}` : '';
+}
+function isDelegatedLeadTask(t: Task): boolean {
+  return delegationStatus(t) === 'ok' && delegatedChildRefs(t).length > 0;
 }
 function isDone(t: Task): boolean {
   return /done|complete/i.test(t.status);
@@ -567,7 +582,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
     return DEFAULT_LANE[colOf(t.status)];
   }
   function snapshotOf(t: Task, lane: Lane = laneOf(t)): TaskSnapshot {
-    return { status: colOf(t.status), owner: t.ownerName ?? '', team: t.teamName ?? taskTeam(t) ?? '', lane };
+    return { status: colOf(t.status), owner: t.ownerName ?? '', team: t.teamName ?? taskTeam(t) ?? '', lane, delegation: delegationSnapshot(t) };
   }
   async function freshTask(t: Task): Promise<{ task: Task | null; lane: Lane }> {
     const list = await call<Task[]>(store.viewAll ? 'tasks:allTeams' : 'tasks');
@@ -706,6 +721,15 @@ function TasksPanel({ store }: { store: FleetStore }) {
     const status = item?.triage?.status ?? '';
     const taskRef = item?.triage?.taskRef ?? ref(t);
     const actor = item?.triage?.actor ?? item?.owner;
+    const requestedRef = ref(t);
+    const blockers = Array.isArray(item?.blockers) ? item.blockers.filter((b): b is string => typeof b === 'string') : [];
+    const requestedIsInOwnerBacklog = !!item && taskRef !== requestedRef && blockers.includes(requestedRef);
+    if (requestedIsInOwnerBacklog && triageDelivered(item)) {
+      return { ok: true, status, taskRef, actor, message: `jump-started oldest stalled blocker ${taskRef}; ${requestedRef} is in ${actor || 'the same owner'} backlog` };
+    }
+    if (requestedIsInOwnerBacklog && status === 'throttled') {
+      return { ok: false, status, taskRef, actor, message: `${requestedRef} is in ${actor || 'the owner'} stalled backlog; oldest blocker ${taskRef} was already nudged recently` };
+    }
     if (item && triageDelivered(item)) {
       return { ok: true, status, taskRef, actor, message: `jump-started ${taskRef} via ${actor || 'manager'} ✓` };
     }
@@ -715,7 +739,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
     if (status === 'throttled') return { ok: false, status, taskRef, actor, message: `${taskRef} was already nudged recently; waiting for an update` };
     if (status === 'send_failed' || status === 'owner_wake_prompt_failed') return { ok: false, status, taskRef, actor, message: `manager could not deliver the stalled-task prompt for ${taskRef}` };
     if (status === 'no_lead') return { ok: false, status, taskRef, actor, message: `no live lead or task manager is available for ${taskRef}` };
-    if (!item) return { ok: false, status, taskRef, actor, message: `no stalled task was found for ${ref(t)}` };
+    if (!item && isDelegatedLeadTask(t)) {
+      const kids = delegatedChildRefs(t);
+      return { ok: false, status: 'delegated', taskRef, actor, message: `${ref(t)} is already delegated${kids.length ? ` to ${kids.join(', ')}` : ''}; no stalled jump-start needed` };
+    }
+    if (!item) return { ok: false, status: 'not_stalled', taskRef, actor, message: `no manager-stalled task was found for ${ref(t)}` };
     return { ok: false, status, taskRef, actor, message: `manager returned ${status || 'no action'} for ${taskRef}` };
   }
 
@@ -739,7 +767,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
     const tt = toast({ kind: 'progress', text: `Jump-starting ${ref(t)}…` });
     try {
       const res = await jumpstartCore(t, {}, true, true);
-      tt.update(res.ok ? { kind: 'success', text: res.message } : { kind: res.status === 'owner_busy' || res.status === 'lead_busy' || res.status === 'task_manager_busy' || res.status === 'throttled' ? 'info' : 'error', text: res.message });
+      tt.update(res.ok ? { kind: 'success', text: res.message } : { kind: res.status === 'owner_busy' || res.status === 'lead_busy' || res.status === 'task_manager_busy' || res.status === 'throttled' || res.status === 'delegated' || res.status === 'not_stalled' ? 'info' : 'error', text: res.message });
       if (res.ok) await reload();
     } catch (e) { tt.update({ kind: 'error', text: `jump-start failed: ${e instanceof Error ? e.message : String(e)}` }); }
   }
@@ -981,6 +1009,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const stalledTasks = tasks.filter((t) => {
     if (colOf(t.status) !== 'doing' || !t.ownerName) return false;
     if (isBlocked(t)) return false; // a blocked task isn't stalled — it's waiting on a prerequisite
+    if (isDelegatedLeadTask(t)) return false; // lead parent already delegated child work; not jump-startable
     const up = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
     return up > 0 && Date.now() - up > 30 * 60 * 1000;
   });
@@ -1269,11 +1298,13 @@ function TasksPanel({ store }: { store: FleetStore }) {
             // strong stall signal — don't claim "working" when a task has sat untouched for 30m+.
             const upMs = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
             const blocked = isBlocked(t);                        // waiting on a prerequisite → parked in Holding
-            const stale = owned && !blocked && upMs > 0 && Date.now() - upMs > 30 * 60 * 1000;
-            const working = owned && !stale && !blocked;         // recently moved to doing → plausibly active
+            const delegated = owned && isDelegatedLeadTask(t);
+            const stale = owned && !blocked && !delegated && upMs > 0 && Date.now() - upMs > 30 * 60 * 1000;
+            const working = owned && !delegated && !stale && !blocked; // recently moved to doing → plausibly active
             const cAbs = absTime(t.createdAt);
             const uAbs = absTime(t.updatedAt);
             const dAbs = absTime(t.completedAt ?? t.updatedAt);
+            const childRefs = delegated ? delegatedChildRefs(t) : [];
             return (
             <div
               key={ref(t)}
@@ -1281,7 +1312,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
               onDragStart={(e) => { setDragRef(ref(t)); e.dataTransfer.setData('text/plain', ref(t)); e.dataTransfer.effectAllowed = 'move'; }}
               onDragEnd={() => setDragRef(null)}
               className="kanban-card"
-              style={{ border: `1px solid ${blocked ? 'rgba(96,165,250,0.5)' : working ? 'rgba(60,203,120,0.55)' : stale ? 'rgba(224,163,60,0.55)' : 'var(--border, #2a2a2a)'}`, borderRadius: 6, padding: '6px 8px', background: 'var(--bg, #141414)', cursor: busy ? 'default' : 'grab' }}
+              style={{ border: `1px solid ${blocked ? 'rgba(96,165,250,0.5)' : delegated ? 'rgba(96,165,250,0.55)' : working ? 'rgba(60,203,120,0.55)' : stale ? 'rgba(224,163,60,0.55)' : 'var(--border, #2a2a2a)'}`, borderRadius: 6, padding: '6px 8px', background: 'var(--bg, #141414)', cursor: busy ? 'default' : 'grab' }}
             >
               <div className="task-card-title b" title={t.title}>{t.title}</div>
               <div className="muted small mono">{t.shortId ?? ref(t)}{isRoutine(t) ? ' · routine' : ''}{store.viewAll && t.teamName ? ` · ${t.teamName}` : ''}{(() => { const n = blocksCount(t); return n ? ` · blocks ${n}` : ''; })()}</div>
@@ -1321,6 +1352,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#60a5fa', background: 'rgba(96,165,250,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
                     ⏸ {t.ownerName ? `${t.ownerName} · ` : ''}waiting
                   </span>
+                ) : delegated ? (
+                  <span className="small" title={`${t.ownerName} delegated this parent task${childRefs.length ? ` to ${childRefs.join(', ')}` : ''}; the manager does not consider it jump-startable stalled.`}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#60a5fa', background: 'rgba(96,165,250,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
+                    ⇢ {t.ownerName} · delegated
+                  </span>
                 ) : working ? (
                   <span className="small" title={`${t.ownerName} recently picked this up${uAbs ? ` — moved to Doing ${uAbs}` : ''}`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#3ccb78', background: 'rgba(60,203,120,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
@@ -1354,6 +1390,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
               <div className="muted" style={{ marginTop: 3, display: 'flex', gap: 9, flexWrap: 'wrap', fontSize: 10.5, opacity: 0.85 }}>
                 <span title={cAbs ? `created ${cAbs}` : undefined}>⊕ created {ago(t.createdAt)} ago</span>
                 {working && t.updatedAt ? <span style={{ color: '#3ccb78' }} title={uAbs ? `moved to Doing ${uAbs}` : undefined}>▶ in Doing {ago(t.updatedAt)}</span> : null}
+                {delegated && childRefs.length ? <span style={{ color: '#60a5fa' }} title={`Delegated child tasks: ${childRefs.join(', ')}`}>⇢ {childRefs.length} delegated</span> : null}
                 {stale ? <span style={{ color: '#e0a33c' }} title={uAbs ? `no status change since ${uAbs} — may be stalled` : undefined}>⏳ no update {ago(t.updatedAt)}</span> : null}
                 {phase === 'done' && (t.completedAt || t.updatedAt) ? <span title={dAbs ? `completed ${dAbs}` : undefined}>✓ done {ago(t.completedAt ?? t.updatedAt)} ago</span> : null}
                 {phase === 'todo' && t.ownerName ? <span title="assigned but not started yet">◴ queued</span> : null}

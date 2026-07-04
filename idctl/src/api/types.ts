@@ -148,6 +148,15 @@ export interface Task {
   createdAt: number;
   updatedAt?: number;
   completedAt?: number | null;
+  delegationAudit?: {
+    status?: 'ok' | 'pending-delegation' | 'needs-delegation' | string;
+    ownerRole?: string;
+    reason?: string;
+    ageSeconds?: number;
+    graceSeconds?: number;
+    childTaskRefs?: string[];
+    [key: string]: unknown;
+  } | null;
 }
 
 /** A query awaiting a human/manager answer (manager inbox). */
