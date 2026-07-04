@@ -38,6 +38,7 @@ type TrackingEvent = TrackingCandidate & {
   at: string;
   weekKey: string;
   method: string;
+  tags: string[];
   opportunity?: OpportunitySignal;
 };
 
@@ -45,7 +46,6 @@ const s = (v: unknown): string => (typeof v === 'string' ? v : '');
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 const clip = (v: unknown, n: number): string => s(v).replace(/\s+/g, ' ').trim().slice(0, n);
 const clean = (v: unknown, n = 160): string => clip(v, n);
-const keyPart = (v: unknown): string => (s(v) || 'default').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'default';
 
 function safeJson(value: unknown, n = 3000): string {
   try { return JSON.stringify(value).slice(0, n); } catch { return ''; }
@@ -675,10 +675,11 @@ const EXTRAS: Record<string, (args: unknown[], result: unknown) => void> = {
 export function recordControlAction(method: string, args: unknown[], result: unknown): void {
   try {
     const summarize = ACTIONS[method];
+    let out: Summary | undefined;
     if (summarize) {
-      let out: Summary;
       try { out = summarize(args, result) ?? {}; } catch { out = {}; }
       void brain.control(method, out);
+      void recordTrackingHooks(method, args, result, out).catch(() => {});
     }
     const extra = EXTRAS[method];
     if (extra) { try { extra(args, result); } catch { /* best-effort */ } }
