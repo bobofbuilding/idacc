@@ -42,7 +42,8 @@ export interface DraftDispatchRunResult {
 
 const MAX_SUBTASKS = 12;
 const NEWS_LIMIT_PER_TEAM = 80;
-const MAX_DRAFTS_PER_RUN = 4;
+const MAX_DRAFTS_PER_RUN = boundedEnvInt('IDACC_DRAFT_DISPATCHER_MAX_DRAFTS_PER_RUN', 1, 1, 4);
+const DRAFT_TASK_CREATE_CAP = boundedEnvInt('IDACC_DRAFT_DISPATCHER_TASK_CREATE_CAP', 2, 1, MAX_SUBTASKS);
 const RECENT_DONE_TASK_LIMIT = 250;
 const RECENT_DRAFT_MS = 2 * 60 * 60 * 1000;
 const PROCESSED_TTL_MS = 14 * 24 * 60 * 60 * 1000;
@@ -51,6 +52,20 @@ const POLL_MS = 30_000;
 const INITIAL_DELAY_MS = 12_000;
 
 const inFlightDrafts = new Set<string>();
+
+function envFlag(name: string): boolean {
+  return /^(1|true|yes|on)$/i.test(String(process.env[name] || '').trim());
+}
+
+function boundedEnvInt(name: string, fallback: number, min: number, max: number): number {
+  const raw = Number(process.env[name]);
+  const value = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+function draftDispatcherLivePromotionAllowed(): boolean {
+  return envFlag('IDACC_DRAFT_DISPATCHER_ENABLE_LIVE') || envFlag('IDACC_DRAFT_DISPATCHER_ALLOW_LIVE');
+}
 
 function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
 function clip(s: string, n: number): string {
@@ -233,7 +248,8 @@ function budgetedCommand(client: ManagerClient, command: string, source: string)
 }
 
 async function createAndDispatchRoutedDraft(client: ManagerClient, draft: ParsedDraftProposal, rosters: TeamRoster[]): Promise<CreatePlanResult> {
-  const routed = routeSubtasks(draft.team, draft.subtasks, rosters);
+  const routedAll = routeSubtasks(draft.team, draft.subtasks, rosters);
+  const routed = routedAll.slice(0, DRAFT_TASK_CREATE_CAP);
   const created: RoutedCreatedTask[] = [];
   for (let i = 0; i < routed.length; i++) {
     const st = routed[i];
@@ -257,12 +273,29 @@ async function createAndDispatchRoutedDraft(client: ManagerClient, draft: Parsed
       });
     }
   }
+  for (let i = routed.length; i < routedAll.length; i++) {
+    const st = routedAll[i];
+    const reason = `draft promotion capped at ${DRAFT_TASK_CREATE_CAP} live task${DRAFT_TASK_CREATE_CAP === 1 ? '' : 's'}; review remaining draft proposals manually`;
+    created.push({
+      idx: i,
+      ref: st.title,
+      title: st.title,
+      agent: st.agent,
+      ok: false,
+      error: reason,
+      warning: reason,
+      dependsOn: st.dependsOn,
+      dispatched: false,
+      deferred: true,
+      team: st.team,
+    });
+  }
 
   try {
     for (let i = 0; i < created.length; i++) {
       const c = created[i];
       if (!c.ok) continue;
-      const refs = (routed[i].dependsOn || [])
+      const refs = (routedAll[i]?.dependsOn || [])
         .filter((d) => d >= 0 && d < created.length && created[d]?.ok)
         .map((d) => created[d].ref);
       if (refs.length) setTaskDeps(c.ref, refs);
@@ -351,7 +384,7 @@ function saveProcessed(processed: Record<string, DraftDispatcherProcessedRecord>
 export async function processDraftProposalsOnce(client: ManagerClient, opts: { now?: number; maxAgeMs?: number; maxDrafts?: number } = {}): Promise<DraftDispatchRunResult> {
   const now = opts.now ?? Date.now();
   const cfg = loadSettings();
-  if (cfg.draftDispatcher?.enabled !== true) {
+  if (cfg.draftDispatcher?.enabled !== true || !draftDispatcherLivePromotionAllowed()) {
     return { enabled: false, scanned: 0, candidates: 0, dispatched: 0, createdTasks: 0, skippedProcessed: 0, failed: 0, details: [] };
   }
   const rawProcessed = { ...(cfg.draftDispatcher?.processed ?? {}) };
@@ -421,7 +454,7 @@ export async function processDraftProposalsOnce(client: ManagerClient, opts: { n
 }
 
 export function startDraftDispatcherLoop(clientProvider: () => ManagerClient): () => void {
-  if (loadSettings().draftDispatcher?.enabled !== true) return () => {};
+  if (loadSettings().draftDispatcher?.enabled !== true || !draftDispatcherLivePromotionAllowed()) return () => {};
   let stopped = false;
   let running = false;
   const tick = async (): Promise<void> => {

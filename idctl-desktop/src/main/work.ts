@@ -47,7 +47,9 @@ function taskKeys(t: Task): string[] {
 function taskRef(t: Task): string { return t.shortId ?? t.name ?? t.uuid ?? t.title; }
 function clip(s: string, n: number): string { const t = (s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; }
 
-const MAX_SUBTASKS = 12;
+const MAX_SUBTASKS = boundedEnvInt('IDACC_WORK_MAX_SUBTASKS', 12, 1, 24);
+const WORK_TASK_MANAGER_SUBTASK_CAP = boundedEnvInt('IDACC_WORK_TASK_MANAGER_SUBTASK_CAP', 3, 1, MAX_SUBTASKS);
+const WORK_CREATE_TASK_CAP = boundedEnvInt('IDACC_WORK_CREATE_TASK_CAP', 3, 1, MAX_SUBTASKS);
 const WORK_LEAD_QUEUE_MAX = positiveEnvInt('IDACC_WORK_LEAD_QUEUE_MAX', 2);
 const WORK_LEAD_GUARD_TTL_MS = positiveEnvInt('IDACC_WORK_LEAD_GUARD_TTL_MINUTES', 45) * 60 * 1000;
 const WORK_OWNER_OPEN_TASK_CAP = positiveEnvInt('IDACC_WORK_OWNER_OPEN_TASK_CAP', 1);
@@ -62,6 +64,12 @@ const WORK_PLANNER_NAMES = (process.env.IDACC_WORK_PLANNER_NAMES || 'task-manage
 function positiveEnvInt(name: string, fallback: number): number {
   const raw = Number(process.env[name]);
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+}
+
+function boundedEnvInt(name: string, fallback: number, min: number, max: number): number {
+  const raw = Number(process.env[name]);
+  const value = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+  return Math.min(max, Math.max(min, value));
 }
 
 function extractGoalId(...texts: Array<string | undefined | null>): string {
@@ -430,7 +438,11 @@ function consumeQueueCapacity(capacity: PlanCapacity, team: string | undefined):
   };
 }
 
-const DECOMP_PROMPT = (objective: string, agentLines: string, plannerKind: DecompositionPlanner['kind']) =>
+function decompositionCapForPlanner(kind: DecompositionPlanner['kind']): number {
+  return kind === 'task-manager' ? WORK_TASK_MANAGER_SUBTASK_CAP : MAX_SUBTASKS;
+}
+
+const DECOMP_PROMPT = (objective: string, agentLines: string, plannerKind: DecompositionPlanner['kind'], maxSubtasks: number) =>
   `${plannerKind === 'task-manager' ? 'You are the fleet task manager.' : 'You are the team lead.'} Break the objective below into a small set of concrete, independently-actionable sub-tasks for the fleet, and assign each to the best-suited agent.
 
 This is an ADVISORY decomposition request only. Do not create, claim, or close manager tasks for yourself while answering it. The control center will create the live tasks and dispatch them after parsing your JSON.
@@ -440,7 +452,7 @@ Objective: ${objective}
 Available agents:
 ${agentLines}
 
-Return ONLY a JSON array (no prose, no markdown fence) of up to ${MAX_SUBTASKS} objects with this exact shape:
+Return ONLY a JSON array (no prose, no markdown fence) of up to ${maxSubtasks} objects with this exact shape:
 [{"title":"short imperative task","description":"1-2 sentences: what to do and the expected output","agent":"<one of the agent names above>","dependsOn":[<0-based indices of prerequisite tasks in THIS array; empty when it can start immediately>]}]
 
 Rules:
@@ -473,11 +485,13 @@ export async function decomposeWork(
     `- ${fallback}`;
 
   let raw = '';
+  let maxSubtasks = MAX_SUBTASKS;
   try {
     const planner = await resolveDecompositionPlanner(client, lead);
     const guard = await guardLeadQueue(planner.client, planner.agent, planner.kind === 'task-manager' ? 'task-manager decomposition' : 'decomposition');
     if (!guard.ok) return { ok: false, subtasks: [], raw: '', error: guard.detail };
-    raw = await dispatchBudgeted(planner.client, `/ask ${planner.agent} ${qArg(DECOMP_PROMPT(obj, agentLines, planner.kind))}`, 'work:decompose');
+    maxSubtasks = decompositionCapForPlanner(planner.kind);
+    raw = await dispatchBudgeted(planner.client, `/ask ${planner.agent} ${qArg(DECOMP_PROMPT(obj, agentLines, planner.kind, maxSubtasks))}`, 'work:decompose');
   } catch (e) {
     return { ok: false, subtasks: [], raw: '', error: e instanceof Error ? e.message : String(e) };
   }
@@ -486,7 +500,7 @@ export async function decomposeWork(
   const arr = extractJsonArray(raw);
   if (!arr) return { ok: false, subtasks: [], raw, error: 'could not parse a task list from the reply' };
 
-  const n = Math.min(arr.length, MAX_SUBTASKS);
+  const n = Math.min(arr.length, maxSubtasks);
   const subtasks: SubTask[] = [];
   for (let i = 0; i < n; i++) {
     const o = (arr[i] ?? {}) as Record<string, unknown>;
@@ -541,7 +555,7 @@ export async function createAndDispatchPlan(
   const pool = executionPoolForTeam(roster, coordinator, client.team, opts.allowCoordinatorOwners === true);
   const names = new Set(pool.map((a) => a.name));
   const fallback = pool[0]?.name ?? '';
-  const list = subtasks.slice(0, MAX_SUBTASKS).map((st, i, arr) => ({
+  const planItems = subtasks.slice(0, MAX_SUBTASKS).map((st, i, arr) => ({
     title: clip(String(st?.title ?? `Task ${i + 1}`), 120) || `Task ${i + 1}`,
     description: clip(String(st?.description ?? ''), 400),
     agent: names.has(st?.agent) ? st.agent : fallback,
@@ -549,6 +563,8 @@ export async function createAndDispatchPlan(
       .map((d) => Number(d))
       .filter((d) => Number.isInteger(d) && d >= 0 && d < arr.length && d !== i),
   }));
+  const createLimit = Math.min(WORK_CREATE_TASK_CAP, planItems.length);
+  const list = planItems.slice(0, createLimit);
   const created: CreatedTask[] = [];
   if (!fallback) return { created, dispatched: 0, deferred: 0 }; // no agents → nothing to dispatch
   // Don't pile every task on one agent - spread across the active roster (best-fit up to a cap).
@@ -603,6 +619,13 @@ export async function createAndDispatchPlan(
       created.push({ idx: i, ref: st.title, title: st.title, agent: st.agent, ok: false, error: e instanceof Error ? e.message : String(e), dependsOn: st.dependsOn, dispatched: false });
     }
   }
+  for (let i = createLimit; i < planItems.length; i++) {
+    created.push(capacityDeferredTask(
+      i,
+      planItems[i],
+      `capacity deferred: live task creation cap ${WORK_CREATE_TASK_CAP} reached for this plan; review remaining proposed work before creating more tasks`,
+    ));
+  }
 
   // Persist the dependency graph app-side (the manager has no deps field) so the board
   // can surface "blocked by …". Map each task's backward dep indices → the created refs.
@@ -610,7 +633,7 @@ export async function createAndDispatchPlan(
     for (let i = 0; i < created.length; i++) {
       const c = created[i];
       if (!c.ok) continue;
-      const refs = (list[i].dependsOn || [])
+      const refs = (planItems[i]?.dependsOn || [])
         .filter((d) => d >= 0 && d < created.length && created[d]?.ok)
         .map((d) => created[d].ref);
       if (refs.length) setTaskDeps(c.ref, refs);
