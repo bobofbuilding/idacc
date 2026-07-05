@@ -8,6 +8,7 @@ import type {
   LearnRecommendation,
   LearnReviewState,
 } from '../../main/materialstore.ts';
+import { latestLearnFailureNote } from '../../shared/learnMaterialDisplay.ts';
 
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 type GoalPriority = 'primary' | 'secondary' | 'general';
@@ -91,6 +92,10 @@ function safeLearnTeam(team: string): string {
 }
 
 function materialStageText(m: LearnMaterial): string {
+  if (m.status === 'failed') {
+    const note = latestLearnFailureNote(m);
+    return note ? `failed: ${note}` : 'failed; review or remove';
+  }
   if (m.status === 'blocked' && (m.injectionWarnings?.length ?? 0) > 0) return 'review source trust';
   if (m.status === 'blocked') return 'review needed';
   if (m.status === 'queued' && m.processingTag === 'requeued after stale processing') return 'queued after recovery';
@@ -510,6 +515,16 @@ export function Learn({ store }: { store: FleetStore }) {
                     <b>Blocked for review</b>
                     <div className="muted small">{blockedMaterialMessage(selected)}</div>
                     <div className="muted small">Other queued Learn materials can still process. Use the recommendation controls below to create review work, or reprocess after reviewing the source.</div>
+                  </div>
+                  <button className="btn" disabled={busy} onClick={() => void processNext()}>Process next queued</button>
+                </div>
+              ) : null}
+              {selected.status === 'failed' ? (
+                <div className="learn-review-callout">
+                  <div>
+                    <b>Processing failed</b>
+                    <div className="muted small">{latestLearnFailureNote(selected) || 'No failure detail was recorded. Reprocess or remove this material.'}</div>
+                    <div className="muted small">Other queued Learn materials can still process. Fix the source and process this item again, or remove it from the queue.</div>
                   </div>
                   <button className="btn" disabled={busy} onClick={() => void processNext()}>Process next queued</button>
                 </div>
