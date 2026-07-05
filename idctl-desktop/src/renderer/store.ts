@@ -182,6 +182,20 @@ const EVENT_STREAM_BACKPRESSURE_MS = 750;
 const EVENT_STREAM_IDLE_BACKOFF_MS = 1000;
 const EVENT_CURSOR_STORAGE_PREFIX = 'idacc:event-cursor:';
 const VIEW_INVALIDATING_EVENT_PREFIXES = ['agent:', 'checkin:', 'goal:', 'learn:', 'schedule:', 'task:', 'team:'];
+const VIEW_EVENT_PREFIXES: Record<string, string[]> = {
+  dashboard: VIEW_INVALIDATING_EVENT_PREFIXES,
+  tasks: ['agent:', 'goal:', 'learn:', 'schedule:', 'task:', 'team:'],
+  schedule: ['agent:', 'schedule:', 'task:', 'team:'],
+  teams: ['agent:', 'checkin:', 'team:'],
+  health: ['agent:', 'checkin:', 'team:'],
+  modules: ['agent:', 'team:'],
+  projects: ['agent:', 'task:', 'team:'],
+  identity: ['agent:', 'team:'],
+  computer: ['agent:', 'team:'],
+  inbox: [],
+  settings: [],
+  wiki: [],
+};
 
 function fleetSnapshotSig(input: {
   info: { managerUrl: string; team?: string; coordinator?: string };
@@ -222,15 +236,17 @@ function allAgentsSig(groups: Array<{ team: string; agents: Agent[] }>): string 
   ]));
 }
 
-function eventsInvalidateViews(events: ManagerEvent[]): boolean {
-  return events.some((event) => VIEW_INVALIDATING_EVENT_PREFIXES.some((prefix) => event.topic.startsWith(prefix)));
+export function eventsInvalidateViews(events: ManagerEvent[], activeView?: string): boolean {
+  const prefixes = VIEW_EVENT_PREFIXES[activeView || ''] ?? VIEW_INVALIDATING_EVENT_PREFIXES;
+  if (!prefixes.length) return false;
+  return events.some((event) => prefixes.some((prefix) => event.topic.startsWith(prefix)));
 }
 
 function fleetPollDelay(baseMs: number): number {
   return typeof document !== 'undefined' && document.hidden ? Math.max(baseMs, HIDDEN_POLL_MS) : baseMs;
 }
 
-function viewNeedsAllTeamsAgents(view?: string): boolean {
+export function viewNeedsAllTeamsAgents(view?: string): boolean {
   return !view || ['dashboard', 'tasks', 'schedule', 'teams', 'health', 'modules', 'projects', 'identity', 'computer'].includes(view);
 }
 
@@ -284,8 +300,10 @@ export function useFleet(activeView?: string): FleetStore {
   const [streamEpoch, setStreamEpoch] = useState(0); // bumped ONLY on team change → never resets the event cursor on a plain refresh
   const epoch = useRef(0); // bump on team change to reset the event cursor loop
   const teamRef = useRef<string | undefined>(undefined);
+  const activeViewRef = useRef(activeView);
   const needsAllTeamsAgents = viewNeedsAllTeamsAgents(activeView);
   useEffect(() => { teamRef.current = team; }, [team]);
+  useEffect(() => { activeViewRef.current = activeView; }, [activeView]);
 
   const refresh = useCallback(() => {
     if (refreshTimer.current) return;
@@ -403,7 +421,7 @@ export function useFleet(activeView?: string): FleetStore {
             const batch = resp.events.map((e) => ({ ...e, timestamp: e.timestamp ?? e.occurred_at ?? Date.now() }));
             setEvents((prev) => [...prev, ...batch].slice(-EVENT_BUFFER));
             const now = Date.now();
-            if (eventsInvalidateViews(resp.events) && now - lastEventViewRefreshRef.current >= EVENT_VIEW_REFRESH_MIN_MS) {
+            if (eventsInvalidateViews(resp.events, activeViewRef.current) && now - lastEventViewRefreshRef.current >= EVENT_VIEW_REFRESH_MIN_MS) {
               lastEventViewRefreshRef.current = now;
               setLastUpdated(now);
             }
@@ -445,7 +463,7 @@ export function useFleet(activeView?: string): FleetStore {
     };
     void load();
     return () => { alive = false; clearTimeout(timer); };
-  }, [tick, needsAllTeamsAgents]);
+  }, [needsAllTeamsAgents]);
 
   return { connection, managerUrl, team, coordinator, agents, teams, events, inbox, chatUnread, lastError, lastUpdated, viewAll, allAgents, refresh, refreshChatUnread, setTeam };
 }

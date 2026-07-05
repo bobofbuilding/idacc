@@ -20,6 +20,7 @@
     "test:team-agent-groups": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/team-agent-groups-smoke.mjs",
     "test:plans-work": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/plans-work-smoke.mjs",
     "test:work-delegation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/work-delegation-smoke.mjs",
+    "test:renderer-store": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/renderer-store-poll-smoke.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "node scripts/build-tauri.mjs && tauri build"
