@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { eventsInvalidateViews, viewNeedsAllTeamsAgents } from '../src/renderer/store.ts';
+import { allTeamsAgentsPollDelay, eventsInvalidateViews, viewNeedsAllTeamsAgents } from '../src/renderer/store.ts';
 
 const ev = (topic) => ({ topic, payload: {}, timestamp: Date.now() });
 
@@ -9,6 +9,15 @@ assert.equal(viewNeedsAllTeamsAgents('teams'), true);
 assert.equal(viewNeedsAllTeamsAgents('settings'), false);
 assert.equal(viewNeedsAllTeamsAgents('wiki'), false);
 assert.equal(viewNeedsAllTeamsAgents('inbox'), false);
+assert.equal(viewNeedsAllTeamsAgents('modules'), true);
+assert.equal(viewNeedsAllTeamsAgents('projects'), true);
+assert.equal(viewNeedsAllTeamsAgents('identity'), true);
+assert.equal(viewNeedsAllTeamsAgents('computer'), true);
+
+assert.equal(allTeamsAgentsPollDelay('dashboard'), 15000);
+assert.equal(allTeamsAgentsPollDelay('tasks'), 15000);
+assert.equal(allTeamsAgentsPollDelay('teams'), 60000);
+assert.equal(allTeamsAgentsPollDelay('modules'), 60000);
 
 assert.equal(eventsInvalidateViews([ev('task:created')], 'tasks'), true);
 assert.equal(eventsInvalidateViews([ev('task:created')], 'dashboard'), true);

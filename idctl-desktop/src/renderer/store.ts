@@ -175,7 +175,9 @@ export interface FleetStore {
 
 const EVENT_BUFFER = 1000;
 const SNAPSHOT_POLL_MS = 5000;
-const ALL_TEAMS_POLL_MS = 15000;
+const ALL_TEAMS_PRIMARY_POLL_MS = 15000;
+const ALL_TEAMS_SECONDARY_POLL_MS = 60000;
+const ALL_TEAMS_HIDDEN_POLL_MS = 120000;
 const HIDDEN_POLL_MS = 30000;
 const EVENT_VIEW_REFRESH_MIN_MS = 5000;
 const EVENT_STREAM_BACKPRESSURE_MS = 750;
@@ -248,6 +250,12 @@ function fleetPollDelay(baseMs: number): number {
 
 export function viewNeedsAllTeamsAgents(view?: string): boolean {
   return !view || ['dashboard', 'tasks', 'schedule', 'teams', 'health', 'modules', 'projects', 'identity', 'computer'].includes(view);
+}
+
+export function allTeamsAgentsPollDelay(view?: string): number {
+  const primary = !view || ['dashboard', 'tasks', 'schedule'].includes(view);
+  const base = primary ? ALL_TEAMS_PRIMARY_POLL_MS : ALL_TEAMS_SECONDARY_POLL_MS;
+  return typeof document !== 'undefined' && document.hidden ? Math.max(base, ALL_TEAMS_HIDDEN_POLL_MS) : base;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -443,8 +451,10 @@ export function useFleet(activeView?: string): FleetStore {
     // restart this loop, or it would reset the cursor to 0 and replay history.
   }, [streamEpoch]);
 
-  // Holistic aggregate (always on): fetch every team's agents (each tagged with its team) so the
-  // fleet grid + Dashboard + Work board + status bar always show all teams at once.
+  // Holistic aggregate: fetch every team's agents (each tagged with its team) on
+  // views that actually consume a cross-team roster. Heavy secondary views keep
+  // the initial context but poll at a slower cadence; explicit mutations and
+  // page-level force loads still refresh immediately when the operator acts.
   useEffect(() => {
     if (!needsAllTeamsAgents) return;
     let alive = true;
@@ -459,7 +469,7 @@ export function useFleet(activeView?: string): FleetStore {
           setAllAgents(groups.flatMap((g) => g.agents.map((a) => ({ ...a, team: g.team }))));
         }
       } catch { /* keep last */ }
-      finally { if (alive) timer = setTimeout(load, fleetPollDelay(ALL_TEAMS_POLL_MS)); }
+      finally { if (alive) timer = setTimeout(load, allTeamsAgentsPollDelay(activeView)); }
     };
     void load();
     return () => { alive = false; clearTimeout(timer); };
