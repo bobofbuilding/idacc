@@ -205,7 +205,7 @@ export function Health({ store, navigate, embedded = false }: { store: FleetStor
     }
   }
   async function currentProbeTargets(): Promise<ProbeTarget[]> {
-    const groups = await call<Array<{ team: string; agents: ProbeTarget[] }>>('agents:allTeams').catch(() => null);
+    const groups = await call<Array<{ team: string; agents: ProbeTarget[] }>>('agents:allTeams', { force: true }).catch(() => null);
     const targets = groups
       ? groups.flatMap((g) => g.agents.map((a) => ({ id: a.id, name: a.name, status: a.status, team: g.team })))
       : store.agents.map((a) => ({ id: a.id, name: a.name, status: a.status, team: store.team ?? 'default' }));

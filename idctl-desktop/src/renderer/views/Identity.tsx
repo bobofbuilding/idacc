@@ -635,7 +635,7 @@ export function Identity({ store }: { store: FleetStore }) {
   }
 
   async function freshIdentityAgents(): Promise<IdentityAgent[] | null> {
-    const groups = await call<{ team: string; agents: Agent[] }[]>('agents:allTeams').catch(() => null);
+    const groups = await call<{ team: string; agents: Agent[] }[]>('agents:allTeams', { force: true }).catch(() => null);
     if (groups) return uniqueAgents(groups.flatMap((g) => g.agents.map((a) => ({ ...a, team: g.team }))));
     const ag = await call<Agent[]>('agents').catch(() => null);
     return ag ? uniqueAgents(ag.map((a) => ({ ...a, team: store.team ?? 'default' }))) : null;

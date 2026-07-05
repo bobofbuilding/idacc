@@ -304,7 +304,7 @@ function secondaryStamp(list: { agent: string; team: string; leadsTeams: string[
   })).sort((a, b) => `${a.team}/${a.agent}`.localeCompare(`${b.team}/${b.agent}`)));
 }
 async function freshHrGroups(): Promise<TeamAgentsGroup[]> {
-  return call<TeamAgentsGroup[]>('agents:allTeams').catch(() => []);
+  return call<TeamAgentsGroup[]>('agents:allTeams', { force: true }).catch(() => []);
 }
 function hrGraphGroupsFromStore(store: FleetStore, activeTeam: string): TeamAgentsGroup[] {
   if (store.allAgents.length) {
@@ -1559,7 +1559,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   async function currentTeamSnapshot(team: string): Promise<TeamSnapshot> {
     const [teams, groups] = await Promise.all([
       call<Array<{ name: string; agentCount?: number }>>('teams').catch(() => []),
-      call<TeamAgentsGroup[]>('agents:allTeams').catch(() => null),
+      call<TeamAgentsGroup[]>('agents:allTeams', { force: true }).catch(() => null),
     ]);
     const row = teams.find((t) => t.name === team);
     const group = groups?.find((g) => g.team === team);

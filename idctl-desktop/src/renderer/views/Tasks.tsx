@@ -371,7 +371,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
   }, [showAssign, activeTeam, store.teams.length]);
 
   async function freshAgentGroups(): Promise<TeamAgentsGroup[]> {
-    const groups = await call<TeamAgentsGroup[]>('agents:allTeams').catch(() => [] as TeamAgentsGroup[]);
+    const groups = await call<TeamAgentsGroup[]>('agents:allTeams', { force: true }).catch(() => [] as TeamAgentsGroup[]);
     if (groups.length) return groups;
     return [{ team: store.team ?? 'default', agents: store.agents.map((a) => ({ ...a, team: store.team ?? 'default' })) }];
   }

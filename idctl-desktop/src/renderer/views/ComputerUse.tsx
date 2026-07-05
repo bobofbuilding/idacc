@@ -465,7 +465,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
   }
 
   async function freshGroups(): Promise<TeamAgentsGroup[]> {
-    return call<TeamAgentsGroup[]>('agents:allTeams').catch(() => []);
+    return call<TeamAgentsGroup[]>('agents:allTeams', { force: true }).catch(() => []);
   }
   function findFreshTarget(groups: TeamAgentsGroup[], rendered: ComputerUseTarget): ComputerUseTarget | null {
     const expectedTeam = rendered.team ?? activeTeam;

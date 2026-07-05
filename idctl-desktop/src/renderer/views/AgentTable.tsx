@@ -376,7 +376,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     });
   }
   async function freshFleetAgents(): Promise<TeamAgent[] | null> {
-    const groups = await call<{ team: string; agents: Agent[] }[]>('agents:allTeams').catch(() => null);
+    const groups = await call<{ team: string; agents: Agent[] }[]>('agents:allTeams', { force: true }).catch(() => null);
     if (groups) return groups.flatMap((g) => g.agents.map((a) => ({ ...a, team: g.team })));
     const ag = await call<Agent[]>('agents').catch(() => null);
     return ag ? ag.map((a) => ({ ...a, team: store.team ?? 'default' })) : null;

@@ -74,6 +74,18 @@ function readCallKey(method: string, args: unknown[]): string {
   }
 }
 
+function isForcedRead(method: string, args: unknown[]): boolean {
+  if (method === 'subs:status' && args[0] === true) return true;
+  if (method !== 'agents:allTeams') return false;
+  const first = args[0];
+  return typeof first === 'object' && first !== null && (first as { force?: unknown }).force === true;
+}
+
+function cacheKeyArgs(method: string, args: unknown[]): unknown[] {
+  if (method === 'agents:allTeams' && isForcedRead(method, args)) return [];
+  return args;
+}
+
 export class ReadCallCache {
   private readonly inFlight = new Map<string, Promise<unknown>>();
   private readonly results = new Map<string, { at: number; result: unknown }>();
@@ -84,22 +96,26 @@ export class ReadCallCache {
   }
 
   async run(method: string, args: unknown[], run: () => Promise<unknown>): Promise<unknown> {
-    const key = readCallKey(method, args);
+    const forced = isForcedRead(method, args);
+    const key = readCallKey(method, cacheKeyArgs(method, args));
     const cacheable = !(method === 'subs:status' && args[0] === true);
     const ttl = cacheable ? READ_CACHE_TTL_MS.get(method) ?? 0 : 0;
-    if (ttl > 0) {
+    if (!forced && ttl > 0) {
       const cached = this.results.get(key);
       if (cached && Date.now() - cached.at < ttl) return cached.result;
     }
     const current = this.inFlight.get(key);
-    if (current) return current;
-    const next = run()
+    if (!forced && current) return current;
+    let next: Promise<unknown>;
+    next = run()
       .then((result) => {
         if (ttl > 0) this.results.set(key, { at: Date.now(), result });
         return result;
       })
-      .finally(() => { this.inFlight.delete(key); });
-    this.inFlight.set(key, next);
+      .finally(() => {
+        if (!forced && this.inFlight.get(key) === next) this.inFlight.delete(key);
+      });
+    if (!forced) this.inFlight.set(key, next);
     return next;
   }
 }

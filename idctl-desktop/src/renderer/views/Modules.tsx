@@ -1062,7 +1062,7 @@ export function Modules({ store }: { store: FleetStore }) {
   }
 
   async function freshGroups(): Promise<TeamAgentsGroup[]> {
-    return call<TeamAgentsGroup[]>('agents:allTeams').catch(() => []);
+    return call<TeamAgentsGroup[]>('agents:allTeams', { force: true }).catch(() => []);
   }
   function findFreshTarget(groups: TeamAgentsGroup[], rendered: TargetAgent): TargetAgent | null {
     const expectedTeam = targetTeamOf(rendered);
@@ -1398,7 +1398,7 @@ export function Modules({ store }: { store: FleetStore }) {
       .map((a) => ({ ...a, team: a.team ?? activeTeam }));
   }
   async function freshSkillFleetUsage(skill: string): Promise<TargetAgent[] | null> {
-    const groups = await call<TeamAgentsGroup[]>('agents:allTeams').catch(() => null);
+    const groups = await call<TeamAgentsGroup[]>('agents:allTeams', { force: true }).catch(() => null);
     if (!groups) return null;
     return groups
       .flatMap((g) => g.agents.map((a) => ({ ...a, team: g.team })))
