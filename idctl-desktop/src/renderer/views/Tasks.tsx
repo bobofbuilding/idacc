@@ -792,7 +792,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
     t = fresh;
     const tteam = taskTeam(t);
     if (!t.ownerName) return { ok: false, message: `no owner is assigned to ${ref(t)}` };
-    const report = await call<StalledTriageReport>('remote', `/task jumpstart-stalled --owner ${qArg(t.ownerName)} --limit 1${force ? ' --force' : ''}`, undefined, tteam);
+    const report = await call<StalledTriageReport>('remote', `/task jumpstart-stalled --task ${qArg(ref(t))}${force ? ' --force' : ''}`, undefined, tteam);
     const item = (report.items ?? [])[0] ?? null;
     return jumpstartResultMessage(t, item);
   }
