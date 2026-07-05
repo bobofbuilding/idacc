@@ -32,7 +32,8 @@ assert.equal(work.subtask.agent, 'lead');
 assert.deepEqual(work.subtask.dependsOn, []);
 assert.match(work.subtask.description, new RegExp(work.goal.id));
 assert.match(work.subtask.description, /Source brain plan/);
-assert.match(work.subtask.description, /close this parent only after delegated child tasks/);
+assert.match(work.subtask.description, /do not do the whole plan yourself/);
+assert.match(work.subtask.description, /close only after child tasks/);
 assert.ok(work.subtask.description.length <= 400, 'lead parent task description should preserve critical instructions inside the createPlan clip limit');
 
 const same = buildPrimaryLeadPlanWork(plan, 'changed body', 'lead', 'default', 1720000000001);

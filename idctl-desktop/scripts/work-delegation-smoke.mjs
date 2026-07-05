@@ -76,16 +76,18 @@ const result = await createAndDispatchPlan(
 
 await new Promise((resolve) => setTimeout(resolve, 0));
 
-assert.equal(remoteCommands.length, 1, 'lead-owned parent task should still be created');
+assert.equal(remoteCommands.length, 2, 'lead-owned parent task should be created and kicked off');
 assert.match(remoteCommands[0], /--owner research-lead/, 'parent task should stay assigned to the coordinator');
-assert.equal(dispatchCommands.length, 0, 'IDACC must not send a duplicate direct /ask to the coordinator');
+assert.match(remoteCommands[1], /^\/ask research-lead\b/, 'lead-owned parent should receive the delegation kickoff');
+assert.match(remoteCommands[1], /delegated child tasks/i, 'kickoff should require child task reporting when the lead delegates');
+assert.equal(dispatchCommands.length, 0, 'work kickoff should use manager remote queueing, not blocking dispatch');
 assert.equal(result.created.length, 1);
 assert.equal(result.created[0].ok, true);
 assert.equal(result.created[0].agent, 'research-lead');
-assert.equal(result.created[0].deferred, true, 'coordinator-owned parent should be manager-deferred');
-assert.match(result.created[0].warning || '', /manager delegation kickoff/);
-assert.equal(result.dispatched, 0);
-assert.equal(result.deferred, 1);
+assert.equal(result.created[0].deferred, false, 'coordinator-owned parent should not suppress kickoff');
+assert.match(result.created[0].warning || '', /kicked off for manager delegation/);
+assert.equal(result.dispatched, 1);
+assert.equal(result.deferred, 0);
 
 remoteCommands.length = 0;
 dispatchCommands.length = 0;

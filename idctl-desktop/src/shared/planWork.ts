@@ -107,9 +107,10 @@ export function buildPrimaryLeadPlanWork(
     title: `Delegate plan: ${compactText(plan.title, 92)}`,
     description: [
       `goal ${goalId}`,
-      `Source brain plan: ${source}`,
+      `Source brain plan: ${compactText(source, 120)}`,
       `Primary lead: ${owner}`,
-      'Decompose remaining work into team-lead/member-owned child tasks; skip shipped work; close this parent only after delegated child tasks and validator checks are complete.',
+      'Coordination task: create child /task rows assigned to relevant team leads or active non-lead agents before execution; do not do the whole plan yourself.',
+      'Skip shipped work; close only after child tasks and validator checks finish.',
     ].join('\n'),
     agent: lead,
     dependsOn: [],

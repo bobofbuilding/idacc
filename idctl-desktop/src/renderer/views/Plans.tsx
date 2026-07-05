@@ -320,8 +320,12 @@ export function Plans({ store }: { store: FleetStore }) {
       const question = String(it?.question ?? '').trim();
       if (!question) continue;
       const options = (Array.isArray(it?.options) ? it.options : []).map((o: unknown) => String(o)).filter(Boolean);
-      await call('questions:add', { question, options: options.length ? options : ['Acknowledge'], agent: who, taskRef: `plan:${fresh.file}`, taskTitle: fresh.title, team: store.team ?? 'default' }).catch(() => {});
-      added++;
+      if (await relayPlanBlocker(fresh, question, {
+        options: options.length ? options : ['Acknowledge'],
+        agent: who,
+        key: `agent-blocker:${added}:${question}`,
+        metadata: { phase: 'blocker-scan' },
+      })) added++;
     }
     if (aliveRef.current) setBlockers((m) => ({ ...m, [fresh.file]: added ? `${added} decision${added === 1 ? '' : 's'} → Inbox` : 'nothing needs you' }));
     return { text: added ? `${added} -> Inbox` : 'no blockers', added };
@@ -344,6 +348,39 @@ export function Plans({ store }: { store: FleetStore }) {
     };
     await call('goals:save', next);
     return next;
+  }
+
+  async function relayPlanBlocker(
+    p: BrainPlan,
+    question: string,
+    opts: { options?: string[]; agent?: string; team?: string; key?: string; metadata?: Record<string, unknown> } = {},
+  ): Promise<boolean> {
+    const q = String(question || '').replace(/\s+/g, ' ').trim();
+    if (!q) return false;
+    const blockerTeam = opts.team || team || 'default';
+    const blockerAgent = opts.agent || genAgent || coordinator || '';
+    const key = String(opts.key || q).replace(/\s+/g, '-').slice(0, 96);
+    try {
+      await call('questions:add', {
+        question: q,
+        options: opts.options?.length ? opts.options : ['Retry when ready', 'Hold this plan'],
+        agent: blockerAgent,
+        taskRef: `plan:${p.file}`,
+        taskTitle: p.title,
+        team: blockerTeam,
+        dedupeKey: `plan:${p.file}:${key}`,
+        source: 'plans',
+        metadata: {
+          planFile: p.file,
+          planStatus: p.status,
+          planNum: p.num,
+          ...opts.metadata,
+        },
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // Compile the plan + dispatch to ALL active teams/agents — no selection. The primary
@@ -387,20 +424,63 @@ export function Plans({ store }: { store: FleetStore }) {
       const created = res.created.find((c) => c.ok);
       if (!created) {
         const reason = res.created.map((c) => c.error || c.warning).filter(Boolean).join('; ') || 'no task was created';
+        await relayPlanBlocker(fresh, `Work > Plans could not create a live primary-lead task for "${fresh.title}". ${reason}`, {
+          agent: lead,
+          team: leadTeam,
+          key: `dispatch-create:${reason}`,
+          options: ['Retry after clearing capacity', 'Review plan manually', 'Hold this plan'],
+          metadata: { phase: 'dispatch-create', goalId: savedGoal.id, reason },
+        });
         return { text: `objective ${savedGoal.id} saved, but lead task not created: ${reason}`, dispatched: false };
       }
       const ref = created.ref || created.title || work.subtask.title;
+      await savePrimaryLeadPlanGoal({
+        ...savedGoal,
+        driver: {
+          ...(savedGoal.driver ?? {}),
+          taskRefs: [...new Set([...(savedGoal.driver?.taskRefs ?? []), ref])],
+          lastRunAt: Date.now(),
+          note: `Delegated from brain plan ${work.source} via ${ref}`,
+        },
+      });
       const deferred = res.deferred || res.created.filter((c) => c.deferred).length;
-      const note = [created.warning, deferred ? `${deferred} waiting on manager/lead capacity` : 'manager kickoff queued'].filter(Boolean).join('; ');
+      if (res.dispatched <= 0) {
+        const reason = [created.warning, deferred ? `${deferred} task(s) waiting on capacity/dependencies` : 'manager did not accept a kickoff'].filter(Boolean).join('; ');
+        await relayPlanBlocker(fresh, `Work > Plans created "${created.title || ref}" for "${fresh.title}", but no agent kickoff was accepted. ${reason}`, {
+          agent: lead,
+          team: leadTeam,
+          key: `dispatch-kickoff:${ref}:${reason}`,
+          options: ['Retry kickoff', 'Open Tasks and triage manually', 'Hold this plan'],
+          metadata: { phase: 'dispatch-kickoff', goalId: savedGoal.id, taskRef: ref, reason },
+        });
+        return { text: `objective ${savedGoal.id} + lead task ${ref}, but kickoff blocked: ${reason}`, dispatched: false };
+      }
+      const note = [created.warning, deferred ? `${deferred} waiting on manager/lead capacity` : 'manager kickoff accepted'].filter(Boolean).join('; ');
       return { text: `objective ${savedGoal.id} + lead task ${ref} for ${work.owner}${note ? ` (${note})` : ''}`, dispatched: true };
     }
     // ---- fallback: mechanical decompose + partition + dispatch (no primary lead online) ----
     const obj = `Implement this plan, end to end:\n\n# ${baseline.title}\n\n${got?.content ?? ''}`;
     const who = genAgent;
-    if (!who) return { text: 'no agent to compile', dispatched: false };
+    if (!who) {
+      await relayPlanBlocker(baseline, `Work > Plans could not compile "${baseline.title}" because no active planning agent is available.`, {
+        key: 'fallback-no-planning-agent',
+        options: ['Restart an agent and retry', 'Hold this plan'],
+        metadata: { phase: 'fallback-decompose', reason: 'no planning agent' },
+      });
+      return { text: 'no agent to compile', dispatched: false };
+    }
     // 1) Decompose ONCE → sub-tasks (+ dependency edges).
     const dec = await call<DecomposeResult>('work:decompose', obj, who).catch((): DecomposeResult => ({ ok: false, subtasks: [], raw: '', error: 'decompose failed' }));
-    if (!dec.ok || !dec.subtasks.length) return { text: dec.error || 'could not split into tasks', dispatched: false };
+    if (!dec.ok || !dec.subtasks.length) {
+      const reason = dec.error || 'could not split into tasks';
+      await relayPlanBlocker(baseline, `Work > Plans could not decompose "${baseline.title}" into delegated tasks. ${reason}`, {
+        agent: who,
+        key: `fallback-decompose:${reason}`,
+        options: ['Retry decomposition', 'Review plan manually', 'Hold this plan'],
+        metadata: { phase: 'fallback-decompose', reason },
+      });
+      return { text: reason, dispatched: false };
+    }
     const fresh = await ensureBrainPlanFresh(baseline, `Dispatch ${baseline.title}`, ['title', 'mtime']);
     if (!fresh) throw new Error('plan changed while decomposition was running; refreshed');
     const subs = dec.subtasks;
@@ -408,7 +488,14 @@ export function Plans({ store }: { store: FleetStore }) {
     // 2) Active teams with a running lead + their capacity (running-agent count).
     const allTeams = store.teams.map((t) => t.name).filter(Boolean);
     const leads = (await call<TeamLead[]>('work:teamLeads', allTeams).catch(() => [] as TeamLead[])).filter((l) => l.activeCount > 0 && l.lead);
-    if (!leads.length) return { text: 'no active teams to dispatch to', dispatched: false };
+    if (!leads.length) {
+      await relayPlanBlocker(fresh, `Work > Plans could not dispatch "${fresh.title}" because no active team lead is available.`, {
+        key: 'fallback-no-active-team-leads',
+        options: ['Restart team leads and retry', 'Hold this plan'],
+        metadata: { phase: 'fallback-dispatch', reason: 'no active team leads' },
+      });
+      return { text: 'no active teams to dispatch to', dispatched: false };
+    }
     // 3) Dependency clusters (union-find on the dep edges).
     const parent = Array.from({ length: N }, (_, i) => i);
     const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x])));
@@ -441,6 +528,14 @@ export function Plans({ store }: { store: FleetStore }) {
       const res = await call<CreatePlanResult>('work:createPlan', obj, batch, { team: l.team, dispatch: true, lane: 'doing' }).catch((): CreatePlanResult => ({ created: [], dispatched: 0, deferred: 0 }));
       const ok = res.created.filter((c) => c.ok).length;
       if (ok) parts.push(`${l.team}: ${ok}`);
+    }
+    if (!parts.length) {
+      await relayPlanBlocker(fresh, `Work > Plans split "${fresh.title}" into ${N} task(s), but no team accepted live task creation or dispatch.`, {
+        agent: who,
+        key: `fallback-nothing-dispatched:${N}`,
+        options: ['Retry dispatch after clearing capacity', 'Open Tasks and triage manually', 'Hold this plan'],
+        metadata: { phase: 'fallback-dispatch', taskCount: N },
+      });
     }
     return { text: parts.length ? `split ${N} tasks -> ${parts.join(' · ')}` : 'nothing dispatched', dispatched: parts.length > 0 };
   }
@@ -482,6 +577,11 @@ export function Plans({ store }: { store: FleetStore }) {
       if (aliveRef.current) setMsg(`audited (${a.text}) · ${b.text} · ${d.text}${d.dispatched ? ' · status -> Partial' : ''}`);
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
+      await relayPlanBlocker(fresh, `Work > Plans failed before it could delegate "${fresh.title}". ${m}`, {
+        key: `work-exception:${m}`,
+        options: ['Retry work pass', 'Hold this plan'],
+        metadata: { phase: 'work-exception', error: m },
+      });
       t.update({ kind: 'error', text: `“${fresh.title}” work failed: ${m}` });
       if (aliveRef.current) setMsg(`work failed: ${m}`);
     } finally { if (aliveRef.current) setBusyFile(null); }
