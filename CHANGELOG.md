@@ -8,6 +8,11 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.598] — 2026-07-05
+- test(plans): cover primary lead readiness routing
+- fix(plans): block when primary lead cannot receive work
+- fix(renderer): avoid redundant fleet refreshes
+
 ## [0.1.597] — 2026-07-05
 - fix(plans): kick off delegated plan work
 
