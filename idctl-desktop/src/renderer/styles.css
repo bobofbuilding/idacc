@@ -378,19 +378,24 @@ button.chip.incompat:hover { border-color: var(--line); }
 }
 /* Work > Learn intake */
 .learn-root {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   min-width: 0;
-  overflow: visible;
+  min-height: 0;
+  overflow: hidden;
+  isolation: isolate;
 }
 .learn-intake {
   display: flex;
   flex-direction: column;
   flex: 0 0 auto;
   gap: 12px;
-  overflow: visible;
+  overflow: hidden;
   position: relative;
-  z-index: 2;
-  margin-bottom: 12px;
+  z-index: 3;
+  margin-bottom: 0;
 }
 .learn-intake-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .learn-intake-head h3 { margin: 0; }
@@ -399,17 +404,18 @@ button.chip.incompat:hover { border-color: var(--line); }
   grid-template-columns: minmax(320px, .95fr) minmax(380px, 1.15fr);
   gap: 14px;
   align-items: start;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   clear: both;
-  margin-top: 8px;
+  margin-top: 0;
   position: relative;
   z-index: 1;
   min-width: 0;
+  min-height: 0;
   isolation: isolate;
 }
 .learn-workspace > .card {
   overflow: auto;
-  max-height: clamp(320px, calc(100vh - 360px), 760px);
+  max-height: min(760px, max(320px, calc(100vh - 390px)));
   min-width: 0;
   overscroll-behavior: contain;
   position: relative;
@@ -497,6 +503,7 @@ button.chip.incompat:hover { border-color: var(--line); }
   .learn-control-row { grid-template-columns: minmax(110px, 1fr) minmax(120px, 1fr) auto; align-items: end; }
   .learn-actions { justify-content: flex-start; }
   .learn-review-callout { align-items: stretch; flex-direction: column; }
+  .learn-root { overflow: visible; }
   .learn-workspace > .card { max-height: none; }
 }
 @media (max-width: 720px) {

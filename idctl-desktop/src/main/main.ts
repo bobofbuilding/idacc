@@ -455,6 +455,7 @@ function startLearnQueueRunner(): () => void {
         if (material) {
           publishStoreChange('materials:processNext');
           recordControlAction('materials:processNext', ['background'], material);
+          if (material.status === 'ready' || material.status === 'blocked') kickLearnBrainBackfillRunner?.(250);
         }
       }
       const remaining = listMaterials().some((m) => m.status === 'queued');
@@ -1098,15 +1099,21 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       kickLearnQueueRunner?.(250);
       return result;
     }
-    case 'materials:priority':
-      return updateMaterialPriority(args[0] as string, args[1] as LearnPriority, args[2] as boolean | undefined);
+    case 'materials:priority': {
+      const result = updateMaterialPriority(args[0] as string, args[1] as LearnPriority, args[2] as boolean | undefined);
+      if (result.status === 'queued') kickLearnQueueRunner?.(100);
+      if (result.status === 'ready' || result.status === 'blocked') kickLearnBrainBackfillRunner?.(250);
+      return result;
+    }
     case 'materials:processNext': {
       const result = await processNextMaterial((args[0] as ProcessMaterialContext | undefined) ?? {});
+      if (result && (result.status === 'ready' || result.status === 'blocked')) kickLearnBrainBackfillRunner?.(250);
       kickLearnQueueRunner?.(250);
       return result;
     }
     case 'materials:process': {
       const result = await processMaterial(args[0] as string, (args[1] as ProcessMaterialContext | undefined) ?? {});
+      if (result.status === 'ready' || result.status === 'blocked') kickLearnBrainBackfillRunner?.(250);
       kickLearnQueueRunner?.(250);
       return result;
     }
