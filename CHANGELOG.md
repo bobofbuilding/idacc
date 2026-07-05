@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.597] — 2026-07-05
+- fix(plans): kick off delegated plan work
+
 ## [0.1.596] — 2026-07-05
 - fix(tasks): jumpstart selected stalled task by ref
 - fix(idctl): cap task status fallback
