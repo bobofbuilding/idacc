@@ -17,6 +17,19 @@ export interface SubTask { title: string; description: string; agent: string; de
 export interface CreatedTask { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; warning?: string; dependsOn: number[]; dispatched: boolean; deferred?: boolean }
 export interface DecomposeResult { ok: boolean; subtasks: SubTask[]; raw: string; error?: string }
 export interface CreatePlanResult { created: CreatedTask[]; dispatched: number; deferred: number }
+export interface TeamLeadDelegationTarget { team: string; lead: string; activeCount: number; totalCount: number; runtime?: string; status?: string; skills: string[] }
+export interface TeamLeadDelegatedTask extends CreatedTask { team: string; lead: string }
+export interface TeamLeadDelegationResult {
+  ok: boolean;
+  targetCount: number;
+  subtasks: SubTask[];
+  created: TeamLeadDelegatedTask[];
+  dispatched: number;
+  deferred: number;
+  errors: string[];
+  raw?: string;
+}
+export interface TeamLeadDelegationOptions { currentTeam?: string; primaryLead?: string }
 
 /** Quote a free-text argument as ONE token for the manager tokenizer (matches client qArg). */
 function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
@@ -239,6 +252,60 @@ async function resolveDecompositionPlanner(client: ManagerClient, fallbackLead: 
     if (planner) return { client: scoped, agent: planner.name, kind: 'task-manager' };
   }
   return { client, agent: fallbackLead, kind: 'lead' };
+}
+
+async function resolveActiveTeamLeadTargets(baseClient: ManagerClient, currentTeam = 'default'): Promise<TeamLeadDelegationTarget[]> {
+  const teams = await baseClient.teams().catch(() => []);
+  const names = [...new Set(teams.map((team) => String(team.name || '').trim()).filter(Boolean))]
+    .filter((team) => team !== currentTeam && team !== 'default');
+  const targets = await Promise.all(
+    names.map(async (team): Promise<TeamLeadDelegationTarget | null> => {
+      const agents = await baseClient.withTeam(team).agents().catch(() => [] as Agent[]);
+      const activeCount = agents.filter((agent) => isActiveStatus(agent.status)).length;
+      const lead = pickActiveLead(agents);
+      if (!lead || isDefaultValidatorName(lead)) return null;
+      const row = agents.find((agent) => agent.name === lead);
+      return {
+        team,
+        lead,
+        activeCount,
+        totalCount: agents.length,
+        runtime: row?.runtime,
+        status: row?.status,
+        skills: Array.isArray(row?.metadata?.skills) ? row!.metadata!.skills as string[] : [],
+      };
+    }),
+  );
+  return targets.filter((target): target is TeamLeadDelegationTarget => !!target && target.activeCount > 0);
+}
+
+function normRouteKey(s: string): string {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function teamLeadTargetForSubtask(targets: TeamLeadDelegationTarget[], st: SubTask, index: number): TeamLeadDelegationTarget {
+  const byLead = new Map(targets.map((target) => [normRouteKey(target.lead), target]));
+  const byTeam = new Map(targets.map((target) => [normRouteKey(target.team), target]));
+  const ownerKey = normRouteKey(st.agent);
+  const exact = byLead.get(ownerKey) ?? byTeam.get(ownerKey);
+  if (exact) return exact;
+  const hay = normRouteKey(`${st.agent} ${st.title} ${st.description}`);
+  return targets.find((target) => hay.includes(normRouteKey(target.team)) || hay.includes(normRouteKey(target.lead)))
+    ?? targets[index % targets.length];
+}
+
+function teamLeadPacket(target: TeamLeadDelegationTarget, st: SubTask): SubTask {
+  const leadNote = `Team lead packet for ${target.team}: create child /task rows for active teammates before execution, coordinate the work, close with delegated child task names, and surface blockers immediately.`;
+  return {
+    title: st.title,
+    agent: target.lead,
+    description: clip([st.description, leadNote].filter(Boolean).join('\n\n'), 380),
+    dependsOn: st.dependsOn,
+  };
+}
+
+function warningNeedsTriage(warning?: string): boolean {
+  return !!warning && !/coordinator-owned parent kicked off for manager delegation/i.test(warning);
 }
 
 function isDefaultTeamName(team?: string): boolean {
@@ -706,6 +773,106 @@ export async function createAndDispatchPlan(
   const ready = runnable.filter((c) => list[c.idx].dependsOn.filter((d) => d < c.idx).every((d) => created[d]?.ok && !created[d]?.deferred));
   const capacityDeferred = created.filter((c) => !c.ok && c.deferred).length;
   return { created, dispatched: ready.length, deferred: ok.length - ready.length + capacityDeferred };
+}
+
+// ---- Plan/objective delegation to team leads ------------------------------
+
+/**
+ * Turn one high-level objective into a bounded set of live, assigned team-lead
+ * tasks. This is the explicit Plans/Goals path: it does not rely on background
+ * Autopilot, and it returns capacity/decomposition failures to the caller so the
+ * UI can surface them as Inbox blockers.
+ */
+export async function delegateObjectiveToTeamLeads(
+  baseClient: ManagerClient,
+  objective: string,
+  opts: TeamLeadDelegationOptions = {},
+): Promise<TeamLeadDelegationResult> {
+  const obj = String(objective || '').trim();
+  const errors: string[] = [];
+  const created: TeamLeadDelegatedTask[] = [];
+  if (!obj) {
+    return { ok: false, targetCount: 0, subtasks: [], created, dispatched: 0, deferred: 0, errors: ['describe the objective first'] };
+  }
+
+  const currentTeam = opts.currentTeam || baseClient.team || 'default';
+  const plannerClient = currentTeam === baseClient.team ? baseClient : baseClient.withTeam(currentTeam);
+  const targets = await resolveActiveTeamLeadTargets(baseClient, currentTeam);
+  if (!targets.length) {
+    return { ok: false, targetCount: 0, subtasks: [], created, dispatched: 0, deferred: 0, errors: ['no active non-default team leads available'] };
+  }
+
+  const plannerRoster = await plannerClient.agents().catch(() => [] as Agent[]);
+  const primaryLead = opts.primaryLead || pickActiveLead(plannerRoster) || '';
+  if (!primaryLead) {
+    return { ok: false, targetCount: targets.length, subtasks: [], created, dispatched: 0, deferred: 0, errors: [`no active planning lead available on ${currentTeam}`] };
+  }
+
+  const leadRoster = targets.map((target) => ({
+    name: target.lead,
+    runtime: target.runtime,
+    status: target.status,
+    skills: target.skills,
+  }));
+  const decomp = await decomposeWork(plannerClient, obj, primaryLead, leadRoster);
+  if (!decomp.ok || !decomp.subtasks.length) {
+    const reason = decomp.error || 'no team-lead subtasks produced';
+    return { ok: false, targetCount: targets.length, subtasks: [], created, dispatched: 0, deferred: 0, errors: [reason], raw: decomp.raw };
+  }
+
+  const byTeam = new Map<string, Array<{ globalIndex: number; target: TeamLeadDelegationTarget; st: SubTask }>>();
+  decomp.subtasks.forEach((st, index) => {
+    const target = teamLeadTargetForSubtask(targets, st, index);
+    const rows = byTeam.get(target.team) ?? [];
+    rows.push({ globalIndex: index, target, st });
+    byTeam.set(target.team, rows);
+  });
+
+  let dispatched = 0;
+  let deferred = 0;
+  await Promise.all([...byTeam].map(async ([team, rows]) => {
+    const target = rows[0]?.target;
+    if (!target) return;
+    const localIndex = new Map(rows.map((row, index) => [row.globalIndex, index]));
+    const batch = rows.map((row) => {
+      const packet = teamLeadPacket(row.target, row.st);
+      return {
+        ...packet,
+        dependsOn: (row.st.dependsOn || []).filter((dep) => localIndex.has(dep)).map((dep) => localIndex.get(dep) as number),
+      };
+    });
+    try {
+      const result = await createAndDispatchPlan(baseClient.withTeam(team), obj, batch, {
+        dispatch: true,
+        respectOwners: true,
+        allowCoordinatorOwners: true,
+      });
+      dispatched += result.dispatched;
+      deferred += result.deferred;
+      for (const task of result.created) {
+        created.push({ ...task, team, lead: target.lead });
+        if (!task.ok) {
+          const reason = task.error || task.warning || `task ${task.title || task.ref} was not created`;
+          if (reason) errors.push(`${team}/${target.lead}: ${reason}`);
+        } else if (warningNeedsTriage(task.warning)) {
+          errors.push(`${team}/${target.lead}: ${task.warning}`);
+        }
+      }
+    } catch (e) {
+      errors.push(`${team}/${target.lead}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }));
+
+  return {
+    ok: created.some((task) => task.ok),
+    targetCount: targets.length,
+    subtasks: decomp.subtasks,
+    created,
+    dispatched,
+    deferred,
+    errors,
+    raw: decomp.raw,
+  };
 }
 
 // ---- Cross-team fan-out -------------------------------------------------

@@ -46,6 +46,8 @@ type CreatedTask = { ok: boolean; ref?: string; title?: string; agent?: string; 
 type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: number };
 type TeamLead = { team: string; lead: string | null; activeCount: number; totalCount: number };
 type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
+type TeamLeadDelegatedTask = CreatedTask & { team: string; lead: string };
+type TeamLeadDelegationResult = { ok: boolean; targetCount: number; subtasks: SubTask[]; created: TeamLeadDelegatedTask[]; dispatched: number; deferred: number; errors: string[]; raw?: string };
 
 const STATUSES: PlanStatus[] = ['draft', 'active', 'done', 'archived'];
 const STATUS_CLASS: Record<PlanStatus, string> = { draft: 'st-paused', active: 'st-active', done: 'st-done', archived: 'st-blocked' };
@@ -427,53 +429,64 @@ export function Plans({ store }: { store: FleetStore }) {
         });
         return { text: `objective ${savedGoal.id} saved, but primary lead is unavailable: ${ready.reason}`, dispatched: false };
       }
-      const res = await call<CreatePlanResult>('work:createPlan', work.objective, [work.subtask], {
-        team: leadTeam,
-        dispatch: true,
-        lane: 'doing',
-        respectOwners: true,
-        allowCoordinatorOwners: true,
-      }).catch((e): CreatePlanResult => ({
-        created: [{ ok: false, error: e instanceof Error ? e.message : String(e) }],
+      const res = await call<TeamLeadDelegationResult>('work:delegateToTeamLeads', work.objective, {
+        currentTeam: leadTeam,
+        primaryLead: lead,
+      }).catch((e): TeamLeadDelegationResult => ({
+        ok: false,
+        targetCount: 0,
+        subtasks: [],
+        created: [],
         dispatched: 0,
         deferred: 0,
+        errors: [e instanceof Error ? e.message : String(e)],
       }));
-      const created = res.created.find((c) => c.ok);
-      if (!created) {
-        const reason = res.created.map((c) => c.error || c.warning).filter(Boolean).join('; ') || 'no task was created';
-        await relayPlanBlocker(fresh, `Work > Plans could not create a live primary-lead task for "${fresh.title}". ${reason}`, {
+      const created = res.created.filter((c) => c.ok);
+      if (!res.ok || !created.length) {
+        const reason = (res.errors ?? []).filter(Boolean).join('; ') || 'no live team-lead task was created';
+        await relayPlanBlocker(fresh, `Work > Plans saved objective ${savedGoal.id} for "${fresh.title}", but it could not create live delegated team-lead tasks. ${reason}`, {
           agent: lead,
           team: leadTeam,
-          key: `dispatch-create:${reason}`,
-          options: ['Retry after clearing capacity', 'Review plan manually', 'Hold this plan'],
-          metadata: { phase: 'dispatch-create', goalId: savedGoal.id, reason },
+          key: `team-lead-delegation:${reason}`,
+          options: ['Retry after clearing capacity', 'Review active team leads', 'Hold this plan'],
+          metadata: { phase: 'team-lead-delegation', goalId: savedGoal.id, reason, targetCount: res.targetCount },
         });
-        return { text: `objective ${savedGoal.id} saved, but lead task not created: ${reason}`, dispatched: false };
+        return { text: `objective ${savedGoal.id} saved, but delegated tasks were not created: ${reason}`, dispatched: false };
       }
-      const ref = created.ref || created.title || work.subtask.title;
+      const refs = created.map((task) => task.ref || task.title || `${task.team}/${task.lead}`).filter(Boolean);
       await savePrimaryLeadPlanGoal({
         ...savedGoal,
         driver: {
           ...(savedGoal.driver ?? {}),
-          taskRefs: [...new Set([...(savedGoal.driver?.taskRefs ?? []), ref])],
+          taskRefs: [...new Set([...(savedGoal.driver?.taskRefs ?? []), ...refs])],
           lastRunAt: Date.now(),
-          note: `Delegated from brain plan ${work.source} via ${ref}`,
+          note: `Delegated from brain plan ${work.source} to ${created.length} team-lead task(s)`,
         },
       });
-      const deferred = res.deferred || res.created.filter((c) => c.deferred).length;
       if (res.dispatched <= 0) {
-        const reason = [created.warning, deferred ? `${deferred} task(s) waiting on capacity/dependencies` : 'manager did not accept a kickoff'].filter(Boolean).join('; ');
-        await relayPlanBlocker(fresh, `Work > Plans created "${created.title || ref}" for "${fresh.title}", but no agent kickoff was accepted. ${reason}`, {
+        const reason = [(res.errors ?? []).join('; '), res.deferred ? `${res.deferred} task(s) waiting on capacity/dependencies` : 'manager did not accept a kickoff'].filter(Boolean).join('; ');
+        await relayPlanBlocker(fresh, `Work > Plans created delegated task(s) for "${fresh.title}", but no team-lead kickoff was accepted. ${reason}`, {
           agent: lead,
           team: leadTeam,
-          key: `dispatch-kickoff:${ref}:${reason}`,
+          key: `team-lead-kickoff:${reason}`,
           options: ['Retry kickoff', 'Open Tasks and triage manually', 'Hold this plan'],
-          metadata: { phase: 'dispatch-kickoff', goalId: savedGoal.id, taskRef: ref, reason },
+          metadata: { phase: 'team-lead-kickoff', goalId: savedGoal.id, taskRefs: refs, reason },
         });
-        return { text: `objective ${savedGoal.id} + lead task ${ref}, but kickoff blocked: ${reason}`, dispatched: false };
+        return { text: `objective ${savedGoal.id} + ${created.length} delegated task(s), but kickoff blocked: ${reason}`, dispatched: false };
       }
-      const note = [created.warning, deferred ? `${deferred} waiting on manager/lead capacity` : 'manager kickoff accepted'].filter(Boolean).join('; ');
-      return { text: `objective ${savedGoal.id} + lead task ${ref} for ${work.owner}${note ? ` (${note})` : ''}`, dispatched: true };
+      if (res.deferred > 0 || (res.errors ?? []).length) {
+        const reason = [(res.errors ?? []).join('; '), res.deferred ? `${res.deferred} task(s) deferred by capacity/dependencies` : ''].filter(Boolean).join('; ');
+        await relayPlanBlocker(fresh, `Work > Plans delegated "${fresh.title}" to ${created.length} team-lead task(s), but part of the plan still needs triage. ${reason}`, {
+          agent: lead,
+          team: leadTeam,
+          key: `team-lead-delegation-partial:${reason}`,
+          options: ['Triage deferred work', 'Continue with dispatched tasks', 'Hold this plan'],
+          metadata: { phase: 'team-lead-delegation-partial', goalId: savedGoal.id, taskRefs: refs, reason },
+        });
+      }
+      const teams = [...new Set(created.map((task) => `${task.team}/${task.lead}`))].join(', ');
+      const note = [res.deferred ? `${res.deferred} waiting on capacity/dependencies` : 'manager kickoff accepted', (res.errors ?? []).length ? 'partial blocker sent to Inbox' : ''].filter(Boolean).join('; ');
+      return { text: `objective ${savedGoal.id} + ${created.length} delegated team-lead task(s) for ${teams}${note ? ` (${note})` : ''}`, dispatched: true };
     }
     // ---- fallback: mechanical decompose + partition + dispatch (no primary lead online) ----
     const obj = `Implement this plan, end to end:\n\n# ${baseline.title}\n\n${got?.content ?? ''}`;

@@ -58,7 +58,7 @@ import { headroomBackendContractAudit, headroomCoreAudit, headroomStatus } from 
 import { headroomPluginPathAudit } from './headroomPlugin.ts';
 import { contextBudgetDryRun, contextBudgetReport, loadRecentContextBudgetRecords, optimizeAskCommand, readContextBudgetRecord } from './contextBudget.ts';
 import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayOptions } from './contextReplay.ts';
-import { decomposeWork, createAndDispatchPlan, fanOutObjective, teamLeads, triageUnassigned, type SubTask } from './work.ts';
+import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
 import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, type GoalDriverConfig } from './goaldriver.ts';
 import { processDraftProposalsOnce, startDraftDispatcherLoop } from './draftDispatcher.ts';
 import { buildOrgHierarchy, previewOrgSync, syncOrg, startOrgSyncLoop } from './orgSync.ts';
@@ -1197,6 +1197,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // are still routed to an execution assignee when one exists.
   'work:createPlan': (objective: string, subtasks: SubTask[], opts?: { dispatch?: boolean; lane?: string; team?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean }) =>
     createAndDispatchPlan(opts?.team ? client.withTeam(String(opts.team)) : client, String(objective), Array.isArray(subtasks) ? subtasks : [], opts ?? {}),
+  // Explicit Plans/Goals delegation: resolve active team leads and create live,
+  // assigned team-lead task rows. Returns failures for Inbox blocker routing.
+  'work:delegateToTeamLeads': (objective: string, opts?: TeamLeadDelegationOptions) =>
+    delegateObjectiveToTeamLeads(client, String(objective), opts ?? {}),
   // Cross-team fan-out: hand one objective to several teams' ACTIVE leads at once.
   'work:teamLeads': (teams: string[]) => teamLeads(client, Array.isArray(teams) ? teams.map(String) : []),
   'work:fanout': (objective: string, teams: string[]) =>
