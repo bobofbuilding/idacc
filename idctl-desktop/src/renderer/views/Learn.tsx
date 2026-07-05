@@ -393,7 +393,7 @@ export function Learn({ store }: { store: FleetStore }) {
             <h3>Learn intake</h3>
             {note ? <div className="muted small">{note}</div> : null}
           </div>
-          <div className="learn-auto small" title="Queued materials are processed in the background one at a time. Rows are hidden only after their Brain graph sync is current; blocked materials stay for review.">
+          <div className="learn-auto small" title="Queued materials are processed in the background one at a time. Completed rows are hidden after their Brain graph sync is current; blocked or failed materials stay here for review.">
             <span className="status st-active">Auto-processing on</span>
             {queuedCount ? <span className="muted">({queuedCount})</span> : null}
             {syncPendingCount ? <span className="muted">{syncPendingCount} Brain sync pending</span> : null}
@@ -453,7 +453,7 @@ export function Learn({ store }: { store: FleetStore }) {
 
       <div className="split learn-workspace">
         <section className="card grow learn-queue-card">
-          <h3>Queue <span className="muted small">- {activeMaterials.length} active{completedCount ? ` · ${completedCount} completed hidden` : ''}</span></h3>
+          <h3>Active materials <span className="muted small">- {activeMaterials.length} visible{queuedCount ? ` · ${queuedCount} queued` : ''}{completedCount ? ` · ${completedCount} completed hidden` : ''}</span></h3>
           {activeMaterials.length ? (
             <table className="grid">
               <thead>
