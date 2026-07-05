@@ -3,6 +3,15 @@ import { call, useSyncVersion, type FleetStore } from '../store.ts';
 import type { InboxItem } from '../../../../idctl/src/api/types.ts';
 
 type BlockerQuestion = { id: string; question: string; options: string[]; agent: string; taskRef?: string; taskTitle?: string; team: string; createdAt: number; seenCount?: number; lastSeenAt?: number; source?: string; metadata?: Record<string, unknown> };
+type QuestionAction = { label: string; value: string; title: string; primary?: boolean };
+type QuestionPresentation = {
+  eyebrow: string;
+  title: string;
+  detail: string;
+  recommendation?: string;
+  actions: QuestionAction[];
+  raw?: string;
+};
 function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
 
 /** Order decisions so a prerequisite task's decision comes BEFORE a dependent's.
@@ -24,6 +33,66 @@ function orderByDeps(qs: BlockerQuestion[], deps: Record<string, string[]>): Blo
   return qs.map((q, i) => ({ q, i, d: q.taskRef ? depth(q.taskRef) : 0 }))
     .sort((a, b) => a.d - b.d || a.i - b.i)
     .map((x) => x.q);
+}
+
+function planRecoveryReason(q: BlockerQuestion): string {
+  const phase = String(q.metadata?.phase ?? '').replace(/-/g, ' ').trim();
+  const reason = String(q.metadata?.reason ?? q.metadata?.error ?? '').trim();
+  if (reason) return phase ? `${phase}: ${reason}` : reason;
+  const m = q.question.match(/\.\s*([^.]*(?:failed|unavailable|blocked|deferred|capacity|agent failed)[^.]*)$/i);
+  return m?.[1]?.trim() || 'Plan automation needs a recovery pass before work continues.';
+}
+
+function presentQuestion(q: BlockerQuestion): QuestionPresentation {
+  const options = q.options.length ? q.options : ['Acknowledge'];
+  const actions: QuestionAction[] = options.map((value) => ({ label: value, value, title: `Answer "${value}"` }));
+  const isPlanQuestion = q.taskRef?.startsWith('plan:') ?? false;
+  if (!isPlanQuestion) {
+    return {
+      eyebrow: [q.team, q.agent].filter(Boolean).join(' · ') || 'Decision',
+      title: q.question,
+      detail: '',
+      actions,
+    };
+  }
+  const planTitle = q.taskTitle || q.taskRef?.replace(/^plan:/, '') || 'this plan';
+  const failedBeforeDelegation = /failed before it could delegate|could not create live delegated|could not complete .*preflight|could not decompose|could not dispatch/i.test(q.question);
+  const relabeled = actions.map((action, index): QuestionAction => {
+    const value = action.value;
+    if (/retry/i.test(value)) {
+      return {
+        ...action,
+        label: failedBeforeDelegation ? 'Retry with delegation fallback' : 'Retry recovery pass',
+        title: 'Ask the plan owner to run the work pass again using the deterministic team-lead fallback if the planner fails.',
+        primary: index === 0,
+      };
+    }
+    if (/hold|pause/i.test(value)) {
+      return {
+        ...action,
+        label: 'Pause plan',
+        title: 'Keep the plan paused until the underlying agent/capacity issue is resolved.',
+      };
+    }
+    if (/review/i.test(value)) {
+      return {
+        ...action,
+        label: 'Review then continue',
+        title: 'Review the blocker manually, then continue the plan when ready.',
+      };
+    }
+    return action;
+  });
+  return {
+    eyebrow: [q.team, q.agent, 'Work > Plans'].filter(Boolean).join(' · '),
+    title: failedBeforeDelegation ? 'Plan delegation needs a recovery pass' : 'Plan needs your decision',
+    detail: `Plan: ${planTitle}`,
+    recommendation: failedBeforeDelegation
+      ? `Recommended: retry the work pass. If the planner/preflight agent fails again, the current build creates bounded coordination tasks for active team leads and records the skipped review here. Technical reason: ${planRecoveryReason(q)}`
+      : planRecoveryReason(q),
+    actions: relabeled,
+    raw: q.question,
+  };
 }
 
 export function Inbox({ store }: { store: FleetStore }) {
@@ -79,6 +148,7 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
   const isSyntheticQuestion = isLearnQuestion || isPlanQuestion;
   const from = q.agent || (isBrainApproval ? 'Brain governance' : isSyntheticQuestion ? 'review gate' : 'agent');
   const brainApprovalId = isBrainApproval ? String(q.metadata?.approvalId ?? q.taskRef?.split(':')[1] ?? '').trim() : '';
+  const presentation = presentQuestion(q);
 
   // Deliver a response to the blocked agent (best-effort, async) and clear the item.
   // A response moves the task into the board's "Under Review" lane (the block is being
@@ -121,13 +191,23 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
 
   return (
     <div className="inbox-row">
-      <div className="inbox-from">{q.team ? `${q.team} · ` : ''}{from}{subject ? ` · ${subject}` : ''}{q.seenCount && q.seenCount > 1 ? ` · raised ${q.seenCount} times` : ''}</div>
-      <div className="inbox-msg b" style={{ whiteSpace: 'pre-line' }}>{q.question}</div>
+      <div className="inbox-from">
+        {presentation.eyebrow || `${q.team ? `${q.team} · ` : ''}${from}`}{q.seenCount && q.seenCount > 1 ? ` · raised ${q.seenCount} times` : ''}
+      </div>
+      <div className="inbox-msg b" style={{ whiteSpace: 'pre-line' }}>{presentation.title}</div>
+      {presentation.detail ? <div className="inbox-detail">{presentation.detail}</div> : null}
+      {presentation.recommendation ? <div className="inbox-recommendation">{presentation.recommendation}</div> : null}
+      {presentation.raw && presentation.raw !== presentation.title ? (
+        <details className="inbox-raw">
+          <summary>technical detail</summary>
+          <div>{presentation.raw}</div>
+        </details>
+      ) : null}
       {/* Options stacked top-to-bottom, hugging the left. */}
-      {q.options.length ? (
+      {presentation.actions.length ? (
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
-          {q.options.map((o) => (
-            <button key={o} className="btn" style={{ textAlign: 'left' }} disabled={busy} onClick={() => void chooseOption(o)} title={isBrainApproval ? `${o}; Brain apply remains separate` : `Answer “${o}” and reply to ${q.agent || 'the agent'}`}>{o}</button>
+          {presentation.actions.map((action) => (
+            <button key={action.value} className={`btn${action.primary ? ' primary' : ''}`} style={{ textAlign: 'left' }} disabled={busy} onClick={() => void chooseOption(action.value)} title={isBrainApproval ? `${action.value}; Brain apply remains separate` : action.title}>{action.label}</button>
           ))}
         </div>
       ) : null}

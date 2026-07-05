@@ -116,6 +116,7 @@ fi
 APP="$DESK/release/mac-arm64/ID Agents Control Center.app"
 ZIP="$DESK/release/ID-Agents-Control-Center-$VER-arm64.zip"
 [ -d "$APP" ] || { echo "build did not produce $APP" >&2; exit 1; }
+node "$ROOT/scripts/check-release-payload.mjs" "$APP"
 rm -f "$ZIP"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 

@@ -28,7 +28,7 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^brainApproval:resolve$/, ['questions', 'inbox', 'brain']],
   [/^inbox:(respond|dismiss)$/, ['inbox', 'tasks', 'dashboard', 'brain']],
   [/^tasks:set(Lane|Deps|Review)$/, ['tasks', 'work', 'brain']],
-  [/^work:(createPlan|fanout|triage)$/, ['tasks', 'work', 'dashboard', 'brain']],
+  [/^work:(createPlan|delegateToTeamLeads|fanout|triage)$/, ['tasks', 'work', 'dashboard', 'brain']],
   [/^(addHeartbeat|addCalendarCheckin|pauseSchedule|resumeSchedule|removeSchedule|checkins:close)$/, ['schedules', 'checkins', 'loops', 'work', 'brain']],
   [/^projects:(save|remove|syncRoot)$/, ['projects', 'dashboard', 'brain']],
   [/^coordinator:(set|setPrimary)$/, ['org', 'dashboard', 'agents', 'work', 'brain']],

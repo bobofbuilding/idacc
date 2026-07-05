@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { delegateObjectiveToTeamLeads } from '../src/main/work.ts';
+import { syncDomainsForMethod } from '../src/shared/syncDomains.ts';
 
 function agent(name, status = 'running', runtime = 'claude-code-cli') {
   return {
@@ -15,6 +16,7 @@ function agent(name, status = 'running', runtime = 'claude-code-cli') {
 const dispatchCommands = [];
 const remoteCommands = [];
 let taskSeq = 0;
+let dispatchMode = 'normal';
 
 const rosters = {
   default: [agent('lead'), agent('coder'), agent('researcher')],
@@ -38,6 +40,7 @@ function makeClient(team = 'default') {
     },
     async dispatch(command) {
       dispatchCommands.push({ team, command });
+      if (dispatchMode === 'fail') throw new Error('agent failed');
       const available = command.match(/Available agents:\n([\s\S]*?)\n\nReturn ONLY/)?.[1] ?? '';
       assert.match(available, /research-lead/, 'planner prompt should offer active research lead');
       assert.match(available, /engineering-lead/, 'planner prompt should offer active engineering lead');
@@ -116,7 +119,29 @@ assert.ok(creates.every((row) => /child \/task rows/.test(row.command)), 'team-l
 assert.ok(asks.some((row) => row.team === 'research' && /^\/ask research-lead\b/.test(row.command)));
 assert.ok(asks.some((row) => row.team === 'engineering' && /^\/ask engineering-lead\b/.test(row.command)));
 
+dispatchCommands.length = 0;
+remoteCommands.length = 0;
+taskSeq = 0;
+dispatchMode = 'fail';
+const fallback = await delegateObjectiveToTeamLeads(
+  makeClient(),
+  'goal goal_plan_fallback: Work a live brain plan even when the planner agent fails.',
+  { currentTeam: 'default', primaryLead: 'lead' },
+);
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(fallback.ok, true, 'planner failure should still create durable team-lead task rows');
+assert.equal(fallback.targetCount, 2);
+assert.equal(fallback.subtasks.length, 2);
+assert.equal(fallback.created.filter((task) => task.ok).length, 2);
+assert.equal(fallback.dispatched, 2);
+assert.match(fallback.errors.join('; '), /deterministic team-lead fallback/);
+assert.deepEqual(fallback.created.map((task) => `${task.team}/${task.lead}`).sort(), ['engineering/engineering-lead', 'research/research-lead']);
+const fallbackCreates = remoteCommands.filter((row) => /^\/task create\b/.test(row.command));
+assert.equal(fallbackCreates.length, 2, 'fallback should create one coordination task per active team lead');
+assert.ok(fallbackCreates.every((row) => /Planner fallback/.test(row.command)));
+
 const noLeadClient = makeClient();
+dispatchMode = 'normal';
 rosters.research = [agent('research-lead', 'stopped')];
 rosters.engineering = [agent('engineering-lead', 'offline')];
 const blocked = await delegateObjectiveToTeamLeads(noLeadClient, 'goal goal_plan_blocked: Work a plan.', {
@@ -125,3 +150,8 @@ const blocked = await delegateObjectiveToTeamLeads(noLeadClient, 'goal goal_plan
 });
 assert.equal(blocked.ok, false);
 assert.match(blocked.errors.join('; '), /no active non-default team leads/);
+assert.deepEqual(
+  syncDomainsForMethod('work:delegateToTeamLeads').sort(),
+  ['brain', 'dashboard', 'tasks', 'work'],
+  'team-lead delegation must refresh visible task/work state',
+);

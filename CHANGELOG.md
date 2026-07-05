@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.601] — 2026-07-05
+- Fix Work > Plans delegation fallback, solution-oriented Inbox blockers, and guard releases against bundling local Brain/Learn state.
+
 ## [0.1.600] — 2026-07-05
 - fix(learn): route background queue with team context
 

@@ -304,6 +304,20 @@ function teamLeadPacket(target: TeamLeadDelegationTarget, st: SubTask): SubTask 
   };
 }
 
+function deterministicTeamLeadSubtasks(objective: string, targets: TeamLeadDelegationTarget[]): SubTask[] {
+  const obj = clip(objective, 1400);
+  return targets.slice(0, MAX_SUBTASKS).map((target): SubTask => ({
+    title: `Route objective through ${target.team}`,
+    agent: target.lead,
+    description: [
+      `Planner fallback for ${target.team}: decompose this objective for active teammates before execution.`,
+      'Create only the minimal child /task rows needed for your team, skip shipped or duplicate work, and surface any blocker up to the primary lead.',
+      `Objective: ${obj}`,
+    ].join('\n'),
+    dependsOn: [],
+  }));
+}
+
 function warningNeedsTriage(warning?: string): boolean {
   return !!warning && !/coordinator-owned parent kicked off for manager delegation/i.test(warning);
 }
@@ -815,13 +829,15 @@ export async function delegateObjectiveToTeamLeads(
     skills: target.skills,
   }));
   const decomp = await decomposeWork(plannerClient, obj, primaryLead, leadRoster);
-  if (!decomp.ok || !decomp.subtasks.length) {
+  let subtasks = decomp.subtasks;
+  if (!decomp.ok || !subtasks.length) {
     const reason = decomp.error || 'no team-lead subtasks produced';
-    return { ok: false, targetCount: targets.length, subtasks: [], created, dispatched: 0, deferred: 0, errors: [reason], raw: decomp.raw };
+    subtasks = deterministicTeamLeadSubtasks(obj, targets);
+    errors.push(`planner decomposition failed; used deterministic team-lead fallback (${reason})`);
   }
 
   const byTeam = new Map<string, Array<{ globalIndex: number; target: TeamLeadDelegationTarget; st: SubTask }>>();
-  decomp.subtasks.forEach((st, index) => {
+  subtasks.forEach((st, index) => {
     const target = teamLeadTargetForSubtask(targets, st, index);
     const rows = byTeam.get(target.team) ?? [];
     rows.push({ globalIndex: index, target, st });
@@ -866,7 +882,7 @@ export async function delegateObjectiveToTeamLeads(
   return {
     ok: created.some((task) => task.ok),
     targetCount: targets.length,
-    subtasks: decomp.subtasks,
+    subtasks,
     created,
     dispatched,
     deferred,

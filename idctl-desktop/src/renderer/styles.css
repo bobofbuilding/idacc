@@ -738,6 +738,20 @@ textarea.composer-input { resize: none; line-height: 1.4; min-height: 38px; max-
 /* Inbox */
 .inbox-row { padding: 10px 0; border-bottom: 1px solid var(--line); }
 .inbox-from { color: var(--accent); font-size: 12px; }
+.inbox-detail { margin-top: 2px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.inbox-recommendation {
+  margin-top: 8px;
+  max-width: 920px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--ok) 38%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.inbox-raw { margin-top: 6px; color: var(--muted); font-size: 11px; }
+.inbox-raw summary { cursor: pointer; width: max-content; }
+.inbox-raw div { margin-top: 4px; max-width: 920px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* Buttons */
 .btn { background: var(--bg-3); border: 1px solid var(--line); color: var(--text); border-radius: 7px; padding: 6px 12px; font: inherit; cursor: pointer; }
