@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import { useToast } from '../components/toast.tsx';
 import { buildPrimaryLeadPlanWork } from '../../shared/planWork.ts';
+import { primaryLeadReadiness } from '../../shared/planRouting.ts';
 
 /**
  * Plans tab (under Work). Two sets, one shared organizer (search / sort /
@@ -70,9 +71,6 @@ function brainStatusKey(s?: string): BrainStatusKey {
 }
 function brainStatusLabel(key: BrainStatusKey): string {
   return BRAIN_BUCKETS.find((b) => b.key === key)?.label ?? key;
-}
-function agentIsLive(status?: string): boolean {
-  return !!status && !/stop|offline|dead|exit|error|crash|down|disabled|sleep/i.test(status);
 }
 
 function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
@@ -388,16 +386,8 @@ export function Plans({ store }: { store: FleetStore }) {
 
   async function primaryLeadReady(lead: string, leadTeam: string): Promise<{ ok: true } | { ok: false; reason: string }> {
     const live = await call<TeamLead[]>('work:teamLeads', [leadTeam]).catch(() => [] as TeamLead[]);
-    const teamLead = live.find((row) => row.team === leadTeam);
-    if (teamLead?.lead === lead) return { ok: true };
     const localFleet = store.allAgents.length ? store.allAgents : store.agents.map((a) => ({ ...a, team: store.team ?? 'default' }));
-    const local = localFleet.find((a) => a.name === lead && (a.team ?? leadTeam) === leadTeam);
-    if (local && agentIsLive(local.status)) return { ok: true };
-    if (teamLead) {
-      if (!teamLead.activeCount) return { ok: false, reason: `${leadTeam}/${lead} is not running (${teamLead.totalCount || 0} agent rows, 0 active)` };
-      return { ok: false, reason: `${leadTeam}/${lead} is not the active lead; active lead is ${teamLead.lead || 'unknown'} with ${teamLead.activeCount} active agent(s)` };
-    }
-    return { ok: false, reason: `${leadTeam}/${lead} could not be resolved from the live manager roster` };
+    return primaryLeadReadiness(lead, leadTeam, live, localFleet, store.team ?? 'default');
   }
 
   // Compile the plan + dispatch to ALL active teams/agents — no selection. The primary
