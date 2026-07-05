@@ -92,6 +92,95 @@ type ManagerCapabilities = {
   features?: string[];
   routes?: { method: string; path: string; group: string }[];
 } | null;
+type CachedLoad<T> = { value: T; at: number; cached: boolean };
+
+let settingsStackInstallCache: CachedLoad<Record<string, LocalStackInstallStatus>> | null = null;
+let settingsStackInstallInFlight: Promise<CachedLoad<Record<string, LocalStackInstallStatus>>> | null = null;
+let settingsStackBackgroundCache: CachedLoad<Record<string, BackgroundStackStatus>> | null = null;
+let settingsStackBackgroundInFlight: Promise<CachedLoad<Record<string, BackgroundStackStatus>>> | null = null;
+let settingsDiscoveryCache: (CachedLoad<Discovered[]> & { key: string }) | null = null;
+let settingsDiscoveryInFlight: (Promise<CachedLoad<Discovered[]>> & { cacheKey?: string }) | null = null;
+
+function cacheFresh<T>(cache: CachedLoad<T> | null, maxAgeMs = DISCOVERY_MAX_AGE_MS): cache is CachedLoad<T> {
+  return !!cache && Date.now() - cache.at < maxAgeMs;
+}
+
+function invalidateSettingsDiscoveryCache(): void {
+  settingsDiscoveryCache = null;
+}
+
+function discoveryCacheKey(candidates: LocalServerCandidate[]): string {
+  return JSON.stringify(candidates.map((candidate) => ({
+    id: candidate.id,
+    kind: candidate.kind,
+    baseUrl: candidate.baseUrl,
+    port: candidate.port,
+  })).sort((a, b) => `${a.id}:${a.baseUrl}`.localeCompare(`${b.id}:${b.baseUrl}`)));
+}
+
+async function cachedStackInstallStatus(
+  stackIds: string[],
+  force = false,
+): Promise<CachedLoad<Record<string, LocalStackInstallStatus>>> {
+  if (!force && cacheFresh(settingsStackInstallCache)) return { ...settingsStackInstallCache, cached: true };
+  if (!force && settingsStackInstallInFlight) return settingsStackInstallInFlight;
+  const task = call<Record<string, LocalStackInstallStatus>>('stack:installStatus', stackIds, force)
+    .catch((): Record<string, LocalStackInstallStatus> => ({}))
+    .then((value) => {
+      const loaded = { value, at: Date.now(), cached: false };
+      settingsStackInstallCache = loaded;
+      return loaded;
+    })
+    .finally(() => {
+      if (settingsStackInstallInFlight === task) settingsStackInstallInFlight = null;
+    });
+  settingsStackInstallInFlight = task;
+  return task;
+}
+
+async function cachedStackBackgroundStatus(
+  stackIds: string[],
+  force = false,
+): Promise<CachedLoad<Record<string, BackgroundStackStatus>>> {
+  if (!force && cacheFresh(settingsStackBackgroundCache)) return { ...settingsStackBackgroundCache, cached: true };
+  if (!force && settingsStackBackgroundInFlight) return settingsStackBackgroundInFlight;
+  const task = call<Record<string, BackgroundStackStatus>>('stack:backgroundStatus', stackIds)
+    .catch((): Record<string, BackgroundStackStatus> => ({}))
+    .then((value) => {
+      const loaded = { value, at: Date.now(), cached: false };
+      settingsStackBackgroundCache = loaded;
+      return loaded;
+    })
+    .finally(() => {
+      if (settingsStackBackgroundInFlight === task) settingsStackBackgroundInFlight = null;
+    });
+  settingsStackBackgroundInFlight = task;
+  return task;
+}
+
+async function cachedLocalDiscovery(
+  candidates: LocalServerCandidate[],
+  force = false,
+): Promise<CachedLoad<Discovered[]>> {
+  const key = discoveryCacheKey(candidates);
+  if (!force && settingsDiscoveryCache?.key === key && cacheFresh(settingsDiscoveryCache)) {
+    return { ...settingsDiscoveryCache, cached: true };
+  }
+  if (!force && settingsDiscoveryInFlight?.cacheKey === key) return settingsDiscoveryInFlight;
+  const task = call<Discovered[]>('providers:discover', candidates)
+    .catch((): Discovered[] => [])
+    .then((value) => {
+      const loaded = { value, at: Date.now(), cached: false };
+      settingsDiscoveryCache = { ...loaded, key };
+      return loaded;
+    })
+    .finally(() => {
+      if (settingsDiscoveryInFlight === task) settingsDiscoveryInFlight = null;
+    }) as Promise<CachedLoad<Discovered[]>> & { cacheKey?: string };
+  task.cacheKey = key;
+  settingsDiscoveryInFlight = task;
+  return task;
+}
 
 function timeAgo(ms: number): string {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -484,6 +573,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         }
       }
       const next = await call<ProviderRow[]>('providers:add', p);
+      invalidateSettingsDiscoveryCache();
       setProviders(next);
       warmRuntimeCatalog(next);
       setProviderMsg(existing ? `replaced "${p.name}"` : `added "${p.name}"`);
@@ -598,6 +688,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       return;
     }
     const next = await call<ProviderRow[]>('providers:remove', n);
+    invalidateSettingsDiscoveryCache();
     setProviders(next);
     warmRuntimeCatalog(next);
   }
@@ -727,12 +818,11 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   }
 
   // Local LLM discovery: scan localhost for running servers, then one-click add.
-  async function checkBackgroundStacks(): Promise<Record<string, BackgroundStackStatus>> {
-    if (stackBackgroundPromiseRef.current) return stackBackgroundPromiseRef.current;
+  async function checkBackgroundStacks(opts: { force?: boolean } = {}): Promise<Record<string, BackgroundStackStatus>> {
+    if (!opts.force && stackBackgroundPromiseRef.current) return stackBackgroundPromiseRef.current;
     let task: Promise<Record<string, BackgroundStackStatus>>;
-    task = call<Record<string, BackgroundStackStatus>>('stack:backgroundStatus', TOP_LOCAL_STACKS.map((s) => s.id))
-      .catch((): Record<string, BackgroundStackStatus> => ({}))
-      .then((status) => {
+    task = cachedStackBackgroundStatus(TOP_LOCAL_STACKS.map((s) => s.id), opts.force)
+      .then(({ value: status }) => {
         setStackBackgroundStatus(status);
         return status;
       })
@@ -742,13 +832,13 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     stackBackgroundPromiseRef.current = task;
     return task;
   }
-  async function checkStackInstalls(): Promise<Record<string, LocalStackInstallStatus>> {
-    if (stackInstallPromiseRef.current) return stackInstallPromiseRef.current;
+  async function checkStackInstalls(opts: { force?: boolean } = {}): Promise<Record<string, LocalStackInstallStatus>> {
+    if (!opts.force && stackInstallPromiseRef.current) return stackInstallPromiseRef.current;
     setStackInstallChecking(true);
     let task: Promise<Record<string, LocalStackInstallStatus>>;
     task = (async () => {
-      const status = await call<Record<string, LocalStackInstallStatus>>('stack:installStatus', TOP_LOCAL_STACKS.map((s) => s.id))
-        .catch((): Record<string, LocalStackInstallStatus> => ({}));
+      const loaded = await cachedStackInstallStatus(TOP_LOCAL_STACKS.map((s) => s.id), opts.force);
+      const status = loaded.value;
       setStackInstallStatus(status);
       setStackPortOverrides((prev) => {
         const next = { ...prev };
@@ -757,7 +847,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         }
         return next;
       });
-      await autoAddInstalledStackBackendPlaceholders(status);
+      if (!loaded.cached || opts.force) await autoAddInstalledStackBackendPlaceholders(status);
       return status;
     })().finally(() => {
       if (stackInstallPromiseRef.current === task) {
@@ -768,22 +858,24 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     stackInstallPromiseRef.current = task;
     return task;
   }
-  async function runDiscover(opts: { autoAddKnownStacks?: boolean } = {}): Promise<Discovered[]> {
-    if (discoverPromiseRef.current) return discoverPromiseRef.current;
+  async function runDiscover(opts: { autoAddKnownStacks?: boolean; force?: boolean } = {}): Promise<Discovered[]> {
+    if (!opts.force && discoverPromiseRef.current) return discoverPromiseRef.current;
     let task: Promise<Discovered[]>;
     task = (async () => {
       setDiscovering(true);
-      const [found] = await Promise.all([
-        call<Discovered[]>('providers:discover', stackExtraDiscoveryCandidates()).catch(() => []),
-        checkStackInstalls(),
-        checkBackgroundStacks(),
+      const force = opts.force || opts.autoAddKnownStacks === true;
+      const [loaded] = await Promise.all([
+        cachedLocalDiscovery(stackExtraDiscoveryCandidates(), force),
+        checkStackInstalls({ force }),
+        checkBackgroundStacks({ force }),
       ]);
+      const found = loaded.value;
       const autoAddedUrls = opts.autoAddKnownStacks ? await autoAddKnownStackBackends(found) : new Set<string>();
       const displayed = autoAddedUrls.size
         ? found.map((s) => autoAddedUrls.has(normUrl(s.baseUrl)) ? { ...s, alreadyAdded: true } : s)
         : found;
       setDiscovered(displayed);
-      setDiscoveredAt(Date.now());
+      setDiscoveredAt(loaded.at);
       return displayed;
     })().finally(() => {
       if (discoverPromiseRef.current === task) {
@@ -862,6 +954,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       taken.add(providerName);
       existingUrls.add(normUrl(baseUrl));
       nextProviders = await call<ProviderRow[]>('providers:add', profile);
+      invalidateSettingsDiscoveryCache();
       added.add(normUrl(baseUrl));
       addedNames.push(providerName);
     }
@@ -899,6 +992,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         const providerName = existing?.name ?? uniqueProviderName(server.id, taken);
         taken.add(providerName);
         nextProviders = await call<ProviderRow[]>('providers:add', discoveredToProfile(server, providerName));
+        invalidateSettingsDiscoveryCache();
         addedUrls.add(normUrl(server.baseUrl));
         addedNames.push(providerName);
       }
@@ -912,7 +1006,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     }
   }
   async function freshDiscoveredBeforeAdd(s: Discovered): Promise<Discovered | null> {
-    const fresh = await runDiscover();
+    const fresh = await runDiscover({ force: true });
     const current = findDiscoveredMatch(fresh, s);
     if (!current) {
       window.alert(`${s.name} is no longer answering on ${s.baseUrl}. Refreshed the discovered server list; start the server and scan again before adding it.`);
@@ -930,7 +1024,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       const latest = await freshProviders();
       if (latest.some((p) => normUrl(p.baseUrl) === normUrl(s.baseUrl))) {
         setProviders(latest);
-        await runDiscover();
+        await runDiscover({ force: true });
         window.alert(`${s.name} is already configured as an inference backend. Refreshed the discovered server list.`);
         return;
       }
@@ -942,14 +1036,14 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       const latestAfterScan = await freshProviders();
       if (latestAfterScan.some((p) => normUrl(p.baseUrl) === normUrl(current.baseUrl))) {
         setProviders(latestAfterScan);
-        await runDiscover();
+        await runDiscover({ force: true });
         window.alert(`${current.name} was configured while the scan refreshed. Review the current backend row before changing routing.`);
         return;
       }
       const providerName = uniqueProviderName(current.id, new Set(latestAfterScan.map((p) => p.name)));
       await addProviderProfile(discoveredToProfile(current, providerName));
       await reload();
-      await runDiscover(); // refresh the alreadyAdded flags
+      await runDiscover({ force: true }); // refresh the alreadyAdded flags
     } finally {
       setBusy(false);
     }
@@ -961,7 +1055,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       return;
     }
     setStackMsg(`checking ${s.name} before adding backend…`);
-    const fresh = await runDiscover();
+    const fresh = await runDiscover({ force: true });
     const match = fresh.find((x) => normUrl(x.baseUrl) === normUrl(apiBase));
     if (!match || match.status !== 'live') {
       setStackMsg(`${s.name} is installed, but no live server answered at ${apiBase}. Start its server, then scan again.`);
@@ -1156,6 +1250,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         : {}),
     };
     const next = await call<ProviderRow[]>('providers:add', profile);
+    invalidateSettingsDiscoveryCache();
     setProviders(next);
     warmRuntimeCatalog(next);
     await reload();
@@ -1979,7 +2074,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setStackMsg(`${s.name} ${status.detail ?? 'started'}${status.pid ? ` · pid ${status.pid}` : ''}${status.logPath ? ` · log ${status.logPath}` : ''}. IDACC will re-check the API and sync models when it answers.`);
       scheduleStackDiscoverScans(s);
       [3000, 10000, 24000].forEach((delay) => {
-        setTimeout(() => void checkBackgroundStacks(), delay);
+        setTimeout(() => void checkBackgroundStacks({ force: true }), delay);
       });
     } catch (e) {
       setStackMsg(`failed to start ${s.name} in background: ${e instanceof Error ? e.message : String(e)}`);
@@ -1993,7 +2088,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       const status = await call<BackgroundStackStatus>('stack:stopBackground', s.id);
       setStackBackgroundStatus((prev) => ({ ...prev, [s.id]: status }));
       setStackMsg(`${s.name}: ${status.detail ?? 'stopped'}. Re-check if an external copy is still running on port ${s.defaultPort ?? 'its port'}.`);
-      void runDiscover();
+      void runDiscover({ force: true });
     } catch (e) {
       setStackMsg(`failed to stop ${s.name}: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -2350,7 +2445,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           <button className="btn small" disabled={ollamaCatalogChecking} title="Scan public Ollama tags and add newly discovered entries to the local searchable catalog" onClick={() => void checkOllamaCatalog()}>
             {ollamaCatalogChecking ? 'Checking…' : 'Check catalog'}
           </button>
-          <button className="btn small" disabled={discovering} onClick={() => void runDiscover()}>
+          <button className="btn small" disabled={discovering} onClick={() => void runDiscover({ force: true })}>
             {discovering ? 'Scanning…' : 'Scan running'}
           </button>
           <button className="btn small" type="button" onClick={openStackSetup}>
@@ -2603,7 +2698,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             <span className="muted small">{stackFilterCount}</span>
           </div>
           <div className="stack-toolbar-actions">
-            <button className="btn small" disabled={discovering} title="Scan local APIs and auto-add live backend presets" onClick={() => void runDiscover({ autoAddKnownStacks: true })}>{discovering ? 'Scanning…' : 'Scan running'}</button>
+            <button className="btn small" disabled={discovering} title="Scan local APIs and auto-add live backend presets" onClick={() => void runDiscover({ autoAddKnownStacks: true, force: true })}>{discovering ? 'Scanning…' : 'Scan running'}</button>
             {discoveredAt ? (
               <span className={`small ${discoveryStale ? 'warn-text' : 'muted'}`}>
                 scan {timeAgo(discoveredAt)}{discoveryStale ? ' · refresh before routing' : ''}
