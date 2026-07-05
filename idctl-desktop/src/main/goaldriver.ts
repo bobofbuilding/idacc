@@ -68,14 +68,22 @@ function taskRef(t: Task): string {
   return t.shortId ?? t.name ?? t.uuid ?? t.title;
 }
 
+async function openTasksForTeam(client: ManagerClient): Promise<Task[]> {
+  const [todo, doing] = await Promise.all([
+    client.tasksByStatus('todo').catch(() => [] as Task[]),
+    client.tasksByStatus('doing').catch(() => [] as Task[]),
+  ]);
+  return [...todo, ...doing];
+}
+
 async function tasksForGoalScope(baseClient: ManagerClient, goalTeam: string): Promise<Task[]> {
   if (goalTeam && goalTeam !== 'default') {
-    return baseClient.withTeam(goalTeam).tasks().catch(() => [] as Task[]);
+    return openTasksForTeam(baseClient.withTeam(goalTeam));
   }
   const teams = await baseClient.teams().catch(() => []);
   const teamNames = teams.length ? teams.map((team) => team.name).filter(Boolean) : [baseClient.team ?? 'default'];
   const rows = await Promise.all(
-    Array.from(new Set(teamNames)).map((team) => baseClient.withTeam(team).tasks().catch(() => [] as Task[])),
+    Array.from(new Set(teamNames)).map((team) => openTasksForTeam(baseClient.withTeam(team))),
   );
   return rows.flat();
 }

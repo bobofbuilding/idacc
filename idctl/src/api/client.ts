@@ -173,6 +173,8 @@ export class NetworkError extends Error {
     this.name = 'NetworkError';
   }
 }
+
+export type TaskStatusFilter = 'todo' | 'doing' | 'done';
 export class ManagerError extends Error {
   /** HTTP status that produced this error (when known). 404 = route missing on
    *  a stock/older manager; used by requireRoute() to give an actionable message. */
@@ -338,6 +340,12 @@ function normalizeInboxRecord(raw: unknown): InboxItem | null {
     schedule: Object.keys(schedule).length ? schedule : null,
     mode: textField(row.mode) ?? null,
   };
+}
+
+function taskStatusCol(status?: string): TaskStatusFilter {
+  if (/done|complete/i.test(status ?? '')) return 'done';
+  if (/doing|claim|progress|start|active/i.test(status ?? '')) return 'doing';
+  return 'todo';
 }
 
 export class ManagerClient {
@@ -637,6 +645,26 @@ export class ManagerClient {
       if (!(err instanceof ManagerError) || err.status !== 404) throw err;
       const env = await this.remote<{ tasks?: unknown[] }>('/task', undefined, signal);
       return (env.result?.tasks ?? []).map(normalizeTaskRecord).filter((t): t is Task => !!t);
+    }
+  }
+
+  async tasksByStatus(
+    status: TaskStatusFilter,
+    opts: { limit?: number; signal?: AbortSignal } = {},
+  ): Promise<Task[]> {
+    const params = new URLSearchParams({ status });
+    if (opts.limit && Number.isFinite(opts.limit)) {
+      params.set('limit', String(Math.max(1, Math.floor(opts.limit))));
+    }
+    const path = `/tasks?${params.toString()}`;
+    try {
+      const data = await this.get<{ tasks?: unknown[] }>(path, opts.signal);
+      return (data.tasks ?? []).map(normalizeTaskRecord).filter((t): t is Task => !!t);
+    } catch (err) {
+      if (!(err instanceof ManagerError) || err.status !== 404) throw err;
+      const rows = await this.tasks(opts.signal);
+      const filtered = rows.filter((task) => taskStatusCol(task.status) === status);
+      return opts.limit ? filtered.slice(0, opts.limit) : filtered;
     }
   }
 

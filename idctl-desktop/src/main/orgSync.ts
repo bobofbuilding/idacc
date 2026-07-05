@@ -295,6 +295,20 @@ function isAgentIdle(agentName: string, team: string, tasks: Task[]): boolean {
   );
 }
 
+async function openTasksForTeams(client: ManagerClient, teams: string[]): Promise<Task[]> {
+  const rows = await Promise.all(
+    teams.map(async (team) => {
+      const tc = client.withTeam(team);
+      const [todo, doing] = await Promise.all([
+        tc.tasksByStatus('todo').catch(() => [] as Task[]),
+        tc.tasksByStatus('doing').catch(() => [] as Task[]),
+      ]);
+      return [...todo, ...doing].map((task) => ({ ...task, teamName: task.teamName ?? team }));
+    }),
+  );
+  return rows.flat();
+}
+
 // A query event whose latest status is one of these is FINISHED; anything else (dispatched /
 // received / processing / queued) means the agent is mid-query.
 const QUERY_DONE_RE = /deliver|done|complete|fail|cancel|expire|timeout/i;
@@ -347,7 +361,7 @@ async function buildOrgSyncPlan(client: ManagerClient, opts: { autoRebuild?: boo
 
   const brainByTeam: Record<string, string[]> = {};
   for (const team of hierarchy.teams) brainByTeam[team] = await brainInstructions(team);
-  const tasks = await client.tasks().catch(() => [] as Task[]);
+  const tasks = await openTasksForTeams(client, hierarchy.teams);
   const queryBusy = autoRebuild ? await collectQueryBusy(client, hierarchy.teams) : new Set<string>();
 
   let skippedBusy = 0;

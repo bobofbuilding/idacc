@@ -52,6 +52,7 @@ const WORK_LEAD_QUEUE_MAX = positiveEnvInt('IDACC_WORK_LEAD_QUEUE_MAX', 2);
 const WORK_LEAD_GUARD_TTL_MS = positiveEnvInt('IDACC_WORK_LEAD_GUARD_TTL_MINUTES', 45) * 60 * 1000;
 const WORK_OWNER_OPEN_TASK_CAP = positiveEnvInt('IDACC_WORK_OWNER_OPEN_TASK_CAP', 1);
 const WORK_QUEUE_TODO_CAP = positiveEnvInt('IDACC_WORK_QUEUE_TODO_CAP', 1);
+const WORK_COMPLETION_DONE_TASK_LIMIT = positiveEnvInt('IDACC_WORK_DONE_POLL_LIMIT', 250);
 const WORK_PLANNER_TEAM = process.env.IDACC_WORK_PLANNER_TEAM || 'ops-team';
 const WORK_PLANNER_NAMES = (process.env.IDACC_WORK_PLANNER_NAMES || 'task-manager,task-master')
   .split(',')
@@ -90,6 +91,18 @@ function taskBriefFlags(objective: string, st: Pick<SubTask, 'title' | 'descript
     ['--backlog-policy', backlog],
     ['--bittrees-relevance', relevance],
   ].map(([flag, value]) => `${flag} ${qArg(value)}`).join(' ');
+}
+
+async function openTasks(client: ManagerClient): Promise<Task[]> {
+  const [todo, doing] = await Promise.all([
+    client.tasksByStatus('todo').catch(() => [] as Task[]),
+    client.tasksByStatus('doing').catch(() => [] as Task[]),
+  ]);
+  return [...todo, ...doing];
+}
+
+async function recentDoneTasks(client: ManagerClient): Promise<Task[]> {
+  return client.tasksByStatus('done', { limit: WORK_COMPLETION_DONE_TASK_LIMIT }).catch(() => [] as Task[]);
 }
 
 /** An agent is routable only when it's actually running. Anything clearly
@@ -347,7 +360,7 @@ async function activeQueryCount(client: ManagerClient, agent: string): Promise<n
 
 async function planCapacity(client: ManagerClient, pool: Agent[]): Promise<PlanCapacity> {
   const [tasks, queryCounts] = await Promise.all([
-    client.tasks().catch(() => [] as Task[]),
+    openTasks(client),
     Promise.all(pool.map(async (agent) => [agentNameKey(agent.name), await activeQueryCount(client, agent.name)] as const)),
   ]);
   const lanes = taskLanesSnapshot();
@@ -624,7 +637,7 @@ export async function createAndDispatchPlan(
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   const tickPoll = async (): Promise<void> => {
     if (!waiters.length) { if (pollTimer) { clearInterval(pollTimer); pollTimer = undefined; } return; }
-    const snap = await client.tasks().catch(() => [] as Task[]);
+    const snap = await recentDoneTasks(client);
     const doneKeys = new Set<string>();
     for (const t of snap) if (isTaskDone(t.status)) for (const k of taskKeys(t)) doneKeys.add(k);
     const now = Date.now();
@@ -773,7 +786,7 @@ If you cannot complete it, mark it done with: /task done ${ref} --failure-note "
 export async function triageUnassigned(client: ManagerClient, lead: string, opts: { dispatch?: boolean } = {}): Promise<TriageResult> {
   const dispatch = opts.dispatch !== false;
   const [tasks, roster] = await Promise.all([
-    client.tasks().catch(() => [] as Task[]),
+    client.tasksByStatus('todo').catch(() => [] as Task[]),
     client.agents().catch(() => [] as Agent[]) as Promise<Agent[]>,
   ]);
   const coordinator = pickActiveLead(roster) ?? lead;

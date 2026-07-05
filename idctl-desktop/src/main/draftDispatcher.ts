@@ -43,6 +43,7 @@ export interface DraftDispatchRunResult {
 const MAX_SUBTASKS = 12;
 const NEWS_LIMIT_PER_TEAM = 80;
 const MAX_DRAFTS_PER_RUN = 4;
+const RECENT_DONE_TASK_LIMIT = 250;
 const RECENT_DRAFT_MS = 2 * 60 * 60 * 1000;
 const PROCESSED_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const PROCESSED_CAP = 1000;
@@ -55,6 +56,9 @@ function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/
 function clip(s: string, n: number): string {
   const t = (s || '').replace(/\s+/g, ' ').trim();
   return t.length > n ? `${t.slice(0, Math.max(0, n - 1))}...` : t;
+}
+async function recentDoneTasks(client: ManagerClient): Promise<Task[]> {
+  return client.tasksByStatus('done', { limit: RECENT_DONE_TASK_LIMIT }).catch(() => [] as Task[]);
 }
 function stringField(v: unknown, max = 240): string {
   return typeof v === 'string' ? clip(v, max) : '';
@@ -273,7 +277,7 @@ async function createAndDispatchRoutedDraft(client: ManagerClient, draft: Parsed
       return;
     }
     const teams = [...new Set(waiters.map((w) => w.team))];
-    const snaps = await Promise.all(teams.map(async (team) => [team, await client.withTeam(team).tasks().catch(() => [] as Task[])] as const));
+    const snaps = await Promise.all(teams.map(async (team) => [team, await recentDoneTasks(client.withTeam(team))] as const));
     const doneKeys = new Set<string>();
     for (const [team, tasks] of snaps) {
       for (const t of tasks) {
