@@ -23,7 +23,7 @@ const forbidden = [
   },
   {
     label: 'Brain workspace state',
-    re: /(?:^|\/)(?:id-agents\/)?workspace\/projects\/brain\/(?:brain\.db|data|exports|snapshots|approvals|facts|text-units|logs)(?:\/|$)/i,
+    re: /(?:^|\/)(?:id-agents\/)?workspace\/projects\/brain\/(?:(?:brain\.db(?:[-.\w]*)?)|(?:data|exports|snapshots|approvals|facts|text-units|logs|output|uploads|control-center)(?:\/|$)|plans\/archive(?:\/|$)|\.[\w.-]*cursor\.json$|[^/]+\.bak-[^/]+$)/i,
   },
   {
     label: 'Learn blob snapshots',

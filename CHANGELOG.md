@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.603] — 2026-07-05
+- Park idle Learn/Brain background polling behind event kicks and harden release payload guards against local Brain state.
+
 ## [0.1.602] — 2026-07-05
 - Reduce runtime load by slowing all-team roster polling on heavy secondary pages while keeping Dashboard and Work responsive.
 

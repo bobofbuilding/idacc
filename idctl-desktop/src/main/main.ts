@@ -32,6 +32,7 @@ import { getPermissions, openPermissionSettings, relaunchApp, type CuPermissionP
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
 import { buildLearnProcessContext } from '../shared/learnContext.ts';
+import { LEARN_BRAIN_BACKFILL_RUNNER_DELAYS, LEARN_QUEUE_RUNNER_DELAYS } from '../shared/backgroundPolicy.ts';
 
 // Bundled as CommonJS → __dirname is the output dir (out/main/).
 declare const __dirname: string;
@@ -428,10 +429,8 @@ function startLearnQueueRunner(): () => void {
   let stopped = false;
   let running = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const idleMs = 30_000;
-  const retryMs = 90_000;
 
-  const schedule = (delayMs = idleMs) => {
+  const schedule = (delayMs = LEARN_QUEUE_RUNNER_DELAYS.idleMs) => {
     if (stopped) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void tick(), Math.max(0, delayMs));
@@ -440,7 +439,7 @@ function startLearnQueueRunner(): () => void {
 
   const tick = async () => {
     if (stopped) return;
-    if (running) { schedule(2_000); return; }
+    if (running) { schedule(LEARN_QUEUE_RUNNER_DELAYS.alreadyRunningMs); return; }
     running = true;
     try {
       recoverStaleMaterials();
@@ -448,7 +447,7 @@ function startLearnQueueRunner(): () => void {
       const activeProcessing = current.some((m) => m.status === 'processing');
       const hasQueued = current.some((m) => m.status === 'queued');
       if (activeProcessing) {
-        schedule(hasQueued ? 15_000 : idleMs);
+        schedule(hasQueued ? LEARN_QUEUE_RUNNER_DELAYS.activeProcessingWithQueuedMs : LEARN_QUEUE_RUNNER_DELAYS.activeProcessingMs);
         return;
       }
       if (hasQueued) {
@@ -456,21 +455,21 @@ function startLearnQueueRunner(): () => void {
         if (material) {
           publishStoreChange('materials:processNext');
           recordControlAction('materials:processNext', ['background'], material);
-          if (material.status === 'ready' || material.status === 'blocked') kickLearnBrainBackfillRunner?.(250);
+          if (material.status === 'ready' || material.status === 'blocked') kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialReadyKickMs);
         }
       }
       const remaining = listMaterials().some((m) => m.status === 'queued');
-      schedule(remaining ? 750 : idleMs);
+      schedule(remaining ? LEARN_QUEUE_RUNNER_DELAYS.remainingQueuedMs : LEARN_QUEUE_RUNNER_DELAYS.idleMs);
     } catch (e) {
       console.warn('[learn] auto-process queue failed:', e);
-      schedule(retryMs);
+      schedule(LEARN_QUEUE_RUNNER_DELAYS.retryMs);
     } finally {
       running = false;
     }
   };
 
   kickLearnQueueRunner = schedule;
-  schedule(2_000);
+  schedule(LEARN_QUEUE_RUNNER_DELAYS.bootMs);
   return () => {
     stopped = true;
     kickLearnQueueRunner = null;
@@ -497,11 +496,8 @@ function startLearnBrainBackfillRunner(): () => void {
   let stopped = false;
   let running = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const idleMs = 10 * 60_000;
-  const activeMs = 45_000;
-  const retryMs = 5 * 60_000;
 
-  const schedule = (delayMs = idleMs) => {
+  const schedule = (delayMs = LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.idleMs) => {
     if (stopped) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void tick(), Math.max(0, delayMs));
@@ -510,22 +506,22 @@ function startLearnBrainBackfillRunner(): () => void {
 
   const tick = async () => {
     if (stopped) return;
-    if (running) { schedule(15_000); return; }
+    if (running) { schedule(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.alreadyRunningMs); return; }
     running = true;
     try {
       const result = await syncUnsyncedMaterialsToBrain({ limit: 2 });
       if (result.attempted > 0) publishStoreChange('materials:brainSync');
-      schedule(result.remaining > 0 ? activeMs : idleMs);
+      schedule(result.remaining > 0 ? LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.activeMs : LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.idleMs);
     } catch (e) {
       console.warn('[learn] brain backfill failed:', e);
-      schedule(retryMs);
+      schedule(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.retryMs);
     } finally {
       running = false;
     }
   };
 
   kickLearnBrainBackfillRunner = schedule;
-  schedule(12_000);
+  schedule(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.bootMs);
   return () => {
     stopped = true;
     kickLearnBrainBackfillRunner = null;
@@ -1098,7 +1094,7 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return getMaterial(args[0] as string);
     case 'materials:save': {
       const result = saveMaterial(args[0] as CreateMaterialInput | LearnMaterial);
-      kickLearnQueueRunner?.(250);
+      kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.terminalWriteKickMs);
       return result;
     }
     case 'materials:remove':
@@ -1112,30 +1108,30 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
         Array.isArray(args[0]) ? args[0].map(String) : [],
         (args[1] as { priority?: LearnPriority; prioritized?: boolean } | undefined) ?? {},
       );
-      kickLearnQueueRunner?.(250);
+      kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.terminalWriteKickMs);
       return result;
     }
     case 'materials:priority': {
       const result = updateMaterialPriority(args[0] as string, args[1] as LearnPriority, args[2] as boolean | undefined);
-      if (result.status === 'queued') kickLearnQueueRunner?.(100);
-      if (result.status === 'ready' || result.status === 'blocked') kickLearnBrainBackfillRunner?.(250);
+      if (result.status === 'queued') kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.queuedWriteKickMs);
+      if (result.status === 'ready' || result.status === 'blocked') kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialReadyKickMs);
       return result;
     }
     case 'materials:processNext': {
       const result = await processNextMaterial((args[0] as ProcessMaterialContext | undefined) ?? {});
-      if (result && (result.status === 'ready' || result.status === 'blocked')) kickLearnBrainBackfillRunner?.(250);
-      kickLearnQueueRunner?.(250);
+      if (result && (result.status === 'ready' || result.status === 'blocked')) kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialReadyKickMs);
+      kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.terminalWriteKickMs);
       return result;
     }
     case 'materials:process': {
       const result = await processMaterial(args[0] as string, (args[1] as ProcessMaterialContext | undefined) ?? {});
-      if (result.status === 'ready' || result.status === 'blocked') kickLearnBrainBackfillRunner?.(250);
-      kickLearnQueueRunner?.(250);
+      if (result.status === 'ready' || result.status === 'blocked') kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialReadyKickMs);
+      kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.terminalWriteKickMs);
       return result;
     }
     case 'materials:recoverStale': {
       const result = recoverStaleMaterials();
-      kickLearnQueueRunner?.(250);
+      kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.terminalWriteKickMs);
       return result;
     }
     case 'materials:syncBrain':
@@ -1145,7 +1141,7 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       });
     case 'materials:markRecommendation': {
       const result = markRecommendation(args[0] as string, args[1] as string, args[2] as LearnReviewState);
-      kickLearnBrainBackfillRunner?.(250);
+      kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialReadyKickMs);
       return result;
     }
     case 'image:generate':
@@ -1305,13 +1301,13 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
       stopMaterialChangeBridge = subscribeMaterialChanges((reason, material) => {
         publishStoreChange('materials:changed');
         if (reason === 'write' && 'status' in material && material.status === 'queued') {
-          kickLearnQueueRunner?.(100);
+          kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.queuedWriteKickMs);
         }
         if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked' || material.status === 'failed')) {
-          kickLearnQueueRunner?.(250);
+          kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.terminalWriteKickMs);
         }
         if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked')) {
-          kickLearnBrainBackfillRunner?.(500);
+          kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialWriteKickMs);
         }
       });
     } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }
