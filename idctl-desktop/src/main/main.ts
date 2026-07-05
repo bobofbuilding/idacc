@@ -31,6 +31,7 @@ import { startBroker, armBroker, disarmBroker, setWatching, brokerStatus, auditT
 import { getPermissions, openPermissionSettings, relaunchApp, type CuPermissionPane } from './computeruse/permissions.ts';
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
+import { buildLearnProcessContext } from '../shared/learnContext.ts';
 
 // Bundled as CommonJS → __dirname is the output dir (out/main/).
 declare const __dirname: string;
@@ -451,7 +452,7 @@ function startLearnQueueRunner(): () => void {
         return;
       }
       if (hasQueued) {
-        const material = await processNextMaterial({});
+        const material = await processNextMaterial(await learnProcessContext());
         if (material) {
           publishStoreChange('materials:processNext');
           recordControlAction('materials:processNext', ['background'], material);
@@ -475,6 +476,21 @@ function startLearnQueueRunner(): () => void {
     kickLearnQueueRunner = null;
     if (timer) clearTimeout(timer);
   };
+}
+
+async function learnProcessContext(): Promise<ProcessMaterialContext> {
+  const settings = loadSettings();
+  let liveTeams: string[] = [];
+  try {
+    const teams = await bridgeCall('teams', []) as Array<{ name?: string }>;
+    liveTeams = teams.map((team) => String(team.name || '').trim()).filter(Boolean);
+  } catch {
+    liveTeams = [];
+  }
+  return buildLearnProcessContext({
+    defaultTeam: settings.defaultTeam,
+    knownTeams: settings.knownTeams,
+  }, liveTeams);
 }
 
 function startLearnBrainBackfillRunner(): () => void {
