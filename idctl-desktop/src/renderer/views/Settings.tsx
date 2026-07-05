@@ -22,6 +22,7 @@ const SUB_AUTO_REFRESH_MS = 5 * 60 * 1000;
 const OLLAMA_CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
 const SETTINGS_FOCUS_REFRESH_MIN_MS = 60 * 1000;
 const SETTINGS_RUNTIME_CATALOG_WARM_MS = 5 * 60 * 1000;
+const SETTINGS_UPDATE_CHECK_STALE_MS = 15 * 60 * 1000;
 const API_FIRST_PROVIDER = PROVIDER_CATALOG.find((e) => !e.local) ?? findProvider('openai');
 const DISCOVERY_MAX_AGE_MS = 2 * 60 * 1000;
 const STACK_BACKEND_PRESET_FILTER = 'backend-presets';
@@ -148,6 +149,10 @@ function imageMessageClass(msg: string): string {
   if (/(failed|blocked|changed)/i.test(msg)) return 'status-error';
   if (/(no server|not found|not configured|draft|unsaved)/i.test(msg)) return 'warn-text';
   return 'ok-text';
+}
+function shouldCheckUpdateOnSettingsOpen(status: { checking?: boolean; lastChecked?: number } | null | undefined): boolean {
+  if (status?.checking) return false;
+  return !status?.lastChecked || Date.now() - status.lastChecked > SETTINGS_UPDATE_CHECK_STALE_MS;
 }
 
 export function Settings({ store, navigate }: { store: FleetStore; navigate?: (view: string) => void }) {
@@ -291,10 +296,15 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     setManagerCaps(await call<ManagerCapabilities>('manager:capabilities').catch(() => null));
     const u = await call<typeof upd>('update:getSettings').catch(() => null);
     setUpd(u);
-    setUpdStatus(await call<typeof updStatus>('update:status').catch(() => null));
-    // Kick a FRESH check so the card reflects the true latest when you open
-    // Settings (the cached status above can lag a release until the next check).
-    void call<typeof updStatus>('update:check').then((s) => { if (s) setUpdStatus(s); }).catch(() => {});
+    const currentUpdateStatus = await call<typeof updStatus>('update:status').catch(() => null);
+    setUpdStatus(currentUpdateStatus);
+    // The main updater already checks at launch, on focus, and on its interval.
+    // Settings mount happens on every page switch, so only refresh here when the
+    // cached status is stale enough to avoid making Settings feel like a network
+    // gate for unrelated local/runtime controls.
+    if (shouldCheckUpdateOnSettingsOpen(currentUpdateStatus)) {
+      void call<typeof updStatus>('update:check').then((s) => { if (s) setUpdStatus(s); }).catch(() => {});
+    }
     await refreshManagedSubscriptions();
   }
   async function reloadManagerCapabilities() {
@@ -1912,7 +1922,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     setStackConfirm(`i:${s.id}`);
   }
   async function reviewStackUninstall(s: LocalStackEntry, running: boolean, configuredProviders: ProviderRow[]) {
-    const status = await call<Record<string, LocalStackInstallStatus>>('stack:installStatus', [s.id]).catch((): Record<string, LocalStackInstallStatus> => ({}));
+    const status = await call<Record<string, LocalStackInstallStatus>>('stack:installStatus', [s.id], true).catch((): Record<string, LocalStackInstallStatus> => ({}));
     setStackInstallStatus((prev) => ({ ...prev, ...status }));
     if (!status[s.id]?.installed) {
       setStackConfirm(null);
@@ -1936,7 +1946,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   function scheduleStackInstallChecks(s: LocalStackEntry, action: 'install' | 'uninstall') {
     [6000, 18000, 36000].forEach((delay, idx, arr) => {
       setTimeout(async () => {
-        const status = await call<Record<string, LocalStackInstallStatus>>('stack:installStatus', [s.id]).catch((): Record<string, LocalStackInstallStatus> => ({}));
+        const status = await call<Record<string, LocalStackInstallStatus>>('stack:installStatus', [s.id], true).catch((): Record<string, LocalStackInstallStatus> => ({}));
         setStackInstallStatus((prev) => ({ ...prev, ...status }));
         const detectedPort = status[s.id]?.port;
         if (detectedPort) setStackPortOverrides((prev) => ({ ...prev, [s.id]: detectedPort }));
@@ -2004,7 +2014,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     if (!cmd) return;
     if (!await ensureDockerReady(s, cmd)) return;
     if (action === 'install' && stackUsesDockerCommand(cmd)) {
-      const status = await call<Record<string, LocalStackInstallStatus>>('stack:installStatus', [s.id]).catch((): Record<string, LocalStackInstallStatus> => ({}));
+      const status = await call<Record<string, LocalStackInstallStatus>>('stack:installStatus', [s.id], true).catch((): Record<string, LocalStackInstallStatus> => ({}));
       setStackInstallStatus((prev) => ({ ...prev, ...status }));
       const detectedPort = status[s.id]?.port;
       if (detectedPort) setStackPortOverrides((prev) => ({ ...prev, [s.id]: detectedPort }));

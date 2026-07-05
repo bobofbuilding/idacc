@@ -937,7 +937,7 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'app:hardware':
       return getHardware();
     case 'stack:installStatus':
-      return localStackInstallStatus(Array.isArray(args[0]) ? args[0] as string[] : []);
+      return localStackInstallStatus(Array.isArray(args[0]) ? args[0] as string[] : [], { force: Boolean(args[1]) });
     case 'stack:backgroundStatus':
       return backgroundStackStatus(Array.isArray(args[0]) ? args[0] as string[] : []);
     case 'stack:startBackground':

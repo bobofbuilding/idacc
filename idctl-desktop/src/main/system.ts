@@ -18,6 +18,7 @@ import { join } from 'node:path';
 
 const execFileP = promisify(execFile);
 const GB = 1024 ** 3;
+const LOCAL_STACK_INSTALL_CACHE_MS = 5 * 60_000;
 
 const BACKGROUND_STACKS: Record<string, { name: string; command: string; port?: number }> = {
   'mlx-lm-server': {
@@ -28,6 +29,7 @@ const BACKGROUND_STACKS: Record<string, { name: string; command: string; port?: 
 };
 
 const backgroundProcs = new Map<string, { child: ChildProcess; command: string; startedAt: number; logPath: string; name: string; port?: number }>();
+const localStackInstallStatusCache = new Map<string, { at: number; rows: Record<string, LocalStackInstallStatus> }>();
 
 /** GUI apps inherit a minimal PATH; include common package-manager locations. */
 function cliEnv(): NodeJS.ProcessEnv {
@@ -216,7 +218,16 @@ export async function dockerStatus(): Promise<DockerStatus> {
  * checks the same package/container family as the uninstall command; a configured
  * backend or open port is not enough proof that IDACC can uninstall the package.
  */
-export async function localStackInstallStatus(ids: string[]): Promise<Record<string, LocalStackInstallStatus>> {
+function localStackInstallCacheKey(ids: string[]): string {
+  return [...new Set(ids.map(String).filter(Boolean))].sort().join('\u0001');
+}
+
+export async function localStackInstallStatus(ids: string[], options: { force?: boolean } = {}): Promise<Record<string, LocalStackInstallStatus>> {
+  const cacheKey = localStackInstallCacheKey(ids);
+  if (!options.force && cacheKey) {
+    const cached = localStackInstallStatusCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < LOCAL_STACK_INSTALL_CACHE_MS) return cached.rows;
+  }
   const checkedAt = Date.now();
   const out: Record<string, LocalStackInstallStatus> = {};
   for (const id of ids.map(String)) {
@@ -285,6 +296,7 @@ export async function localStackInstallStatus(ids: string[]): Promise<Record<str
       checkedAt,
     };
   }
+  if (cacheKey) localStackInstallStatusCache.set(cacheKey, { at: Date.now(), rows: out });
   return out;
 }
 
