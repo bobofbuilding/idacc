@@ -24,6 +24,15 @@ type StalledTriageReport = { triagedOwners?: number; items?: StalledTriageItem[]
 type JumpstartResult = { ok: boolean; status?: string; taskRef?: string; actor?: string; message: string };
 type AssignScope = 'team' | 'selected-teams' | 'team-leads' | 'all-agents';
 type TaskSnapshot = { status: string; owner?: string; team?: string; lane: Lane; delegation?: string };
+type DelegatedChildTask = {
+  ref?: string;
+  name?: string;
+  title?: string;
+  status?: string;
+  ownerName?: string | null;
+  updatedAt?: number;
+  completedAt?: number | null;
+};
 type TeamAgentsGroup = { team: string; agents: TeamAgent[] };
 type WorkSchedule = ScheduleEntry & { team?: string };
 type WorkOrgHierarchy = {
@@ -63,17 +72,42 @@ function ref(t: Task): string {
 function delegationStatus(t: Task): string {
   return String(t.delegationAudit?.status ?? '');
 }
+function delegatedChildTasks(t: Task): DelegatedChildTask[] {
+  const raw = t.delegationAudit?.childTasks;
+  return Array.isArray(raw)
+    ? raw.filter((item): item is DelegatedChildTask => !!item && typeof item === 'object')
+    : [];
+}
 function delegatedChildRefs(t: Task): string[] {
+  const children = delegatedChildTasks(t);
+  if (children.length) {
+    return children
+      .map((child) => String(child.ref || child.name || '').trim())
+      .filter(Boolean);
+  }
   const refs = t.delegationAudit?.childTaskRefs;
   return Array.isArray(refs) ? refs.filter((r): r is string => typeof r === 'string' && !!r.trim()) : [];
 }
 function delegationSnapshot(t: Task): string {
   const status = delegationStatus(t);
   const children = delegatedChildRefs(t);
-  return status || children.length ? `${status}:${children.join(',')}` : '';
+  const childStates = delegatedChildTasks(t)
+    .map((child) => `${child.ref || child.name || ''}:${child.status || ''}:${child.ownerName || ''}`)
+    .join(',');
+  return status || children.length || childStates ? `${status}:${children.join(',')}:${childStates}` : '';
 }
 function isDelegatedLeadTask(t: Task): boolean {
-  return delegationStatus(t) === 'ok' && delegatedChildRefs(t).length > 0;
+  return delegationStatus(t) === 'ok' && (delegatedChildRefs(t).length > 0 || delegatedChildTasks(t).length > 0);
+}
+function childTaskDone(child: DelegatedChildTask): boolean {
+  return /done|complete/i.test(String(child.status || ''));
+}
+function delegatedChildTitle(child: DelegatedChildTask): string {
+  const ref = child.ref || child.name || 'child';
+  const owner = child.ownerName ? ` · ${child.ownerName}` : '';
+  const status = child.status ? ` · ${child.status}` : '';
+  const title = child.title ? ` · ${child.title}` : '';
+  return `${ref}${owner}${status}${title}`;
 }
 function isDone(t: Task): boolean {
   return /done|complete/i.test(t.status);
@@ -1306,7 +1340,15 @@ function TasksPanel({ store }: { store: FleetStore }) {
             const cAbs = absTime(t.createdAt);
             const uAbs = absTime(t.updatedAt);
             const dAbs = absTime(t.completedAt ?? t.updatedAt);
+            const childTasks = delegated ? delegatedChildTasks(t) : [];
+            const activeChildren = childTasks.filter((child) => !childTaskDone(child));
             const childRefs = delegated ? delegatedChildRefs(t) : [];
+            const childSummary = childTasks.length
+              ? childTasks.map(delegatedChildTitle).join('\n')
+              : childRefs.join(', ');
+            const delegatedLabel = activeChildren.length
+              ? `waiting on ${activeChildren.length}`
+              : 'delegated';
             return (
             <div
               key={ref(t)}
@@ -1355,9 +1397,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     ⏸ {t.ownerName ? `${t.ownerName} · ` : ''}waiting
                   </span>
                 ) : delegated ? (
-                  <span className="small" title={`${t.ownerName} delegated this parent task${childRefs.length ? ` to ${childRefs.join(', ')}` : ''}; the manager does not consider it jump-startable stalled.`}
+                  <span className="small" title={`${t.ownerName} delegated this parent task${childSummary ? `:\n${childSummary}` : ''}\n\nThe manager waits for active child tasks before this parent can close.`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#60a5fa', background: 'rgba(96,165,250,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
-                    ⇢ {t.ownerName} · delegated
+                    ⇢ {t.ownerName} · {delegatedLabel}
                   </span>
                 ) : working ? (
                   <span className="small" title={`${t.ownerName} recently picked this up${uAbs ? ` — moved to Doing ${uAbs}` : ''}`}
@@ -1392,7 +1434,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
               <div className="muted" style={{ marginTop: 3, display: 'flex', gap: 9, flexWrap: 'wrap', fontSize: 10.5, opacity: 0.85 }}>
                 <span title={cAbs ? `created ${cAbs}` : undefined}>⊕ created {ago(t.createdAt)} ago</span>
                 {working && t.updatedAt ? <span style={{ color: '#3ccb78' }} title={uAbs ? `moved to Doing ${uAbs}` : undefined}>▶ in Doing {ago(t.updatedAt)}</span> : null}
-                {delegated && childRefs.length ? <span style={{ color: '#60a5fa' }} title={`Delegated child tasks: ${childRefs.join(', ')}`}>⇢ {childRefs.length} delegated</span> : null}
+                {delegated && childRefs.length ? (
+                  <span style={{ color: '#60a5fa' }} title={childSummary ? `Delegated child tasks:\n${childSummary}` : `Delegated child tasks: ${childRefs.join(', ')}`}>
+                    ⇢ {activeChildren.length ? `${activeChildren.length} active / ` : ''}{childRefs.length} delegated
+                  </span>
+                ) : null}
                 {stale ? <span style={{ color: '#e0a33c' }} title={uAbs ? `no status change since ${uAbs} — may be stalled` : undefined}>⏳ no update {ago(t.updatedAt)}</span> : null}
                 {phase === 'done' && (t.completedAt || t.updatedAt) ? <span title={dAbs ? `completed ${dAbs}` : undefined}>✓ done {ago(t.completedAt ?? t.updatedAt)} ago</span> : null}
                 {phase === 'todo' && t.ownerName ? <span title="assigned but not started yet">◴ queued</span> : null}

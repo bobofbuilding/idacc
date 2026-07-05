@@ -155,6 +155,15 @@ export interface Task {
     ageSeconds?: number;
     graceSeconds?: number;
     childTaskRefs?: string[];
+    childTasks?: Array<{
+      ref?: string;
+      name?: string;
+      title?: string;
+      status?: string;
+      ownerName?: string | null;
+      updatedAt?: number;
+      completedAt?: number | null;
+    }>;
     [key: string]: unknown;
   } | null;
 }
