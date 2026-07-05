@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.605] — 2026-07-05
+- Resolve plan recovery locally and preserve chat failure details
+
 ## [0.1.604] — 2026-07-05
 - fix(idacc): harden work delegation dispatch
 

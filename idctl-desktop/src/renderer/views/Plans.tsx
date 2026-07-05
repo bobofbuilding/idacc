@@ -408,6 +408,7 @@ export function Plans({ store }: { store: FleetStore }) {
       });
       return true;
     } catch {
+      if (aliveRef.current) setBlockers((m) => ({ ...m, [p.file]: 'decision write failed' }));
       return false;
     }
   }

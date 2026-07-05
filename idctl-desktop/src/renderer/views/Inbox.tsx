@@ -156,8 +156,18 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
   async function deliver(answer: string) {
     setBusy(true); setErr('');
     try {
-      if (q.agent && !isLearnQuestion && answer) void call('dispatch', `/ask ${q.agent} ${qArg(answer)}`).catch(() => {});
+      if (q.agent && !isSyntheticQuestion && !isBrainApproval && answer) void call('dispatch', `/ask ${q.agent} ${qArg(answer)}`).catch(() => {});
       if (q.taskRef && !isSyntheticQuestion) void call('tasks:setReview', q.taskRef, 'under-review').catch(() => {});
+      await call('questions:remove', q.id);
+      onDone();
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
+  }
+  async function resolvePlanQuestion(option: string) {
+    setBusy(true); setErr('');
+    try {
+      const file = String(q.metadata?.file ?? q.metadata?.planFile ?? q.taskRef?.slice('plan:'.length) ?? '').trim();
+      const status = /retry/i.test(option) ? 'PENDING' : 'PAUSED';
+      if (file) await call('brain:setPlanStatus', file, status).catch(() => undefined);
       await call('questions:remove', q.id);
       onDone();
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
@@ -178,9 +188,18 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
   }
   const chooseOption = (o: string) => isBrainApproval
     ? resolveBrainApproval(o)
+    : isPlanQuestion
+      ? resolvePlanQuestion(o)
     : deliver(`Decision on “${subject}”. You asked: ${q.question} — the user chose: ${o}. Proceed accordingly.`);
-  const sendComment = () => { const c = comment.trim(); if (c) void deliver(`Response on “${subject}”. You asked: ${q.question} — the user says: ${c}. Proceed accordingly.`); };
-  const handleManually = () => deliver(`Re “${subject}”: ${q.question} — the USER is handling this manually/independently. Do NOT work on it or re-raise it; set it aside and continue with everything else. The user will follow up when it's done.`);
+  const sendComment = () => {
+    const c = comment.trim();
+    if (!c) return;
+    if (isPlanQuestion) void resolvePlanQuestion('comment');
+    else void deliver(`Response on “${subject}”. You asked: ${q.question} — the user says: ${c}. Proceed accordingly.`);
+  };
+  const handleManually = () => isPlanQuestion
+    ? resolvePlanQuestion("I'll handle it")
+    : deliver(`Re “${subject}”: ${q.question} — the USER is handling this manually/independently. Do NOT work on it or re-raise it; set it aside and continue with everything else. The user will follow up when it's done.`);
   async function skip() {
     setBusy(true); setErr('');
     try {

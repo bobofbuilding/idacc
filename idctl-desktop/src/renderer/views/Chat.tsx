@@ -53,6 +53,10 @@ function hasReplyContent(m?: Pick<Msg, 'text' | 'image'>): boolean {
 function isRecoverableFailureText(text?: string): boolean {
   return /^\s*✗\s*(failed|agent failed|query failed|query expired|expired)\b/i.test(String(text || ''));
 }
+function terminalQueryText(q: QueryPoll): string {
+  const detail = q.error || q.text || q.status || 'failed';
+  return `✗ ${detail}`;
+}
 function isRecoverableFailedMsg(m: Msg): boolean {
   return !!m.queryId && isRecoverableFailureText(m.text);
 }
@@ -707,7 +711,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
           return;
         }
         if (q?.status === 'failed' || q?.status === 'expired') {
-          await resolveMsg(sid, inf.replyId, { queryId: inf.queryId, text: `${inf.target} returned ${q.status}; checking for a final reply…`, pending: true });
+          await resolveMsg(sid, inf.replyId, { queryId: inf.queryId, text: `${terminalQueryText(q)} Checking for a final reply…`, pending: true });
           const confirmed = await confirmRecoverableTerminal(inf, q);
           if (!confirmed) { await new Promise((r) => setTimeout(r, 1500)); continue; }
           if (confirmed.status === 'delivered') {
@@ -727,7 +731,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
           if (confirmed.status === 'pending' || confirmed.status === 'processing') {
             await new Promise((r) => setTimeout(r, 1500)); continue;
           }
-          await deliverInflight(sid, inf, { role: 'system', text: `✗ ${confirmed.error || confirmed.status}` });
+          await deliverInflight(sid, inf, { role: 'system', text: terminalQueryText(confirmed) });
           return;
         }
         if (q?.status === 'cancelled') {
