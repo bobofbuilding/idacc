@@ -21,6 +21,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { auditPreview, optimizeAskCommandCore, type ContextBudgetDecision } from '../shared/contextBudget.ts';
 import { syncDomainsForMethod } from '../shared/syncDomains.ts';
 import { COALESCED_READ_METHODS, ReadCallCache } from '../shared/readCallCache.ts';
+import { mapTeamAgentGroups } from '../shared/teamAgentGroups.ts';
 
 const MGR_DEFAULT = 'http://127.0.0.1:4100';
 const WIKI_URL = 'docs/CONTROL_CENTER_WIKI.json';
@@ -794,9 +795,7 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   'agents:allTeams': async () => {
     const teams = await client.teams().catch(() => []);
     const names = teams.length ? teams.map((t) => t.name) : [team || 'default'];
-    const groups = await Promise.all(
-      names.map(async (name) => ({ team: name, agents: await client.withTeam(name).agents().catch(() => []) })),
-    );
+    const groups = await mapTeamAgentGroups<Agent>(names, (name) => client.withTeam(name).agents());
     return groups.filter((g) => g.agents.length > 0);
   },
   'wiki:get': () => fetchWiki(),

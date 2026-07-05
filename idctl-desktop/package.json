@@ -17,6 +17,7 @@
     "test:learn-brain-sync": "../idctl/node_modules/.bin/tsx scripts/learn-brain-sync-smoke.ts",
     "test:learn-queue": "../idctl/node_modules/.bin/tsx scripts/learn-queue-smoke.ts",
     "test:headroom-plugin": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/headroom-plugin-path-smoke.mjs",
+    "test:team-agent-groups": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/team-agent-groups-smoke.mjs",
     "test:plans-work": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/plans-work-smoke.mjs",
     "test:work-delegation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/work-delegation-smoke.mjs",
     "tauri": "tauri",
