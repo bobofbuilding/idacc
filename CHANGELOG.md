@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.594] — 2026-07-05
+- fix(work): cap live task fanout
+
 ## [0.1.593] — 2026-07-05
 - fix(ui): force fresh fleet checks only for guards
 - fix(learn): clarify active queue and stabilize intake layout
