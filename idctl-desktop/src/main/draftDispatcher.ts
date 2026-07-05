@@ -135,6 +135,20 @@ function sourceText(news: DraftNewsItem): string {
   return news.message || dataMessage || '';
 }
 
+function actorText(news: DraftNewsItem): string {
+  const d = news.data ?? {};
+  return stringField(d.from ?? d.sender ?? d.agent ?? d.source ?? '', 80);
+}
+
+function isInternalPlannerActor(actor: string): boolean {
+  return /\b(task-manager|task-master)\b/i.test(actor);
+}
+
+function isInternalPlannerDecomposition(news: DraftNewsItem, arr: SubTask[] | null): boolean {
+  if (!isInternalPlannerActor(actorText(news)) || !arr?.length) return false;
+  return arr.every((row) => !!row.agent && Array.isArray(row.dependsOn));
+}
+
 export function parseDraftProposalFromNews(news: DraftNewsItem, team: string, now = Date.now(), maxAgeMs = RECENT_DRAFT_MS): ParsedDraftProposal | null {
   const text = sourceText(news);
   const at = toMs(news.timestamp);
@@ -143,6 +157,16 @@ export function parseDraftProposalFromNews(news: DraftNewsItem, team: string, no
 
   const arr = extractJsonArray(text);
   if (!arr?.length) return null;
+  if (isInternalPlannerDecomposition(news, arr.map((raw, i) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { title: '', description: '', agent: '', dependsOn: [] };
+    const o = raw as Record<string, unknown>;
+    return {
+      title: stringField(o.title ?? o.task ?? o.name, 120),
+      description: stringField(o.description ?? o.detail ?? o.details ?? o.output, 320),
+      agent: stringField(o.agent ?? o.owner ?? o.assignee, 80),
+      dependsOn: normalizeDeps(o.dependsOn ?? o.depends_on ?? o.after, arr.length, i),
+    };
+  }))) return null;
   const n = Math.min(arr.length, MAX_SUBTASKS);
   const subtasks: SubTask[] = [];
   for (let i = 0; i < n; i++) {

@@ -523,21 +523,21 @@ function decompositionCapForPlanner(kind: DecompositionPlanner['kind']): number 
   return kind === 'task-manager' ? WORK_TASK_MANAGER_SUBTASK_CAP : MAX_SUBTASKS;
 }
 
-const DECOMP_PROMPT = (objective: string, agentLines: string, plannerKind: DecompositionPlanner['kind'], maxSubtasks: number) =>
-  `${plannerKind === 'task-manager' ? 'You are the fleet task manager.' : 'You are the team lead.'} Break the objective below into a small set of concrete, independently-actionable sub-tasks for the fleet, and assign each to the best-suited agent.
+const INTERNAL_WORK_DECOMPOSITION_MARKER = '[IDACC_INTERNAL_WORK_DECOMPOSITION]';
 
-This is an ADVISORY decomposition request only. Do not create, claim, or close manager tasks for yourself while answering it. The control center will create the live tasks and dispatch them after parsing your JSON.
+const DECOMP_PROMPT = (objective: string, agentLines: string, maxSubtasks: number) =>
+  `${INTERNAL_WORK_DECOMPOSITION_MARKER}
+You are the internal work planner. Break the objective below into a small set of concrete, independently-actionable sub-tasks for the fleet, and assign each to the best-suited execution owner.
 
 Objective: ${objective}
 
-Available agents:
+Assignable agents:
 ${agentLines}
 
 Return ONLY a JSON array (no prose, no markdown fence) of up to ${maxSubtasks} objects with this exact shape:
 [{"title":"short imperative task","description":"1-2 sentences: what to do and the expected output","agent":"<one of the agent names above>","dependsOn":[<0-based indices of prerequisite tasks in THIS array; empty when it can start immediately>]}]
 
 Rules:
-- Do not create manager tasks, claim a task, or mark a task done for this advisory decomposition request.
 - Assign work ONLY to agents that are running; never assign a task to one marked [STOPPED — do not assign].
 - Do not assign execution to yourself/the coordinator when any non-coordinator assignee is available.
 - On the default team, coder and researcher validate completed work; do not assign normal execution to them when another worker or team lead is available.
@@ -561,8 +561,9 @@ export async function decomposeWork(
   // Prefer routing to an agent that's actually running; fall back to anything only
   // if the whole roster is stopped.
   const fallback = assignable.find((a) => isActiveStatus(a.status))?.name ?? assignable[0]?.name ?? firstActive ?? (names.has(lead) ? lead : agents[0]?.name ?? lead);
+  const visibleAgents = assignable.length ? assignable : agents;
   const agentLines =
-    agents.map((a) => agentLine(a, lead, assignableNames, client.team)).join('\n') ||
+    visibleAgents.map((a) => agentLine(a, lead, assignableNames, client.team)).join('\n') ||
     `- ${fallback}`;
 
   let raw = '';
@@ -572,7 +573,7 @@ export async function decomposeWork(
     const guard = await guardLeadQueue(planner.client, planner.agent, planner.kind === 'task-manager' ? 'task-manager decomposition' : 'decomposition');
     if (!guard.ok) return { ok: false, subtasks: [], raw: '', error: guard.detail };
     maxSubtasks = decompositionCapForPlanner(planner.kind);
-    raw = await dispatchBudgeted(planner.client, `/ask ${planner.agent} ${qArg(DECOMP_PROMPT(obj, agentLines, planner.kind, maxSubtasks))}`, 'work:decompose');
+    raw = await dispatchBudgeted(planner.client, `/ask ${planner.agent} ${qArg(DECOMP_PROMPT(obj, agentLines, maxSubtasks))}`, 'work:decompose');
   } catch (e) {
     return { ok: false, subtasks: [], raw: '', error: e instanceof Error ? e.message : String(e) };
   }
@@ -620,7 +621,7 @@ export async function createAndDispatchPlan(
   client: ManagerClient,
   objective: string,
   subtasks: SubTask[],
-  opts: { dispatch?: boolean; lane?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean } = {},
+  opts: { dispatch?: boolean; lane?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean; coordinator?: string } = {},
 ): Promise<CreatePlanResult> {
   // dispatch=false → create tasks UNOWNED (status todo) into a lane and DON'T farm them
   // out (a staged queue the lead works later). Default true = assign owners + dispatch.
@@ -632,7 +633,7 @@ export async function createAndDispatchPlan(
   // Auto-route to ACTIVE agents only: a stopped agent can't pick up work, so the
   // owner pool (and the coerce-to-fallback target) is the running roster whenever
   // any agent is running; degrade to the full roster only if nothing is active.
-  const coordinator = pickActiveLead(roster) ?? '';
+  const coordinator = String(opts.coordinator ?? pickActiveLead(roster) ?? '').trim();
   const pool = executionPoolForTeam(roster, coordinator, client.team, opts.allowCoordinatorOwners === true);
   const names = new Set(pool.map((a) => a.name));
   const fallback = pool[0]?.name ?? '';
@@ -757,6 +758,7 @@ export async function createAndDispatchPlan(
 
   // done[i] resolves only AFTER task i completes, so dependents wait for OUTPUT, not dispatch.
   const done: Promise<void>[] = new Array(list.length);
+  const initialEnqueues: Promise<void>[] = [];
   // One in-flight task per OWNER: an agent works (and finishes) its tasks one at a time. This
   // also serializes local-model agents so they never thrash a single GPU with concurrent runs.
   const ownerChain: Record<string, Promise<void> | undefined> = {};
@@ -768,9 +770,20 @@ export async function createAndDispatchPlan(
     const deps = backDeps.map((d) => done[d]).filter(Boolean); // each resolves on prereq COMPLETION
     const prevForOwner = ownerChain[c.agent];
     const waits = prevForOwner ? [...deps, prevForOwner] : deps;
+    let markEnqueued: () => void = () => {};
+    const enqueued = new Promise<void>((resolve) => { markEnqueued = resolve; });
+    if (!waits.length) initialEnqueues.push(enqueued);
     const p = Promise.allSettled(waits).then(async () => {
-      c.dispatched = true;
-      await enqueueBudgeted(client, `/ask ${c.agent} ${qArg(WORK_PROMPT(objective, list[i], c.ref))}`, 'work:createPlan:task-dispatch').then(() => {}, () => {});
+      try {
+        await enqueueBudgeted(client, `/ask ${c.agent} ${qArg(WORK_PROMPT(objective, list[i], c.ref))}`, 'work:createPlan:task-dispatch');
+        c.dispatched = true;
+      } catch (e) {
+        c.dispatched = false;
+        c.error = `dispatch failed: ${e instanceof Error ? e.message : String(e)}`;
+        return;
+      } finally {
+        markEnqueued();
+      }
       // Hold this task's done-promise open until the task itself finishes — that's what gates
       // its dependents (and its owner's next task).
       await waitForTaskDone(c.ref);
@@ -781,12 +794,13 @@ export async function createAndDispatchPlan(
   for (let i = 0; i < list.length; i++) done[i] = startSub(i);
   // Fire-and-forget: the fleet runs in the background; swallow to avoid unhandled rejections.
   void Promise.allSettled(done);
+  await Promise.allSettled(initialEnqueues);
 
   const ok = created.filter((c) => c.ok);
   const runnable = ok.filter((c) => !c.deferred);
-  const ready = runnable.filter((c) => list[c.idx].dependsOn.filter((d) => d < c.idx).every((d) => created[d]?.ok && !created[d]?.deferred));
+  const dispatched = runnable.filter((c) => c.dispatched).length;
   const capacityDeferred = created.filter((c) => !c.ok && c.deferred).length;
-  return { created, dispatched: ready.length, deferred: ok.length - ready.length + capacityDeferred };
+  return { created, dispatched, deferred: ok.length - dispatched + capacityDeferred };
 }
 
 // ---- Plan/objective delegation to team leads ------------------------------

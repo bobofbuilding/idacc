@@ -41,11 +41,12 @@ function makeClient(team = 'default') {
     async dispatch(command) {
       dispatchCommands.push({ team, command });
       if (dispatchMode === 'fail') throw new Error('agent failed');
-      const available = command.match(/Available agents:\n([\s\S]*?)\n\nReturn ONLY/)?.[1] ?? '';
+      const available = command.match(/Assignable agents:\n([\s\S]*?)\n\nReturn ONLY/)?.[1] ?? '';
       assert.match(available, /research-lead/, 'planner prompt should offer active research lead');
       assert.match(available, /engineering-lead/, 'planner prompt should offer active engineering lead');
       assert.doesNotMatch(available, /\bcoder\b/, 'planner prompt should not offer default validators as execution owners');
       assert.doesNotMatch(available, /\bresearcher\b/, 'planner prompt should not offer default validators as execution owners');
+      assert.doesNotMatch(command, /ADVISORY decomposition|fleet task manager/i, 'planner prompt must not create visible advisory draft traffic');
       return JSON.stringify([
         {
           title: 'Research remaining plan risks',

@@ -581,9 +581,9 @@ export function Plans({ store }: { store: FleetStore }) {
         agent: '', // let work:createPlan balance across this team's active agents
         dependsOn: (subs[g].dependsOn || []).filter((d) => localOf.has(d)).map((d) => localOf.get(d) as number),
       }));
-      const res = await call<CreatePlanResult>('work:createPlan', obj, batch, { team: l.team, dispatch: true, lane: 'doing' }).catch((): CreatePlanResult => ({ created: [], dispatched: 0, deferred: 0 }));
+      const res = await call<CreatePlanResult>('work:createPlan', obj, batch, { team: l.team, dispatch: true, lane: 'doing', coordinator: l.lead || undefined }).catch((): CreatePlanResult => ({ created: [], dispatched: 0, deferred: 0 }));
       const ok = res.created.filter((c) => c.ok).length;
-      if (ok) parts.push(`${l.team}: ${ok}`);
+      if (res.dispatched > 0) parts.push(`${l.team}: ${res.dispatched}/${ok || batch.length} started`);
     }
     if (!parts.length) {
       await relayPlanBlocker(fresh, `Work > Plans split "${fresh.title}" into ${N} task(s), but no team accepted live task creation or dispatch.`, {

@@ -92,6 +92,52 @@ assert.equal(result.deferred, 0);
 remoteCommands.length = 0;
 dispatchCommands.length = 0;
 
+const askFailClient = {
+  ...client,
+  async remote(command) {
+    remoteCommands.push(command);
+    if (/^\/ask\b/.test(command)) throw new Error('query cap reached');
+    return {
+      ok: true,
+      result: {
+        task: {
+          shortId: '#askfail',
+          name: 'ask-fail-task',
+        },
+      },
+    };
+  },
+};
+
+const rejectedDispatch = await createAndDispatchPlan(
+  askFailClient,
+  'Create a task but fail dispatch.',
+  [
+    {
+      title: 'Dispatch should not be counted',
+      description: 'The manager accepts task creation but rejects the agent ask.',
+      agent: 'writer',
+      dependsOn: [],
+    },
+  ],
+  {
+    dispatch: true,
+    respectOwners: true,
+  },
+);
+
+assert.equal(remoteCommands.filter((cmd) => /^\/task create\b/.test(cmd)).length, 1);
+assert.equal(remoteCommands.filter((cmd) => /^\/ask\b/.test(cmd)).length, 1);
+assert.equal(rejectedDispatch.created.length, 1);
+assert.equal(rejectedDispatch.created[0].ok, true);
+assert.equal(rejectedDispatch.created[0].dispatched, false, 'failed /ask must not be reported as dispatched');
+assert.match(rejectedDispatch.created[0].error || '', /dispatch failed: query cap reached/);
+assert.equal(rejectedDispatch.dispatched, 0);
+assert.equal(rejectedDispatch.deferred, 1);
+
+remoteCommands.length = 0;
+dispatchCommands.length = 0;
+
 const busyOwnerClient = {
   ...client,
   async tasksByStatus(status) {

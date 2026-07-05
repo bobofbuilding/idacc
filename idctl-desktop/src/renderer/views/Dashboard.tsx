@@ -76,7 +76,34 @@ function workDraftFromText(text: string): WorkDraftSummary | null {
     return null;
   }
 }
+function isInternalPlannerActor(actor: string): boolean {
+  return /\b(task-manager|task-master)\b/i.test(actor);
+}
+function isInternalWorkDecompositionText(actor: string, text: string): boolean {
+  if (!isInternalPlannerActor(actor)) return false;
+  const raw = extractJsonArray(text);
+  if (!raw) return false;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return false;
+    return parsed.every((row) =>
+      !!row
+      && typeof row === 'object'
+      && !Array.isArray(row)
+      && (str((row as Record<string, unknown>).agent) || str((row as Record<string, unknown>).owner))
+      && ('dependsOn' in (row as Record<string, unknown>) || 'depends_on' in (row as Record<string, unknown>)),
+    );
+  } catch {
+    return false;
+  }
+}
+function isInternalWorkDecompositionNews(n: DashboardNews): boolean {
+  const actor = newsActor(n) || str(n.data?.from) || str(n.data?.sender) || str(n.data?.agent) || str(n.data?.source);
+  const raw = n.message || previewOf(n.data ?? {});
+  return isInternalWorkDecompositionText(actor, raw);
+}
 function workDraftDesc(actor: string, text: string): string | null {
+  if (isInternalWorkDecompositionText(actor, text)) return null;
   const draft = workDraftFromText(text);
   if (!draft) return null;
   const noun = draft.count === 1 ? 'work item' : 'work items';
@@ -164,6 +191,7 @@ function newsDesc(n: DashboardNews): string {
   return [actor, preview].filter(Boolean).join(' — ');
 }
 function newsWorkDraftDesc(n: DashboardNews): string | null {
+  if (isInternalWorkDecompositionNews(n)) return null;
   const raw = n.message || previewOf(n.data ?? {});
   return workDraftDesc(newsActor(n), raw);
 }

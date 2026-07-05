@@ -894,7 +894,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
     // Global toast: persists after the panel closes / you switch pages.
     const t = toast({ kind: 'progress', text: `Creating ${n} task${n === 1 ? '' : 's'} & dispatching to ${activeTeam}…` });
     try {
-      const res = await call<CreatePlanResult>('work:createPlan', objective.trim(), dispatchProposal, { team: activeTeam });
+      const res = await call<CreatePlanResult>('work:createPlan', objective.trim(), dispatchProposal, { team: activeTeam, coordinator: leadName });
       const okCount = res.created.filter((c) => c.ok).length;
       const capacityDeferred = res.created.filter((c) => !c.ok && c.deferred).length;
       const failed = res.created.length - okCount - capacityDeferred;
@@ -934,7 +934,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
       }
       const results = await Promise.all([...byTeam.entries()].map(async ([tm, ags]) => {
         const subtasks = ags.map((a) => ({ title, description: taskDesc.trim(), agent: a.name, dependsOn: [] as number[] }));
-        const res = await call<CreatePlanResult>('work:createPlan', title, subtasks, { team: tm, dispatch: true, respectOwners: true });
+        const coordinator = tm === activeTeam ? leadName : undefined;
+        const res = await call<CreatePlanResult>('work:createPlan', title, subtasks, { team: tm, dispatch: true, respectOwners: true, coordinator });
         const created = res.created.filter((c) => c.ok);
         return { team: tm, ok: created.length, dispatched: res.dispatched, created };
       }));
