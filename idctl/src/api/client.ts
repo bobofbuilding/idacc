@@ -348,6 +348,18 @@ function taskStatusCol(status?: string): TaskStatusFilter {
   return 'todo';
 }
 
+function taskOrderValue(task: Task): number {
+  return Number(task.completedAt ?? task.updatedAt ?? task.createdAt ?? 0) || 0;
+}
+
+function selectTasksByStatus(rows: Task[], status: TaskStatusFilter, limit?: number): Task[] {
+  const filtered = rows.filter((task) => taskStatusCol(task.status) === status);
+  if (status === 'done') {
+    filtered.sort((a, b) => taskOrderValue(b) - taskOrderValue(a));
+  }
+  return limit ? filtered.slice(0, limit) : filtered;
+}
+
 export class ManagerClient {
   constructor(private cfg: Config) {}
 
@@ -660,13 +672,12 @@ export class ManagerClient {
     try {
       const data = await this.get<{ tasks?: unknown[] }>(path, opts.signal);
       const rows = (data.tasks ?? []).map(normalizeTaskRecord).filter((t): t is Task => !!t);
-      const filtered = rows.filter((task) => taskStatusCol(task.status) === status);
-      return opts.limit ? filtered.slice(0, opts.limit) : filtered;
+      return selectTasksByStatus(rows, status, opts.limit);
     } catch (err) {
       if (!(err instanceof ManagerError) || err.status !== 404) throw err;
-      const rows = await this.tasks(opts.signal);
-      const filtered = rows.filter((task) => taskStatusCol(task.status) === status);
-      return opts.limit ? filtered.slice(0, opts.limit) : filtered;
+      const env = await this.remote<{ tasks?: unknown[] }>('/task', undefined, opts.signal);
+      const rows = (env.result?.tasks ?? []).map(normalizeTaskRecord).filter((t): t is Task => !!t);
+      return selectTasksByStatus(rows, status, opts.limit);
     }
   }
 
