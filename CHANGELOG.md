@@ -8,6 +8,11 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.591] — 2026-07-05
+- fix(learn): wake processing and stabilize layout
+- fix(tasks): avoid broad task read fallbacks
+- fix(tasks): bound background task reads
+
 ## [0.1.590] — 2026-07-05
 - fix(settings): reduce repeated local stack checks
 
