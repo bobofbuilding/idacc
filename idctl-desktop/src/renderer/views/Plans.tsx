@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import { useToast } from '../components/toast.tsx';
+import { buildPrimaryLeadPlanWork } from '../../shared/planWork.ts';
 
 /**
  * Plans tab (under Work). Two sets, one shared organizer (search / sort /
@@ -28,11 +29,19 @@ type DraftPlanField = 'title' | 'status' | 'version' | 'updatedAt' | 'content' |
 type SortMode = 'recent' | 'title' | 'status';
 type BrainStatusKey = 'pending' | 'partial' | 'hold' | 'done';
 type BrainStatusWrite = 'PENDING' | 'PARTIAL' | 'PAUSED' | 'DONE';
+type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
+type GoalPriority = 'primary' | 'secondary' | 'general';
+interface Goal {
+  id: string; title: string; idea: string; agent?: string; team: string;
+  status: GoalStatus; priority?: GoalPriority; autopilot?: boolean; content: string;
+  driver?: { lastRunAt?: number; taskRefs?: string[]; note?: string };
+  createdAt: number; updatedAt: number;
+}
 
 // Auto-decompose IPC shapes (mirror main/work.ts) for "compile into tasks".
 type SubTask = { title: string; description: string; agent: string; dependsOn: number[] };
 type DecomposeResult = { ok: boolean; subtasks: SubTask[]; raw: string; error?: string };
-type CreatedTask = { ok: boolean };
+type CreatedTask = { ok: boolean; ref?: string; title?: string; agent?: string; error?: string; warning?: string; deferred?: boolean };
 type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: number };
 type TeamLead = { team: string; lead: string | null; activeCount: number; totalCount: number };
 type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
@@ -317,6 +326,26 @@ export function Plans({ store }: { store: FleetStore }) {
     if (aliveRef.current) setBlockers((m) => ({ ...m, [fresh.file]: added ? `${added} decision${added === 1 ? '' : 's'} → Inbox` : 'nothing needs you' }));
     return { text: added ? `${added} -> Inbox` : 'no blockers', added };
   }
+
+  async function savePrimaryLeadPlanGoal(goal: Goal): Promise<Goal> {
+    const existing = await call<Goal | null>('goals:get', goal.id).catch(() => null);
+    const next: Goal = {
+      ...(existing ?? goal),
+      ...goal,
+      status: 'active',
+      priority: existing?.priority ?? goal.priority ?? 'general',
+      autopilot: false,
+      createdAt: existing?.createdAt || goal.createdAt,
+      updatedAt: Date.now(),
+      driver: {
+        ...(existing?.driver ?? {}),
+        ...(goal.driver ?? {}),
+      },
+    };
+    await call('goals:save', next);
+    return next;
+  }
+
   // Compile the plan + dispatch to ALL active teams/agents — no selection. The primary
   // (owning) team gets trackable task cards (auto-assigned + worked); every OTHER active
   // team gets the plan handed to its lead, run in parallel.
@@ -342,12 +371,28 @@ export function Plans({ store }: { store: FleetStore }) {
     if (lead && leadOnline) {
       const fresh = await ensureBrainPlanFresh(baseline, `Dispatch ${baseline.title}`, ['title', 'mtime']);
       if (!fresh) throw new Error('plan changed before dispatch; refreshed');
-      const prompt = `You are the primary lead. Work this plan end to end by delegating scoped objectives directly to the corresponding team lead(s). Do not use default/coder or default/researcher as execution routers; they validate completed work on the return path.\n\n# ${fresh.title}\n\n${got?.content ?? ''}\n\nHow to run it:\n1. FIRST check what is ALREADY DONE (inspect the codebase / brain). Do NOT create tasks to re-build or re-verify completed work — skip anything already shipped.\n2. Decompose only the REMAINING work into concrete objectives with clear owning team leads + dependencies. Measure the objectives against the active primary goal first, then secondary goals, then this plan.\n3. Delegate each objective to the right team lead with \`/ask <team>/<lead> "<scoped objective>"\`. Team leads own member task creation, parallel delegation, collection, and refinement.\n4. Require every substantial completed-work packet to go through both validators: \`/ask default/coder "<completed work + summary>"\` for implementation/operations/code-quality validation and \`/ask default/researcher "<completed work + summary>"\` for evidence/reasoning/sourcing/policy/completeness validation.\n5. If either validator bounces it, send the feedback back to the responsible team lead for another refinement cycle. If both validate it, consolidate the validated result for the operator.\n6. Keep it lean — one objective per real piece of remaining work, no duplicate verify-passes.\n\nReply with a short summary of which team leads you delegated to and how validation will return.`;
-      // Fire-and-forget — the lead decomposes + delegates in the BACKGROUND (don't block the UI
-      // waiting up to 15 min for its full reply).
-      const leadTarget = leadTeam && leadTeam !== (store.team ?? 'default') ? `${leadTeam}/${lead}` : lead;
-      await call('dispatch:start', `/ask ${leadTarget} ${qArg(prompt)}`).catch(() => {});
-      return { text: `handed to ${leadTarget} to decompose + delegate (working in background)`, dispatched: true };
+      const work = buildPrimaryLeadPlanWork(fresh, got?.content ?? '', lead, leadTeam);
+      const savedGoal = await savePrimaryLeadPlanGoal(work.goal);
+      const res = await call<CreatePlanResult>('work:createPlan', work.objective, [work.subtask], {
+        team: leadTeam,
+        dispatch: true,
+        lane: 'doing',
+        respectOwners: true,
+        allowCoordinatorOwners: true,
+      }).catch((e): CreatePlanResult => ({
+        created: [{ ok: false, error: e instanceof Error ? e.message : String(e) }],
+        dispatched: 0,
+        deferred: 0,
+      }));
+      const created = res.created.find((c) => c.ok);
+      if (!created) {
+        const reason = res.created.map((c) => c.error || c.warning).filter(Boolean).join('; ') || 'no task was created';
+        return { text: `objective ${savedGoal.id} saved, but lead task not created: ${reason}`, dispatched: false };
+      }
+      const ref = created.ref || created.title || work.subtask.title;
+      const deferred = res.deferred || res.created.filter((c) => c.deferred).length;
+      const note = [created.warning, deferred ? `${deferred} waiting on manager/lead capacity` : 'manager kickoff queued'].filter(Boolean).join('; ');
+      return { text: `objective ${savedGoal.id} + lead task ${ref} for ${work.owner}${note ? ` (${note})` : ''}`, dispatched: true };
     }
     // ---- fallback: mechanical decompose + partition + dispatch (no primary lead online) ----
     const obj = `Implement this plan, end to end:\n\n# ${baseline.title}\n\n${got?.content ?? ''}`;
@@ -404,7 +449,7 @@ export function Plans({ store }: { store: FleetStore }) {
     if (busyFile) return;
     const fresh = await ensureBrainPlanFresh(p, `Work ${p.title}`);
     if (!fresh) return;
-    if (!window.confirm(`Work plan "${fresh.title}" now?\n\nThis audits the true status, pauses on blockers with Inbox questions, or delegates remaining work and marks it partial.`)) return;
+    if (!window.confirm(`Work plan "${fresh.title}" now?\n\nThis audits the true status, pauses on blockers with Inbox questions, or creates a tracked objective plus manager-backed lead task for remaining work.`)) return;
     setBusyFile(fresh.file);
     const t = toast({ kind: 'progress', text: `Working “${fresh.title}” — auditing status…` });
     try {
@@ -425,7 +470,7 @@ export function Plans({ store }: { store: FleetStore }) {
         if (aliveRef.current) setMsg(`paused · ${b.text}`);
         return;
       }
-      t.update({ kind: 'progress', text: `Working “${fresh.title}” — handing to the lead to decompose & delegate…` });
+      t.update({ kind: 'progress', text: `Working “${fresh.title}” — creating objective and lead delegation task…` });
       const d = await dispatchCore(fresh);
       if (d.dispatched) {
         const latest = await currentBrainPlan(fresh.file);
