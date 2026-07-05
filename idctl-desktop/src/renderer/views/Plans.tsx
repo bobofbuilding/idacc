@@ -71,6 +71,9 @@ function brainStatusKey(s?: string): BrainStatusKey {
 function brainStatusLabel(key: BrainStatusKey): string {
   return BRAIN_BUCKETS.find((b) => b.key === key)?.label ?? key;
 }
+function agentIsLive(status?: string): boolean {
+  return !!status && !/stop|offline|dead|exit|error|crash|down|disabled|sleep/i.test(status);
+}
 
 function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
 function clip(s: string, n: number): string { const t = s.replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; }
@@ -383,6 +386,20 @@ export function Plans({ store }: { store: FleetStore }) {
     }
   }
 
+  async function primaryLeadReady(lead: string, leadTeam: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const live = await call<TeamLead[]>('work:teamLeads', [leadTeam]).catch(() => [] as TeamLead[]);
+    const teamLead = live.find((row) => row.team === leadTeam);
+    if (teamLead?.lead === lead) return { ok: true };
+    const localFleet = store.allAgents.length ? store.allAgents : store.agents.map((a) => ({ ...a, team: store.team ?? 'default' }));
+    const local = localFleet.find((a) => a.name === lead && (a.team ?? leadTeam) === leadTeam);
+    if (local && agentIsLive(local.status)) return { ok: true };
+    if (teamLead) {
+      if (!teamLead.activeCount) return { ok: false, reason: `${leadTeam}/${lead} is not running (${teamLead.totalCount || 0} agent rows, 0 active)` };
+      return { ok: false, reason: `${leadTeam}/${lead} is not the active lead; active lead is ${teamLead.lead || 'unknown'} with ${teamLead.activeCount} active agent(s)` };
+    }
+    return { ok: false, reason: `${leadTeam}/${lead} could not be resolved from the live manager roster` };
+  }
+
   // Compile the plan + dispatch to ALL active teams/agents — no selection. The primary
   // (owning) team gets trackable task cards (auto-assigned + worked); every OTHER active
   // team gets the plan handed to its lead, run in parallel.
@@ -404,12 +421,22 @@ export function Plans({ store }: { store: FleetStore }) {
     const hier = await call<{ primary: { team: string; agent: string } | null }>('coordinator:hierarchy').catch(() => ({ primary: null }));
     const lead = hier.primary?.agent;
     const leadTeam = hier.primary?.team ?? store.team ?? 'default';
-    const leadOnline = !!lead && store.allAgents.some((a) => a.name === lead && (a.team ?? store.team ?? 'default') === leadTeam && !!a.status && !/stop|offline|dead|exit|error|crash|down|disabled|sleep/i.test(a.status));
-    if (lead && leadOnline) {
+    if (lead) {
       const fresh = await ensureBrainPlanFresh(baseline, `Dispatch ${baseline.title}`, ['title', 'mtime']);
       if (!fresh) throw new Error('plan changed before dispatch; refreshed');
       const work = buildPrimaryLeadPlanWork(fresh, got?.content ?? '', lead, leadTeam);
       const savedGoal = await savePrimaryLeadPlanGoal(work.goal);
+      const ready = await primaryLeadReady(lead, leadTeam);
+      if (!ready.ok) {
+        await relayPlanBlocker(fresh, `Work > Plans saved objective ${savedGoal.id} for "${fresh.title}", but it could not create the primary-lead delegation task because ${ready.reason}.`, {
+          agent: lead,
+          team: leadTeam,
+          key: `primary-lead-unavailable:${ready.reason}`,
+          options: ['Restart primary lead and retry', 'Assign manually from Tasks', 'Hold this plan'],
+          metadata: { phase: 'primary-lead-ready', goalId: savedGoal.id, reason: ready.reason },
+        });
+        return { text: `objective ${savedGoal.id} saved, but primary lead is unavailable: ${ready.reason}`, dispatched: false };
+      }
       const res = await call<CreatePlanResult>('work:createPlan', work.objective, [work.subtask], {
         team: leadTeam,
         dispatch: true,
