@@ -973,16 +973,21 @@ async function managerTaskRows(team: string, status: 'todo' | 'doing' | 'done', 
 }
 
 async function boardTasksForTeam(team: string): Promise<Task[]> {
-  try {
-    const [todo, doing, done] = await Promise.all([
-      managerTaskRows(team, 'todo'),
-      managerTaskRows(team, 'doing'),
-      managerTaskRows(team, 'done', RECENT_DONE_TASK_LIMIT),
-    ]);
-    return dedupeTasks([...todo, ...doing, ...done]);
-  } catch {
-    return (await client.withTeam(team).tasks().catch(() => [])).map((t) => ({ ...t, teamName: t.teamName ?? team }));
-  }
+  const scoped = client.withTeam(team);
+  const readStatus = async (status: 'todo' | 'doing' | 'done', limit?: number): Promise<Task[]> => {
+    try {
+      return await managerTaskRows(team, status, limit);
+    } catch {
+      return (await scoped.tasksByStatus(status, limit ? { limit } : undefined).catch(() => []))
+        .map((t) => ({ ...t, teamName: t.teamName ?? team }));
+    }
+  };
+  const [todo, doing, done] = await Promise.all([
+    readStatus('todo'),
+    readStatus('doing'),
+    readStatus('done', RECENT_DONE_TASK_LIMIT),
+  ]);
+  return dedupeTasks([...todo, ...doing, ...done]);
 }
 
 const readCallCache = new ReadCallCache();

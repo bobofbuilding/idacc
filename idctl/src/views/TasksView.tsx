@@ -14,6 +14,7 @@ import { theme, statusColor, ago, truncate } from '../app/theme.ts';
 import type { Task } from '../api/types.ts';
 
 type Mode = 'list' | 'new' | 'assign';
+const RECENT_DONE_TASK_LIMIT = 25;
 
 function ref(t: Task): string {
   return t.shortId ?? t.name ?? t.uuid ?? t.title;
@@ -32,7 +33,12 @@ export function TasksView() {
 
   async function reload() {
     try {
-      const t = await store.client.tasks();
+      const [todo, doing, done] = await Promise.all([
+        store.client.tasksByStatus('todo').catch(() => [] as Task[]),
+        store.client.tasksByStatus('doing').catch(() => [] as Task[]),
+        store.client.tasksByStatus('done', { limit: RECENT_DONE_TASK_LIMIT }).catch(() => [] as Task[]),
+      ]);
+      const t = [...todo, ...doing, ...done];
       setTasks([...t].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)));
       setLoaded(true);
     } catch (err) {

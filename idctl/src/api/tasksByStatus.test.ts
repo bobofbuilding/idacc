@@ -10,6 +10,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
   return new Response(JSON.stringify({
     tasks: [
       { shortId: '#done0001', title: 'Done row', status: 'done', createdAt: 1 },
+      { shortId: '#done0002', title: 'Older done row', status: 'completed', createdAt: 0 },
+      { shortId: '#todo0001', title: 'Todo row', status: 'todo', createdAt: 2 },
     ],
   }), {
     status: 200,
@@ -26,12 +28,12 @@ try {
     waitSeconds: 25,
   });
 
-  const rows = await client.tasksByStatus('done', { limit: 5 });
+  const rows = await client.tasksByStatus('done', { limit: 1 });
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].shortId, '#done0001');
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'http://127.0.0.1:4100/tasks?status=done&limit=5');
+  assert.equal(calls[0].url, 'http://127.0.0.1:4100/tasks?status=done&limit=1');
   assert.equal(calls[0].headers.get('x-id-team'), 'ops-team');
   assert.equal(calls[0].headers.get('x-id-admin'), '1');
 } finally {

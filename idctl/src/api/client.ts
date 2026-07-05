@@ -659,7 +659,9 @@ export class ManagerClient {
     const path = `/tasks?${params.toString()}`;
     try {
       const data = await this.get<{ tasks?: unknown[] }>(path, opts.signal);
-      return (data.tasks ?? []).map(normalizeTaskRecord).filter((t): t is Task => !!t);
+      const rows = (data.tasks ?? []).map(normalizeTaskRecord).filter((t): t is Task => !!t);
+      const filtered = rows.filter((task) => taskStatusCol(task.status) === status);
+      return opts.limit ? filtered.slice(0, opts.limit) : filtered;
     } catch (err) {
       if (!(err instanceof ManagerError) || err.status !== 404) throw err;
       const rows = await this.tasks(opts.signal);

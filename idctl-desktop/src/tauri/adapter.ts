@@ -78,22 +78,27 @@ async function managerTaskRows(targetTeam: string, status: 'todo' | 'doing' | 'd
 }
 
 async function boardTasksForTeam(targetTeam: string): Promise<Task[]> {
-  try {
-    const [todo, doing, done] = await Promise.all([
-      managerTaskRows(targetTeam, 'todo'),
-      managerTaskRows(targetTeam, 'doing'),
-      managerTaskRows(targetTeam, 'done', RECENT_DONE_TASK_LIMIT),
-    ]);
-    const seen = new Set<string>();
-    return [...todo, ...doing, ...done].filter((t) => {
-      const id = String(t.shortId ?? t.uuid ?? t.name ?? `${t.teamName ?? ''}:${t.title}:${t.createdAt ?? ''}`);
-      if (seen.has(id)) return false;
-      seen.add(id);
-      return true;
-    });
-  } catch {
-    return client.withTeam(targetTeam).tasks().catch(() => []);
-  }
+  const scoped = client.withTeam(targetTeam);
+  const readStatus = async (status: 'todo' | 'doing' | 'done', limit?: number): Promise<Task[]> => {
+    try {
+      return await managerTaskRows(targetTeam, status, limit);
+    } catch {
+      return (await scoped.tasksByStatus(status, limit ? { limit } : undefined).catch(() => []))
+        .map((t) => ({ ...t, teamName: t.teamName ?? targetTeam }));
+    }
+  };
+  const [todo, doing, done] = await Promise.all([
+    readStatus('todo'),
+    readStatus('doing'),
+    readStatus('done', RECENT_DONE_TASK_LIMIT),
+  ]);
+  const seen = new Set<string>();
+  return [...todo, ...doing, ...done].filter((t) => {
+    const id = String(t.shortId ?? t.uuid ?? t.name ?? `${t.teamName ?? ''}:${t.title}:${t.createdAt ?? ''}`);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
 }
 
 function scopedAgentKey(agent: string, selectedTeam?: string): string {
