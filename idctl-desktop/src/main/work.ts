@@ -631,7 +631,7 @@ export async function createAndDispatchPlan(
   client: ManagerClient,
   objective: string,
   subtasks: SubTask[],
-  opts: { dispatch?: boolean; lane?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean; allowInactiveOwners?: boolean; ownerOpenTaskCap?: number; coordinator?: string } = {},
+  opts: { dispatch?: boolean; lane?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean; allowInactiveOwners?: boolean; ownerOpenTaskCap?: number; coordinator?: string; leadCoordination?: boolean } = {},
 ): Promise<CreatePlanResult> {
   // dispatch=false → create tasks UNOWNED (status todo) into a lane and DON'T farm them
   // out (a staged queue the lead works later). Default true = assign owners + dispatch.
@@ -687,13 +687,34 @@ export async function createAndDispatchPlan(
     // Dispatching: assign the owner now (manager sets owned→doing). Queuing: create
     // unowned (stays todo) and record the lead's suggested owner in the description.
     const desc = dispatch ? st.description : `${st.description}${st.description ? '\n\n' : ''}(suggested owner: ${st.agent})`.trim();
-    const cmd = `/task create ${qArg(st.title)}${dispatch ? ` --owner ${st.agent}` : ''}${desc ? ` --description ${qArg(desc)}` : ''} ${taskBriefFlags(objective, st)}`;
+    const coordinationFlag = dispatch && opts.leadCoordination === true ? ' --lead-coordination' : '';
+    const cmd = `/task create ${qArg(st.title)}${dispatch ? ` --owner ${st.agent}` : ''}${coordinationFlag}${desc ? ` --description ${qArg(desc)}` : ''} ${taskBriefFlags(objective, st)}`;
     try {
-      const env = await client.remote<{ task?: { shortId?: string; name?: string }; warning?: string }>(cmd);
+      const env = await client.remote<{ task?: { shortId?: string; name?: string; ownerName?: string | null; status?: string | null }; warning?: string }>(cmd);
       const task = env.result?.task;
       const remoteWarning = typeof env.result?.warning === 'string' && env.result.warning.trim() ? env.result.warning.trim() : undefined;
       const ref = task?.shortId ?? task?.name ?? st.title;
       if (opts.lane && ref) { try { setTaskLane(ref, opts.lane); } catch { /* overlay is best-effort */ } }
+      const hasOwnerField = task ? Object.prototype.hasOwnProperty.call(task, 'ownerName') : false;
+      const actualOwner = agentNameKey(task?.ownerName ?? '');
+      const expectedOwner = agentNameKey(st.agent);
+      const returnedTodo = task?.status ? isTodoStatus(task.status) : false;
+      if (dispatch && ((hasOwnerField && actualOwner !== expectedOwner) || returnedTodo)) {
+        const actual = task?.ownerName || (returnedTodo ? 'unowned todo' : 'unknown');
+        created.push({
+          idx: i,
+          ref,
+          title: st.title,
+          agent: st.agent,
+          ok: false,
+          error: `dispatch did not assign requested owner ${st.agent}; manager returned ${actual}`,
+          warning: remoteWarning,
+          dependsOn: st.dependsOn,
+          dispatched: false,
+          deferred: true,
+        });
+        continue;
+      }
       const coordinatorKickoff = dispatch
         && opts.allowCoordinatorOwners === true
         && agentNameKey(st.agent) === agentNameKey(coordinator);

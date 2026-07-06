@@ -36,6 +36,16 @@ assert.match(
 );
 assert.match(
   goaldriver,
+  /leadCoordination:\s*true/,
+  'Goal driver should mark Autopilot team-lead packets as lead coordination work',
+);
+assert.match(
+  work,
+  /--lead-coordination/,
+  'Work dispatch should pass the explicit manager flag for lead coordination packets',
+);
+assert.match(
+  goaldriver,
   /deterministicGoalLeadSubtasks\(goal, targets, slots, 'default-team Autopilot direct team-lead fanout'\)/,
   'Default-team Autopilot should create bounded team-lead tasks directly instead of serializing on a planner',
 );

@@ -376,6 +376,7 @@ async function createGoalLeadTasks(
         allowInactiveOwners: true,
         ownerOpenTaskCap: GOAL_LEAD_OWNER_OPEN_TASK_CAP,
         coordinator: teamSubtasks[0]?.agent,
+        leadCoordination: true,
       }).catch(() => ({ created: [], dispatched: 0, deferred: 0 })),
     ),
   );
