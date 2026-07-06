@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.608] — 2026-07-06
+- Keep Work Plans objectives out of the Goals tab
+
 ## [0.1.607] — 2026-07-06
 - Fix Work Plans Inbox approvals to resume delegation recovery
 

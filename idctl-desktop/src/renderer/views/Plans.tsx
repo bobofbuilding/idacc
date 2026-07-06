@@ -32,8 +32,10 @@ type BrainStatusKey = 'pending' | 'partial' | 'hold' | 'done';
 type BrainStatusWrite = 'PENDING' | 'PARTIAL' | 'PAUSED' | 'DONE';
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 type GoalPriority = 'primary' | 'secondary' | 'general';
+type GoalOrigin = 'goals' | 'plans' | 'learn';
 interface Goal {
   id: string; title: string; idea: string; agent?: string; team: string;
+  origin?: GoalOrigin;
   status: GoalStatus; priority?: GoalPriority; autopilot?: boolean; content: string;
   driver?: { lastRunAt?: number; taskRefs?: string[]; note?: string };
   createdAt: number; updatedAt: number;

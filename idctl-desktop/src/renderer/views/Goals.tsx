@@ -9,13 +9,15 @@ import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../st
 
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 type GoalPriority = 'primary' | 'secondary' | 'general';
+type GoalOrigin = 'goals' | 'plans' | 'learn';
 interface Goal {
   id: string; title: string; idea: string; agent?: string; team: string;
+  origin?: GoalOrigin;
   status: GoalStatus; priority?: GoalPriority; autopilot?: boolean; content: string;
   driver?: { lastRunAt?: number; taskRefs?: string[]; note?: string };
   createdAt: number; updatedAt: number;
 }
-type GoalSummary = { id: string; title: string; status: GoalStatus; priority?: GoalPriority; agent?: string; team: string; updatedAt: number; autopilot?: boolean };
+type GoalSummary = { id: string; title: string; status: GoalStatus; priority?: GoalPriority; agent?: string; team: string; origin?: GoalOrigin; updatedAt: number; autopilot?: boolean };
 type GoalField = 'title' | 'status' | 'priority' | 'autopilot' | 'content' | 'updatedAt';
 interface GoalDriverConfig { enabled: boolean; cadenceMs: number; maxOpenTasksPerGoal: number }
 interface GoalDriverSummary { enabled: boolean; consideredGoals: number; drivenGoals: number; tasksSpawned: number; teamsSynced: number; errors: string[] }
@@ -146,7 +148,7 @@ export function Goals({ store }: { store: FleetStore }) {
     const now = Date.now();
     const goal: Goal = {
       id: newId(), title: (title.trim() || clip(content, 60)), idea: idea.trim(), agent: genAgent, team,
-      status: 'draft', priority, autopilot: false, content, createdAt: now, updatedAt: now,
+      origin: 'goals', status: 'draft', priority, autopilot: false, content, createdAt: now, updatedAt: now,
     };
     await call('goals:save', goal);
     if (!aliveRef.current) return;

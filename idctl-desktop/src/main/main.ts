@@ -1138,7 +1138,7 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return recoverPlanFromInbox((args[0] as PlanRecoverInput | undefined) ?? {});
     // Goals: saved per-project goals (goalstore).
     case 'goals:list':
-      return listGoals(args[0] as string | undefined);
+      return listGoals(args[0] as string | undefined, (args[1] as { includePlanObjectives?: boolean } | undefined) ?? {});
     case 'goals:get':
       return getGoal(args[0] as string);
     case 'goals:save': {

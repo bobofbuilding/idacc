@@ -14,6 +14,7 @@ export interface PlanWorkGoal {
   idea: string;
   agent?: string;
   team: string;
+  origin: 'plans';
   status: 'active';
   priority: 'general';
   autopilot: false;
@@ -82,6 +83,7 @@ export function buildPrimaryLeadPlanWork(
     idea: `Work live brain plan ${source}`,
     agent: lead,
     team: leadTeam || 'default',
+    origin: 'plans',
     status: 'active',
     priority: 'general',
     autopilot: false,

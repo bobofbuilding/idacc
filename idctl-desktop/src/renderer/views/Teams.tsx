@@ -43,7 +43,8 @@ const HR_RUNTIME_CATALOG_UI_CACHE_MS = 5 * 60_000;
 
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 type GoalPriority = 'primary' | 'secondary' | 'general';
-type GoalSummary = { id: string; title: string; status: GoalStatus; priority?: GoalPriority; agent?: string; team: string; updatedAt: number; autopilot?: boolean };
+type GoalOrigin = 'goals' | 'plans' | 'learn';
+type GoalSummary = { id: string; title: string; status: GoalStatus; priority?: GoalPriority; agent?: string; team: string; origin?: GoalOrigin; updatedAt: number; autopilot?: boolean };
 type Goal = GoalSummary & {
   idea: string;
   content: string;

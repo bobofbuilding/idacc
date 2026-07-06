@@ -22,12 +22,14 @@ function goalsDir(): string {
 
 export type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 export type GoalPriority = 'primary' | 'secondary' | 'general';
+export type GoalOrigin = 'goals' | 'plans' | 'learn';
 export interface Goal {
   id: string;
   title: string;
   idea: string;          // the rough idea the goal was drafted from (may be empty)
   agent?: string;        // which agent helped write/last-refined it
   team: string;
+  origin?: GoalOrigin;   // user Goals tab records are "goals"; Work > Plans uses "plans"
   status: GoalStatus;
   priority?: GoalPriority; // primary goal first, secondary next, general supporting goals last
   autopilot?: boolean;   // opt-in: eligible for the disabled-by-default goal driver
@@ -40,7 +42,8 @@ export interface Goal {
   createdAt: number;
   updatedAt: number;
 }
-export interface GoalSummary { id: string; title: string; status: GoalStatus; priority: GoalPriority; agent?: string; team: string; updatedAt: number; autopilot?: boolean }
+export interface GoalSummary { id: string; title: string; status: GoalStatus; priority: GoalPriority; agent?: string; team: string; origin: GoalOrigin; updatedAt: number; autopilot?: boolean }
+export interface ListGoalsOptions { includePlanObjectives?: boolean }
 
 export function normalizeGoalPriority(input: unknown): GoalPriority {
   const value = String(input ?? '').trim().toLowerCase();
@@ -52,27 +55,52 @@ export function goalPriorityRank(input: unknown): number {
   return priority === 'primary' ? 0 : priority === 'secondary' ? 1 : 2;
 }
 
+export function normalizeGoalOrigin(input: unknown): GoalOrigin {
+  const value = String(input ?? '').trim().toLowerCase();
+  return value === 'plans' || value === 'learn' ? value : 'goals';
+}
+
+export function isPlanObjectiveGoal(goal: Pick<Goal, 'id' | 'title' | 'idea'> & { origin?: unknown; driver?: { note?: string } }): boolean {
+  if (normalizeGoalOrigin(goal.origin) === 'plans') return true;
+  const id = String(goal.id || '');
+  if (id.startsWith('goal_plan_')) return true;
+  const title = String(goal.title || '').trim();
+  const provenance = `${goal.idea || ''}\n${goal.driver?.note || ''}`;
+  return title.startsWith('Plan:') && /\b(?:brain plan|Work\s*>\s*Plans)\b/i.test(provenance);
+}
+
+function normalizeGoal(goal: Goal): Goal {
+  const origin = isPlanObjectiveGoal(goal) ? 'plans' : normalizeGoalOrigin(goal.origin);
+  return {
+    ...goal,
+    origin,
+    priority: normalizeGoalPriority(goal.priority),
+  };
+}
+
 function fileFor(id: string): string {
   const safe = String(id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
   if (!safe) throw new Error('invalid goal id');
   return join(goalsDir(), `${safe}.json`);
 }
 
-export function listGoals(team?: string): GoalSummary[] {
+export function listGoals(team?: string, options: ListGoalsOptions = {}): GoalSummary[] {
   const dir = goalsDir();
   const out: GoalSummary[] = [];
   for (const f of readdirSync(dir)) {
     if (!f.endsWith('.json')) continue;
     try {
-      const g = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Goal;
+      const g = normalizeGoal(JSON.parse(readFileSync(join(dir, f), 'utf8')) as Goal);
       if (team && g.team !== team) continue;
+      if (!options.includePlanObjectives && isPlanObjectiveGoal(g)) continue;
       out.push({
         id: g.id,
         title: g.title || '(untitled goal)',
         status: g.status ?? 'draft',
-        priority: normalizeGoalPriority(g.priority),
+        priority: g.priority ?? 'general',
         agent: g.agent,
         team: g.team,
+        origin: g.origin ?? 'goals',
         updatedAt: g.updatedAt || 0,
         autopilot: !!g.autopilot,
       });
@@ -86,7 +114,7 @@ export function getGoal(id: string): Goal | null {
     const f = fileFor(id);
     if (!existsSync(f)) return null;
     const goal = JSON.parse(readFileSync(f, 'utf8')) as Goal;
-    return { ...goal, priority: normalizeGoalPriority(goal.priority) };
+    return normalizeGoal(goal);
   } catch { return null; }
 }
 
@@ -95,9 +123,8 @@ export function saveGoal(goal: Goal): { ok: boolean; id: string } {
   const f = fileFor(goal.id);
   const now = Date.now();
   const payload: Goal = {
-    ...goal,
+    ...normalizeGoal(goal),
     title: (goal.title || '').slice(0, 200),
-    priority: normalizeGoalPriority(goal.priority),
     createdAt: goal.createdAt || now,
     updatedAt: now,
   };
