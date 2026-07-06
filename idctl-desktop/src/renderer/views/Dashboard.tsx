@@ -200,6 +200,9 @@ function inboxDesc(i: InboxItem): string {
   const preview = clip(i.message || i.prompt || i.query_id, 120);
   return `${from} needs reply — ${preview}`;
 }
+function uniqSorted(values: string[]): string[] {
+  return Array.from(new Set(values.map((v) => String(v || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
 
 type OrgHier = {
   primary: { team: string; agent: string } | null;
@@ -254,13 +257,13 @@ function recentWorkingKeys(events: TeamEvent[]): Set<string> {
 function CoordinationTree({
   store,
   events,
-  activeTeams,
+  coordinationTeams,
   hier,
   tasks,
 }: {
   store: FleetStore;
   events: TeamEvent[];
-  activeTeams: string[];
+  coordinationTeams: string[];
   hier: OrgHier;
   tasks: LiteTask[];
 }) {
@@ -334,15 +337,15 @@ function CoordinationTree({
 
   const primary = hier.primary?.agent;
   if (!primary) return null; // nothing to show until a primary lead is designated (HR Manager)
-  const activeTeamSet = new Set(activeTeams);
+  const coordinationTeamSet = new Set(coordinationTeams);
   const visibleSecondaries = hier.secondaries
-    .map((s) => ({ ...s, leadsTeams: s.leadsTeams.filter((tm) => activeTeamSet.has(tm)) }))
+    .map((s) => ({ ...s, leadsTeams: s.leadsTeams.filter((tm) => coordinationTeamSet.has(tm)) }))
     .filter((s) => s.leadsTeams.length > 0);
-  // Active teams not owned by any visible secondary, surfaced under the primary —
+  // HR-known teams not owned by any visible secondary, surfaced under the primary —
   // EXCEPT the primary lead's own (default) team: the lead already appears as
   // "primary lead" above, so rendering its team row would duplicate the same agent.
   const coveredTeams = new Set(visibleSecondaries.flatMap((s) => s.leadsTeams));
-  const orphanTeams = activeTeams.filter((tm) => !coveredTeams.has(tm) && hier.coordinators[tm] !== primary);
+  const orphanTeams = coordinationTeams.filter((tm) => !coveredTeams.has(tm) && hier.coordinators[tm] !== primary);
 
   return (
     <section className="card" style={{ marginBottom: 12, flexShrink: 0 }}>
@@ -389,8 +392,24 @@ export function Dashboard({ store }: { store: FleetStore }) {
   useEffect(() => { loadHierarchy(); }, [loadHierarchy, store.lastUpdated, hierarchySyncVersion]);
   // Teams that currently have ≥1 running agent (idle teams hidden from the picker).
   const activeTeams = useMemo(
-    () => store.teams.map((t) => t.name).filter((n) => store.allAgents.some((a) => a.team === n && isAgentLive(a.status))),
+    () => uniqSorted([
+      ...store.teams.map((t) => t.name),
+      ...store.allAgents.filter((a) => isAgentLive(a.status)).map((a) => a.team ?? ''),
+    ]).filter((n) => store.allAgents.some((a) => a.team === n && isAgentLive(a.status))),
     [store.teams, store.allAgents],
+  );
+  // HR Manager's graph is based on the full cross-team roster, not only currently
+  // running teams. Dashboard should mirror that org shape and show stopped teams
+  // greyed out instead of silently dropping them from Live Coordination.
+  const coordinationTeams = useMemo(
+    () => uniqSorted([
+      ...hier.teams,
+      ...store.teams.map((t) => t.name),
+      ...store.allAgents.map((a) => a.team ?? ''),
+      ...Object.keys(hier.coordinators),
+      ...hier.secondaries.flatMap((s) => s.leadsTeams ?? []),
+    ]).filter((team) => team !== 'public'),
+    [hier.teams, hier.coordinators, hier.secondaries, store.teams, store.allAgents],
   );
   // The chat targets the current routed team's lead as a read-only dashboard view.
   // Default to the active team (if running) else the first team with running agents.
@@ -557,7 +576,7 @@ export function Dashboard({ store }: { store: FleetStore }) {
         </div>
       </header>
 
-      <CoordinationTree store={store} events={events} activeTeams={activeTeams} hier={hier} tasks={tasks} />
+      <CoordinationTree store={store} events={events} coordinationTeams={coordinationTeams} hier={hier} tasks={tasks} />
 
       {/* Explicit flex row so the chat fills the left and the activity tile always shows on the right. */}
       <div style={{ display: 'flex', gap: 14, flex: 1, minHeight: 0, alignItems: 'stretch' }}>

@@ -31,11 +31,12 @@
         "idctl-desktop/src/renderer/views/dashboard/CommandPalette.tsx",
         "idctl-desktop/src/renderer/views/dashboard/ControlDrawer.tsx",
         "idctl-desktop/src/renderer/dashboard/commands.ts",
-        "idctl-desktop/src/renderer/store.ts"
+        "idctl-desktop/src/renderer/store.ts",
+        "idctl-desktop/scripts/dashboard-coordination-roster-smoke.mjs"
       ],
       "purpose": "Operator home: view the current routed team lead, talk to that lead, watch cross-team coordination, and read the live activity feed.",
       "scope": "All-team observation with a read-only chat target. The embedded chat dispatches to the routed team lead; the activity feed merges events across teams.",
-      "body": "# Dashboard\n\nDashboard is the operator home for live fleet status, routed lead chat, and recent activity. Keep this page lightweight; detailed behavioral history belongs in release notes, not the live wiki manifest. The renderer store coalesces and version-stamps sync domains so page remounts observe the latest invalidation state without extra broad refreshes. Electron builds use the main-process sync stream as the single mutation invalidation source, while non-Electron transports retain local fallback invalidation. Broad all-team roster polling is kept on a moderate cadence while the event stream keeps activity fresh. Dashboard and Work keep the faster all-team roster cadence for active coordination, while heavier secondary pages keep their initial cross-team context but poll more slowly and hidden windows back off further. The embedded lead chat preserves manager error/text details while confirming failed or expired queries, so operator triage sees the actionable failure rather than a bare status. The shared status bar derives active agent and team counts from the already-loaded all-team roster when available, falling back to the team-lead IPC poll only on views without that roster."
+      "body": "# Dashboard\n\nDashboard is the operator home for live fleet status, routed lead chat, and recent activity. Keep this page lightweight; detailed behavioral history belongs in release notes, not the live wiki manifest. The renderer store coalesces and version-stamps sync domains so page remounts observe the latest invalidation state without extra broad refreshes. Electron builds use the main-process sync stream as the single mutation invalidation source, while non-Electron transports retain local fallback invalidation. Broad all-team roster polling is kept on a moderate cadence while the event stream keeps activity fresh. Dashboard and Work keep the faster all-team roster cadence for active coordination, while heavier secondary pages keep their initial cross-team context but poll more slowly and hidden windows back off further. Live Coordination mirrors HR Manager's full org roster from hierarchy teams, configured coordinators, secondary coverage, and all-agent team tags; stopped or idle teams remain visible instead of disappearing from the tree. The embedded lead chat preserves manager error/text details while confirming failed or expired queries, so operator triage sees the actionable failure rather than a bare status. The shared status bar derives active agent and team counts from the already-loaded all-team roster when available, falling back to the team-lead IPC poll only on views without that roster."
     },
     {
       "id": "inbox",
@@ -314,5 +315,5 @@
       "body": "# Wiki\n\nThis page now reads a compact app manifest. The replacement authoring contract is being rebuilt in docs/CONTROL_CENTER_WIKI.md as Markdown-first schema documentation. The renderer loads and polls the wiki manifest only while the Wiki page is open, keeping the rest of the app free from idle wiki refresh work."
     }
   ],
-  "appVersion": "0.1.608"
+  "appVersion": "0.1.609"
 }
