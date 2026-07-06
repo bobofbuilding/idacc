@@ -12,6 +12,8 @@ import { brain } from '../../../idctl/src/api/brain.ts';
 import { createAndDispatchPlan, decomposeWork, isActiveStatus, type SubTask } from './work.ts';
 import { getGoal, goalPriorityRank, listGoals, normalizeGoalPriority, saveGoal, type Goal } from './goalstore.ts';
 
+const GOAL_LEAD_OWNER_OPEN_TASK_CAP = 3;
+
 export interface GoalDriverConfig {
   enabled: boolean;
   cadenceMs: number;
@@ -38,7 +40,7 @@ interface GoalLeadTarget {
 export const GOAL_DRIVER_DEFAULTS: GoalDriverConfig = {
   enabled: false,
   cadenceMs: 30 * 60 * 1000,
-  maxOpenTasksPerGoal: 3,
+  maxOpenTasksPerGoal: 12,
 };
 
 export function normalizeGoalDriverConfig(input?: Partial<GoalDriverConfig> | null): GoalDriverConfig {
@@ -131,6 +133,23 @@ function pickActiveLead(agents: Pick<Agent, 'name' | 'status' | 'metadata'>[]): 
     .sort((a, b) => leadRank(a) - leadRank(b) || a.name.localeCompare(b.name))[0].name;
 }
 
+function isWakeableGoalLeadStatus(status?: string): boolean {
+  const s = String(status || '').toLowerCase();
+  return !/dead|exit|error|crash|down|disabled/.test(s);
+}
+
+function pickWakeableLead(agents: Pick<Agent, 'name' | 'status' | 'metadata'>[]): string | null {
+  return agents
+    .filter((a) => isWakeableGoalLeadStatus(a.status))
+    .slice()
+    .sort((a, b) =>
+      leadRank(a) - leadRank(b)
+      || Number(isActiveStatus(b.status)) - Number(isActiveStatus(a.status))
+      || a.name.localeCompare(b.name),
+    )[0]?.name
+    ?? null;
+}
+
 function isDefaultValidator(name: string): boolean {
   return /^(coder|researcher)$/i.test(name.trim());
 }
@@ -142,7 +161,7 @@ async function resolveGoalLeadTargets(baseClient: ManagerClient, goalTeam?: stri
   const targets = await Promise.all(
     candidates.map(async (team): Promise<GoalLeadTarget | null> => {
       const agents = await baseClient.withTeam(team.name).agents().catch(() => [] as Agent[]);
-      const leadName = pickActiveLead(agents);
+      const leadName = pickWakeableLead(agents);
       if (!leadName || isDefaultValidator(leadName)) return null;
       const lead = agents.find((agent) => agent.name === leadName);
       return {
@@ -316,27 +335,26 @@ function deterministicGoalLeadSubtasks(goal: Goal, targets: GoalLeadTarget[], sl
   }));
 }
 
+function goalLeadTargetForSubtask(targets: GoalLeadTarget[], st: SubTask, index: number): GoalLeadTarget {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const agentKey = norm(st.agent || '');
+  const exact = targets.find((target) => norm(target.lead) === agentKey || norm(target.team) === agentKey);
+  if (exact) return exact;
+  const hay = norm(`${st.agent} ${st.title} ${st.description}`);
+  const hinted = targets.find((target) => hay.includes(norm(target.team)) || hay.includes(norm(target.lead)));
+  return hinted ?? targets[index % targets.length];
+}
+
 async function createGoalLeadTasks(
   baseClient: ManagerClient,
   objective: string,
   subtasks: SubTask[],
   targets: GoalLeadTarget[],
 ): Promise<{ ok: number; refs: string[] }> {
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
-  const targetsByLead = new Map(targets.map((target) => [norm(target.lead), target]));
-  const targetsByTeam = new Map(targets.map((target) => [norm(target.team), target]));
-  const targetForSubtask = (st: SubTask, index: number): GoalLeadTarget => {
-    const agentKey = norm(st.agent || '');
-    const exact = targetsByLead.get(agentKey) ?? targetsByTeam.get(agentKey);
-    if (exact) return exact;
-    const hay = norm(`${st.agent} ${st.title} ${st.description}`);
-    const hinted = targets.find((target) => hay.includes(norm(target.team)) || hay.includes(norm(target.lead)));
-    return hinted ?? targets[index % targets.length];
-  };
   const byTeam = new Map<string, SubTask[]>();
   for (let i = 0; i < subtasks.length; i++) {
     const st = subtasks[i];
-    const target = targetForSubtask(st, i);
+    const target = goalLeadTargetForSubtask(targets, st, i);
     const team = target.team;
     const list = byTeam.get(team) ?? [];
     list.push({
@@ -355,6 +373,9 @@ async function createGoalLeadTasks(
         dispatch: true,
         respectOwners: true,
         allowCoordinatorOwners: true,
+        allowInactiveOwners: true,
+        ownerOpenTaskCap: GOAL_LEAD_OWNER_OPEN_TASK_CAP,
+        coordinator: teamSubtasks[0]?.agent,
       }).catch(() => ({ created: [], dispatched: 0, deferred: 0 })),
     ),
   );
@@ -371,7 +392,6 @@ async function driveGoal(baseClient: ManagerClient, goal: Goal, cfg: GoalDriverC
   const openRefs = openTagged.map(taskRef).filter(Boolean);
   const slots = Math.max(0, cfg.maxOpenTasksPerGoal - openTagged.length);
   if (slots <= 0) return { spawned: 0, refs: openRefs, note: `open task cap reached (${openTagged.length}/${cfg.maxOpenTasksPerGoal})` };
-  if (openTagged.length > 0) return { spawned: 0, refs: openRefs, note: `waiting on ${openTagged.length} open goal task(s)` };
 
   const agents = await teamClient.agents().catch(() => [] as Agent[]);
   const lead = pickActiveLead(agents);
@@ -400,27 +420,18 @@ async function driveGoal(baseClient: ManagerClient, goal: Goal, cfg: GoalDriverC
 
   const targets = await resolveGoalLeadTargets(baseClient, goal.team);
   if (!targets.length) return { spawned: 0, refs: [], note: 'no active non-default team leads available' };
-  const roster = targets.map((target) => ({
-    name: target.lead,
-    runtime: target.runtime,
-    status: target.status,
-    skills: target.skills,
-  }));
-  const decomp = await decomposeWork(teamClient, goal.content || goal.idea || goal.title, lead, roster);
-  const plannerFallbackReason = decomp.error || 'no subtasks produced';
-  const plannedSubtasks = decomp.ok && decomp.subtasks.length
-    ? decomp.subtasks
-    : deterministicGoalLeadSubtasks(goal, targets, slots, plannerFallbackReason);
+  const plannedSubtasks = deterministicGoalLeadSubtasks(goal, targets, slots, 'default-team Autopilot direct team-lead fanout');
   if (!freshActiveGoalForDriver(goal)) return { spawned: 0, refs: [], note: 'goal changed or autopilot was disabled before team-lead task creation' };
 
   const subtasks = plannedSubtasks.slice(0, slots).map((st) => annotateSubtask(goal, st));
   const created = await createGoalLeadTasks(baseClient, goal.content || goal.title, subtasks, targets);
+  const totalRefs = [...openRefs, ...created.refs];
   return {
     spawned: created.ok,
-    refs: created.refs,
+    refs: totalRefs,
     note: created.ok
-      ? `spawned ${created.ok} task(s) to team leads${decomp.ok ? '' : ` via planner fallback (${plannerFallbackReason})`}`
-      : `no team-lead tasks created${decomp.ok ? '' : ` after planner fallback (${plannerFallbackReason})`}`,
+      ? `spawned ${created.ok} task(s) to team leads via direct fanout${openTagged.length ? `; ${openTagged.length} existing open goal task(s) remain` : ''}`
+      : `no team-lead tasks created via direct fanout${openTagged.length ? `; ${openTagged.length} existing open goal task(s) remain` : ''}`,
   };
 }
 

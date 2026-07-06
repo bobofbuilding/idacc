@@ -16,11 +16,41 @@ assert.match(
 );
 assert.match(
   goaldriver,
-  /plannerFallbackReason[\s\S]*deterministicGoalLeadSubtasks\(goal, targets, slots, plannerFallbackReason\)/,
-  'Default-team Autopilot should create bounded team-lead tasks when all planners are blocked',
+  /maxOpenTasksPerGoal:\s*12/,
+  'Goal driver default open-task cap should allow meaningful team-lead fanout',
 );
 assert.match(
   goaldriver,
-  /via planner fallback/,
-  'Goal driver metadata should explain when task creation used planner fallback',
+  /function pickWakeableLead/,
+  'Goal driver should include parked but wakeable team leads in goal fanout target resolution',
+);
+assert.match(
+  goaldriver,
+  /allowInactiveOwners:\s*true/,
+  'Goal driver should preserve parked team-lead owners so the manager can wake them for assigned goal work',
+);
+assert.match(
+  goaldriver,
+  /ownerOpenTaskCap:\s*GOAL_LEAD_OWNER_OPEN_TASK_CAP/,
+  'Goal driver should use a higher explicit owner cap for team-lead coordination fanout',
+);
+assert.match(
+  goaldriver,
+  /deterministicGoalLeadSubtasks\(goal, targets, slots, 'default-team Autopilot direct team-lead fanout'\)/,
+  'Default-team Autopilot should create bounded team-lead tasks directly instead of serializing on a planner',
+);
+assert.doesNotMatch(
+  goaldriver,
+  /waiting on \$\{openTagged\.length\} open goal task/,
+  'Goal driver should top up toward the cap instead of waiting for every open goal task to finish',
+);
+assert.match(
+  goaldriver,
+  /existing open goal task\(s\) remain/,
+  'Goal driver metadata should report existing open goal tasks while still attempting top-up fanout',
+);
+assert.match(
+  goaldriver,
+  /via direct fanout/,
+  'Goal driver metadata should explain when task creation used direct fanout',
 );

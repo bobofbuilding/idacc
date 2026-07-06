@@ -341,9 +341,10 @@ function executionPoolForTeam<T extends { name: string; status?: string }>(
   lead: string,
   team?: string,
   allowCoordinator = false,
+  allowInactiveOwners = false,
 ): T[] {
   const active = agents.filter((a) => isActiveStatus(a.status));
-  const base = active.length ? active : agents;
+  const base = allowInactiveOwners ? agents : (active.length ? active : agents);
   if (allowCoordinator || base.length <= 1) return base;
   const leadKey = agentNameKey(lead);
   const withoutLead = base.filter((a) => agentNameKey(a.name) !== leadKey);
@@ -447,7 +448,7 @@ async function activeQueryCount(client: ManagerClient, agent: string): Promise<n
   }
 }
 
-async function planCapacity(client: ManagerClient, pool: Agent[]): Promise<PlanCapacity> {
+async function planCapacity(client: ManagerClient, pool: Agent[], ownerOpenTaskCap = WORK_OWNER_OPEN_TASK_CAP): Promise<PlanCapacity> {
   const [tasks, queryCounts] = await Promise.all([
     openTasks(client),
     Promise.all(pool.map(async (agent) => [agentNameKey(agent.name), await activeQueryCount(client, agent.name)] as const)),
@@ -465,7 +466,7 @@ async function planCapacity(client: ManagerClient, pool: Agent[]): Promise<PlanC
   for (const agent of pool) {
     const key = agentNameKey(agent.name);
     const used = (ownerOpen.get(key) ?? 0) + (ownerActiveQueries.get(key) ?? 0);
-    ownerSlots.set(key, Math.max(0, WORK_OWNER_OPEN_TASK_CAP - used));
+    ownerSlots.set(key, Math.max(0, ownerOpenTaskCap - used));
   }
   const queueTodoCount = open.filter((task) => !task.ownerName && isTodoStatus(task.status)).length;
   return {
@@ -630,7 +631,7 @@ export async function createAndDispatchPlan(
   client: ManagerClient,
   objective: string,
   subtasks: SubTask[],
-  opts: { dispatch?: boolean; lane?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean; coordinator?: string } = {},
+  opts: { dispatch?: boolean; lane?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean; allowInactiveOwners?: boolean; ownerOpenTaskCap?: number; coordinator?: string } = {},
 ): Promise<CreatePlanResult> {
   // dispatch=false → create tasks UNOWNED (status todo) into a lane and DON'T farm them
   // out (a staged queue the lead works later). Default true = assign owners + dispatch.
@@ -643,7 +644,7 @@ export async function createAndDispatchPlan(
   // owner pool (and the coerce-to-fallback target) is the running roster whenever
   // any agent is running; degrade to the full roster only if nothing is active.
   const coordinator = String(opts.coordinator ?? pickActiveLead(roster) ?? '').trim();
-  const pool = executionPoolForTeam(roster, coordinator, client.team, opts.allowCoordinatorOwners === true);
+  const pool = executionPoolForTeam(roster, coordinator, client.team, opts.allowCoordinatorOwners === true, opts.allowInactiveOwners === true);
   const names = new Set(pool.map((a) => a.name));
   const fallback = pool[0]?.name ?? '';
   const planItems = subtasks.slice(0, MAX_SUBTASKS).map((st, i, arr) => ({
@@ -661,7 +662,10 @@ export async function createAndDispatchPlan(
   // Don't pile every task on one agent - spread across the active roster (best-fit up to a cap).
   // respectOwners=true keeps explicit execution owners, but still blocks coordinator/validator bypasses.
   if (!opts.respectOwners) balanceOwners(list, [...names]);
-  const capacity = await planCapacity(client, pool);
+  const ownerOpenTaskCap = Number.isFinite(opts.ownerOpenTaskCap) && Number(opts.ownerOpenTaskCap) > 0
+    ? Math.floor(Number(opts.ownerOpenTaskCap))
+    : WORK_OWNER_OPEN_TASK_CAP;
+  const capacity = await planCapacity(client, pool, ownerOpenTaskCap);
   const deferredIndexes = new Set<number>();
 
   // 1) Create only tasks that have immediate capacity; defer the rest without
