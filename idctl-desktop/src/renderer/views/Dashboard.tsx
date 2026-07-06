@@ -125,6 +125,15 @@ function describe(e: { topic: string; actor?: string; data?: Record<string, unkn
   const t = e.topic;
   if (t.startsWith('query:')) {
     const st = str(d.status) || t.split(':')[1] || '';
+    const expiryReason = str(d.expiry_reason);
+    if (st === 'expired' && queryExpiryIsCleanup(expiryReason)) {
+      const label = expiryReason === 'duplicate_task_ask'
+        ? 'cleaned duplicate query'
+        : expiryReason === 'terminal_task_ask'
+          ? 'closed obsolete query'
+          : 'cleaned stale query';
+      return [who, label].filter(Boolean).join(' ');
+    }
     const verb = QUERY_VERB[st] || (st ? `query ${st}` : 'query');
     const preview = previewOf(d);
     const head = who ? `${who} ${verb}` : verb;
@@ -140,11 +149,18 @@ function describe(e: { topic: string; actor?: string; data?: Record<string, unkn
   const detail = previewOf(d) || str(d.status);
   return [who, clip(detail, 90)].filter(Boolean).join(' · ') || t;
 }
+function queryExpiryIsCleanup(reason: string): boolean {
+  return /^(duplicate_task_ask|terminal_task_ask|stale_plan_decision|queued_peer_wake)$/.test(reason);
+}
 function topicClass(t: string): string {
   if (/online|delivered|done|complete/.test(t)) return 'ok';
   if (/offline|fail|expired|error/.test(t)) return 'err';
   if (/due|pending/.test(t)) return 'warn';
   return 'accent';
+}
+function eventClass(e: { topic: string; data?: Record<string, unknown> }): string {
+  if (e.topic === 'query:expired' && queryExpiryIsCleanup(str(e.data?.expiry_reason))) return 'warn';
+  return topicClass(e.topic);
 }
 function toMs(ts?: number | null): number {
   if (!ts) return 0;
@@ -479,7 +495,7 @@ export function Dashboard({ store }: { store: FleetStore }) {
       items.push({
         key: `event:${e.team ?? ''}:${e.seq}`,
         topic: e.topic.split(':')[0] || 'event',
-        className: topicClass(e.topic),
+        className: eventClass(e),
         desc: describe(e, name),
         team: e.team,
         agent: str(e.data?.agent) || str(e.actor) || str(e.data?.from) || str(e.data?.name) || undefined,
