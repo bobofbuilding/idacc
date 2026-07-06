@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.610] — 2026-07-06
+- Create queued Work tasks from active-goal Learn recommendations
+
 ## [0.1.609] — 2026-07-06
 - Align Dashboard live coordination with HR Manager roster
 

@@ -26,7 +26,7 @@ interface Goal {
   updatedAt: number;
 }
 interface RecoverStaleResult { recovered: number; materials: LearnMaterial[] }
-type CreatedTask = { ok: boolean; ref?: string; title?: string; error?: string };
+type CreatedTask = { ok: boolean; ref?: string; title?: string; error?: string; warning?: string; deferred?: boolean };
 type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: number };
 
 const PRIORITIES: LearnPriority[] = ['urgent', 'high', 'normal'];
@@ -613,6 +613,11 @@ function RecommendationRow({ rec, disabled, onAccept, onDismiss }: {
       </div>
       <div className="small" style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{rec.body}</div>
       {rec.options?.length ? <div className="muted small" style={{ marginTop: 6 }}>{rec.options.join(' / ')}</div> : null}
+      {rec.autoTaskStatus ? (
+        <div className="muted small" style={{ marginTop: 6 }}>
+          task automation: {rec.autoTaskStatus}{rec.autoTaskRef ? ` · ${rec.autoTaskRef}` : ''}{rec.autoTaskError ? ` · ${rec.autoTaskError}` : ''}
+        </div>
+      ) : null}
       <div className="row-actions" style={{ marginTop: 8, gap: 6 }}>
         <button className="btn small primary" disabled={disabled || rec.reviewState !== 'draft'} onClick={onAccept}>Accept</button>
         <button className="btn small" disabled={disabled || rec.reviewState !== 'draft'} onClick={onDismiss}>Dismiss</button>

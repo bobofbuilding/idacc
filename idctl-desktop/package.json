@@ -1,7 +1,7 @@
 {
   "name": "idagents-control-center",
   "productName": "ID Agents Control Center",
-  "version": "0.1.609",
+  "version": "0.1.610",
   "description": "Desktop control center for id-agents — live fleet dashboard, manager chat, teams, keys.",
   "private": true,
   "main": "out/main/main.cjs",
@@ -20,6 +20,7 @@
     "test:dashboard-coordination": "node scripts/dashboard-coordination-roster-smoke.mjs",
     "test:learn-context": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/learn-context-smoke.mjs",
     "test:learn-failure-display": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/learn-failure-display-smoke.mjs",
+    "test:learn-task-automation": "node scripts/learn-task-automation-smoke.mjs",
     "test:learn-brain-sync": "../idctl/node_modules/.bin/tsx scripts/learn-brain-sync-smoke.ts",
     "test:learn-queue": "../idctl/node_modules/.bin/tsx scripts/learn-queue-smoke.ts",
     "test:headroom-plugin": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/headroom-plugin-path-smoke.mjs",

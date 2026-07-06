@@ -1248,7 +1248,7 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
         retryMs: Number(args[1] ?? undefined),
       });
     case 'materials:markRecommendation': {
-      const result = markRecommendation(args[0] as string, args[1] as string, args[2] as LearnReviewState);
+      const result = await markRecommendation(args[0] as string, args[1] as string, args[2] as LearnReviewState);
       kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialReadyKickMs);
       return result;
     }
@@ -1407,7 +1407,7 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     // Work > Learn queue: process newly-added materials even when the Learn tab is not mounted.
     try {
       stopMaterialChangeBridge = subscribeMaterialChanges((reason, material) => {
-        publishStoreChange('materials:changed');
+        publishStoreChange(reason === 'tasks' ? 'materials:tasks' : 'materials:changed');
         if (reason === 'write' && 'status' in material && material.status === 'queued') {
           kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.queuedWriteKickMs);
         }

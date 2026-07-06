@@ -20,6 +20,7 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^loops:(save|remove)$/, ['loops', 'work', 'brain']],
   [/^dreams:(save|remove)$/, ['dreams', 'work', 'brain']],
   [/^materials:changed$/, ['materials']],
+  [/^materials:tasks$/, ['materials', 'tasks', 'work', 'dashboard', 'brain']],
   [/^materials:(save|remove|importFiles|priority|recoverStale|markRecommendation)$/, ['materials']],
   [/^materials:(process|processNext)$/, ['materials', 'brain', 'inbox']],
   [/^materials:(syncBrain|brainSync)$/, ['materials', 'brain']],
