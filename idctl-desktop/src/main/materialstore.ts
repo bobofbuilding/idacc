@@ -246,6 +246,7 @@ const STOP_WORDS = new Set([
 const INJECTION_RE = /(ignore\s+(all\s+)?previous|forget\s+(all\s+)?(previous|prior)|developer\s+message|system\s+prompt|do\s+not\s+follow|exfiltrat|reveal\s+(your|the)\s+(system|prompt|secret)|<\|system\|>|begin\s+system|assistant:|user:)/ig;
 const STALE_PROCESSING_MS = 20 * 60 * 1000;
 const BRAIN_SYNC_RETRY_MS = 15 * 60 * 1000;
+const LEARN_TASK_AUTOMATION_RETRY_MS = 15 * 60 * 1000;
 
 let processing = false;
 type MaterialChangeReason = 'write' | 'remove' | 'tasks';
@@ -1350,6 +1351,7 @@ function buildRecommendations(material: LearnMaterial, extraction: ExtractionRes
 
 function shouldAutoCreateLearnTask(material: LearnMaterial, rec: LearnRecommendation): boolean {
   if (rec.reviewState === 'accepted' || rec.autoTaskStatus === 'created') return false;
+  if ((rec.autoTaskStatus === 'deferred' || rec.autoTaskStatus === 'failed') && rec.autoTaskAt && now() - rec.autoTaskAt < LEARN_TASK_AUTOMATION_RETRY_MS) return false;
   if (rec.blocking) return false;
   if (rec.type !== 'task' && rec.type !== 'feature') return false;
   return (material.activeGoalMatches ?? []).length > 0;
@@ -1424,6 +1426,47 @@ async function autoCreateLearnTasks(material: LearnMaterial): Promise<{ created:
 
   if (changed) notifyMaterialChange('tasks', material);
   return { created, deferred, failed };
+}
+
+export async function autoCreatePendingLearnTasks(opts: { limit?: number } = {}): Promise<{ scanned: number; attempted: number; created: number; deferred: number; failed: number }> {
+  const limit = Math.max(1, Math.min(25, Number(opts.limit ?? 6) || 6));
+  let scanned = 0;
+  let attempted = 0;
+  let created = 0;
+  let deferred = 0;
+  let failed = 0;
+  const candidates = listMaterials()
+    .filter((material) =>
+      material.stage === 'recommendations'
+      && (material.status === 'ready' || material.status === 'blocked')
+      && !hasBlockingDraftRecommendation(material.recommendations)
+      && (material.recommendations ?? []).some((rec) => shouldAutoCreateLearnTask(material, rec)),
+    )
+    .slice(0, limit);
+
+  for (const material of candidates) {
+    scanned++;
+    const before = (material.recommendations ?? []).filter((rec) => shouldAutoCreateLearnTask(material, rec)).length;
+    if (!before) continue;
+    attempted += before;
+    const result = await autoCreateLearnTasks(material);
+    created += result.created;
+    deferred += result.deferred;
+    failed += result.failed;
+    material.progress.push({
+      stage: 'recommendations',
+      status: result.failed || result.deferred ? 'warning' : 'done',
+      note: `Learn task automation backfill: created ${result.created}, deferred ${result.deferred}, failed ${result.failed} queued Work task(s)`,
+      at: now(),
+    });
+    if (material.status === 'blocked' && !hasBlockingDraftRecommendation(material.recommendations)) {
+      material.status = 'ready';
+      material.processingTag = 'review complete';
+    }
+    writeMaterial(material);
+  }
+
+  return { scanned, attempted, created, deferred, failed };
 }
 
 function surfaceBlockingQuestions(material: LearnMaterial, recommendations: LearnRecommendation[]): number {

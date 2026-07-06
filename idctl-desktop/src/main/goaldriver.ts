@@ -301,6 +301,21 @@ function annotateSubtask(goal: Goal, st: SubTask): SubTask {
   };
 }
 
+function deterministicGoalLeadSubtasks(goal: Goal, targets: GoalLeadTarget[], slots: number, reason: string): SubTask[] {
+  const usable = targets.slice(0, Math.max(1, Math.min(slots, targets.length)));
+  return usable.map((target) => ({
+    title: `Advance active goal: ${clip(goal.title || goal.id, 82)}`,
+    description: [
+      `Autopilot planner fallback: ${reason}`,
+      `Active goal ${goal.id}: ${goal.title || goal.id}`,
+      'Create only the minimal child tasks needed on your team, skip duplicate or already-covered work, and close with concrete evidence or blockers.',
+      'Keep recommendations aligned to this active goal; optional follow-ups become backlog candidates instead of live work.',
+    ].join('\n'),
+    agent: target.lead,
+    dependsOn: [],
+  }));
+}
+
 async function createGoalLeadTasks(
   baseClient: ManagerClient,
   objective: string,
@@ -392,15 +407,20 @@ async function driveGoal(baseClient: ManagerClient, goal: Goal, cfg: GoalDriverC
     skills: target.skills,
   }));
   const decomp = await decomposeWork(teamClient, goal.content || goal.idea || goal.title, lead, roster);
-  if (!decomp.ok || !decomp.subtasks.length) return { spawned: 0, refs: [], note: decomp.error || 'no subtasks produced' };
+  const plannerFallbackReason = decomp.error || 'no subtasks produced';
+  const plannedSubtasks = decomp.ok && decomp.subtasks.length
+    ? decomp.subtasks
+    : deterministicGoalLeadSubtasks(goal, targets, slots, plannerFallbackReason);
   if (!freshActiveGoalForDriver(goal)) return { spawned: 0, refs: [], note: 'goal changed or autopilot was disabled before team-lead task creation' };
 
-  const subtasks = decomp.subtasks.slice(0, slots).map((st) => annotateSubtask(goal, st));
+  const subtasks = plannedSubtasks.slice(0, slots).map((st) => annotateSubtask(goal, st));
   const created = await createGoalLeadTasks(baseClient, goal.content || goal.title, subtasks, targets);
   return {
     spawned: created.ok,
     refs: created.refs,
-    note: created.ok ? `spawned ${created.ok} task(s) to team leads` : 'no team-lead tasks created',
+    note: created.ok
+      ? `spawned ${created.ok} task(s) to team leads${decomp.ok ? '' : ` via planner fallback (${plannerFallbackReason})`}`
+      : `no team-lead tasks created${decomp.ok ? '' : ` after planner fallback (${plannerFallbackReason})`}`,
   };
 }
 

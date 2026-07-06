@@ -36,9 +36,29 @@ assert.match(
   'Learn task automation should emit a narrow task refresh event',
 );
 assert.match(
+  materialstore,
+  /export async function autoCreatePendingLearnTasks[\s\S]*Learn task automation backfill/,
+  'Already-processed Learn materials should be backfilled into queued Work tasks',
+);
+assert.match(
+  materialstore,
+  /LEARN_TASK_AUTOMATION_RETRY_MS/,
+  'Deferred Learn task automation should be cooldown-gated before retrying',
+);
+assert.match(
   main,
   /reason === 'tasks' \? 'materials:tasks' : 'materials:changed'/,
   'Main process should publish the task-specific Learn sync event',
+);
+assert.match(
+  main,
+  /autoCreatePendingLearnTasks\(\{ limit: hasQueued \? 2 : 6 \}\)/,
+  'Learn queue runner should backfill eligible task recommendations while idle',
+);
+assert.match(
+  main,
+  /case 'materials:autoCreateTasks'/,
+  'Main process should expose an explicit Learn task automation backfill hook',
 );
 assert.match(
   syncDomains,

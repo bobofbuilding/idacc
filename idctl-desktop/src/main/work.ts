@@ -571,9 +571,18 @@ export async function decomposeWork(
   try {
     const planner = await resolveDecompositionPlanner(client, lead);
     const guard = await guardLeadQueue(planner.client, planner.agent, planner.kind === 'task-manager' ? 'task-manager decomposition' : 'decomposition');
-    if (!guard.ok) return { ok: false, subtasks: [], raw: '', error: guard.detail };
-    maxSubtasks = decompositionCapForPlanner(planner.kind);
-    raw = await dispatchBudgeted(planner.client, `/ask ${planner.agent} ${qArg(DECOMP_PROMPT(obj, agentLines, maxSubtasks))}`, 'work:decompose');
+    let activePlanner = planner;
+    if (!guard.ok && planner.kind === 'task-manager' && lead && planner.agent !== lead) {
+      const leadGuard = await guardLeadQueue(client, lead, 'lead fallback decomposition');
+      if (!leadGuard.ok) {
+        return { ok: false, subtasks: [], raw: '', error: `${guard.detail}; lead fallback unavailable: ${leadGuard.detail}` };
+      }
+      activePlanner = { client, agent: lead, kind: 'lead' };
+    } else if (!guard.ok) {
+      return { ok: false, subtasks: [], raw: '', error: guard.detail };
+    }
+    maxSubtasks = decompositionCapForPlanner(activePlanner.kind);
+    raw = await dispatchBudgeted(activePlanner.client, `/ask ${activePlanner.agent} ${qArg(DECOMP_PROMPT(obj, agentLines, maxSubtasks))}`, 'work:decompose');
   } catch (e) {
     return { ok: false, subtasks: [], raw: '', error: e instanceof Error ? e.message : String(e) };
   }
