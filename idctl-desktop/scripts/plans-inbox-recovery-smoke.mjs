@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 
 const plans = await readFile(new URL('../src/renderer/views/Plans.tsx', import.meta.url), 'utf8');
 const inbox = await readFile(new URL('../src/renderer/views/Inbox.tsx', import.meta.url), 'utf8');
+const main = await readFile(new URL('../src/main/main.ts', import.meta.url), 'utf8');
+const shared = await readFile(new URL('../src/shared/planInbox.ts', import.meta.url), 'utf8');
 
 assert.ok(
   plans.includes('function relayPlanBlocker('),
@@ -25,12 +27,20 @@ assert.ok(
   'Inbox should resolve Work > Plans recovery decisions locally instead of routing them to the lead',
 );
 assert.ok(
+  inbox.includes("call('plans:recover'") && main.includes("case 'plans:recover'"),
+  'Plan decisions should invoke the main-process recovery pass, not only flip local status',
+);
+assert.ok(
   inbox.includes('q.agent && !isSyntheticQuestion && !isBrainApproval && answer'),
   'Synthetic plan/learn questions must not dispatch decision text back to agents',
 );
 assert.ok(
-  inbox.includes("const status = /retry/i.test(option) ? 'PENDING' : 'PAUSED'"),
-  'Retrying a plan decision should unpause the plan locally without creating another lead query',
+  shared.includes("return 'resume'") && shared.includes("return 'pause'"),
+  'Plan Inbox option classification should make Approve/retry resume, while hold/pause/manual stays paused',
+);
+assert.ok(
+  main.includes("bridgeCall('work:delegateToTeamLeads'") && main.includes("setBrainPlanStatus(file, 'PARTIAL')"),
+  'Approving a plan recovery should retry live delegation and advance the plan when tasks are created',
 );
 
 console.log('plans Inbox recovery guard ok');

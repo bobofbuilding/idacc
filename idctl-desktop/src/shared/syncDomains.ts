@@ -12,7 +12,7 @@ export interface StoreChangeEvent {
 }
 
 const RULES: Array<[RegExp, string[]]> = [
-  [/^plans:(save|remove)$/, ['plans', 'work', 'brain']],
+  [/^plans:(save|remove|recover)$/, ['plans', 'work', 'brain', 'brain-plans', 'questions', 'inbox', 'tasks', 'dashboard']],
   [/^brain:(createPlan|setPlanStatus)$/, ['brain', 'brain-plans', 'plans', 'work']],
   [/^goals:(save|remove)$/, ['goals', 'work', 'brain']],
   [/^goalDriver:(setConfig|runOnce)$/, ['goals', 'tasks', 'work', 'brain']],

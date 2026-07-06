@@ -33,6 +33,8 @@ import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
 import { buildLearnProcessContext } from '../shared/learnContext.ts';
 import { LEARN_BRAIN_BACKFILL_RUNNER_DELAYS, LEARN_QUEUE_RUNNER_DELAYS } from '../shared/backgroundPolicy.ts';
+import { buildPrimaryLeadPlanWork } from '../shared/planWork.ts';
+import { planInboxResolutionForOption } from '../shared/planInbox.ts';
 
 // Bundled as CommonJS → __dirname is the output dir (out/main/).
 declare const __dirname: string;
@@ -56,6 +58,21 @@ const pendingStoreChangeMethods = new Set<string>();
 
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
 type BrainDashboardTab = 'fleet' | 'health' | 'skills' | 'learning' | 'agents' | 'graph';
+type PlanRecoverInput = {
+  file?: string;
+  option?: string;
+  questionId?: string;
+  comment?: string;
+  status?: string;
+};
+type TeamLeadDelegationResult = {
+  ok: boolean;
+  targetCount: number;
+  created: Array<{ ok?: boolean; ref?: string; title?: string; team?: string; lead?: string; error?: string; warning?: string }>;
+  dispatched: number;
+  deferred: number;
+  errors?: string[];
+};
 
 type RendererCrashState = {
   version?: string;
@@ -109,6 +126,95 @@ function writeRendererCrashState(state: RendererCrashState): void {
 function recentRendererCrash(state: RendererCrashState | null): boolean {
   const at = state?.lastRendererCrashAt ? Date.parse(state.lastRendererCrashAt) : 0;
   return Number.isFinite(at) && at > 0 && Date.now() - at < 24 * 60 * 60 * 1000;
+}
+
+async function recoverPlanFromInbox(input: PlanRecoverInput): Promise<Record<string, unknown>> {
+  const file = String(input?.file || '').trim();
+  if (!file) throw new Error('plan file required');
+  const option = String(input?.option || input?.status || '').trim();
+  const questionId = String(input?.questionId || '').trim();
+  const resolution = planInboxResolutionForOption(option);
+
+  if (resolution === 'pause') {
+    const status = setBrainPlanStatus(file, 'PAUSED');
+    if (questionId) removeQuestion(questionId);
+    return { ok: status.ok, action: 'paused', status };
+  }
+
+  const listed = listBrainPlans().plans.find((p) => p.file === file);
+  const got = getBrainPlan(file);
+  if (!listed || !got) throw new Error(`brain plan not found: ${file}`);
+  const pending = setBrainPlanStatus(file, 'PENDING');
+
+  const hierarchy = await bridgeCall('coordinator:hierarchy', []) as { primary?: { team?: string; agent?: string } | null };
+  const lead = hierarchy.primary?.agent || 'lead';
+  const leadTeam = hierarchy.primary?.team || 'default';
+  const work = buildPrimaryLeadPlanWork(listed, got.content, lead, leadTeam);
+  const existing = getGoal(work.goal.id);
+  const savedGoal: Goal = {
+    ...(existing ?? work.goal),
+    ...work.goal,
+    status: 'active',
+    priority: existing?.priority ?? work.goal.priority,
+    autopilot: false,
+    createdAt: existing?.createdAt || work.goal.createdAt,
+    updatedAt: Date.now(),
+    driver: {
+      ...(existing?.driver ?? {}),
+      ...(work.goal.driver ?? {}),
+      note: input.comment
+        ? `${work.goal.driver?.note ?? 'Recovered from Inbox'}; user note: ${String(input.comment).slice(0, 240)}`
+        : work.goal.driver?.note,
+    },
+  };
+  saveGoal(savedGoal);
+
+  const delegated = await bridgeCall('work:delegateToTeamLeads', [work.objective, {
+    currentTeam: leadTeam,
+    primaryLead: lead,
+  }]) as TeamLeadDelegationResult;
+  const created = (delegated.created ?? []).filter((task) => task.ok);
+  if (!delegated.ok || !created.length) {
+    const reason = (delegated.errors ?? []).filter(Boolean).join('; ') || 'no live team-lead task was created';
+    if (questionId) removeQuestion(questionId);
+    addQuestion({
+      id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+      question: `Work > Plans recovery for "${listed.title}" still could not create live delegated team-lead tasks. ${reason}`,
+      options: ['Approve retry recovery', 'Review active team leads', 'Pause plan'],
+      agent: lead,
+      taskRef: `plan:${file}`,
+      taskTitle: listed.title,
+      team: leadTeam,
+      createdAt: Date.now(),
+      dedupeKey: `plan:${file}:recovery:${reason}`.slice(0, 200),
+      source: 'plans',
+      metadata: { planFile: file, phase: 'inbox-recovery', goalId: savedGoal.id, reason, targetCount: delegated.targetCount },
+    });
+    return { ok: false, action: 'recovery-blocked', status: pending, reason, goalId: savedGoal.id };
+  }
+
+  if (questionId) removeQuestion(questionId);
+  const refs = created.map((task) => task.ref || task.title || `${task.team}/${task.lead}`).filter(Boolean) as string[];
+  saveGoal({
+    ...savedGoal,
+    driver: {
+      ...(savedGoal.driver ?? {}),
+      taskRefs: [...new Set([...(savedGoal.driver?.taskRefs ?? []), ...refs])],
+      lastRunAt: Date.now(),
+      note: `Recovered from Inbox and delegated brain plan ${work.source} to ${created.length} team-lead task(s)`,
+    },
+  });
+  const partial = setBrainPlanStatus(file, 'PARTIAL');
+  return {
+    ok: true,
+    action: 'delegated',
+    status: partial.ok ? partial : pending,
+    goalId: savedGoal.id,
+    created: created.length,
+    dispatched: delegated.dispatched,
+    deferred: delegated.deferred,
+    refs,
+  };
 }
 
 function rendererCrashStateForCurrentVersion(): RendererCrashState | null {
@@ -1028,6 +1134,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return savePlan(args[0] as Plan);
     case 'plans:remove':
       return removePlan(args[0] as string);
+    case 'plans:recover':
+      return recoverPlanFromInbox((args[0] as PlanRecoverInput | undefined) ?? {});
     // Goals: saved per-project goals (goalstore).
     case 'goals:list':
       return listGoals(args[0] as string | undefined);

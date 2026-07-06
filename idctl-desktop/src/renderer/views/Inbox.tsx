@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { call, useSyncVersion, type FleetStore } from '../store.ts';
 import type { InboxItem } from '../../../../idctl/src/api/types.ts';
+import { planInboxStatusForOption } from '../../shared/planInbox.ts';
 
 type BlockerQuestion = { id: string; question: string; options: string[]; agent: string; taskRef?: string; taskTitle?: string; team: string; createdAt: number; seenCount?: number; lastSeenAt?: number; source?: string; metadata?: Record<string, unknown> };
 type QuestionAction = { label: string; value: string; title: string; primary?: boolean };
@@ -166,9 +167,18 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
     setBusy(true); setErr('');
     try {
       const file = String(q.metadata?.file ?? q.metadata?.planFile ?? q.taskRef?.slice('plan:'.length) ?? '').trim();
-      const status = /retry/i.test(option) ? 'PENDING' : 'PAUSED';
-      if (file) await call('brain:setPlanStatus', file, status).catch(() => undefined);
-      await call('questions:remove', q.id);
+      const status = planInboxStatusForOption(option);
+      if (file) {
+        await call('plans:recover', {
+          file,
+          option,
+          questionId: q.id,
+          comment: comment.trim(),
+          status,
+        });
+      } else {
+        await call('questions:remove', q.id);
+      }
       onDone();
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
   }

@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.607] — 2026-07-06
+- Fix Work Plans Inbox approvals to resume delegation recovery
+
 ## [0.1.606] — 2026-07-05
 - fix(learn): surface failed material recovery details
 
