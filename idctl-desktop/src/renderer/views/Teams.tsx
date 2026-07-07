@@ -60,9 +60,9 @@ type TeamSource =
   | { kind: 'config'; name: string };
 type TeamAgentsGroup = { team: string; agents: Agent[] };
 type TeamSnapshot = { exists: boolean; agents: Agent[]; running: number; total: number; rosterKnown: boolean };
-type HrHierarchy = { primary: { team: string; agent: string } | null; coordinators: Record<string, string> };
 type OrgCfg = { enabled?: boolean; autoRebuild?: boolean };
 type SecLead = { agent: string; team: string; leadsTeams: string[] };
+type HrHierarchy = { primary: { team: string; agent: string } | null; coordinators: Record<string, string>; secondaries?: SecLead[]; teams?: string[] };
 type TeamBlueprint = { id: string; team: string; label: string; description: string; spec: string };
 type BlueprintCoverage = TeamBlueprint & { present: number; total: number; missing: string[]; complete: boolean };
 type HrFocus = 'route-hierarchy' | 'health';
@@ -292,6 +292,8 @@ function hierarchyStamp(h: HrHierarchy): string {
   return JSON.stringify({
     primary: h.primary ? [h.primary.team, h.primary.agent] : null,
     coordinators: Object.entries(h.coordinators ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+    secondaries: normalizeSecondaryRows(h.secondaries ?? []).map((s) => [s.team, s.agent, [...new Set(s.leadsTeams ?? [])].sort((a, b) => a.localeCompare(b))]),
+    teams: [...new Set(h.teams ?? [])].sort((a, b) => a.localeCompare(b)),
   });
 }
 function orgConfigStamp(c: OrgCfg): string {
@@ -1227,11 +1229,11 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     [hier.coordinators],
   );
   async function loadHier() {
-    setHier(await call<typeof hier>('coordinator:hierarchy').catch(() => ({ primary: null, coordinators: {} })));
+    setHier(await call<typeof hier>('org:hierarchy').catch(() => ({ primary: null, coordinators: {} })));
   }
   useEffect(() => { void loadHier(); }, [activeTeam, hrStructureVersion]);
   async function ensureHierarchyFresh(action: string): Promise<HrHierarchy | null> {
-    const fresh = await call<HrHierarchy>('coordinator:hierarchy').catch(() => ({ primary: null, coordinators: {} }));
+    const fresh = await call<HrHierarchy>('org:hierarchy').catch(() => ({ primary: null, coordinators: {} }));
     if (hierarchyStamp(fresh) !== hierarchyStamp(hier)) {
       setHier(fresh);
       setMsg(`${action} blocked: lead hierarchy changed elsewhere. Refreshed; review the current hierarchy first.`);
@@ -1275,7 +1277,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       `This changes the lead that the rest of ${team} reports to.`,
     ].join('\n');
     if (!window.confirm(preview)) return;
-    const afterHier = await call<HrHierarchy>('coordinator:hierarchy').catch(() => ({ primary: null, coordinators: {} }));
+    const afterHier = await call<HrHierarchy>('org:hierarchy').catch(() => ({ primary: null, coordinators: {} }));
     if (hierarchyStamp(afterHier) !== hierarchyStamp(freshHier)) {
       setHier(afterHier);
       setMsg('Set coordinator blocked: lead hierarchy changed after review. Review the refreshed hierarchy first.');
@@ -1312,7 +1314,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       'This changes fleet hierarchy routing. Run Org sync afterward to push the hierarchy into agent goals and the brain.',
     ].join('\n');
     if (!window.confirm(preview)) return;
-    const afterHier = await call<HrHierarchy>('coordinator:hierarchy').catch(() => ({ primary: null, coordinators: {} }));
+    const afterHier = await call<HrHierarchy>('org:hierarchy').catch(() => ({ primary: null, coordinators: {} }));
     if (hierarchyStamp(afterHier) !== hierarchyStamp(freshHier)) {
       setHier(afterHier);
       setMsg('Promote primary blocked: lead hierarchy changed after review. Review the refreshed hierarchy first.');
@@ -1415,7 +1417,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
         return;
       }
       const [afterHier, afterCfg] = await Promise.all([
-        call<HrHierarchy>('coordinator:hierarchy').catch(() => ({ primary: null, coordinators: {} })),
+        call<HrHierarchy>('org:hierarchy').catch(() => ({ primary: null, coordinators: {} })),
         call<OrgCfg>('org:getConfig').catch(() => freshCfg),
       ]);
       if (hierarchyStamp(afterHier) !== previewStamp.hierarchy || orgConfigStamp(afterCfg) !== previewStamp.config) {
@@ -1673,7 +1675,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       const [teamsNow, groupsNow, hierNow] = await Promise.all([
         call<Array<{ name: string }>>('teams').catch(() => []),
         freshHrGroups(),
-        call<HrHierarchy>('coordinator:hierarchy').catch(() => ({ primary: null, coordinators: {} })),
+        call<HrHierarchy>('org:hierarchy').catch(() => ({ primary: null, coordinators: {} })),
       ]);
       const currentTeams = new Set(teamsNow.map((t) => t.name));
       const sourceAgents = agentsForTeam(groupsNow, source);
@@ -1714,7 +1716,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       if (!window.confirm(`${steps.join('\n')}\n\nThis is a guarded multi-step maintenance action, not an atomic manager transaction. Continue?`)) return;
       const [afterGroups, afterHier] = await Promise.all([
         freshHrGroups(),
-        call<HrHierarchy>('coordinator:hierarchy').catch(() => ({ primary: null, coordinators: {} })),
+        call<HrHierarchy>('org:hierarchy').catch(() => ({ primary: null, coordinators: {} })),
       ]);
       if (agentNameKey(agentsForTeam(afterGroups, source)) !== agentNameKey(sourceAgents) || hierarchyStamp(afterHier) !== hierarchyStamp(hierNow)) {
         setMaintMsg('blocked: roster or hierarchy changed after confirmation; review refreshed state first');
@@ -2655,7 +2657,7 @@ function TeamBuilder({
     const [teamsNow, groupsNow, hierarchyNow] = await Promise.all([
       call<Array<{ name: string }>>('teams').catch(() => []),
       freshHrGroups(),
-      call<HrHierarchy>('coordinator:hierarchy').catch(() => ({ primary: null, coordinators: {} })),
+      call<HrHierarchy>('org:hierarchy').catch(() => ({ primary: null, coordinators: {} })),
     ]);
     const freshTeamExists = teamsNow.some((t) => t.name === targetTeam);
     const renderedTeamExists = existingTeams.includes(targetTeam);
@@ -2812,7 +2814,7 @@ function TeamBuilder({
       setPost((p) => ({ ...p, coord: 'running', leadName }));
       try {
         const [hierNow, groupsNow] = await Promise.all([
-          call<HrHierarchy>('coordinator:hierarchy').catch(() => preflight.hierarchy),
+          call<HrHierarchy>('org:hierarchy').catch(() => preflight.hierarchy),
           freshHrGroups(),
         ]);
         if (hierarchyStamp(hierNow) !== preflight.hierarchyStamp) {

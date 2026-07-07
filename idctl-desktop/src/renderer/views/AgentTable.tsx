@@ -351,7 +351,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   }, [runtimeCooldownVersion, runtimeCooldownActive]);
 
   useEffect(() => {
-    call<{ coordinators?: Record<string, string> }>('coordinator:hierarchy').then((h) => setCoords(h.coordinators ?? {})).catch(() => {});
+    call<{ coordinators?: Record<string, string> }>('org:hierarchy').then((h) => setCoords(h.coordinators ?? {})).catch(() => {});
   }, [hierarchyVersion, store.team, store.coordinator]);
 
   // ★ marks the team's coordinator (lead); routing changes live in HR Manager.

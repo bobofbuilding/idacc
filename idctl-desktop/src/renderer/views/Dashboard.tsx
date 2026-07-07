@@ -452,6 +452,7 @@ export function Dashboard({ store }: { store: FleetStore }) {
   const [events, setEvents] = useState<TeamEvent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [news, setNews] = useState<DashboardNews[]>([]);
+  const [activityClockTick, setActivityClockTick] = useState(0);
   const activityLiveRef = useRef(true);
   useEffect(() => () => { activityLiveRef.current = false; }, []);
   const loadActivity = useCallback(() => {
@@ -472,6 +473,10 @@ export function Dashboard({ store }: { store: FleetStore }) {
     const iv = setInterval(() => { loadActivity(); }, 15000);
     return () => clearInterval(iv);
   }, [loadActivity]);
+  useEffect(() => {
+    const iv = setInterval(() => { setActivityClockTick((n) => (n + 1) % 60); }, 1000);
+    return () => clearInterval(iv);
+  }, []);
   const activityTaskStats = useMemo(() => {
     const activeTeamSet = new Set(activeTeams);
     const scoped = tasks.filter((t) => !t.teamName || activeTeamSet.has(t.teamName));
@@ -612,7 +617,7 @@ export function Dashboard({ store }: { store: FleetStore }) {
               <div className="feed-row" key={item.key} title={item.title}>
                 <span className={`topic ${item.className}`}>{item.topic}</span>
                 <span className="desc">{item.team ? <span className="muted" style={{ marginRight: 4 }}>[{item.team}]</span> : null}{item.desc}</span>
-                {item.at ? <span className="muted t">{ago(item.at)}</span> : null}
+                {item.at ? <span className="muted t" data-clock={activityClockTick}>{ago(item.at)}</span> : null}
               </div>
             ))}
             {feedItems.length === 0 ? <div className="muted">waiting for activity…</div> : null}
