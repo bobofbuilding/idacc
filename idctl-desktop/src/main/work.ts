@@ -61,14 +61,18 @@ function taskRef(t: Task): string { return t.shortId ?? t.name ?? t.uuid ?? t.ti
 function clip(s: string, n: number): string { const t = (s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; }
 
 const MAX_SUBTASKS = boundedEnvInt('IDACC_WORK_MAX_SUBTASKS', 12, 1, 24);
-const WORK_TASK_MANAGER_SUBTASK_CAP = boundedEnvInt('IDACC_WORK_TASK_MANAGER_SUBTASK_CAP', 3, 1, MAX_SUBTASKS);
-const WORK_CREATE_TASK_CAP = boundedEnvInt('IDACC_WORK_CREATE_TASK_CAP', 3, 1, MAX_SUBTASKS);
-const WORK_LEAD_QUEUE_MAX = positiveEnvInt('IDACC_WORK_LEAD_QUEUE_MAX', 2);
+const WORK_TASK_MANAGER_SUBTASK_CAP = boundedEnvInt('IDACC_WORK_TASK_MANAGER_SUBTASK_CAP', 8, 1, MAX_SUBTASKS);
+const WORK_CREATE_TASK_CAP = boundedEnvInt('IDACC_WORK_CREATE_TASK_CAP', 8, 1, MAX_SUBTASKS);
+const WORK_DESCRIPTION_LIMIT = boundedEnvInt('IDACC_WORK_DESCRIPTION_LIMIT', 900, 240, 1800);
+const WORK_TEAM_LEAD_PACKET_LIMIT = boundedEnvInt('IDACC_WORK_TEAM_LEAD_PACKET_LIMIT', 1400, 400, 2600);
+const WORK_LEAD_QUEUE_MAX = positiveEnvInt('IDACC_WORK_LEAD_QUEUE_MAX', 4);
 const WORK_LEAD_GUARD_TTL_MS = positiveEnvInt('IDACC_WORK_LEAD_GUARD_TTL_MINUTES', 45) * 60 * 1000;
 const WORK_OWNER_OPEN_TASK_CAP = positiveEnvInt('IDACC_WORK_OWNER_OPEN_TASK_CAP', 1);
+const WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP = positiveEnvInt('IDACC_WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP', 4);
 const WORK_QUEUE_TODO_CAP = positiveEnvInt('IDACC_WORK_QUEUE_TODO_CAP', 1);
 const WORK_COMPLETION_DONE_TASK_LIMIT = positiveEnvInt('IDACC_WORK_DONE_POLL_LIMIT', 250);
 const WORK_PLANNER_TEAM = process.env.IDACC_WORK_PLANNER_TEAM || 'ops-team';
+const WORK_USE_TASK_MANAGER_PLANNER = /^(1|true|yes|on)$/i.test(String(process.env.IDACC_WORK_USE_TASK_MANAGER_PLANNER || ''));
 const WORK_PLANNER_NAMES = (process.env.IDACC_WORK_PLANNER_NAMES || 'task-manager,task-master')
   .split(',')
   .map((name) => agentNameKey(name))
@@ -242,6 +246,9 @@ type DecompositionPlanner = {
 };
 
 async function resolveDecompositionPlanner(client: ManagerClient, fallbackLead: string): Promise<DecompositionPlanner> {
+  if (!WORK_USE_TASK_MANAGER_PLANNER && fallbackLead) {
+    return { client, agent: fallbackLead, kind: 'lead' };
+  }
   const candidateTeams = [...new Set([client.team ?? 'default', WORK_PLANNER_TEAM].filter(Boolean))];
   for (const team of candidateTeams) {
     const scoped = team === client.team ? client : client.withTeam(team);
@@ -295,27 +302,70 @@ function teamLeadTargetForSubtask(targets: TeamLeadDelegationTarget[], st: SubTa
 }
 
 function teamLeadPacket(target: TeamLeadDelegationTarget, st: SubTask): SubTask {
-  const leadNote = `Team lead packet for ${target.team}: create child /task rows for active teammates before execution, coordinate the work, close with delegated child task names, and surface blockers immediately.`;
+  const leadNote = [
+    `Team lead packet for ${target.team}: create child /task rows for active teammates before execution, coordinate the work, close with delegated child task names, and surface blockers immediately.`,
+    'Do not close this from an audit/status packet alone. Produce implementation-grade child work with concrete artifacts, verification evidence, and publish/deploy readiness when the plan asks for shipped work.',
+  ].join(' ');
   return {
     title: st.title,
     agent: target.lead,
-    description: clip([st.description, leadNote].filter(Boolean).join('\n\n'), 380),
+    description: clip([st.description, leadNote].filter(Boolean).join('\n\n'), WORK_TEAM_LEAD_PACKET_LIMIT),
     dependsOn: st.dependsOn,
   };
 }
 
 function deterministicTeamLeadSubtasks(objective: string, targets: TeamLeadDelegationTarget[]): SubTask[] {
   const obj = clip(objective, 1400);
-  return targets.slice(0, MAX_SUBTASKS).map((target): SubTask => ({
-    title: `Route objective through ${target.team}`,
-    agent: target.lead,
-    description: [
-      `Planner fallback for ${target.team}: decompose this objective for active teammates before execution.`,
-      'Create only the minimal child /task rows needed for your team, skip shipped or duplicate work, and surface any blocker up to the primary lead.',
-      `Objective: ${obj}`,
-    ].join('\n'),
-    dependsOn: [],
-  }));
+  const specific = (target: TeamLeadDelegationTarget): { title: string; description: string } => {
+    const team = normRouteKey(target.team);
+    if (team.includes('engineer')) {
+      return {
+        title: `Implement ${clip(objective, 64)}`,
+        description: 'Turn the objective into code/config/data changes, wire the runtime path, and provide build/test evidence plus any deployment or integration blockers.',
+      };
+    }
+    if (team.includes('research')) {
+      return {
+        title: `Ground content and requirements for ${clip(objective, 48)}`,
+        description: 'Extract source-backed requirements, claims, data, and acceptance criteria so implementation work ships complete rather than as a placeholder.',
+      };
+    }
+    if (team.includes('ops')) {
+      return {
+        title: `Prepare release operations for ${clip(objective, 52)}`,
+        description: 'Validate environment, deployment, monitoring, and rollback readiness; create follow-on operational child tasks when the release path is not ready.',
+      };
+    }
+    if (team.includes('legal') || team.includes('counsel')) {
+      return {
+        title: `Review compliance blockers for ${clip(objective, 54)}`,
+        description: 'Identify legal, policy, data-use, domain, and publication blockers that must be resolved before the plan is shipped.',
+      };
+    }
+    if (team.includes('security')) {
+      return {
+        title: `Validate security readiness for ${clip(objective, 54)}`,
+        description: 'Check auth, secrets, data exposure, abuse paths, and release gates; create concrete remediation tasks for any blocker.',
+      };
+    }
+    return {
+      title: `Execute team slice for ${target.team}`,
+      description: 'Decompose the objective into active teammate tasks with concrete artifacts, verification evidence, and blockers surfaced to the primary lead.',
+    };
+  };
+  return targets.slice(0, MAX_SUBTASKS).map((target): SubTask => {
+    const slice = specific(target);
+    return {
+      title: slice.title,
+      agent: target.lead,
+      description: [
+        `Planner fallback for ${target.team}: ${slice.description}`,
+        'Create only the minimal child /task rows needed for your team, skip shipped or duplicate work, and surface any blocker up to the primary lead.',
+        `Objective: ${obj}`,
+      ].join('\n'),
+      dependsOn: [],
+    };
+  });
 }
 
 function warningNeedsTriage(warning?: string): boolean {
@@ -495,6 +545,12 @@ function capacityDeferredTask(i: number, st: SubTask, reason: string): CreatedTa
 
 function consumeOwnerCapacity(capacity: PlanCapacity, team: string | undefined, agent: string): { ok: true } | { ok: false; reason: string } {
   const key = agentNameKey(agent);
+  if (!capacity.ownerSlots.has(key)) {
+    return {
+      ok: false,
+      reason: `capacity deferred: ${team ?? 'default'}/${agent} is not in the live assignable owner pool; no live task was created`,
+    };
+  }
   const slots = capacity.ownerSlots.get(key) ?? 0;
   if (slots > 0) {
     capacity.ownerSlots.set(key, slots - 1);
@@ -542,6 +598,10 @@ Rules:
 - Assign work ONLY to agents that are running; never assign a task to one marked [STOPPED — do not assign].
 - Do not assign execution to yourself/the coordinator when any non-coordinator assignee is available.
 - On the default team, coder and researcher validate completed work; do not assign normal execution to them when another worker or team lead is available.
+- Produce implementation-grade work, not status-only packets. Unless the objective is explicitly research-only, include tasks that result in shipped artifacts, code/content/data changes, deployment/release wiring, and validation.
+- For page/site objectives, cover source-grounded content, user/agent workflows, implementation/data routes, deployment/publish, QA/accessibility/security, and post-release verification as applicable.
+- Every task description must name the expected artifact or observable change and acceptance evidence.
+- Do not mark the plan complete from an audit, inventory, assessment, or readiness packet alone.
 - Maximize parallelism: use an empty dependsOn whenever a task does not truly need another task's output.
 - Only add a dependency when a task genuinely needs a prior task's result.
 - Keep titles short and imperative; assign realistic owners chosen from the agent names above.`;
@@ -597,7 +657,7 @@ export async function decomposeWork(
   for (let i = 0; i < n; i++) {
     const o = (arr[i] ?? {}) as Record<string, unknown>;
     const title = clip(String(o.title ?? o.task ?? `Task ${i + 1}`), 120) || `Task ${i + 1}`;
-    const description = clip(String(o.description ?? o.detail ?? ''), 400);
+    const description = clip(String(o.description ?? o.detail ?? ''), WORK_DESCRIPTION_LIMIT);
     let agent = String(o.agent ?? o.owner ?? '').trim();
     // Coerce unknown, stopped, coordinator, or validator-only owners to an execution assignee.
     if (!(assignableNames.size ? assignableNames.has(agent) : names.has(agent))) agent = fallback;
@@ -644,12 +704,21 @@ export async function createAndDispatchPlan(
   // owner pool (and the coerce-to-fallback target) is the running roster whenever
   // any agent is running; degrade to the full roster only if nothing is active.
   const coordinator = String(opts.coordinator ?? pickActiveLead(roster) ?? '').trim();
-  const pool = executionPoolForTeam(roster, coordinator, client.team, opts.allowCoordinatorOwners === true, opts.allowInactiveOwners === true);
+  const basePool = executionPoolForTeam(roster, coordinator, client.team, opts.allowCoordinatorOwners === true, opts.allowInactiveOwners === true);
+  const pool = [...basePool];
+  if (opts.allowCoordinatorOwners === true) {
+    const requestedOwnerKeys = new Set(subtasks.map((st) => agentNameKey(st?.agent)).filter(Boolean));
+    for (const agent of roster) {
+      if (!requestedOwnerKeys.has(agentNameKey(agent.name))) continue;
+      if (!opts.allowInactiveOwners && !isActiveStatus(agent.status)) continue;
+      if (!pool.some((existing) => agentNameKey(existing.name) === agentNameKey(agent.name))) pool.push(agent);
+    }
+  }
   const names = new Set(pool.map((a) => a.name));
   const fallback = pool[0]?.name ?? '';
   const planItems = subtasks.slice(0, MAX_SUBTASKS).map((st, i, arr) => ({
     title: clip(String(st?.title ?? `Task ${i + 1}`), 120) || `Task ${i + 1}`,
-    description: clip(String(st?.description ?? ''), 400),
+    description: clip(String(st?.description ?? ''), WORK_DESCRIPTION_LIMIT),
     agent: names.has(st?.agent) ? st.agent : fallback,
     dependsOn: (Array.isArray(st?.dependsOn) ? st.dependsOn : [])
       .map((d) => Number(d))
@@ -910,6 +979,8 @@ export async function delegateObjectiveToTeamLeads(
         dispatch: true,
         respectOwners: true,
         allowCoordinatorOwners: true,
+        ownerOpenTaskCap: Math.max(WORK_OWNER_OPEN_TASK_CAP, WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP),
+        leadCoordination: true,
       });
       dispatched += result.dispatched;
       deferred += result.deferred;

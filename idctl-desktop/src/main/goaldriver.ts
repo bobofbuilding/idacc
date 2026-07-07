@@ -1,9 +1,9 @@
 /**
- * Disabled-by-default background driver for active Goals.
+ * Background driver for active Goals.
  *
- * Global `goalDriver.enabled` and per-goal `autopilot` must both be true before
- * anything can spawn. The loop is single-flight and best-effort: errors are
- * logged and recorded on the goal, never allowed to crash the app.
+ * Global `goalDriver.enabled` defaults on, but per-goal `autopilot` must also
+ * be true before anything can spawn. The loop is single-flight and best-effort:
+ * errors are logged and recorded on the goal, never allowed to crash the app.
  */
 
 import type { ManagerClient } from '../../../idctl/src/api/client.ts';
@@ -12,7 +12,7 @@ import { brain } from '../../../idctl/src/api/brain.ts';
 import { createAndDispatchPlan, decomposeWork, isActiveStatus, type SubTask } from './work.ts';
 import { getGoal, goalPriorityRank, listGoals, normalizeGoalPriority, saveGoal, type Goal } from './goalstore.ts';
 
-const GOAL_LEAD_OWNER_OPEN_TASK_CAP = 3;
+const GOAL_LEAD_OWNER_OPEN_TASK_CAP = 4;
 
 export interface GoalDriverConfig {
   enabled: boolean;
@@ -38,9 +38,9 @@ interface GoalLeadTarget {
 }
 
 export const GOAL_DRIVER_DEFAULTS: GoalDriverConfig = {
-  enabled: false,
-  cadenceMs: 30 * 60 * 1000,
-  maxOpenTasksPerGoal: 12,
+  enabled: true,
+  cadenceMs: 15 * 60 * 1000,
+  maxOpenTasksPerGoal: 8,
 };
 
 export function normalizeGoalDriverConfig(input?: Partial<GoalDriverConfig> | null): GoalDriverConfig {

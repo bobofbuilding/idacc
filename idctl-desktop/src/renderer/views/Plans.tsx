@@ -298,7 +298,7 @@ export function Plans({ store }: { store: FleetStore }) {
       const reason = err instanceof Error ? err.message : String(err);
       await relayPlanBlocker(baseline, `Work > Plans could not complete the audit preflight for "${baseline.title}". Delegation will continue, but review the plan status manually. ${reason}`, {
         agent: who,
-        key: `audit-preflight:${reason}`,
+        key: 'audit-preflight',
         options: ['Review plan status', 'Retry work pass', 'Hold this plan'],
         metadata: { phase: 'audit-preflight', reason },
       });
@@ -333,7 +333,7 @@ export function Plans({ store }: { store: FleetStore }) {
       const reason = err instanceof Error ? err.message : String(err);
       await relayPlanBlocker(baseline, `Work > Plans could not complete the blocker preflight for "${baseline.title}". Delegation will continue, but unresolved blocker review may still be needed. ${reason}`, {
         agent: who,
-        key: `blocker-preflight:${reason}`,
+        key: 'blocker-preflight',
         options: ['Review blockers manually', 'Retry work pass', 'Hold this plan'],
         metadata: { phase: 'blocker-preflight', reason },
       });
@@ -452,7 +452,7 @@ export function Plans({ store }: { store: FleetStore }) {
         await relayPlanBlocker(fresh, `Work > Plans saved objective ${savedGoal.id} for "${fresh.title}", but it could not create the primary-lead delegation task because ${ready.reason}.`, {
           agent: lead,
           team: leadTeam,
-          key: `primary-lead-unavailable:${ready.reason}`,
+          key: 'primary-lead-unavailable',
           options: ['Restart primary lead and retry', 'Assign manually from Tasks', 'Hold this plan'],
           metadata: { phase: 'primary-lead-ready', goalId: savedGoal.id, reason: ready.reason },
         });
@@ -476,7 +476,7 @@ export function Plans({ store }: { store: FleetStore }) {
         await relayPlanBlocker(fresh, `Work > Plans saved objective ${savedGoal.id} for "${fresh.title}", but it could not create live delegated team-lead tasks. ${reason}`, {
           agent: lead,
           team: leadTeam,
-          key: `team-lead-delegation:${reason}`,
+          key: 'team-lead-delegation',
           options: ['Retry after clearing capacity', 'Review active team leads', 'Hold this plan'],
           metadata: { phase: 'team-lead-delegation', goalId: savedGoal.id, reason, targetCount: res.targetCount },
         });
@@ -497,7 +497,7 @@ export function Plans({ store }: { store: FleetStore }) {
         await relayPlanBlocker(fresh, `Work > Plans created delegated task(s) for "${fresh.title}", but no team-lead kickoff was accepted. ${reason}`, {
           agent: lead,
           team: leadTeam,
-          key: `team-lead-kickoff:${reason}`,
+          key: 'team-lead-kickoff',
           options: ['Retry kickoff', 'Open Tasks and triage manually', 'Hold this plan'],
           metadata: { phase: 'team-lead-kickoff', goalId: savedGoal.id, taskRefs: refs, reason },
         });
@@ -508,7 +508,7 @@ export function Plans({ store }: { store: FleetStore }) {
         await relayPlanBlocker(fresh, `Work > Plans delegated "${fresh.title}" to ${created.length} team-lead task(s), but part of the plan still needs triage. ${reason}`, {
           agent: lead,
           team: leadTeam,
-          key: `team-lead-delegation-partial:${reason}`,
+          key: 'team-lead-delegation-partial',
           options: ['Triage deferred work', 'Continue with dispatched tasks', 'Hold this plan'],
           metadata: { phase: 'team-lead-delegation-partial', goalId: savedGoal.id, taskRefs: refs, reason },
         });
@@ -534,7 +534,7 @@ export function Plans({ store }: { store: FleetStore }) {
       const reason = dec.error || 'could not split into tasks';
       await relayPlanBlocker(baseline, `Work > Plans could not decompose "${baseline.title}" into delegated tasks. ${reason}`, {
         agent: who,
-        key: `fallback-decompose:${reason}`,
+        key: 'fallback-decompose',
         options: ['Retry decomposition', 'Review plan manually', 'Hold this plan'],
         metadata: { phase: 'fallback-decompose', reason },
       });
@@ -637,7 +637,7 @@ export function Plans({ store }: { store: FleetStore }) {
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
       await relayPlanBlocker(fresh, `Work > Plans failed before it could delegate "${fresh.title}". ${m}`, {
-        key: `work-exception:${m}`,
+        key: 'work-exception',
         options: ['Retry work pass', 'Hold this plan'],
         metadata: { phase: 'work-exception', error: m },
       });

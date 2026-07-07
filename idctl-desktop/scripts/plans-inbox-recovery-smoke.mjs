@@ -42,5 +42,15 @@ assert.ok(
   main.includes("bridgeCall('work:delegateToTeamLeads'") && main.includes("setBrainPlanStatus(file, 'PARTIAL')"),
   'Approving a plan recovery should retry live delegation and advance the plan when tasks are created',
 );
+assert.ok(
+  main.includes('dedupeKey: `plan:${file}:recovery`'),
+  'Plan recovery blockers should use a stable dedupe key instead of embedding transient error text',
+);
+assert.ok(
+  plans.includes("key: 'audit-preflight'") &&
+  plans.includes("key: 'blocker-preflight'") &&
+  plans.includes("key: 'team-lead-delegation'"),
+  'Plan blocker decisions should dedupe by failed phase instead of raw transport/capacity error text',
+);
 
 console.log('plans Inbox recovery guard ok');

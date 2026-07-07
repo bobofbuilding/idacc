@@ -179,14 +179,14 @@ async function recoverPlanFromInbox(input: PlanRecoverInput): Promise<Record<str
     if (questionId) removeQuestion(questionId);
     addQuestion({
       id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
-      question: `Work > Plans recovery for "${listed.title}" still could not create live delegated team-lead tasks. ${reason}`,
-      options: ['Approve retry recovery', 'Review active team leads', 'Pause plan'],
+      question: `Work > Plans recovery for "${listed.title}" still could not create implementation-grade delegated team-lead tasks. ${reason}`,
+      options: ['Retry full delegation', 'Review active team leads', 'Pause plan'],
       agent: lead,
       taskRef: `plan:${file}`,
       taskTitle: listed.title,
       team: leadTeam,
       createdAt: Date.now(),
-      dedupeKey: `plan:${file}:recovery:${reason}`.slice(0, 200),
+      dedupeKey: `plan:${file}:recovery`,
       source: 'plans',
       metadata: { planFile: file, phase: 'inbox-recovery', goalId: savedGoal.id, reason, targetCount: delegated.targetCount },
     });
@@ -396,6 +396,15 @@ async function syncGoalInstructionsAfterMutation(action: string): Promise<void> 
   } catch (e) {
     console.warn(`[goals] ${action}: saved locally, but instruction sync failed:`, e);
   }
+}
+
+function kickGoalDriverAfterMutation(goal: Goal | null | undefined, action: string): void {
+  if (!goal || goal.status !== 'active' || goal.autopilot !== true) return;
+  setTimeout(() => {
+    void bridgeCall('goalDriver:runOnce', []).catch((e) => {
+      console.warn(`[goals] ${action}: saved locally, but immediate Autopilot run failed:`, e);
+    });
+  }, 250).unref?.();
 }
 
 function planHasTag(plan: Plan, tag: string): boolean {
@@ -1147,8 +1156,10 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'goals:get':
       return getGoal(args[0] as string);
     case 'goals:save': {
-      const result = saveGoal(args[0] as Goal);
+      const goal = args[0] as Goal;
+      const result = saveGoal(goal);
       await syncGoalInstructionsAfterMutation('save');
+      kickGoalDriverAfterMutation(goal, 'save');
       return result;
     }
     case 'goals:remove': {

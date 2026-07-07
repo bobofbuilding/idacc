@@ -213,21 +213,22 @@ const cappedFanoutClient = {
 const capped = await createAndDispatchPlan(
   cappedFanoutClient,
   'Create too many live tasks.',
-  Array.from({ length: 5 }, (_, i) => ({
+  Array.from({ length: 10 }, (_, i) => ({
     title: `Fanout task ${i + 1}`,
     description: `Task ${i + 1} should be considered by the planner.`,
-    agent: `worker-${i + 1}`,
+    agent: `worker-${(i % 5) + 1}`,
     dependsOn: [],
   })),
   {
     dispatch: true,
     respectOwners: true,
+    ownerOpenTaskCap: 2,
   },
 );
 
 const taskCreates = remoteCommands.filter((cmd) => /^\/task create\b/.test(cmd));
-assert.equal(taskCreates.length, 3, 'live task creation should be capped per plan by default');
-assert.equal(capped.created.length, 5, 'deferred over-cap proposals should remain visible to the caller');
-assert.equal(capped.created.filter((task) => task.ok).length, 3);
+assert.equal(taskCreates.length, 8, 'live task creation should be capped per plan by default');
+assert.equal(capped.created.length, 10, 'deferred over-cap proposals should remain visible to the caller');
+assert.equal(capped.created.filter((task) => task.ok).length, 8);
 assert.equal(capped.created.filter((task) => task.deferred && !task.ok).length, 2);
-assert.match(capped.created[3].warning || '', /live task creation cap 3 reached/);
+assert.match(capped.created[8].warning || '', /live task creation cap 8 reached/);
