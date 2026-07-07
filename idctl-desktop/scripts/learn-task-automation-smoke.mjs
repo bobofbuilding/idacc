@@ -42,6 +42,36 @@ assert.match(
 );
 assert.match(
   materialstore,
+  /learnPrimaryDirectivePrompt[\s\S]*coordinate recursive learning against active goals/,
+  'Learn should route materials to the primary lead as recursive active-goal learning directives',
+);
+assert.match(
+  materialstore,
+  /learnSecondaryDirectivePrompt[\s\S]*SECONDARY\/default validator/,
+  'Learn should route materials through secondary/default validators for goal-fit validation',
+);
+assert.match(
+  materialstore,
+  /learnTeamLeadDirectivePrompt[\s\S]*Create or split tasks only when the material clearly advances a matched active goal/,
+  'Learn team-lead prompts should allow bounded task delegation from goal-relevant material',
+);
+assert.match(
+  materialstore,
+  /export async function routePendingLearnMaterials[\s\S]*Learning directive routed via primary\/secondary\/team-lead flow/,
+  'Already-processed Learn materials should be backfilled through role-aware lead routing',
+);
+assert.match(
+  materialstore,
+  /LEARN_ROUTING_DISPATCH_TIMEOUT_MS[\s\S]*bridgeCall\('remote', \[`\/ask \$\{agent\}/,
+  'Learn lead routing should use bounded remote dispatches so slow agents cannot block the queue runner',
+);
+assert.doesNotMatch(
+  materialstore,
+  /Do not create tasks, goals, schedules, files, commits, or status changes from this digest/,
+  'Learn lead routing must not prohibit all downstream task creation from goal-relevant material',
+);
+assert.match(
+  materialstore,
   /LEARN_TASK_AUTOMATION_RETRY_MS/,
   'Deferred Learn task automation should be cooldown-gated before retrying',
 );
@@ -57,11 +87,21 @@ assert.match(
 );
 assert.match(
   main,
+  /routePendingLearnMaterials\(\{ limit: hasQueued \? 1 : 3 \}\)/,
+  'Learn queue runner should backfill role-aware lead routing while idle',
+);
+assert.match(
+  main,
   /case 'materials:autoCreateTasks'/,
   'Main process should expose an explicit Learn task automation backfill hook',
 );
 assert.match(
+  main,
+  /case 'materials:routeLeads'/,
+  'Main process should expose an explicit Learn lead-routing backfill hook',
+);
+assert.match(
   syncDomains,
-  /\^materials:tasks\$[\s\S]*'tasks'[\s\S]*'work'[\s\S]*'dashboard'/,
-  'materials:tasks should refresh task/work/dashboard views',
+  /\^materials:\(autoCreateTasks\|routeLeads\)\$[\s\S]*'tasks'[\s\S]*'work'[\s\S]*'dashboard'/,
+  'materials lead/task automation should refresh task/work/dashboard views',
 );

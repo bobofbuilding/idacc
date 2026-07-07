@@ -1148,10 +1148,12 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   },
   // team (optional, 3rd arg) routes the command to another team's fleet — used by the
   // holistic "All teams" Dashboard so per-agent actions hit the agent's own team.
-  remote: (command: string, agent?: string, team?: string) => {
+  remote: (command: string, agent?: string, team?: string, timeoutMs?: number) => {
     const c = team ? client.withTeam(String(team)) : client;
     const prepared = optimizeAskCommand(String(command), { source: 'bridge:remote', team: c.team });
-    return c.remote(prepared.command, agent);
+    const timeout = Number(timeoutMs);
+    const signal = Number.isFinite(timeout) && timeout > 0 ? AbortSignal.timeout(timeout) : undefined;
+    return c.remote(prepared.command, agent, signal);
   },
 
   // Resumable dispatch: START returns a queryId (or an inline reply for

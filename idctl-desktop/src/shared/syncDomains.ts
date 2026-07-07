@@ -21,7 +21,7 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^dreams:(save|remove)$/, ['dreams', 'work', 'brain']],
   [/^materials:changed$/, ['materials']],
   [/^materials:tasks$/, ['materials', 'tasks', 'work', 'dashboard', 'brain']],
-  [/^materials:autoCreateTasks$/, ['materials', 'tasks', 'work', 'dashboard', 'brain']],
+  [/^materials:(autoCreateTasks|routeLeads)$/, ['materials', 'tasks', 'work', 'dashboard', 'brain']],
   [/^materials:(save|remove|importFiles|priority|recoverStale|markRecommendation)$/, ['materials']],
   [/^materials:(process|processNext)$/, ['materials', 'brain', 'inbox']],
   [/^materials:(syncBrain|brainSync)$/, ['materials', 'brain']],

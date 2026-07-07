@@ -22,7 +22,7 @@ import { listGoals, getGoal, saveGoal, removeGoal, type Goal } from './goalstore
 import { listDreams, getDream, saveDream, removeDream, type Dream } from './dreamstore.ts';
 import { listQuestions, addQuestion, removeQuestion, type BlockerQuestion } from './questionstore.ts';
 import { resolveBrainApprovalFromInbox, syncBrainApprovalInbox } from './brainApprovalInbox.ts';
-import { autoCreatePendingLearnTasks, getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, recoverStaleMaterials, removeMaterial, saveMaterial, subscribeMaterialChanges, syncUnsyncedMaterialsToBrain, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
+import { autoCreatePendingLearnTasks, getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, recoverStaleMaterials, removeMaterial, routePendingLearnMaterials, saveMaterial, subscribeMaterialChanges, syncUnsyncedMaterialsToBrain, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
 import { generateImage, readImage, imageModels, getImageServer, detectImageServer, probeImageServer } from './images.ts';
 import { readWiki } from './wiki.ts';
 import { listLocalModelCatalog, loadSettings, mergeLocalModelCatalog, removeEvmRpc, saveSettings, setUpdateSettings, setImageServer, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
@@ -577,6 +577,11 @@ function startLearnQueueRunner(): () => void {
       if (taskBackfill.created || taskBackfill.deferred || taskBackfill.failed) {
         publishStoreChange('materials:tasks');
         recordControlAction('materials:tasks', ['background'], taskBackfill);
+      }
+      const routeBackfill = await routePendingLearnMaterials({ limit: hasQueued ? 1 : 3 });
+      if (routeBackfill.dispatched || routeBackfill.failed) {
+        publishStoreChange('materials:tasks');
+        recordControlAction('materials:routeLeads', ['background'], routeBackfill);
       }
       const remaining = listMaterials().some((m) => m.status === 'queued');
       schedule(remaining ? LEARN_QUEUE_RUNNER_DELAYS.remainingQueuedMs : LEARN_QUEUE_RUNNER_DELAYS.idleMs);
@@ -1265,6 +1270,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       });
     case 'materials:autoCreateTasks':
       return autoCreatePendingLearnTasks({ limit: Number(args[0] ?? 6) });
+    case 'materials:routeLeads':
+      return routePendingLearnMaterials({ limit: Number(args[0] ?? 3), retryMs: Number(args[1] ?? undefined) });
     case 'materials:markRecommendation': {
       const result = await markRecommendation(args[0] as string, args[1] as string, args[2] as LearnReviewState);
       kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialReadyKickMs);
