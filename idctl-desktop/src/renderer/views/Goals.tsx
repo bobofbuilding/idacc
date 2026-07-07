@@ -26,7 +26,7 @@ const STATUSES: GoalStatus[] = ['draft', 'active', 'done', 'archived'];
 const PRIORITIES: GoalPriority[] = ['primary', 'secondary', 'general'];
 const STATUS_CLASS: Record<GoalStatus, string> = { draft: 'st-paused', active: 'st-active', done: 'st-done', archived: 'st-blocked' };
 const PRIORITY_LABEL: Record<GoalPriority, string> = { primary: 'Primary', secondary: 'Secondary', general: 'General' };
-const DRIVER_DEFAULTS: GoalDriverConfig = { enabled: false, cadenceMs: 30 * 60 * 1000, maxOpenTasksPerGoal: 3 };
+const DRIVER_DEFAULTS: GoalDriverConfig = { enabled: true, cadenceMs: 15 * 60 * 1000, maxOpenTasksPerGoal: 8 };
 const CADENCES = [
   { label: '15m', value: 15 * 60 * 1000 },
   { label: '30m', value: 30 * 60 * 1000 },
@@ -191,13 +191,16 @@ export function Goals({ store }: { store: FleetStore }) {
   async function patchGoal(p: Partial<Goal>) {
     if (!detail) return;
     if (p.status && p.status !== detail.status && !window.confirm(`Change goal "${detail.title}" status to ${p.status}?\n\nThis writes the saved goal lifecycle state.`)) return;
-    if (p.autopilot === true && !detail.autopilot && !window.confirm(`Enable Autopilot for "${detail.title}"?\n\nWhen the master driver is on, this goal can spawn or sync work on its cadence.`)) return;
+    if (p.autopilot === true && !detail.autopilot && !window.confirm(`Enable Autopilot for "${detail.title}"?\n\nThis goal can sync Brain instructions and top up bounded team-lead work immediately and on the driver cadence.`)) return;
     const cur = await ensureGoalFresh(detail, `Update goal ${detail.title}`, ['updatedAt']);
     if (!cur) return;
     const next = { ...cur, ...p, updatedAt: Date.now() };
     await call('goals:save', next).catch(() => {});
     const saved = await call<Goal | null>('goals:get', next.id).catch(() => next);
     setDetail(saved ?? next);
+    if ((saved ?? next).status === 'active' && (saved ?? next).autopilot) {
+      setMsg('Autopilot queued: syncing Brain instructions and checking bounded task fanout...');
+    }
     if (aliveRef.current) await reload();
   }
   async function driverPreflight(): Promise<{ cfg: GoalDriverConfig; activeGoals: GoalSummary[] }> {
@@ -237,7 +240,7 @@ export function Goals({ store }: { store: FleetStore }) {
       `Active Autopilot goals across all teams: ${activeGoals.length}`,
       activeGoalPreview(activeGoals),
       '',
-      'This can spawn tasks or sync team instructions on the next driver run.',
+      'This can spawn tasks or sync Brain team instructions on the next driver run.',
     ].join('\n');
   }
   async function patchDriver(p: Partial<GoalDriverConfig>) {
@@ -278,7 +281,7 @@ export function Goals({ store }: { store: FleetStore }) {
       `Active Autopilot goals across all teams: ${pre.activeGoals.length}`,
       activeGoalPreview(pre.activeGoals),
       '',
-      'This can spawn task work and sync team instructions for active Autopilot goals.',
+      'This can spawn task work and sync Brain team instructions for active Autopilot goals.',
     ].join('\n'))) return;
     const fresh = await driverPreflight();
     if (driverConfigStamp(fresh.cfg) !== driverConfigStamp(pre.cfg) || goalSummaryStamp(fresh.activeGoals) !== goalSummaryStamp(pre.activeGoals)) {
@@ -287,7 +290,7 @@ export function Goals({ store }: { store: FleetStore }) {
       return;
     }
     setDriverBusy(true);
-    setMsg('running goal driver...');
+    setMsg('goal driver triggered: syncing Brain instructions and checking bounded task fanout...');
     try {
       const r = await call<GoalDriverSummary>('goalDriver:runOnce');
       if (!aliveRef.current) return;
@@ -334,7 +337,7 @@ export function Goals({ store }: { store: FleetStore }) {
             <input type="checkbox" checked={driverCfg.enabled} disabled={driverBusy} onChange={(e) => void patchDriver({ enabled: e.target.checked })} />
             <b>Autopilot master</b>
           </label>
-          <span className="muted small">Runs only for active goals with Autopilot on.</span>
+          <span className="muted small">Runs only for active goals with Autopilot on; Brain sync and bounded task fanout start immediately after trigger.</span>
           <span className="grow" />
           <label className="small muted" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
             cadence

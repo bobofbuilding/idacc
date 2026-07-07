@@ -109,6 +109,8 @@ assert.equal(result.dispatched, 2);
 assert.equal(result.deferred, 0);
 assert.deepEqual(result.errors, [], 'normal team-lead kickoff warnings should not become blocker errors');
 assert.deepEqual(result.created.map((task) => `${task.team}/${task.lead}`).sort(), ['engineering/engineering-lead', 'research/research-lead']);
+assert.ok(dispatchCommands.some((row) => row.team === 'default' && /^\/ask lead\b/.test(row.command)), 'plan decomposition should go through the primary lead by default');
+assert.ok(!dispatchCommands.some((row) => /\b(task-master|task-manager)\b/.test(row.command)), 'task-master should not be the default decomposition choke point');
 
 const creates = remoteCommands.filter((row) => /^\/task create\b/.test(row.command));
 const asks = remoteCommands.filter((row) => /^\/ask\b/.test(row.command));

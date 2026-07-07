@@ -6,8 +6,8 @@ const goaldriver = await readFile(new URL('../src/main/goaldriver.ts', import.me
 
 assert.match(
   work,
-  /planner\.kind === 'task-manager'[\s\S]*lead fallback decomposition[\s\S]*activePlanner = \{ client, agent: lead, kind: 'lead' \}/,
-  'Work decomposition should fall back from a busy task-manager to the team lead planner',
+  /WORK_USE_TASK_MANAGER_PLANNER[\s\S]*return \{ client, agent: fallbackLead, kind: 'lead' \}/,
+  'Work decomposition should use the team lead by default instead of serializing through task-manager',
 );
 assert.match(
   goaldriver,
@@ -16,8 +16,18 @@ assert.match(
 );
 assert.match(
   goaldriver,
-  /maxOpenTasksPerGoal:\s*12/,
-  'Goal driver default open-task cap should allow meaningful team-lead fanout',
+  /enabled:\s*true/,
+  'Goal driver master default should be enabled; per-goal Autopilot remains the opt-in',
+);
+assert.match(
+  goaldriver,
+  /maxOpenTasksPerGoal:\s*8/,
+  'Goal driver default open-task cap should allow bounded team-lead fanout',
+);
+assert.match(
+  goaldriver,
+  /GOAL_LEAD_OWNER_OPEN_TASK_CAP\s*=\s*4/,
+  'Goal driver should allow team leads a bounded coordination queue instead of blocking at one open task plus one query',
 );
 assert.match(
   goaldriver,
