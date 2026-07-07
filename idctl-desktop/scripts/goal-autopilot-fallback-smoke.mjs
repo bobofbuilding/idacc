@@ -74,3 +74,18 @@ assert.match(
   /via direct fanout/,
   'Goal driver metadata should explain when task creation used direct fanout',
 );
+assert.match(
+  goaldriver,
+  /function deterministicLocalGoalSubtasks/,
+  'Goal driver should seed bounded default-team work when cross-team fanout creates no live tasks',
+);
+assert.match(
+  goaldriver,
+  /cross-team team-lead fanout created no live tasks/,
+  'Goal driver should explain local fallback when team-lead fanout is capacity-blocked',
+);
+assert.match(
+  goaldriver,
+  /GOAL_LOCAL_FALLBACK_TASK_CAP\s*=\s*2/,
+  'Goal driver local fallback should stay bounded to avoid flooding default-team workers',
+);

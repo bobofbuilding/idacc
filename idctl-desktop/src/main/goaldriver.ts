@@ -13,6 +13,8 @@ import { createAndDispatchPlan, decomposeWork, isActiveStatus, type SubTask } fr
 import { getGoal, goalPriorityRank, listGoals, normalizeGoalPriority, saveGoal, type Goal } from './goalstore.ts';
 
 const GOAL_LEAD_OWNER_OPEN_TASK_CAP = 4;
+const GOAL_LOCAL_FALLBACK_TASK_CAP = 2;
+const GOAL_LOCAL_FALLBACK_OWNER_OPEN_TASK_CAP = 2;
 
 export interface GoalDriverConfig {
   enabled: boolean;
@@ -335,6 +337,27 @@ function deterministicGoalLeadSubtasks(goal: Goal, targets: GoalLeadTarget[], sl
   }));
 }
 
+function deterministicLocalGoalSubtasks(goal: Goal, agents: Agent[], lead: string, slots: number, reason: string): SubTask[] {
+  const active = agents.filter((agent) => isActiveStatus(agent.status));
+  const leadKey = agentNameKey(lead);
+  const workers = active.filter((agent) => agentNameKey(agent.name) !== leadKey);
+  const owners = (workers.length ? workers : active).slice(0, Math.max(1, Math.min(slots, GOAL_LOCAL_FALLBACK_TASK_CAP)));
+  const objective = goal.title || goal.id;
+  return owners.map((owner, index): SubTask => ({
+    title: index === 0
+      ? `Advance active goal locally: ${clip(objective, 72)}`
+      : `Validate next step for active goal: ${clip(objective, 70)}`,
+    description: [
+      `Autopilot local fallback: ${reason}`,
+      `Active goal ${goal.id}: ${objective}`,
+      'Create concrete evidence, implementation notes, or a blocker that helps the lead keep this goal moving.',
+      'If this requires another team, report the exact target team/lead and blocker instead of closing as complete.',
+    ].join('\n'),
+    agent: owner.name,
+    dependsOn: [],
+  }));
+}
+
 function goalLeadTargetForSubtask(targets: GoalLeadTarget[], st: SubTask, index: number): GoalLeadTarget {
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
   const agentKey = norm(st.agent || '');
@@ -385,6 +408,27 @@ async function createGoalLeadTasks(
   return { ok: created.length, refs: created.map((task) => task.ref).filter(Boolean) };
 }
 
+async function createLocalGoalTasks(
+  client: ManagerClient,
+  objective: string,
+  goal: Goal,
+  agents: Agent[],
+  lead: string,
+  slots: number,
+  reason: string,
+): Promise<{ ok: number; refs: string[] }> {
+  const subtasks = deterministicLocalGoalSubtasks(goal, agents, lead, slots, reason).map((st) => annotateSubtask(goal, st));
+  if (!subtasks.length) return { ok: 0, refs: [] };
+  const result = await createAndDispatchPlan(client, objective, subtasks, {
+    dispatch: true,
+    respectOwners: true,
+    ownerOpenTaskCap: GOAL_LOCAL_FALLBACK_OWNER_OPEN_TASK_CAP,
+    coordinator: lead,
+  }).catch(() => ({ created: [], dispatched: 0, deferred: 0 }));
+  const created = result.created.filter((task) => task.ok);
+  return { ok: created.length, refs: created.map((task) => task.ref).filter(Boolean) };
+}
+
 async function driveGoal(baseClient: ManagerClient, goal: Goal, cfg: GoalDriverConfig): Promise<{ spawned: number; refs: string[]; note: string }> {
   const teamClient = baseClient.withTeam(goal.team);
   const goalTeam = goal.team || baseClient.team || 'default';
@@ -420,19 +464,39 @@ async function driveGoal(baseClient: ManagerClient, goal: Goal, cfg: GoalDriverC
   }
 
   const targets = await resolveGoalLeadTargets(baseClient, goal.team);
-  if (!targets.length) return { spawned: 0, refs: [], note: 'no active non-default team leads available' };
-  const plannedSubtasks = deterministicGoalLeadSubtasks(goal, targets, slots, 'default-team Autopilot direct team-lead fanout');
-  if (!freshActiveGoalForDriver(goal)) return { spawned: 0, refs: [], note: 'goal changed or autopilot was disabled before team-lead task creation' };
+  if (targets.length) {
+    const plannedSubtasks = deterministicGoalLeadSubtasks(goal, targets, slots, 'default-team Autopilot direct team-lead fanout');
+    if (!freshActiveGoalForDriver(goal)) return { spawned: 0, refs: [], note: 'goal changed or autopilot was disabled before team-lead task creation' };
 
-  const subtasks = plannedSubtasks.slice(0, slots).map((st) => annotateSubtask(goal, st));
-  const created = await createGoalLeadTasks(baseClient, goal.content || goal.title, subtasks, targets);
-  const totalRefs = [...openRefs, ...created.refs];
+    const subtasks = plannedSubtasks.slice(0, slots).map((st) => annotateSubtask(goal, st));
+    const created = await createGoalLeadTasks(baseClient, goal.content || goal.title, subtasks, targets);
+    if (created.ok > 0) {
+      const totalRefs = [...openRefs, ...created.refs];
+      return {
+        spawned: created.ok,
+        refs: totalRefs,
+        note: `spawned ${created.ok} task(s) to team leads via direct fanout${openTagged.length ? `; ${openTagged.length} existing open goal task(s) remain` : ''}`,
+      };
+    }
+  }
+
+  if (!freshActiveGoalForDriver(goal)) return { spawned: 0, refs: [], note: 'goal changed or autopilot was disabled before local fallback task creation' };
+  const local = await createLocalGoalTasks(
+    teamClient,
+    goal.content || goal.title,
+    goal,
+    agents,
+    lead,
+    slots,
+    targets.length ? 'cross-team team-lead fanout created no live tasks' : 'no active non-default team leads available',
+  );
+  const totalRefs = [...openRefs, ...local.refs];
   return {
-    spawned: created.ok,
+    spawned: local.ok,
     refs: totalRefs,
-    note: created.ok
-      ? `spawned ${created.ok} task(s) to team leads via direct fanout${openTagged.length ? `; ${openTagged.length} existing open goal task(s) remain` : ''}`
-      : `no team-lead tasks created via direct fanout${openTagged.length ? `; ${openTagged.length} existing open goal task(s) remain` : ''}`,
+    note: local.ok
+      ? `spawned ${local.ok} local fallback task(s) after team-lead fanout produced no live work${openTagged.length ? `; ${openTagged.length} existing open goal task(s) remain` : ''}`
+      : `no team-lead or local fallback tasks created${openTagged.length ? `; ${openTagged.length} existing open goal task(s) remain` : ''}`,
   };
 }
 
