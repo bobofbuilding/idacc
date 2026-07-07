@@ -24,6 +24,7 @@ fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # repo root: …/.iacc-publish/id-agent-control-center
 export DESK="$ROOT/idctl-desktop"          # exported so the inline node helpers can read it
+export TUI="$ROOT/idctl"
 PUB="$ROOT/../release-publish.py"
 cd "$ROOT"
 
@@ -63,14 +64,26 @@ printf '▶ changelog for v%s (from %s):\n%s\n' "$VER" "${RANGE}" "$CHANGELOG_BO
 # --- 0) typecheck FIRST, before mutating anything — a failure leaves the tree pristine ---
 ( cd "$DESK" && npm run typecheck )
 
-# --- 1) bump the version in package.json + package-lock.json (first match, keep formatting) ---
+# --- 1) bump the version in package manifests + lockfile roots ---
 node -e '
-const fs = require("fs"); const [cur, ver] = process.argv.slice(1);
-for (const f of [process.env.DESK + "/package.json", process.env.DESK + "/package-lock.json"]) {
-  const s = fs.readFileSync(f, "utf8");
-  fs.writeFileSync(f, s.replace(`"version": "${cur}"`, `"version": "${ver}"`)); // String.replace = first occurrence (the top-level field)
+const fs = require("fs"); const path = require("path"); const [ver] = process.argv.slice(1);
+function updatePackageJson(file) {
+  const json = JSON.parse(fs.readFileSync(file, "utf8"));
+  json.version = ver;
+  fs.writeFileSync(file, JSON.stringify(json, null, 2) + "\n");
 }
-' "$CUR" "$VER"
+function updateLock(file) {
+  if (!fs.existsSync(file)) return;
+  const json = JSON.parse(fs.readFileSync(file, "utf8"));
+  json.version = ver;
+  if (json.packages?.[""]) json.packages[""].version = ver;
+  fs.writeFileSync(file, JSON.stringify(json, null, 2) + "\n");
+}
+for (const dir of [process.env.DESK, process.env.TUI]) {
+  updatePackageJson(path.join(dir, "package.json"));
+  updateLock(path.join(dir, "package-lock.json"));
+}
+' "$VER"
 
 # Keep the human-facing wiki in lockstep with the release: check-wiki.mjs (run above) requires
 # docs/CONTROL_CENTER_WIKI.json appVersion === package.json version + a current `updated` date.
@@ -95,6 +108,8 @@ const i = t.indexOf("## [");
 fs.writeFileSync(f, (i >= 0 ? t.slice(0, i) + entry + t.slice(i) : t + "\n" + entry));
 ' "$VER" "$CHANGELOG_BODY"
 
+node "$ROOT/scripts/validate-release-schema.mjs" --precommit "$VER"
+
 # --- 3) commit + tag + push (typecheck already passed in step 0) ---
 # Stamp the version onto the subject ourselves (the commit-msg hook is idempotent and leaves a
 # "v…"-prefixed subject untouched — so this works whether or not the hook is installed in this clone).
@@ -102,7 +117,9 @@ SUBJECT="$(printf '%s' "$CHANGELOG_BODY" | head -1 | sed -E 's/^- *//')"
 git add -A
 git commit -q -m "v$VER: $SUBJECT"
 git pull --rebase origin main   # fold in any concurrent agent pushes before we publish (fail-stops on conflict)
+node "$ROOT/scripts/validate-release-schema.mjs" --postcommit "$VER"
 git tag "v$VER"
+node "$ROOT/scripts/validate-release-schema.mjs" --publish "$VER"
 git push origin main --tags
 echo "✓ committed + tagged v$VER + pushed to origin/main"
 
