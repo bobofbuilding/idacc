@@ -52,6 +52,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'loops', label: 'Loops' },
   { id: 'dream', label: 'Dream' },
 ];
+const MANAGER_STALL_THRESHOLD_MS = 45 * 60 * 1000;
 
 function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
 function clipText(s: string, n: number): string {
@@ -1042,13 +1043,13 @@ function TasksPanel({ store }: { store: FleetStore }) {
   // Unassigned To-Do tasks the lead can triage/assign. Triage runs on the ACTIVE team's lead,
   // so in holistic view the count is scoped to the active team (avoids a misleading total).
   const unassignedTodo = tasks.filter((t) => !t.ownerName && laneOf(t) === 'todo' && (!store.viewAll || t.teamName === activeTeam)).length;
-  // Owned "doing" tasks with no status change in 30m+ → stalled (jump-startable).
+  // Owned "doing" tasks with no manager activity past the manager threshold → stalled.
   const stalledTasks = tasks.filter((t) => {
     if (colOf(t.status) !== 'doing' || !t.ownerName) return false;
     if (isBlocked(t)) return false; // a blocked task isn't stalled — it's waiting on a prerequisite
     if (isDelegatedLeadTask(t)) return false; // lead parent already delegated child work; not jump-startable
     const up = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
-    return up > 0 && Date.now() - up > 30 * 60 * 1000;
+    return up > 0 && Date.now() - up > MANAGER_STALL_THRESHOLD_MS;
   });
   // The Done lane shows RECENT completions (the most-recent N) so the board reads as a live
   // flow instead of looking empty when everything's finished. Older done tasks auto-archive
@@ -1331,12 +1332,12 @@ function TasksPanel({ store }: { store: FleetStore }) {
           const card = (t: Task) => {
             const phase = colOf(t.status);                       // todo | doing | done
             const owned = phase === 'doing' && !!t.ownerName;    // assigned + in the doing state
-            // updatedAt only changes on a status change, so "long in doing with no update" is a
-            // strong stall signal — don't claim "working" when a task has sat untouched for 30m+.
+            // updatedAt changes on task status and manager supervision, so this matches the
+            // manager's stalled-task threshold.
             const upMs = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
             const blocked = isBlocked(t);                        // waiting on a prerequisite → parked in Holding
             const delegated = owned && isDelegatedLeadTask(t);
-            const stale = owned && !blocked && !delegated && upMs > 0 && Date.now() - upMs > 30 * 60 * 1000;
+            const stale = owned && !blocked && !delegated && upMs > 0 && Date.now() - upMs > MANAGER_STALL_THRESHOLD_MS;
             const working = owned && !delegated && !stale && !blocked; // recently moved to doing → plausibly active
             const cAbs = absTime(t.createdAt);
             const uAbs = absTime(t.updatedAt);
