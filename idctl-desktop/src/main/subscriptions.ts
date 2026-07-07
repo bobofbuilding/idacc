@@ -13,7 +13,7 @@ import { shell } from 'electron';
 import { runInTerminal } from './system.ts';
 
 const execFileP = promisify(execFile);
-const SUBS_STATUS_CACHE_TTL_MS = 5 * 60_000;
+const SUBS_STATUS_CACHE_TTL_MS = 60_000;
 
 export type SubProvider = 'claude' | 'chatgpt' | 'cursor' | 'grok' | 'antigravity' | 'copilot' | 'kiro-cli' | 'q';
 
@@ -446,25 +446,33 @@ async function antigravityStatus(): Promise<SubStatus> {
   if (!cli) return notInstalled('antigravity');
   const account = googleAccountHint();
   try {
-    const { stdout, stderr } = await execFileP(cli.bin, ['models'], { env: cliEnv(), timeout: 15000 });
+    const { stdout, stderr } = await execFileP(cli.path, ['models'], { env: cliEnv(), timeout: 15000 });
     const out = `${stdout}${stderr}`.trim();
-    const loggedIn = Boolean(out) && !/not authenticated|not logged in|signed out|login required/i.test(out);
+    const models = stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && line.length <= 120 && !/token|secret|bearer|api[_-]?key/i.test(line));
+    const authError = /not authenticated|not logged in|signed out|login required/i.test(out);
+    const loggedIn = models.length > 0 && !authError;
     return baseStatus('antigravity', {
       loggedIn,
       installed: true,
       statusSupported: true,
       ...account,
       linked: account.linked && !loggedIn ? true : undefined,
-      detail: truncateDetail(out || `${cli.bin} detected at ${cli.path}`),
+      detail: loggedIn
+        ? `agy models returned ${models.length} model${models.length === 1 ? '' : 's'}: ${models.slice(0, 8).join(', ')}`
+        : truncateDetail(out || `${cli.bin} detected at ${cli.path}, but no models were returned`),
     });
   } catch (e: unknown) {
     const err = e as { stdout?: string; stderr?: string; message?: string };
+    const detail = truncateDetail(err.stdout || err.stderr || err.message || SUB_META.antigravity.statusNote || '');
     return baseStatus('antigravity', {
       installed: true,
       statusSupported: true,
       ...account,
       loggedIn: false,
-      detail: truncateDetail(err.stdout || err.stderr || err.message || SUB_META.antigravity.statusNote || ''),
+      detail: detail ? `agy models probe failed: ${detail}` : SUB_META.antigravity.statusNote,
     });
   }
 }

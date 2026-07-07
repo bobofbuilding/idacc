@@ -12,7 +12,7 @@ interface Msg {
   who: string;
   text: string;
   queryId?: string;
-  files?: { name: string; isImage: boolean }[];
+  files?: { name: string; path?: string; isImage: boolean }[];
   image?: { path: string; prompt: string; model: string };
   trace?: string[];        // the agent's OWN behind-the-scenes steps (background tasks) captured with this reply
   delegations?: string[];  // work farmed out to other agents while this reply ran
@@ -88,6 +88,63 @@ function isPlanRequest(text: string): boolean {
 }
 function stripPlanCmd(text: string): string { return text.replace(PLAN_CMD, '').trim(); }
 function newPlanId(): string { return `plan_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
+
+const CHAT_CONTEXT_CHAR_BUDGET = 60_000;
+const CHAT_CONTEXT_MESSAGE_LIMIT = 80;
+const CHAT_MESSAGE_CHAR_BUDGET = 12_000;
+
+function normalizeTranscriptText(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/[ \t]+\n/g, '\n').trim();
+}
+function transcriptLine(m: Msg): string | null {
+  if (m.pending && !m.text.trim() && !m.image) return null;
+  const text = normalizeTranscriptText(m.text || '');
+  const image = m.image ? `[generated image: ${m.image.prompt || m.image.path}]` : '';
+  const files = (m.files || [])
+    .map((f) => `- ${f.name}${f.path ? ` (${f.path})` : ''}${f.isImage ? ' [image]' : ''}`)
+    .join('\n');
+  const body = [text, image, files ? `Attached files:\n${files}` : ''].filter(Boolean).join('\n\n');
+  if (!body) return null;
+  if (m.role === 'system' && /^New chat\./i.test(body)) return null;
+  const who = m.role === 'you' ? 'user' : m.role === 'agent' ? `agent${m.who ? `:${m.who}` : ''}` : 'system';
+  return `${who}:\n${clip(body, CHAT_MESSAGE_CHAR_BUDGET)}`;
+}
+function buildChatScopedPrompt(session: Session, target: string, currentMessage: string): string {
+  const prior = (session.messages || [])
+    .slice(-CHAT_CONTEXT_MESSAGE_LIMIT)
+    .map(transcriptLine)
+    .filter((x): x is string => !!x);
+  prior.push(`user:\n${normalizeTranscriptText(currentMessage) || '(files only)'}`);
+
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = prior.length - 1; i >= 0; i--) {
+    const line = prior[i];
+    const cost = line.length + 2;
+    if (kept.length && used + cost > CHAT_CONTEXT_CHAR_BUDGET) break;
+    kept.unshift(line);
+    used += cost;
+  }
+  const omitted = prior.length - kept.length;
+  const transcript = `${omitted ? `[${omitted} older chat message(s) omitted by local context budget]\n\n` : ''}${kept.join('\n\n---\n\n')}`;
+
+  return [
+    'IDACC CHAT-SCOPED REQUEST',
+    '',
+    `Chat id: ${session.id}`,
+    `Chat title: ${session.title || '(untitled)'}`,
+    `Team: ${session.team}`,
+    `Target agent: ${target}`,
+    session.projectId ? `Project focus id: ${session.projectId}` : '',
+    '',
+    'Context rule: answer this request using only the transcript below, the explicitly attached files/paths named in it, and any project focus stated in the transcript. Do not continue or rely on other Dashboard chats, other agent conversations, old runtime memory, or unrelated manager/task context unless it is quoted in this transcript.',
+    '',
+    'Transcript:',
+    transcript,
+    '',
+    'Respond to the newest user message at the end of the transcript.',
+  ].filter(Boolean).join('\n');
+}
 
 // ---- Live "behind the scenes" feed -----------------------------------------
 // Turn raw manager events (seq > sinceSeq) into short, plain-English lines so a
@@ -750,10 +807,10 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
 
   /** Start a resumable dispatch: kick the query, persist it on the session, then
    *  poll. Errors before a query is created surface immediately. */
-  async function beginDispatch(sid: string, replyId: number, target: string, message: string, planCtx: { planRequest: boolean; planText: string }) {
+  async function beginDispatch(sid: string, replyId: number, target: string, scopedMessage: string, planCtx: { planRequest: boolean; planText: string }) {
     let start: { queryId?: string; inline?: string };
     try {
-      start = await startDispatchWithRetry(`/ask ${target} ${qArg(message)}`, replyId, sid);
+      start = await startDispatchWithRetry(`/ask ${target} ${qArg(scopedMessage)}`, replyId, sid);
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       const friendly = TRANSIENT.test(raw)
@@ -899,11 +956,12 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
         if (saved.length === 0 && !text) { setBusy(false); return; }
       }
       const message = compose(text, saved);
+      const scopedMessage = buildChatScopedPrompt(session, target, message);
       const planRequest = !!text && isPlanRequest(text);
       const myId = idRef.current++;
       const replyId = idRef.current++;
       pushMsgs(
-        { id: myId, role: 'you', who: 'you', text: text || '(files only)', files: saved.map((f) => ({ name: f.name, isImage: f.isImage })) },
+        { id: myId, role: 'you', who: 'you', text: text || '(files only)', files: saved.map((f) => ({ name: f.name, path: f.path, isImage: f.isImage })) },
         { id: replyId, role: 'agent', who: target, text: '', pending: true },
       );
       if (text) { autoTitle(text); void genTitle(sid, text); }
@@ -911,7 +969,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
       setAttachments([]);
       // 2. Hand off to the resumable dispatch — it kicks the query, commits it to
       // session.inflight (which drives the UI), and polls until a reply lands.
-      await beginDispatch(sid, replyId, target, message, { planRequest, planText: text });
+      await beginDispatch(sid, replyId, target, scopedMessage, { planRequest, planText: text });
     } finally {
       sendingRef.current = false; // inflight is now committed (or the send errored out)
     }

@@ -418,7 +418,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       }
       const label = managedSubRows.find((row) => row.key === provider)?.label ?? provider;
       const note = provider === 'antigravity'
-          ? `${label} opened from IDACC. Finish the Antigravity login flow, then Re-check if the row does not update automatically. Agent assignment remains disabled until the manager exposes an Antigravity harness.`
+          ? `${label} opened from IDACC. Finish the Antigravity login flow, then Re-check if the row does not update automatically. Assignment is available once the CLI model probe is live.`
           : `${label} account flow started from IDACC. Finish the vendor prompt/browser flow, then Re-check if the row does not update automatically.`;
       setSubNotice(note);
       setTimeout(() => void refreshManagedSubscriptions({ force: true }), 4000);

@@ -32,7 +32,7 @@ export interface ChatMessage {
   who: string;
   text: string;
   queryId?: string;
-  files?: { name: string; isImage: boolean }[];
+  files?: { name: string; path?: string; isImage: boolean }[];
   image?: { path: string; prompt: string; model: string };
 }
 export interface ChatSession {

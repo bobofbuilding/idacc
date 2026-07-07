@@ -288,6 +288,9 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     .filter((f) => f.kind === 'api' || f.kind === 'local')
     .sort((a, b) => (a.label ?? a.runtime).localeCompare(b.label ?? b.runtime));
   const selectableProviderLaneOpts = providerModelLaneOpts.filter((f) => f.selectable !== false);
+  const selectableHarnessRuntimeOpts = visibleFreshness
+    .filter((f) => (f.kind ?? 'harness') === 'harness' && f.selectable !== false)
+    .map((f) => f.runtime);
   const groupRuntimeOpts = (runtimes: string[], group: ReturnType<typeof runtimePickerGroup>) =>
     runtimes.filter((rt) => runtimePickerGroup(rt) === group);
 
@@ -562,7 +565,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     setBusy('probe runtimes');
     try {
       const nextCatalog = await call<Record<string, string[]>>('runtime:probe');
-      const nextManaged = await call<Record<string, ManagedRuntimeStatus>>('subs:status').catch(() => managedRuntimes);
+      const nextManaged = await call<Record<string, ManagedRuntimeStatus>>('subs:status', true).catch(() => managedRuntimes);
       const nextFreshness = await call<RuntimeFreshness[]>('runtime:freshness').catch(() => freshness);
       setCatalog(nextCatalog);
       setManagedRuntimes(nextManaged);
@@ -668,7 +671,11 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     const isLocal = (a.type ?? '') === 'claude' || RUNTIMES.includes(currentRuntime ?? '');
     const currentProviderLane = currentRuntime?.startsWith('provider:') ? currentRuntime : undefined;
     const currentHarness = currentProviderLane ? undefined : currentRuntime;
-    const runtimeOpts = Array.from(new Set([currentHarness, ...offerableRuntimes(providers, currentHarness, Object.values(managedRuntimes))].filter(Boolean))) as string[];
+    const runtimeOpts = Array.from(new Set([
+      currentHarness,
+      ...offerableRuntimes(providers, currentHarness, Object.values(managedRuntimes)),
+      ...selectableHarnessRuntimeOpts,
+    ].filter(Boolean))) as string[];
     const subscriptionRuntimeOpts = groupRuntimeOpts(runtimeOpts, 'subscription');
     const localRuntimeOpts = groupRuntimeOpts(runtimeOpts, 'local');
     const providerLaneOpts = selectableProviderLaneOpts.filter((f) => f.runtime !== currentProviderLane);

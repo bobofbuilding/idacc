@@ -381,8 +381,22 @@ async function previewProjectsSync(rootArg?: string): Promise<{
 
 type CliModelRuntime = 'grok' | 'antigravity';
 type CliModelCacheEntry = { at: number; models: string[] };
-const LIVE_CLI_MODEL_TIMEOUT_MS = 4000;
+const LIVE_CLI_MODEL_TIMEOUT_MS = 15_000;
 const cliModelCache = new Map<CliModelRuntime, CliModelCacheEntry>();
+
+function cliEnv(): NodeJS.ProcessEnv {
+  const home = homedir();
+  const dirs = [
+    `${home}/.local/bin`,
+    `${home}/.grok/bin`,
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    ...(process.env.PATH ? process.env.PATH.split(':') : []),
+  ];
+  return { ...process.env, PATH: Array.from(new Set(dirs)).join(':') };
+}
 
 function codexModelsFromCache(): string[] {
   try {
@@ -399,7 +413,7 @@ function codexModelsFromCache(): string[] {
 
 function cachedCliModels(runtime: CliModelRuntime, refresh: boolean, load: () => string[]): string[] {
   const cached = cliModelCache.get(runtime);
-  if (!refresh) return cached?.models ?? [];
+  if (cached && !refresh) return cached.models;
   try {
     const models = load();
     cliModelCache.set(runtime, { at: Date.now(), models });
@@ -421,6 +435,7 @@ function grokModelsFromCli(refresh = false): string[] {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: LIVE_CLI_MODEL_TIMEOUT_MS,
+      env: cliEnv(),
     });
     if (!/available models/i.test(stdout) || /not authenticated|not logged in|signed out|login required/i.test(stdout)) return [];
     return stdout
@@ -438,6 +453,7 @@ function antigravityModelsFromCli(refresh = false): string[] {
           encoding: 'utf8',
           stdio: ['pipe', 'pipe', 'pipe'],
           timeout: LIVE_CLI_MODEL_TIMEOUT_MS,
+          env: cliEnv(),
         });
         if (!stdout.trim() || /not authenticated|not logged in|signed out|login required/i.test(stdout)) continue;
         const models = stdout
@@ -537,11 +553,13 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
     }
     if (rt === 'grok') {
       const live = (grokInfo?.models.length ?? 0) > 0;
-      return { runtime: rt, kind: 'harness', models, count: models.length, source: live ? 'grok-cli' : 'curated', lastCheckedMs: live ? grokInfo?.at ?? null : null, selectable, detail: unavailableDetail };
+      const canRun = selectable || live;
+      return { runtime: rt, kind: 'harness', models, count: models.length, source: live ? 'grok-cli' : 'curated', lastCheckedMs: live ? grokInfo?.at ?? null : null, selectable: canRun, detail: canRun ? undefined : unavailableDetail };
     }
     if (rt === 'antigravity') {
       const live = (antigravityInfo?.models.length ?? 0) > 0;
-      return { runtime: rt, kind: 'harness', models, count: models.length, source: live ? 'antigravity-cli' : 'curated', lastCheckedMs: live ? antigravityInfo?.at ?? null : null, selectable, detail: unavailableDetail };
+      const canRun = selectable || live;
+      return { runtime: rt, kind: 'harness', models, count: models.length, source: live ? 'antigravity-cli' : 'curated', lastCheckedMs: live ? antigravityInfo?.at ?? null : null, selectable: canRun, detail: canRun ? undefined : unavailableDetail };
     }
     const p = providerFor(rt);
     if (p) return { runtime: rt, kind: 'harness', models, count: models.length, source: 'provider', provider: p.name, lastCheckedMs: p.lastSync?.at ?? null, selectable, detail: unavailableDetail };
@@ -633,6 +651,9 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
   const availableHarnesses = settingsAvailableRuntimeSet(providers, managed);
   const providerLanes = new Map(buildProviderModelLanes(providers).map((lane) => [lane.id, lane]));
   const refreshedCatalog = runtimeCatalogWithLiveCliModels();
+  for (const rt of ['grok', 'antigravity']) {
+    if ((refreshedCatalog[rt] ?? []).length > 0) availableHarnesses.add(rt);
+  }
   const rows = rowsIn.map((row): RuntimeAssignmentCheck => {
     if (!row.runtime) {
       return { name: row.name, runtime: '', label: 'None', model: row.model || undefined, ok: false, detail: 'No runtime selected.', source: 'harness', modelCount: 0 };
