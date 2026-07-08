@@ -23,6 +23,15 @@ assert.ok(
   'Plan delegation failures should surface a specific live-delegation blocker',
 );
 assert.ok(
+  plans.includes('audit preflight skipped; delegation continues') &&
+  plans.includes('blocker preflight skipped; continuing to delegation'),
+  'Audit/blocker preflight transport failures should stay local and continue to delegation',
+);
+assert.ok(
+  !plans.includes("key: 'audit-preflight'") && !plans.includes("key: 'blocker-preflight'"),
+  'Audit/blocker preflight transport failures should not create user Inbox recovery cards',
+);
+assert.ok(
   inbox.includes('async function resolvePlanQuestion('),
   'Inbox should resolve Work > Plans recovery decisions locally instead of routing them to the lead',
 );
@@ -47,10 +56,8 @@ assert.ok(
   'Plan recovery blockers should use a stable dedupe key instead of embedding transient error text',
 );
 assert.ok(
-  plans.includes("key: 'audit-preflight'") &&
-  plans.includes("key: 'blocker-preflight'") &&
   plans.includes("key: 'team-lead-delegation'"),
-  'Plan blocker decisions should dedupe by failed phase instead of raw transport/capacity error text',
+  'Plan blocker decisions should dedupe live delegation failures by failed phase instead of raw transport/capacity error text',
 );
 
 console.log('plans Inbox recovery guard ok');

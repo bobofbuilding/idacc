@@ -89,7 +89,7 @@ function presentQuestion(q: BlockerQuestion): QuestionPresentation {
     title: failedBeforeDelegation ? 'Plan delegation needs a recovery pass' : 'Plan needs your decision',
     detail: `Plan: ${planTitle}`,
     recommendation: failedBeforeDelegation
-      ? `Recommended: retry the work pass. If the planner/preflight agent fails again, the current build creates bounded coordination tasks for active team leads and records the skipped review here. Technical reason: ${planRecoveryReason(q)}`
+      ? `Recommended: retry the work pass. If planner delegation fails again, the current build creates bounded coordination tasks for active team leads and records unresolved delegation here. Technical reason: ${planRecoveryReason(q)}`
       : planRecoveryReason(q),
     actions: relabeled,
     raw: q.question,

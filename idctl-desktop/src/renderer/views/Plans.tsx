@@ -305,13 +305,7 @@ export function Plans({ store }: { store: FleetStore }) {
       reply = okContent(await call<string>('dispatch', `/ask ${who} ${qArg(AUDIT_PROMPT(baseline.title, got?.content ?? ''))}`));
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      await relayPlanBlocker(baseline, `Work > Plans could not complete the audit preflight for "${baseline.title}". Delegation will continue, but review the plan status manually. ${reason}`, {
-        agent: who,
-        key: 'audit-preflight',
-        options: ['Review plan status', 'Retry work pass', 'Hold this plan'],
-        metadata: { phase: 'audit-preflight', reason },
-      });
-      if (aliveRef.current) setAudit((m) => ({ ...m, [baseline.file]: { summary: `audit preflight failed: ${reason}` } }));
+      if (aliveRef.current) setAudit((m) => ({ ...m, [baseline.file]: { summary: `audit preflight skipped; delegation continues: ${reason}` } }));
       return { text: `audit skipped: ${reason}`, summary: reason };
     }
     const a = reply.indexOf('{'); const b = reply.lastIndexOf('}');
@@ -340,13 +334,7 @@ export function Plans({ store }: { store: FleetStore }) {
       reply = okContent(await call<string>('dispatch', `/ask ${who} ${qArg(BLOCKERS_PROMPT(baseline.title, got?.content ?? ''))}`));
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      await relayPlanBlocker(baseline, `Work > Plans could not complete the blocker preflight for "${baseline.title}". Delegation will continue, but unresolved blocker review may still be needed. ${reason}`, {
-        agent: who,
-        key: 'blocker-preflight',
-        options: ['Review blockers manually', 'Retry work pass', 'Hold this plan'],
-        metadata: { phase: 'blocker-preflight', reason },
-      });
-      if (aliveRef.current) setBlockers((m) => ({ ...m, [baseline.file]: `preflight failed -> Inbox; continuing` }));
+      if (aliveRef.current) setBlockers((m) => ({ ...m, [baseline.file]: `blocker preflight skipped; continuing to delegation` }));
       return { text: `blocker scan skipped: ${reason}`, added: 0 };
     }
     // Route anything needing the USER to the Inbox as a decision (option or comment),
