@@ -124,6 +124,25 @@ npm run status     # one‑shot, scriptable snapshot (no TTY needed)
 > The two packages live as **siblings** in this repo on purpose: `idctl-desktop`
 > imports the shared backend from `../idctl/src/…`. Keep them side‑by‑side.
 
+### Install or update the manager source alongside a project
+
+If you want a local manager checkout that matches the maintained IDACC-compatible
+fork, use the guarded installer:
+
+```bash
+node scripts/install-id-agents-manager.mjs --project-dir ~/Projects/idacc-stack
+```
+
+This installs or fast-forwards `~/Projects/idacc-stack/id-agents` from
+`https://github.com/bobofbuilding/id-agents.git`. It refuses to overwrite a
+non-empty non-git folder, refuses dirty worktrees, refuses foreign remotes unless
+you pass `--allow-foreign`, and uses `git merge --ff-only` so local commits are
+not rewritten. Preview first with:
+
+```bash
+node scripts/install-id-agents-manager.mjs --project-dir ~/Projects/idacc-stack --dry-run
+```
+
 ### Configuration
 
 | Env var | Default | Purpose |

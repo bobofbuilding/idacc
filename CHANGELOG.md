@@ -8,6 +8,9 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.623] — 2026-07-08
+- Add guarded ID Agents manager source installer
+
 ## [0.1.622] — 2026-07-08
 - Add guarded Identity contract console
 
