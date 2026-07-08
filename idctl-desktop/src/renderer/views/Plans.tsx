@@ -179,13 +179,21 @@ export function Plans({ store }: { store: FleetStore }) {
   }
 
   // ---- per-brain-plan actions ----
-  const [busyFile, setBusyFile] = useState<string | null>(null); // one brain-plan action at a time
+  const busyFilesRef = useRef<Set<string>>(new Set());
+  const [busyFiles, setBusyFiles] = useState<Set<string>>(() => new Set());
   const [audit, setAudit] = useState<Record<string, { from?: string; to?: string; summary: string }>>({});
   const [blockers, setBlockers] = useState<Record<string, string>>({});
   type StatusWrite = { ok: boolean; from?: string; to?: string; error?: string; stale?: boolean; current?: { status?: string; mtime?: number } };
   const changedText = (before: string | number | undefined, after: string | number | undefined) => `${String(before || 'none')} -> ${String(after || 'none')}`;
   function brainStamp(p: BrainPlan): Record<BrainPlanField, string | number | undefined> {
     return { title: p.title, status: p.status ?? '', mtime: p.mtime };
+  }
+  function setBrainPlanBusy(file: string, busy: boolean) {
+    const next = new Set(busyFilesRef.current);
+    if (busy) next.add(file);
+    else next.delete(file);
+    busyFilesRef.current = next;
+    if (aliveRef.current) setBusyFiles(next);
   }
   async function ensureBrainPlanFresh(p: BrainPlan, action: string, fields: BrainPlanField[] = ['title', 'status', 'mtime'], quiet = false): Promise<BrainPlan | null> {
     const current = (await call<BrainPlansResp>('brain:plans').catch(() => ({ dir: null, plans: [] }))).plans.find((x) => x.file === p.file) ?? null;
@@ -266,14 +274,15 @@ export function Plans({ store }: { store: FleetStore }) {
     const currentKey = brainStatusKey(fresh.status);
     if (action && currentKey === action.key) { setMsg(`"${fresh.title}" is already ${brainStatusLabel(action.key).toLowerCase()}`); return; }
     if (!window.confirm(`${action?.label ?? 'Update status'} for "${fresh.title}"?\n\nThis writes the live brain plan status to ${brainStatusLabel(action?.key ?? brainStatusKey(status))} and will ${action?.confirm ?? 'update the plan lifecycle state'}.`)) return;
-    setBusyFile(fresh.file); setMsg(`${action?.label ?? 'Updating status'} for "${fresh.title}"...`);
+    if (busyFilesRef.current.has(fresh.file)) { setMsg(`"${fresh.title}" is already being updated`); return; }
+    setBrainPlanBusy(fresh.file, true); setMsg(`${action?.label ?? 'Updating status'} for "${fresh.title}"...`);
     try {
       const res = await writeBrainStatus(fresh, status, action?.label ?? 'Update status');
       if (aliveRef.current) setMsg(res.ok ? `"${fresh.title}" ${res.from} -> ${res.to}` : `failed: ${res.error ?? 'n/a'}`);
     } catch (e) {
       if (aliveRef.current) setMsg(e instanceof Error ? e.message : String(e));
     } finally {
-      if (aliveRef.current) setBusyFile(null);
+      setBrainPlanBusy(fresh.file, false);
     }
   }
 
@@ -600,11 +609,12 @@ export function Plans({ store }: { store: FleetStore }) {
   }
   // One button → all three phases, single live toast.
   async function runWork(p: BrainPlan) {
-    if (busyFile) return;
+    if (busyFilesRef.current.has(p.file)) return;
     const fresh = await ensureBrainPlanFresh(p, `Work ${p.title}`);
     if (!fresh) return;
     if (!window.confirm(`Work plan "${fresh.title}" now?\n\nThis audits the true status, pauses on blockers with Inbox questions, or creates a tracked objective plus manager-backed lead task for remaining work.`)) return;
-    setBusyFile(fresh.file);
+    if (busyFilesRef.current.has(fresh.file)) return;
+    setBrainPlanBusy(fresh.file, true);
     const t = toast({ kind: 'progress', text: `Working “${fresh.title}” — auditing status…` });
     try {
       const a = await auditCore(fresh);
@@ -643,7 +653,7 @@ export function Plans({ store }: { store: FleetStore }) {
       });
       t.update({ kind: 'error', text: `“${fresh.title}” work failed: ${m}` });
       if (aliveRef.current) setMsg(`work failed: ${m}`);
-    } finally { if (aliveRef.current) setBusyFile(null); }
+    } finally { setBrainPlanBusy(fresh.file, false); }
   }
 
   async function open(id: string) {
@@ -814,12 +824,13 @@ export function Plans({ store }: { store: FleetStore }) {
     return acc;
   }, {} as Record<BrainStatusKey, number>);
   const nextWorkPlan =
-    brainActive.find((p) => brainStatusKey(p.status) === 'pending')
-    ?? brainActive.find((p) => brainStatusKey(p.status) === 'partial')
-    ?? brainActive.find((p) => brainStatusKey(p.status) === 'hold')
+    brainActive.find((p) => brainStatusKey(p.status) === 'pending' && !busyFiles.has(p.file))
+    ?? brainActive.find((p) => brainStatusKey(p.status) === 'partial' && !busyFiles.has(p.file))
+    ?? brainActive.find((p) => brainStatusKey(p.status) === 'hold' && !busyFiles.has(p.file))
     ?? null;
+  const busyPlanCount = busyFiles.size;
   async function runNextPlan() {
-    if (!nextWorkPlan) { setMsg('no pending, partial, or paused plans match the current filters'); return; }
+    if (!nextWorkPlan) { setMsg(busyPlanCount ? 'all matching pending, partial, or paused plans are already running' : 'no pending, partial, or paused plans match the current filters'); return; }
     await runWork(nextWorkPlan);
   }
 
@@ -835,7 +846,7 @@ export function Plans({ store }: { store: FleetStore }) {
 
   const brainCard = (p: BrainPlan) => {
     const isOpen = brainOpen === p.file;
-    const acting = busyFile === p.file;
+    const acting = busyFiles.has(p.file);
     const key = brainStatusKey(p.status);
     const workLabel = key === 'hold' ? 'Resume & work' : key === 'partial' ? 'Continue work' : 'Work';
     return (
@@ -852,10 +863,10 @@ export function Plans({ store }: { store: FleetStore }) {
             {p.mtime ? <span className="muted small" title={`file last modified ${abs(p.mtime)}`}>updated {ago(p.mtime)}</span> : null}
           </div>
           <div className="plan-row-actions" onClick={(e) => e.stopPropagation()}>
-          <button className="btn small primary" disabled={busyFile !== null}
+          <button className="btn small primary" disabled={acting}
             title="Audit this plan, pause on blockers with Inbox questions, or delegate remaining work and mark it partial."
             onClick={() => void runWork(p)}>{acting ? 'Working...' : workLabel}</button>
-          <select className="cell-select small" value="" disabled={busyFile !== null} title="Write a guarded live brain-plan status" onChange={(e) => {
+          <select className="cell-select small" value="" disabled={acting} title="Write a guarded live brain-plan status" onChange={(e) => {
             const status = e.target.value as BrainStatusWrite;
             e.currentTarget.value = '';
             if (status) void applyBrainStatus(p, status);
@@ -1051,8 +1062,8 @@ export function Plans({ store }: { store: FleetStore }) {
               ? <span className="muted small mono plan-path" title={brain.dir}>{brain.dir.replace(/^.*\/projects\//, '…/')}</span>
               : <span className="warn-text small">brain plans dir not found</span>}
           </div>
-          <button className="btn small primary" disabled={busyFile !== null || !nextWorkPlan} title={nextWorkPlan ? `Work next matching plan: ${nextWorkPlan.title}` : 'No pending, partial, or paused plan matches the current filters'} onClick={() => void runNextPlan()}>
-            {busyFile ? 'Working...' : nextWorkPlan ? 'Work next' : 'No work queued'}
+          <button className="btn small primary" disabled={!nextWorkPlan} title={nextWorkPlan ? `Work next matching plan: ${nextWorkPlan.title}` : busyPlanCount ? 'All matching pending, partial, or paused plans are already running' : 'No pending, partial, or paused plan matches the current filters'} onClick={() => void runNextPlan()}>
+            {nextWorkPlan ? (busyPlanCount ? `Work next (${busyPlanCount} running)` : 'Work next') : busyPlanCount ? `Working ${busyPlanCount}` : 'No work queued'}
           </button>
         </div>
         {brain.plans.length === 0 ? (
