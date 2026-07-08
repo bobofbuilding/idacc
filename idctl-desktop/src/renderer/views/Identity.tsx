@@ -7,6 +7,27 @@ import type { EvmRpcKeySource, EvmRpcProfile } from '../../../../idctl/src/setti
 type EvidenceState = 'verified' | 'warn' | 'missing' | 'self';
 type IdentityAgent = TeamAgent;
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
+type ContractExecutionState = 'idle' | 'warn' | 'ready' | 'submitted';
+
+const AGENT_BITTREES_SAFE_ENS = 'agent.bittrees.eth';
+const AGENT_BITTREES_SAFE_ADDRESS = '0x8A6445277b81b9dC27ef248aB25b53e6b255Cfb8';
+const EXECUTION_CHAINS = [
+  { chainId: 1, hex: '0x1', name: 'Ethereum mainnet' },
+  { chainId: 8453, hex: '0x2105', name: 'Base' },
+  { chainId: 11155111, hex: '0xaa36a7', name: 'Ethereum Sepolia' },
+  { chainId: 84532, hex: '0x14a34', name: 'Base Sepolia' },
+] as const;
+
+interface EthereumProvider {
+  request<T = unknown>(args: { method: string; params?: unknown[] }): Promise<T>;
+}
+
+interface ContractSimulation {
+  ok: boolean;
+  stamp: string;
+  message: string;
+  preview: string;
+}
 
 interface ControllerProof {
   agent: string;
@@ -114,6 +135,87 @@ function identityValue(
 
 function isEthAddress(value: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(value.trim());
+}
+
+function sameAddress(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+function isHexCalldata(value: string): boolean {
+  return /^0x(?:[0-9a-fA-F]{2})*$/.test(value.trim());
+}
+
+function normalizeTxData(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : '0x';
+}
+
+function parseWei(value: string): bigint | null {
+  const trimmed = value.trim();
+  if (!/^(0|[1-9][0-9]*)$/.test(trimmed)) return null;
+  try {
+    return BigInt(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function weiToHex(value: string): string | null {
+  const wei = parseWei(value);
+  return wei == null ? null : `0x${wei.toString(16)}`;
+}
+
+function getEthereumProvider(): EthereumProvider | null {
+  return ((window as Window & { ethereum?: EthereumProvider }).ethereum) ?? null;
+}
+
+function chainByHex(hex: string): (typeof EXECUTION_CHAINS)[number] | undefined {
+  return EXECUTION_CHAINS.find((chain) => chain.hex.toLowerCase() === hex.trim().toLowerCase());
+}
+
+function executionStamp(chainHex: string, account: string, to: string, data: string, valueWei: string): string {
+  return JSON.stringify({
+    chainHex: chainHex.toLowerCase(),
+    from: account.toLowerCase(),
+    safe: AGENT_BITTREES_SAFE_ADDRESS.toLowerCase(),
+    to: to.trim().toLowerCase(),
+    data: normalizeTxData(data).toLowerCase(),
+    valueWei: valueWei.trim(),
+  });
+}
+
+function formatExecutionPreview(chainHex: string, account: string, to: string, data: string, valueWei: string): string {
+  const chain = chainByHex(chainHex);
+  return JSON.stringify({
+    chain: chain ? `${chain.name} (${chain.hex})` : chainHex,
+    safeEns: AGENT_BITTREES_SAFE_ENS,
+    from: account || 'not connected',
+    requiredSafe: AGENT_BITTREES_SAFE_ADDRESS,
+    to: to.trim() || 'not set',
+    valueWei: valueWei.trim() || '0',
+    data: normalizeTxData(data),
+  }, null, 2);
+}
+
+function contractValidationErrors(
+  account: string,
+  providerChain: string,
+  requiredChain: string,
+  to: string,
+  data: string,
+  valueWei: string,
+): string[] {
+  const errors: string[] = [];
+  const normalizedData = normalizeTxData(data);
+  if (!account) errors.push('Connect wallet/Safe first.');
+  else if (!sameAddress(account, AGENT_BITTREES_SAFE_ADDRESS)) errors.push(`Connected account must be ${AGENT_BITTREES_SAFE_ENS} (${AGENT_BITTREES_SAFE_ADDRESS}).`);
+  if (!chainByHex(requiredChain)) errors.push('Choose a supported chain.');
+  if (!providerChain) errors.push('Wallet chain is not available.');
+  else if (providerChain.toLowerCase() !== requiredChain.toLowerCase()) errors.push(`Wallet chain must match ${chainByHex(requiredChain)?.name ?? requiredChain}.`);
+  if (!isEthAddress(to)) errors.push('Contract target must be a 20-byte 0x address.');
+  if (!isHexCalldata(normalizedData)) errors.push('Calldata must be 0x-prefixed even-length hex.');
+  if (weiToHex(valueWei) == null) errors.push('Value must be a non-negative integer in wei.');
+  return errors;
 }
 
 function providerWalletFromMetadata(metadata: unknown): string {
@@ -514,6 +616,16 @@ export function Identity({ store }: { store: FleetStore }) {
   const [legacyKeys, setLegacyKeys] = useState<LegacyKeyAuthority[]>([]);
   const [brainControllers, setBrainControllers] = useState<BrainControllerReport>(null);
   const [evmRpcs, setEvmRpcs] = useState<EvmRpcRow[]>([]);
+  const [contractAccount, setContractAccount] = useState('');
+  const [contractChain, setContractChain] = useState<(typeof EXECUTION_CHAINS)[number]['hex']>('0x2105');
+  const [providerChain, setProviderChain] = useState('');
+  const [contractTo, setContractTo] = useState('');
+  const [contractData, setContractData] = useState('0x');
+  const [contractValue, setContractValue] = useState('0');
+  const [contractConfirmed, setContractConfirmed] = useState(false);
+  const [contractBusy, setContractBusy] = useState(false);
+  const [contractSimulation, setContractSimulation] = useState<ContractSimulation | null>(null);
+  const [contractMessage, setContractMessage] = useState('Connect a wallet or Safe to prepare a guarded transaction.');
 
   const identityAgents = useMemo(() => {
     const all = store.allAgents.length ? store.allAgents : store.agents.map((a) => ({ ...a, team: store.team ?? 'default' }));
@@ -556,6 +668,20 @@ export function Identity({ store }: { store: FleetStore }) {
   const enabledRpcs = useMemo(() => evmRpcs.filter((rpc) => rpc.enabled !== false), [evmRpcs]);
   const availableRpcs = enabledRpcs.filter((rpc) => rpc.lastRequest?.status === 'available');
   const keyOperational = Boolean(caps?.live && acct?.deployed && activeSessionCount > 0);
+  const contractStamp = useMemo(
+    () => executionStamp(contractChain, contractAccount, contractTo, contractData, contractValue),
+    [contractAccount, contractChain, contractData, contractTo, contractValue],
+  );
+  const contractInputErrors = useMemo(
+    () => contractValidationErrors(contractAccount, providerChain, contractChain, contractTo, contractData, contractValue),
+    [contractAccount, contractChain, contractData, contractTo, contractValue, providerChain],
+  );
+  const contractSimulationFresh = Boolean(contractSimulation?.ok && contractSimulation.stamp === contractStamp);
+  const contractCanSubmit = contractInputErrors.length === 0 && contractSimulationFresh && contractConfirmed && !contractBusy;
+  const contractPreview = contractSimulation?.stamp === contractStamp
+    ? contractSimulation.preview
+    : formatExecutionPreview(contractChain, contractAccount, contractTo, contractData, contractValue);
+  const contractExecutionState: ContractExecutionState = contractSimulationFresh && contractConfirmed ? 'ready' : contractInputErrors.length ? 'warn' : 'idle';
   const brainSelectedController = useMemo(() => brainControllerForAgent(brainControllers, selAgent, duplicateNames), [brainControllers, selAgent, duplicateNames]);
   const brainControllerMatches = useMemo(
     () => identityAgents.map((agent) => brainControllerForAgent(brainControllers, agent, duplicateNames)),
@@ -1005,6 +1131,165 @@ export function Identity({ store }: { store: FleetStore }) {
     }
   }
 
+  async function connectContractWallet() {
+    setContractBusy(true);
+    setContractMessage('Requesting wallet/Safe connection...');
+    try {
+      const provider = getEthereumProvider();
+      if (!provider) {
+        setContractMessage('No EIP-1193 wallet or Safe provider is available in this window.');
+        return;
+      }
+      const accounts = await provider.request<string[]>({ method: 'eth_requestAccounts' });
+      const chain = await provider.request<string>({ method: 'eth_chainId' });
+      const account = accounts.find((row) => typeof row === 'string' && isEthAddress(row)) ?? '';
+      setContractAccount(account);
+      setProviderChain(typeof chain === 'string' ? chain : '');
+      setContractSimulation(null);
+      setContractConfirmed(false);
+      const errors = contractValidationErrors(account, typeof chain === 'string' ? chain : '', contractChain, contractTo, contractData, contractValue);
+      setContractMessage(errors.length ? errors.join(' ') : 'Wallet/Safe connection is ready for simulation.');
+    } catch (err) {
+      setContractMessage(err instanceof Error ? err.message : 'Wallet/Safe connection failed.');
+    } finally {
+      setContractBusy(false);
+    }
+  }
+
+  async function switchContractChain() {
+    setContractBusy(true);
+    setContractMessage(`Requesting switch to ${chainByHex(contractChain)?.name ?? contractChain}...`);
+    try {
+      const provider = getEthereumProvider();
+      if (!provider) {
+        setContractMessage('No EIP-1193 wallet or Safe provider is available in this window.');
+        return;
+      }
+      await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: contractChain }] });
+      const chain = await provider.request<string>({ method: 'eth_chainId' });
+      setProviderChain(typeof chain === 'string' ? chain : '');
+      setContractSimulation(null);
+      setContractConfirmed(false);
+      setContractMessage(typeof chain === 'string' && chain.toLowerCase() === contractChain.toLowerCase() ? 'Wallet chain matches the guarded transaction.' : 'Wallet chain did not switch; review wallet/Safe state.');
+    } catch (err) {
+      setContractMessage(err instanceof Error ? err.message : 'Chain switch was rejected or failed.');
+    } finally {
+      setContractBusy(false);
+    }
+  }
+
+  async function simulateContractExecution() {
+    setContractBusy(true);
+    setContractMessage('Running wallet/Safe simulation...');
+    try {
+      const provider = getEthereumProvider();
+      if (!provider) {
+        setContractMessage('No EIP-1193 wallet or Safe provider is available in this window.');
+        return;
+      }
+      const accounts = await provider.request<string[]>({ method: 'eth_accounts' });
+      const chain = await provider.request<string>({ method: 'eth_chainId' });
+      const account = accounts.find((row) => typeof row === 'string' && isEthAddress(row)) ?? contractAccount;
+      const chainHex = typeof chain === 'string' ? chain : '';
+      setContractAccount(account);
+      setProviderChain(chainHex);
+      const errors = contractValidationErrors(account, chainHex, contractChain, contractTo, contractData, contractValue);
+      if (errors.length) {
+        setContractSimulation(null);
+        setContractMessage(errors.join(' '));
+        return;
+      }
+      const value = weiToHex(contractValue);
+      if (value == null) {
+        setContractSimulation(null);
+        setContractMessage('Value must be a non-negative integer in wei.');
+        return;
+      }
+      const tx = {
+        from: AGENT_BITTREES_SAFE_ADDRESS,
+        to: contractTo.trim(),
+        data: normalizeTxData(contractData),
+        value,
+      };
+      const result = await provider.request<string>({ method: 'eth_call', params: [tx, 'latest'] });
+      const stamp = executionStamp(contractChain, account, contractTo, contractData, contractValue);
+      setContractSimulation({
+        ok: true,
+        stamp,
+        message: 'Simulation passed.',
+        preview: `${formatExecutionPreview(contractChain, account, contractTo, contractData, contractValue)}\n\neth_call result:\n${String(result)}`,
+      });
+      setContractConfirmed(false);
+      setContractMessage('Simulation passed. Review the preview and confirm before submit.');
+    } catch (err) {
+      const stamp = executionStamp(contractChain, contractAccount, contractTo, contractData, contractValue);
+      const message = err instanceof Error ? err.message : 'Simulation failed.';
+      setContractSimulation({
+        ok: false,
+        stamp,
+        message,
+        preview: `${formatExecutionPreview(contractChain, contractAccount, contractTo, contractData, contractValue)}\n\neth_call error:\n${message}`,
+      });
+      setContractConfirmed(false);
+      setContractMessage(`Simulation failed: ${message}`);
+    } finally {
+      setContractBusy(false);
+    }
+  }
+
+  async function submitContractExecution() {
+    setContractBusy(true);
+    setContractMessage('Checking guarded submit state...');
+    try {
+      const provider = getEthereumProvider();
+      if (!provider) {
+        setContractMessage('No EIP-1193 wallet or Safe provider is available in this window.');
+        return;
+      }
+      const accounts = await provider.request<string[]>({ method: 'eth_accounts' });
+      const chain = await provider.request<string>({ method: 'eth_chainId' });
+      const account = accounts.find((row) => typeof row === 'string' && isEthAddress(row)) ?? contractAccount;
+      const chainHex = typeof chain === 'string' ? chain : '';
+      setContractAccount(account);
+      setProviderChain(chainHex);
+      const errors = contractValidationErrors(account, chainHex, contractChain, contractTo, contractData, contractValue);
+      if (errors.length) {
+        setContractMessage(errors.join(' '));
+        return;
+      }
+      const stamp = executionStamp(contractChain, account, contractTo, contractData, contractValue);
+      if (!contractSimulation?.ok || contractSimulation.stamp !== stamp) {
+        setContractMessage('Run a successful simulation for the current transaction before submit.');
+        return;
+      }
+      if (!contractConfirmed) {
+        setContractMessage('Human confirmation is required before wallet/Safe approval.');
+        return;
+      }
+      const value = weiToHex(contractValue);
+      if (value == null) {
+        setContractMessage('Value must be a non-negative integer in wei.');
+        return;
+      }
+      if (!window.confirm(`Submit guarded transaction through ${AGENT_BITTREES_SAFE_ENS}?\n\nTarget: ${contractTo.trim()}\nValue: ${contractValue.trim()} wei\nChain: ${chainByHex(contractChain)?.name ?? contractChain}\n\nThe wallet/Safe must still approve before anything is broadcast.`)) return;
+      const hash = await provider.request<string>({
+        method: 'eth_sendTransaction',
+        params: [{
+          from: AGENT_BITTREES_SAFE_ADDRESS,
+          to: contractTo.trim(),
+          data: normalizeTxData(contractData),
+          value,
+        }],
+      });
+      setContractMessage(`Wallet/Safe submitted transaction ${hash}.`);
+      setContractConfirmed(false);
+    } catch (err) {
+      setContractMessage(err instanceof Error ? err.message : 'Wallet/Safe submit failed or was rejected.');
+    } finally {
+      setContractBusy(false);
+    }
+  }
+
   async function runProcessAction(action = nextProcessStep?.action) {
     switch (action) {
       case 'provision':
@@ -1284,6 +1569,117 @@ export function Identity({ store }: { store: FleetStore }) {
                     </div>
                   ) : null}
                 </div>
+              </section>
+
+              <section className="card identity-contract-console" role="status">
+                <div className="identity-legacy-head">
+                  <h3>Guarded Contract Execution</h3>
+                  <StatusPill state={contractExecutionState === 'ready' ? 'verified' : contractInputErrors.length ? 'warn' : 'missing'} />
+                </div>
+                <p className="muted small">
+                  Safe: <span className="mono">{AGENT_BITTREES_SAFE_ENS}</span> <span className="mono">{AGENT_BITTREES_SAFE_ADDRESS}</span>. IDACC prepares a wallet/Safe transaction only after simulation and human confirmation.
+                </p>
+                <div className="identity-contract-grid">
+                  <label>
+                    <span>Connected wallet/Safe</span>
+                    <input className="mono" value={contractAccount || 'not connected'} readOnly />
+                  </label>
+                  <label>
+                    <span>Wallet chain</span>
+                    <input value={providerChain ? (chainByHex(providerChain)?.name ?? providerChain) : 'not connected'} readOnly />
+                  </label>
+                  <label>
+                    <span>Required chain</span>
+                    <select
+                      value={contractChain}
+                      onChange={(e) => {
+                        setContractChain(e.target.value as (typeof EXECUTION_CHAINS)[number]['hex']);
+                        setContractConfirmed(false);
+                      }}
+                    >
+                      {EXECUTION_CHAINS.map((chain) => (
+                        <option key={chain.hex} value={chain.hex}>
+                          {chain.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Value, wei</span>
+                    <input
+                      className="mono"
+                      inputMode="numeric"
+                      value={contractValue}
+                      onChange={(e) => {
+                        setContractValue(e.target.value);
+                        setContractConfirmed(false);
+                      }}
+                    />
+                  </label>
+                  <label className="wide">
+                    <span>Contract target</span>
+                    <input
+                      className="mono"
+                      placeholder="0x..."
+                      spellCheck={false}
+                      value={contractTo}
+                      onChange={(e) => {
+                        setContractTo(e.target.value);
+                        setContractConfirmed(false);
+                      }}
+                    />
+                  </label>
+                  <label className="wide">
+                    <span>Calldata</span>
+                    <textarea
+                      className="identity-contract-data mono"
+                      spellCheck={false}
+                      value={contractData}
+                      onChange={(e) => {
+                        setContractData(e.target.value);
+                        setContractConfirmed(false);
+                      }}
+                    />
+                  </label>
+                </div>
+                <label className="identity-contract-confirm">
+                  <input
+                    type="checkbox"
+                    checked={contractConfirmed}
+                    disabled={!contractSimulationFresh}
+                    onChange={(e) => setContractConfirmed(e.target.checked)}
+                  />
+                  <span>I reviewed the Safe, chain, target, calldata, value, and current simulation preview.</span>
+                </label>
+                <div className="row-actions identity-actions">
+                  <button className="btn" disabled={contractBusy} onClick={() => void connectContractWallet()}>
+                    Connect wallet/Safe
+                  </button>
+                  <button className="btn" disabled={contractBusy || !contractAccount} onClick={() => void switchContractChain()}>
+                    Switch chain
+                  </button>
+                  <button className="btn" disabled={contractBusy || !contractAccount} onClick={() => void simulateContractExecution()}>
+                    Simulate
+                  </button>
+                  <button className="btn primary" disabled={!contractCanSubmit} onClick={() => void submitContractExecution()}>
+                    Submit with wallet/Safe
+                  </button>
+                </div>
+                {contractInputErrors.length ? (
+                  <div className="risk-list identity-contract-errors">
+                    {contractInputErrors.map((row) => (
+                      <div key={row} className="risk-row">
+                        <span className="dot warn" />
+                        <b>Guard</b>
+                        <span className="warn-text">{row}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <div className={contractSimulationFresh ? 'ok-text small' : contractSimulation?.ok === false ? 'status-error small' : 'muted small'}>
+                  {contractSimulation?.stamp === contractStamp ? contractSimulation.message : contractMessage}
+                </div>
+                <pre className="identity-contract-preview">{contractPreview}</pre>
               </section>
 
               <section className="card identity-gate">

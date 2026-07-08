@@ -1000,6 +1000,17 @@ select:focus, input:focus { border-color: var(--accent); }
 .identity-gate { display: grid; grid-template-columns: minmax(180px, .55fr) minmax(0, 1fr); gap: 18px; align-items: start; }
 .identity-gate h3 { margin-bottom: 6px; }
 .identity-gate p { margin: 0; max-width: 360px; }
+.identity-contract-console { display: flex; flex-direction: column; gap: 10px; }
+.identity-contract-console p { margin: 0; }
+.identity-contract-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.identity-contract-grid label { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.identity-contract-grid label > span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+.identity-contract-grid .wide { grid-column: 1 / -1; }
+.identity-contract-data { width: 100%; min-height: 96px; resize: vertical; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); padding: 7px 8px; font-size: 11px; line-height: 1.45; }
+.identity-contract-confirm { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: start; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.identity-contract-confirm input { width: 16px; height: 16px; margin-top: 2px; }
+.identity-contract-errors { margin-top: 2px; }
+.identity-contract-preview { max-height: 220px; overflow: auto; margin: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); padding: 10px; font-size: 11px; line-height: 1.45; white-space: pre-wrap; user-select: text; -webkit-user-select: text; }
 .controller-proof { display: flex; flex-direction: column; gap: 9px; }
 .identity-proof-message { width: 100%; min-height: 118px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); padding: 8px; font-size: 11px; line-height: 1.45; }
 .identity-proof-input { width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); padding: 7px 8px; font-size: 11px; }
@@ -1028,6 +1039,7 @@ select:focus, input:focus { border-color: var(--accent); }
   .identity-metrics { width: 100%; min-width: 0; }
   .identity-process-steps { grid-template-columns: 1fr; }
   .identity-alert { grid-template-columns: 1fr; }
+  .identity-contract-grid { grid-template-columns: 1fr; }
   .evidence-row { grid-template-columns: 1fr; gap: 6px; }
 }
 
