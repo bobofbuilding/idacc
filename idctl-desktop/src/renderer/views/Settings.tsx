@@ -364,7 +364,10 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   async function refreshManagedSubscriptions(options: { busy?: boolean; notice?: boolean; force?: boolean } = {}) {
     if (options.busy) setSubsBusy(true);
     try {
-      const next = await call<Record<SubKey, Sub>>('subs:status', Boolean(options.force)).catch(() => null);
+      const next = await call<Record<SubKey, Sub>>(
+        'subs:status',
+        { force: !!options.force, maxAgeMs: options.force ? 0 : SUB_AUTO_REFRESH_MS },
+      ).catch(() => null);
       if (next) {
         setSubs(next);
         setSubsCheckedAt(Date.now());
@@ -498,7 +501,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       subRefreshRunningRef.current = true;
       subRefreshLastAtRef.current = now;
       try {
-        const next = await call<Record<SubKey, Sub>>('subs:status').catch(() => null);
+        const next = await call<Record<SubKey, Sub>>('subs:status', { maxAgeMs: SUB_AUTO_REFRESH_MS }).catch(() => null);
         if (!cancelled && next) {
           setSubs(next);
           setSubsCheckedAt(Date.now());

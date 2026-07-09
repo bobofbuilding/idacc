@@ -10,7 +10,6 @@ import { TeamGraph, type GraphSelection } from './TeamGraph.tsx';
 import { Health } from './Health.tsx';
 import {
   getRuntimeCatalogSnapshot,
-  loadRuntimeCatalogSnapshot,
   primeRuntimeCatalogSnapshot,
   type ManagedRuntimeStatus,
   type RuntimeCatalogProvider as ProviderRow,
@@ -1010,10 +1009,17 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       return;
     }
     let live = true;
-    loadRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
-      maxAgeMs: HR_RUNTIME_CATALOG_UI_CACHE_MS,
-    }).then((nextCache) => {
+    Promise.all([
+      call<Record<string, string[]>>('runtime:models').catch(() => ({})),
+      call<ProviderRow[]>('providers:list').catch(() => [] as ProviderRow[]),
+      call<Record<string, ManagedRuntimeStatus>>('subs:cachedStatus').catch(() => ({})),
+    ]).then(([models, providerRows, managed]) => {
       if (!live) return;
+      const nextCache = primeRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
+        modelCatalog: models,
+        providers: providerRows,
+        managedRuntimes: managed,
+      });
       setModelCatalog(nextCache.modelCatalog);
       setProviders(nextCache.providers);
       setManagedRuntimes(nextCache.managedRuntimes);

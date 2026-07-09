@@ -16,6 +16,7 @@ const execFileP = promisify(execFile);
 const SUBS_STATUS_CACHE_TTL_MS = 60_000;
 
 export type SubProvider = 'claude' | 'chatgpt' | 'cursor' | 'grok' | 'antigravity' | 'copilot' | 'kiro-cli' | 'q';
+export interface SubsStatusOptions { force?: boolean; maxAgeMs?: number; staleOk?: boolean }
 
 type LoginMode = 'spawn' | 'terminal';
 type CommandSpec = [string, string[]];
@@ -533,11 +534,17 @@ export function invalidateSubsStatusCache(): void {
   subsStatusCache = null;
 }
 
-export async function subsStatus(force = false): Promise<Record<SubProvider, SubStatus>> {
-  if (!force && subsStatusCache && Date.now() - subsStatusCache.at < SUBS_STATUS_CACHE_TTL_MS) {
-    return subsStatusCache.rows;
-  }
-  if (!force && subsStatusInflight) return subsStatusInflight;
+export function cachedSubsStatus(): Record<SubProvider, SubStatus> | null {
+  return subsStatusCache?.rows ?? null;
+}
+
+export async function subsStatus(opts: SubsStatusOptions = {}): Promise<Record<SubProvider, SubStatus>> {
+  const now = Date.now();
+  const maxAgeMs = Number.isFinite(opts.maxAgeMs) && Number(opts.maxAgeMs) > 0
+    ? Number(opts.maxAgeMs)
+    : SUBS_STATUS_CACHE_TTL_MS;
+  if (!opts.force && subsStatusCache && (opts.staleOk || now - subsStatusCache.at < maxAgeMs)) return subsStatusCache.rows;
+  if (!opts.force && subsStatusInflight) return subsStatusInflight;
   subsStatusInflight = Promise.all(SUB_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const))
     .then((rows) => {
       const result = Object.fromEntries(rows) as Record<SubProvider, SubStatus>;

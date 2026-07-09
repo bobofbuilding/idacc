@@ -19,6 +19,14 @@ assert.ok(
   'Plans UI should distinguish successful Inbox surfacing from local write failure',
 );
 assert.ok(
+  inbox.includes('Retry with delegation fallback') && inbox.includes('Retry recovery pass') && inbox.includes('Pause plan'),
+  'Plan failure Inbox questions should present solution-oriented recovery actions',
+);
+assert.ok(
+  inbox.includes('Recommended: retry the work pass'),
+  'Plan failure Inbox questions should include a concrete recommended next action',
+);
+assert.ok(
   plans.includes('Work > Plans saved objective') && plans.includes('could not create live delegated team-lead tasks'),
   'Plan delegation failures should surface a specific live-delegation blocker',
 );

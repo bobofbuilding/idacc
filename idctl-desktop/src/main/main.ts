@@ -9,7 +9,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { call as bridgeCall, startDraftDispatcher, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
 import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
-import { invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubProvider } from './subscriptions.ts';
+import { cachedSubsStatus, invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubsStatusOptions, type SubProvider } from './subscriptions.ts';
 import { ollamaTags, ollamaPull, ollamaRemove, ollamaCatalogCheck, catalogModelToLocalEntry, type InstalledModelInput } from './ollama.ts';
 import { backgroundStackStatus, dockerStatus, getHardware, localStackInstallStatus, runInTerminal, startBackgroundStack, stopBackgroundStack } from './system.ts';
 import { pickProjectFolder, openProjectFolder, projectReadme, projectGit, projectGitRun, githubMeta, cloneGithub, projectDiff, createGithubRepo, linkGithubRepo, forkGithub, commitProject, detectProjectsRoot, scanProjectsRoot } from './projects.ts';
@@ -1044,7 +1044,13 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'evmRpc:probe':
       return probeEvmRpc(String(args[0] ?? ''));
     case 'subs:status':
-      return subsStatus(Boolean(args[0]));
+      return subsStatus(
+        args[0] && typeof args[0] === 'object'
+          ? args[0] as SubsStatusOptions
+          : { force: Boolean(args[0]) },
+      );
+    case 'subs:cachedStatus':
+      return cachedSubsStatus() ?? {};
     case 'subs:signin':
       invalidateSubsStatusCache();
       return subsSignin(args[0] as SubProvider);
