@@ -937,6 +937,10 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   librarySkills: () => client.librarySkills(),
   libraryPlugins: () => client.libraryPlugins(),
   libraryPluginInspections: () => inspectLibraryPlugins(),
+  'skills:localCandidates': async () => [],
+  'skills:importLocalCandidate': async () => {
+    throw new Error('Local skill import requires the Electron build.');
+  },
   installSkill: (skill: string, agent: string, team?: string) => (team ? client.withTeam(String(team)) : client).installSkill(String(skill), String(agent)),
   projectPluginSkill: (name: string) => projectPluginSkill(name),
   createSkill: (input: CreateSkillInput) => client.createSkill(input),

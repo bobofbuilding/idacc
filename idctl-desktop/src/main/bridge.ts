@@ -868,6 +868,122 @@ function stripMarkdownFrontmatter(markdown: string): string {
   return (match ? text.slice(match[0].length) : text).trim();
 }
 
+type LocalSkillCandidate = {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  source: string;
+  sourcePath: string;
+  installed: boolean;
+  duplicate: boolean;
+};
+
+function splitFrontmatterValue(raw: string): string[] {
+  return raw
+    .replace(/^\[|\]$/g, '')
+    .split(/[, ]+/)
+    .map((part) => part.trim().replace(/^['"]|['"]$/g, ''))
+    .filter(Boolean);
+}
+
+function parseSkillFrontmatter(markdown: string): { frontmatter: Record<string, string>; body: string } {
+  const text = markdown.replace(/^\uFEFF/, '');
+  const lines = text.split('\n');
+  if (lines[0]?.replace(/\r$/, '') !== '---') return { frontmatter: {}, body: text };
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    const trimmed = lines[i].replace(/\r$/, '');
+    if (trimmed === '---' || trimmed === '...') {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) return { frontmatter: {}, body: text };
+  const frontmatter: Record<string, string> = {};
+  for (const line of lines.slice(1, end)) {
+    const match = line.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
+    if (!match) continue;
+    const [, key, value] = match;
+    frontmatter[key] = value.trim().replace(/^['"]|['"]$/g, '');
+  }
+  return { frontmatter, body: lines.slice(end + 1).join('\n') };
+}
+
+function localSkillCandidateRoots(): Array<{ label: string; root: string }> {
+  const home = homedir();
+  return [
+    { label: 'Codex', root: join(home, '.codex', 'skills') },
+    { label: 'Agents', root: join(home, '.agents', 'skills') },
+    { label: 'ID Agents', root: join(home, 'bob', 'Library', 'Assistants', 'idagents', '.agents', 'skills') },
+  ];
+}
+
+function scanLocalSkillCandidates(installedNames: string[]): LocalSkillCandidate[] {
+  const installed = new Set(installedNames);
+  const seen = new Map<string, LocalSkillCandidate>();
+  for (const { label, root } of localSkillCandidateRoots()) {
+    try {
+      if (!existsSync(root) || !statSync(root).isDirectory()) continue;
+      for (const entry of readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+        const skillFile = join(root, entry.name, 'SKILL.md');
+        if (!existsSync(skillFile) || !statSync(skillFile).isFile()) continue;
+        const raw = readFileSync(skillFile, 'utf8');
+        const parsed = parseSkillFrontmatter(raw);
+        const name = (parsed.frontmatter.name || entry.name).trim();
+        if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) continue;
+        const desc = (parsed.frontmatter.description || parsed.body.match(/^#\s+(.+)$/m)?.[1] || `Local ${label} skill ${name}`)
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 1024);
+        const tags = splitFrontmatterValue(parsed.frontmatter.tags || '')
+          .concat(splitFrontmatterValue(parsed.frontmatter.category || ''))
+          .filter((tag, idx, arr) => arr.indexOf(tag) === idx)
+          .slice(0, 12);
+        const candidate: LocalSkillCandidate = {
+          id: `${label}:${name}`,
+          name,
+          description: desc || `Local ${label} skill ${name}`,
+          tags,
+          source: label,
+          sourcePath: skillFile,
+          installed: installed.has(name),
+          duplicate: seen.has(name) || installed.has(name),
+        };
+        const existing = seen.get(name);
+        if (!existing || (existing.installed && !candidate.installed)) seen.set(name, candidate);
+      }
+    } catch {
+      // Ignore unreadable roots. The renderer surfaces only importable candidates.
+    }
+  }
+  return [...seen.values()].sort((a, b) => Number(a.installed) - Number(b.installed) || a.name.localeCompare(b.name));
+}
+
+async function importLocalSkillCandidate(id: string): Promise<LibrarySkillEntry> {
+  const library = await client.librarySkills();
+  const candidates = scanLocalSkillCandidates(library.map((skill) => skill.name));
+  const candidate = candidates.find((entry) => entry.id === id);
+  if (!candidate) throw new Error('Local skill candidate is no longer available.');
+  if (candidate.installed) throw new Error(`Skill ${candidate.name} already exists in the manager catalog.`);
+  const raw = readFileSync(candidate.sourcePath, 'utf8');
+  const parsed = parseSkillFrontmatter(raw);
+  const metadata: Record<string, string> = {
+    source: `local:${candidate.source.toLowerCase().replace(/\s+/g, '-')}`,
+  };
+  if (candidate.tags.length) metadata.tags = candidate.tags.join(', ');
+  return client.createSkill({
+    name: candidate.name,
+    description: candidate.description,
+    ...(parsed.frontmatter.license && { license: parsed.frontmatter.license }),
+    ...(parsed.frontmatter.compatibility && { compatibility: parsed.frontmatter.compatibility }),
+    ...(parsed.frontmatter['allowed-tools'] && { allowedTools: parsed.frontmatter['allowed-tools'] }),
+    metadata,
+    body: stripMarkdownFrontmatter(raw),
+  });
+}
+
 function projectedSkillDescription(name: string, detailDescription?: string | null, body?: string): string {
   const fromDetail = String(detailDescription ?? '').replace(/\s+/g, ' ').trim();
   if (fromDetail) return fromDetail.slice(0, 1024);
@@ -1420,6 +1536,11 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   librarySkills: () => client.librarySkills(),
   libraryPlugins: () => client.libraryPlugins(),
   libraryPluginInspections: () => inspectLibraryPlugins(),
+  'skills:localCandidates': async () => {
+    const skills = await client.librarySkills().catch(() => [] as LibrarySkillEntry[]);
+    return scanLocalSkillCandidates(skills.map((skill) => skill.name));
+  },
+  'skills:importLocalCandidate': (id: string) => importLocalSkillCandidate(String(id)),
   // Skill auto-categorization (app-side tag overlay; never writes the SKILL.md).
   // Returns the cached name→tags overlay merged into the Capabilities catalog.
   'skills:autoTags': () => Promise.resolve(loadSettings().skillTags ?? {}),

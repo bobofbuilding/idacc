@@ -22,6 +22,16 @@ interface TestResult { ok?: boolean; tools?: string[]; error?: string; testing?:
 type TargetAgent = Agent & { team?: string };
 type TeamAgentsGroup = { team: string; agents: Agent[] };
 type SkillAgentRecommendation = { agent: TargetAgent; score: number; reasons: string[]; installed: boolean };
+type LocalSkillCandidate = {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  source: string;
+  sourcePath: string;
+  installed: boolean;
+  duplicate: boolean;
+};
 type PluginRow = LibraryPluginEntry & Partial<LibraryPluginInspection> & { packageSource: string; bundledPortable?: boolean };
 type BrainSkillStats = { totalSkills?: number; chainable?: number; nonChainable?: number; domains?: number; tags?: number; averageComputeCost?: number | null; maxUseCount?: number };
 type BrainSkillFacet = { domain?: string; tag?: string; name?: string; count?: number };
@@ -673,11 +683,13 @@ function capabilityTargetSetStamp(agents: TargetAgent[], fallbackTeam: string): 
 export function Modules({ store }: { store: FleetStore }) {
   const [mcp, setMcp] = useState<McpServerProfile[]>([]);
   const [skills, setSkills] = useState<LibrarySkillEntry[]>([]);
+  const [localSkillCandidates, setLocalSkillCandidates] = useState<LocalSkillCandidate[]>([]);
   // App-side categorization overlay: skill name → auto-derived tags (merged into
   // the catalog display + tag search for skills whose SKILL.md has no tags).
   const [autoTags, setAutoTags] = useState<Record<string, string[]>>({});
   const [categorizing, setCategorizing] = useState(false);
   const [skillCatalogRefreshing, setSkillCatalogRefreshing] = useState(false);
+  const [localSkillRefreshing, setLocalSkillRefreshing] = useState(false);
   const [brainSkills, setBrainSkills] = useState<BrainSkillSummary>(null);
   const [brainCore, setBrainCore] = useState<BrainCoreHealthReport>(null);
   const [brainAgents, setBrainAgents] = useState<BrainAgentsReport>(null);
@@ -861,6 +873,7 @@ export function Modules({ store }: { store: FleetStore }) {
   async function reload() {
     setMcp(await call<McpServerProfile[]>('mcp:list').catch(() => []));
     setSkills(await call<LibrarySkillEntry[]>('librarySkills').catch(() => []));
+    setLocalSkillCandidates(await call<LocalSkillCandidate[]>('skills:localCandidates').catch(() => []));
     setPlugins(await call<LibraryPluginEntry[]>('libraryPlugins').catch(() => []));
     setPluginInspections(await call<LibraryPluginInspection[]>('libraryPluginInspections').catch(() => []));
     setAutoTags(await call<Record<string, string[]>>('skills:autoTags').catch(() => ({})));
@@ -884,8 +897,10 @@ export function Modules({ store }: { store: FleetStore }) {
         call<Record<string, string[]>>('skills:autoTags').catch(() => autoTags),
         call<BrainSkillSummary>('skills:brainSummary').catch(() => brainSkills),
       ]);
+      const latestCandidates = await call<LocalSkillCandidate[]>('skills:localCandidates').catch(() => localSkillCandidates);
       const after = skillCatalogStamp(latestSkills, latestTags);
       setSkills(latestSkills);
+      setLocalSkillCandidates(latestCandidates);
       setAutoTags(latestTags);
       setBrainSkills(latestBrain);
       if (after !== before) {
@@ -1196,6 +1211,41 @@ export function Modules({ store }: { store: FleetStore }) {
   async function uninstallSkillAll(skill: string) {
     await applyToTargets(`uninstall ${skill}`, (a) => call('uninstallSkill', skill, a.name, targetTeamOf(a)));
   }
+  async function uninstallSkillFleet(skill: string) {
+    setBusy(true);
+    setNote(`checking fleet usage for ${skill}…`);
+    try {
+      const installed = await freshSkillFleetUsage(skill);
+      if (!installed) {
+        setNote(`remove blocked: could not verify current fleet skill usage for ${skill}. Refresh and try again.`);
+        return;
+      }
+      if (!installed.length) {
+        await reload();
+        setNote(`${skill} is not installed on any fleet agents`);
+        return;
+      }
+      const preview = describeTargets(installed.slice(0, 12));
+      const extra = installed.length > 12 ? `, +${installed.length - 12} more` : '';
+      if (!window.confirm(`Remove skill "${skill}" from every current fleet agent that has it?\n\nAgents: ${preview}${extra}\n\nThis does not delete the library SKILL.md. It only detaches the skill from agent metadata and live runtime skill folders.`)) return;
+      const latest = await freshSkillFleetUsage(skill);
+      if (!latest) {
+        setNote(`remove blocked: could not recheck fleet skill usage for ${skill}.`);
+        return;
+      }
+      setNote(`removing ${skill} from ${latest.length} fleet agent${latest.length === 1 ? '' : 's'}…`);
+      for (const a of latest) {
+        await call('uninstallSkill', skill, a.name, targetTeamOf(a));
+      }
+      await reload();
+      setNote(`removed ${skill} from ${latest.length} fleet agent${latest.length === 1 ? '' : 's'} ✓`);
+      store.refresh();
+    } catch (err) {
+      setNote(`fleet remove failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
   // Two-step confirm for the destructive library delete (window.confirm is not
   // reliable in Electron, and a single misclick must not nuke a skill).
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
@@ -1282,6 +1332,14 @@ export function Modules({ store }: { store: FleetStore }) {
       topTags: [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 6),
     };
   }, [skills, autoTags]);
+  const importableLocalSkills = useMemo(
+    () => localSkillCandidates.filter((candidate) => !candidate.installed).slice(0, 12),
+    [localSkillCandidates],
+  );
+  const installedLocalSkillCandidates = useMemo(
+    () => localSkillCandidates.filter((candidate) => candidate.installed).length,
+    [localSkillCandidates],
+  );
 
   // ---- Skills: create a new skill (agentskills.io SKILL.md) ---------------
   const [showCreate, setShowCreate] = useState(false);
@@ -1318,6 +1376,49 @@ export function Modules({ store }: { store: FleetStore }) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setNote(`create failed: ${/already_exists/.test(msg) ? 'a skill with that name already exists' : msg}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshLocalSkillCandidates() {
+    setLocalSkillRefreshing(true);
+    setNote('scanning local SKILL.md folders…');
+    try {
+      const candidates = await call<LocalSkillCandidate[]>('skills:localCandidates').catch(() => []);
+      setLocalSkillCandidates(candidates);
+      const importable = candidates.filter((candidate) => !candidate.installed).length;
+      setNote(`local skill scan complete: ${importable} importable candidate${importable === 1 ? '' : 's'}`);
+    } catch (err) {
+      setNote(`local skill scan failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setLocalSkillRefreshing(false);
+    }
+  }
+
+  async function importLocalSkill(candidate: LocalSkillCandidate) {
+    if (candidate.installed) return;
+    const message = [
+      `Import local skill "${candidate.name}" from ${candidate.source}?`,
+      '',
+      `Source: ${candidate.sourcePath}`,
+      '',
+      'IDACC will copy the SKILL.md body into the manager library. Existing library skills are not overwritten.',
+      'After import, attach it to agents and sync Brain before relying on routing/graph surfaces.',
+    ].join('\n');
+    if (!window.confirm(message)) return;
+    setBusy(true);
+    setNote(`importing local skill ${candidate.name}…`);
+    try {
+      const entry = await call<LibrarySkillEntry>('skills:importLocalCandidate', candidate.id);
+      setSkillQuery(entry.name);
+      setTagFilter(new Set());
+      await reload();
+      setBrainDrift({ kind: 'created', skill: entry.name, at: Date.now() });
+      setNote(`imported ${entry.name} into manager skill catalog ✓`);
+    } catch (err) {
+      setNote(`import failed: ${err instanceof Error ? err.message : String(err)}`);
+      await reload();
     } finally {
       setBusy(false);
     }
@@ -1843,11 +1944,17 @@ export function Modules({ store }: { store: FleetStore }) {
           <span className="chip tag" title="Local SKILL.md folders found in the manager library">
             Local {skills.length}
           </span>
+          <span className="chip tag" title="Local Codex/Agents skills that can be imported into the manager library">
+            Candidates {importableLocalSkills.length}
+          </span>
           <span className="chip tag" title="HR-synced agents available for direct skill attachment">
             Agents {skillAttachAgents.length}
           </span>
           <button className="btn small" disabled={skillCatalogRefreshing} onClick={() => void refreshSkillCatalog()}>
             {skillCatalogRefreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+          <button className="btn small" disabled={localSkillRefreshing} onClick={() => void refreshLocalSkillCandidates()}>
+            {localSkillRefreshing ? 'Scanning…' : 'Scan local'}
           </button>
           <span className={`chip ${brainSkillSyncVisible ? 'brain-review' : typeof brainTotal === 'number' ? 'tag' : ''}`} title={brainSkillStatusTitle}>
             {brainSkillStatusLabel}
@@ -1873,6 +1980,40 @@ export function Modules({ store }: { store: FleetStore }) {
             <button className="btn small" disabled={brainSyncDisabled} title={brainSyncTitle} onClick={() => void syncSkillsToBrain()}>
               {brainSyncing ? 'Syncing…' : 'Preview & sync'}
             </button>
+          </div>
+        ) : null}
+
+        {importableLocalSkills.length > 0 ? (
+          <div className="local-skill-candidates">
+            <div className="row-actions local-skill-candidates-head">
+              <div className="grow">
+                <b>Local skill candidates</b>
+                <div className="muted small">
+                  Import useful Codex/Agents skills into the manager catalog before attaching them to agents.
+                  {installedLocalSkillCandidates > 0 ? ` ${installedLocalSkillCandidates} local candidate${installedLocalSkillCandidates === 1 ? '' : 's'} already exist in the catalog.` : ''}
+                </div>
+              </div>
+              <button className="btn small" disabled={localSkillRefreshing} onClick={() => void refreshLocalSkillCandidates()}>
+                {localSkillRefreshing ? 'Scanning…' : 'Rescan'}
+              </button>
+            </div>
+            <div className="local-skill-candidate-list">
+              {importableLocalSkills.map((candidate) => (
+                <div className="local-skill-candidate" key={candidate.id}>
+                  <div className="grow">
+                    <div className="row-actions local-skill-candidate-title">
+                      <b>{candidate.name}</b>
+                      <span className="chip tag">{candidate.source}</span>
+                      {candidate.tags.slice(0, 4).map((tag) => <span key={tag} className="chip tag">{tag}</span>)}
+                    </div>
+                    <div className="muted small skill-desc"><LinkedDescription text={candidate.description} /></div>
+                  </div>
+                  <button className="btn primary small" disabled={busy} onClick={() => void importLocalSkill(candidate)}>
+                    Import
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 
@@ -1992,7 +2133,12 @@ export function Modules({ store }: { store: FleetStore }) {
                   </button>
                   {have > 0 ? (
                     <button className="btn" disabled={busy} title={`Uninstall from ${targetLabel}`} onClick={() => void uninstallSkillAll(s.name)}>
-                      Uninstall
+                      Uninstall selected
+                    </button>
+                  ) : null}
+                  {fleetHave > 0 ? (
+                    <button className="btn" disabled={busy} title="Remove this skill from every fleet agent that currently has it" onClick={() => void uninstallSkillFleet(s.name)}>
+                      Remove from fleet
                     </button>
                   ) : null}
                   {confirmDel === s.name ? (
@@ -2008,7 +2154,7 @@ export function Modules({ store }: { store: FleetStore }) {
                 </div>
                 {fleetHave > 0 ? (
                   <div className="skill-usage-note">
-                    Installed on {fleetHave} fleet agent{fleetHave === 1 ? '' : 's'}; library delete unlocks after the skill is uninstalled everywhere.
+                    Installed on {fleetHave} fleet agent{fleetHave === 1 ? '' : 's'}: {describeTargets(skillFleetUsage(s.name).slice(0, 6))}{fleetHave > 6 ? ', ...' : ''}. Library delete unlocks after the skill is uninstalled everywhere.
                   </div>
                 ) : null}
                 {s.description ? <p className="muted small skill-desc"><LinkedDescription text={s.description} /></p> : null}

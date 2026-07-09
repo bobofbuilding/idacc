@@ -36,7 +36,7 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^coordinator:(set|setPrimary)$/, ['org', 'dashboard', 'agents', 'work', 'brain']],
   [/^org:(sync|setConfig|setSecondaryLeads)$/, ['org', 'dashboard', 'agents', 'work', 'brain']],
   [/^(setAgent|agent:(move|setInstructions)|spawnAgent|deployTeam|team:|rebuildAgent|installSkill|uninstallSkill|createSkill|projectPluginSkill|deleteSkill|setTeamDelegates|setAgentDelegates)/, ['agents', 'teams', 'dashboard', 'brain', 'modules']],
-  [/^skills:(syncBrain|categorize)$/, ['modules', 'brain']],
+  [/^skills:(syncBrain|categorize|importLocalCandidate)$/, ['modules', 'brain', 'agents', 'teams', 'dashboard']],
   [/^mcp:(add|remove)$/, ['settings', 'modules', 'brain']],
   [/^(providers:(add|remove|setDefault|setModelSelection|toggle|connect)|runtime:probe|subs:(signin|signout|install)|ollama:(pull|remove|catalogCheck))$/, ['settings', 'runtime-catalog', 'brain']],
   [/^(manager:setLocalConcurrency|headroom:setPilot|evmRpc:(save|remove|probe)|image:setServer)$/, ['settings', 'brain']],
