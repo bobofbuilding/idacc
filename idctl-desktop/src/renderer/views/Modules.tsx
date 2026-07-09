@@ -1953,19 +1953,13 @@ export function Modules({ store }: { store: FleetStore }) {
         <div className="row-actions" style={{ alignItems: 'baseline', flexWrap: 'wrap' }}>
           <h3 className="grow">Skills</h3>
           <span className="chip tag" title="Local SKILL.md folders found in the manager library">
-            Local {skills.length}
-          </span>
-          <span className="chip tag" title="Local Codex/Agents skills that can be imported into the manager library">
-            Candidates {importableLocalSkills.length}
+            {skills.length} local
           </span>
           <span className="chip tag" title="HR-synced agents available for direct skill attachment">
-            Agents {skillAttachAgents.length}
+            {skillAttachAgents.length} agents
           </span>
           <button className="btn small" disabled={skillCatalogRefreshing} onClick={() => void refreshSkillCatalog()}>
             {skillCatalogRefreshing ? 'Refreshing…' : 'Refresh'}
-          </button>
-          <button className="btn small" disabled={localSkillRefreshing} onClick={() => void refreshLocalSkillCandidates()}>
-            {localSkillRefreshing ? 'Scanning…' : 'Scan local'}
           </button>
           <span className={`chip ${brainSkillSyncVisible ? 'brain-review' : typeof brainTotal === 'number' ? 'tag' : ''}`} title={brainSkillStatusTitle}>
             {brainSkillStatusLabel}
@@ -1979,7 +1973,7 @@ export function Modules({ store }: { store: FleetStore }) {
           </button>
         </div>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Searchable SKILL.md catalog for <b>{targetLabel}</b>. Attach skills to any HR-synced agent, then sync Brain when the catalog changes.
+          Search, attach, import, and sync the manager SKILL.md catalog for <b>{targetLabel}</b>.
         </p>
 
         {brainSkillSyncVisible ? (
@@ -1995,15 +1989,15 @@ export function Modules({ store }: { store: FleetStore }) {
         ) : null}
 
         {importableLocalSkills.length > 0 ? (
-          <div className="local-skill-candidates">
+          <details className="local-skill-candidates">
+            <summary className="local-skill-candidates-summary">
+              <b>{importableLocalSkills.length} importable local skill{importableLocalSkills.length === 1 ? '' : 's'}</b>
+              <span className="muted small">
+                {installedLocalSkillCandidates > 0 ? `${installedLocalSkillCandidates} already in catalog` : 'Codex/Agents skills not yet in catalog'}
+              </span>
+            </summary>
             <div className="row-actions local-skill-candidates-head">
-              <div className="grow">
-                <b>Local skill candidates</b>
-                <div className="muted small">
-                  Import useful Codex/Agents skills into the manager catalog before attaching them to agents.
-                  {installedLocalSkillCandidates > 0 ? ` ${installedLocalSkillCandidates} local candidate${installedLocalSkillCandidates === 1 ? '' : 's'} already exist in the catalog.` : ''}
-                </div>
-              </div>
+              <span className="muted small grow">Import useful local skills into the manager catalog before attaching them to agents.</span>
               <button className="btn small" disabled={localSkillRefreshing} onClick={() => void refreshLocalSkillCandidates()}>
                 {localSkillRefreshing ? 'Scanning…' : 'Rescan'}
               </button>
@@ -2025,39 +2019,33 @@ export function Modules({ store }: { store: FleetStore }) {
                 </div>
               ))}
             </div>
-          </div>
+          </details>
         ) : null}
 
-        <div className="skill-catalog-summary">
-          <div>
-            <b>{filteredSkills.length}/{skills.length}</b>
-            <span className="muted small"> shown</span>
+        <div className="skill-toolbar">
+          <div className="skill-toolbar-main">
+            <input className="catalog-search" placeholder="Search skills" value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
+            <span className="muted small"><b>{filteredSkills.length}</b> of {skills.length}</span>
+            <span className="muted small">{skillTagStats.frontmatter + skillTagStats.autoOnly} tagged · {skillTagStats.untagged} untagged · {allTags.length} tags</span>
           </div>
-          <div>
-            <b>{skillTagStats.frontmatter}</b>
-            <span className="muted small"> tagged</span>
-          </div>
-          <div>
-            <b>{skillTagStats.autoOnly}</b>
-            <span className="muted small"> auto-tagged</span>
-          </div>
-          <div>
-            <b>{skillTagStats.untagged}</b>
-            <span className="muted small"> untagged</span>
-          </div>
-          <div>
-            <b>{brainSkills?.reuseGroups?.length ?? 0}</b>
-            <span className="muted small"> Brain reuse groups</span>
-          </div>
-          <div className="skill-catalog-facets">
+          <div className="skill-toolbar-tags">
             {skillTagStats.topTags.map(([tag, count]) => (
               <button key={tag} className={`chip tag${tagFilter.has(tag) ? ' on' : ''}`} title={`${count} local skill${count === 1 ? '' : 's'}`} onClick={() => toggleTag(tag)}>
                 {tag} {count}
               </button>
             ))}
-            {brainDomainFacets.map((domain) => <span key={`d-${domain}`} className="chip tag" title="Brain skill domain">Brain:{domain}</span>)}
-            {brainTagFacets.map((tag) => <span key={`t-${tag}`} className="chip tag" title="Brain skill tag">Brain:{tag}</span>)}
+            {tagFilter.size > 0 ? <button className="btn small" onClick={() => setTagFilter(new Set())}>Clear</button> : null}
+            {categorizing
+              ? <span className="muted small">categorizing...</span>
+              : <button className="btn small" disabled={busy} title="Re-run AI auto-categorization for untagged skills" onClick={() => void recategorize()}>Re-tag</button>}
           </div>
+          {(brainDomainFacets.length || brainTagFacets.length) ? (
+            <div className="skill-toolbar-brain">
+              {brainDomainFacets.map((domain) => <span key={`d-${domain}`} className="chip tag" title="Brain skill domain">Brain:{domain}</span>)}
+              {brainTagFacets.map((tag) => <span key={`t-${tag}`} className="chip tag" title="Brain skill tag">Brain:{tag}</span>)}
+              <span className="muted small">{brainSkills?.reuseGroups?.length ?? 0} Brain reuse groups</span>
+            </div>
+          ) : null}
         </div>
 
         {showCreate ? (
@@ -2095,29 +2083,6 @@ export function Modules({ store }: { store: FleetStore }) {
           </div>
         ) : null}
 
-        {allTags.length > 0 ? (
-          <div className="row-actions" style={{ flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-            <input className="catalog-search" placeholder="search skills…" value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
-            <span className="chips">
-              {allTags.map((t) => (
-                <button key={t} className={`chip${tagFilter.has(t) ? ' on' : ''}`} onClick={() => toggleTag(t)}>
-                  {tagFilter.has(t) ? '✓ ' : ''}{t}
-                </button>
-              ))}
-            </span>
-            {tagFilter.size > 0 ? <button className="btn small" onClick={() => setTagFilter(new Set())}>clear</button> : null}
-            <span className="grow" />
-            {categorizing
-              ? <span className="muted small">✦ categorizing…</span>
-              : <button className="btn small" disabled={busy} title="Re-run AI auto-categorization for untagged skills" onClick={() => void recategorize()}>↻ re-categorize</button>}
-          </div>
-        ) : skills.length > 0 ? (
-          <div className="row-actions" style={{ gap: 6, marginTop: 8, alignItems: 'center' }}>
-            <input className="catalog-search" placeholder="search skills…" value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
-            {categorizing ? <span className="muted small">✦ categorizing…</span> : null}
-          </div>
-        ) : null}
-
           <div className="skill-catalog">
           {filteredSkills.map((s) => {
             const have = skillCount(s.name);
@@ -2135,101 +2100,106 @@ export function Modules({ store }: { store: FleetStore }) {
                   <span className="b">{s.name}</span>
                   {s.license ? <span className="muted small">· {s.license}</span> : null}
                   <span className="grow" />
-                  <span className={have > 0 ? 'ok-text small' : 'muted small'} title={`${have}/${targetCount} selected targets; ${fleetHave} fleet agent${fleetHave === 1 ? '' : 's'} currently list this skill`}>
-                    {have}/{targetCount}
+                  <span className={have > 0 ? 'ok-text small' : 'muted small'} title={`${have}/${targetCount} selected targets currently list this skill`}>
+                    selected {have}/{targetCount}
                   </span>
-                  {fleetHave !== have ? <span className="chip tag" title="Current whole-fleet install count">Fleet {fleetHave}</span> : null}
-                  <button className="btn" disabled={busy || targetCount === 0 || all} onClick={() => void installSkillAll(s.name)}>
+                  <span className="chip tag" title="Current whole-fleet install count">fleet {fleetHave}</span>
+                  <button className="btn primary small" disabled={busy || targetCount === 0 || all} onClick={() => void installSkillAll(s.name)}>
                     {all ? 'Installed' : `Install → ${targetLabel}`}
                   </button>
-                  {have > 0 ? (
-                    <button className="btn" disabled={busy} title={`Uninstall from ${targetLabel}`} onClick={() => void uninstallSkillAll(s.name)}>
-                      Uninstall selected
-                    </button>
-                  ) : null}
-                  {fleetHave > 0 ? (
-                    <button className="btn" disabled={busy} title="Remove this skill from every fleet agent that currently has it" onClick={() => void uninstallSkillFleet(s.name)}>
-                      Remove from fleet
-                    </button>
-                  ) : null}
-                  {confirmDel === s.name ? (
-                    <>
-                      <button className="btn icon-danger" disabled={busy} title="Permanently delete this skill's SKILL.md from the library" onClick={() => void removeSkill(s.name)}>
-                        Delete?
-                      </button>
-                      <button className="btn" disabled={busy} onClick={() => setConfirmDel(null)}>Cancel</button>
-                    </>
-                  ) : (
-                    <button className="btn icon-danger" disabled={busy || fleetHave > 0} title={fleetHave > 0 ? 'Uninstall from all fleet agents before deleting the library SKILL.md' : 'Delete from library'} onClick={() => setConfirmDel(s.name)}>✕</button>
-                  )}
                 </div>
-                {fleetHave > 0 ? (
-                  <div className="skill-usage-note">
-                    Installed on {fleetHave} fleet agent{fleetHave === 1 ? '' : 's'}: {describeTargets(skillFleetUsage(s.name).slice(0, 6))}{fleetHave > 6 ? ', ...' : ''}. Library delete unlocks after the skill is uninstalled everywhere.
-                  </div>
-                ) : null}
                 {s.description ? <p className="muted small skill-desc"><LinkedDescription text={s.description} /></p> : null}
-                <div className="skill-agent-live">
-                  <div className="skill-agent-live-row">
-                    <span className="muted small">Attach</span>
-                    <select
-                      className="skill-agent-select"
-                      disabled={busy || skillAttachAgents.length === 0}
-                      value={selectedAgentKey}
-                      onChange={(e) => setSkillAgentDrafts((prev) => ({ ...prev, [s.name]: e.target.value }))}
-                    >
-                      {skillAttachAgents.length === 0 ? <option value="">No agents</option> : null}
-                      {skillAttachAgents.map((a) => {
-                        const key = skillAgentKey(a);
-                        return (
-                          <option key={key} value={key}>
-                            {skillAgentLabel(a)}{agentHasSkill(a, s.name) ? ' · attached' : ''}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <button className="btn small" disabled={busy || !selectedAgent || selectedAgentHasSkill} onClick={() => selectedAgent && void applySkillToAgent(s.name, selectedAgent, 'install')}>
-                      {selectedAgentHasSkill ? 'Attached' : 'Attach'}
-                    </button>
-                    {selectedAgentHasSkill && selectedAgent ? (
-                      <button className="btn small" disabled={busy} onClick={() => void applySkillToAgent(s.name, selectedAgent, 'uninstall')}>
-                        Remove
+                <details className="skill-card-details">
+                  <summary>Manage agents, tags, and removal</summary>
+                  <div className="row-actions skill-card-manage">
+                    {have > 0 ? (
+                      <button className="btn small" disabled={busy} title={`Uninstall from ${targetLabel}`} onClick={() => void uninstallSkillAll(s.name)}>
+                        Uninstall selected
                       </button>
                     ) : null}
-                  </div>
-                  {topRecommendations.length > 0 ? (
-                    <div className="skill-recommendations">
-                      <span className="muted small">Recommended</span>
-                      {topRecommendations.map((r) => (
-                        <button
-                          key={skillAgentKey(r.agent)}
-                          className="chip tag skill-rec-chip"
-                          disabled={busy}
-                          title={`Role match: ${r.reasons.slice(0, 3).join(', ') || 'metadata match'}`}
-                          onClick={() => void applySkillToAgent(s.name, r.agent, 'install')}
-                        >
-                          + {skillAgentLabel(r.agent)}
+                    {fleetHave > 0 ? (
+                      <button className="btn small" disabled={busy} title="Remove this skill from every fleet agent that currently has it" onClick={() => void uninstallSkillFleet(s.name)}>
+                        Remove from fleet
+                      </button>
+                    ) : null}
+                    {confirmDel === s.name ? (
+                      <>
+                        <button className="btn icon-danger small" disabled={busy} title="Permanently delete this skill's SKILL.md from the library" onClick={() => void removeSkill(s.name)}>
+                          Delete?
                         </button>
-                      ))}
+                        <button className="btn small" disabled={busy} onClick={() => setConfirmDel(null)}>Cancel</button>
+                      </>
+                    ) : (
+                      <button className="btn icon-danger small" disabled={busy || fleetHave > 0} title={fleetHave > 0 ? 'Uninstall from all fleet agents before deleting the library SKILL.md' : 'Delete from library'} onClick={() => setConfirmDel(s.name)}>Delete library copy</button>
+                    )}
+                  </div>
+                  {fleetHave > 0 ? (
+                    <div className="skill-usage-note">
+                      Installed on {fleetHave} fleet agent{fleetHave === 1 ? '' : 's'}: {describeTargets(skillFleetUsage(s.name).slice(0, 6))}{fleetHave > 6 ? ', ...' : ''}. Library delete unlocks after the skill is uninstalled everywhere.
                     </div>
                   ) : null}
-                </div>
-                {(() => {
-                  const fm = new Set(s.tags ?? []);
-                  const tags = [...new Set([...(s.tags ?? []), ...(autoTags[s.name] ?? [])])];
-                  return tags.length > 0 ? (
-                    <div className="chips skill-tags">
-                      {tags.map((t) => (
-                        <button
-                          key={t}
-                          className={`chip tag${tagFilter.has(t) ? ' on' : ''}${fm.has(t) ? '' : ' auto'}`}
-                          title={fm.has(t) ? t : `${t} — auto-categorized`}
-                          onClick={() => toggleTag(t)}
-                        >{t}</button>
-                      ))}
+                  <div className="skill-agent-live">
+                    <div className="skill-agent-live-row">
+                      <span className="muted small">Agent</span>
+                      <select
+                        className="skill-agent-select"
+                        disabled={busy || skillAttachAgents.length === 0}
+                        value={selectedAgentKey}
+                        onChange={(e) => setSkillAgentDrafts((prev) => ({ ...prev, [s.name]: e.target.value }))}
+                      >
+                        {skillAttachAgents.length === 0 ? <option value="">No agents</option> : null}
+                        {skillAttachAgents.map((a) => {
+                          const key = skillAgentKey(a);
+                          return (
+                            <option key={key} value={key}>
+                              {skillAgentLabel(a)}{agentHasSkill(a, s.name) ? ' · attached' : ''}
+                            </option>
+                          );
+                        })}
+                      </select>
+                      <button className="btn small" disabled={busy || !selectedAgent || selectedAgentHasSkill} onClick={() => selectedAgent && void applySkillToAgent(s.name, selectedAgent, 'install')}>
+                        {selectedAgentHasSkill ? 'Attached' : 'Attach'}
+                      </button>
+                      {selectedAgentHasSkill && selectedAgent ? (
+                        <button className="btn small" disabled={busy} onClick={() => void applySkillToAgent(s.name, selectedAgent, 'uninstall')}>
+                          Remove
+                        </button>
+                      ) : null}
                     </div>
-                  ) : null;
-                })()}
+                    {topRecommendations.length > 0 ? (
+                      <div className="skill-recommendations">
+                        <span className="muted small">Suggested</span>
+                        {topRecommendations.map((r) => (
+                          <button
+                            key={skillAgentKey(r.agent)}
+                            className="chip tag skill-rec-chip"
+                            disabled={busy}
+                            title={`Role match: ${r.reasons.slice(0, 3).join(', ') || 'metadata match'}`}
+                            onClick={() => void applySkillToAgent(s.name, r.agent, 'install')}
+                          >
+                            + {skillAgentLabel(r.agent)}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  {(() => {
+                    const fm = new Set(s.tags ?? []);
+                    const tags = [...new Set([...(s.tags ?? []), ...(autoTags[s.name] ?? [])])];
+                    return tags.length > 0 ? (
+                      <div className="chips skill-tags">
+                        {tags.map((t) => (
+                          <button
+                            key={t}
+                            className={`chip tag${tagFilter.has(t) ? ' on' : ''}${fm.has(t) ? '' : ' auto'}`}
+                            title={fm.has(t) ? t : `${t} - auto-categorized`}
+                            onClick={() => toggleTag(t)}
+                          >{t}</button>
+                        ))}
+                      </div>
+                    ) : null;
+                  })()}
+                </details>
               </div>
             );
           })}

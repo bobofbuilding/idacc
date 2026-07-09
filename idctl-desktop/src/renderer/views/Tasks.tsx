@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore, type TeamAgent } from '../store.ts';
 import { usePrompt } from '../components/prompt.tsx';
 import { useToast } from '../components/toast.tsx';
@@ -150,16 +150,21 @@ const LANE_GROUPS: { title: string; lanes: { id: Lane; label: string }[] }[] = [
   { title: 'Main Flow', lanes: [{ id: 'todo', label: 'To Do' }, { id: 'doing', label: 'Doing' }, { id: 'done', label: 'Done' }] },
 ];
 const RECENT_DONE_CAP = 25; // the Done lane shows the most-recent N completions; older auto-archive
+const TASK_BOARD_POLL_MS = 15000;
+const TASK_USAGE_POLL_MS = 60000;
 /** Relative age. createdAt comes from the manager in SECONDS; normalize to ms. */
-function ago(ts?: number): string {
+function agoAt(ts?: number, now = Date.now()): string {
   if (!ts) return '—';
   const ms = ts < 1e12 ? ts * 1000 : ts;
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  const s = Math.max(0, Math.round((now - ms) / 1000));
   if (s < 60) return `${s}s`;
   const m = Math.round(s / 60); if (m < 60) return `${m}m`;
   const h = Math.round(m / 60); if (h < 24) return `${h}h`;
   const d = Math.round(h / 24); if (d < 30) return `${d}d`;
   return `${Math.round(d / 30)}mo`;
+}
+function ago(ts?: number): string {
+  return agoAt(ts);
 }
 /** Absolute local timestamp for a tooltip. Normalizes seconds → ms like ago(). */
 function absTime(ts?: number): string | undefined {
@@ -197,6 +202,24 @@ function executionCandidatesForTeam(team: string, agents: TeamAgent[], coordinat
     if (withoutValidators.length) return withoutValidators;
   }
   return withoutCoordinator;
+}
+function taskListStamp(list: Task[]): string {
+  return JSON.stringify(list.map((t) => [
+    ref(t),
+    t.uuid ?? '',
+    t.name ?? '',
+    t.title,
+    t.status,
+    t.ownerName ?? '',
+    t.teamName ?? '',
+    t.createdAt ?? 0,
+    t.updatedAt ?? 0,
+    t.completedAt ?? 0,
+    delegationSnapshot(t),
+  ]));
+}
+function sortedRecordStamp<T>(record: Record<string, T>): string {
+  return JSON.stringify(Object.entries(record).sort(([a], [b]) => a.localeCompare(b)));
 }
 
 /** Tabbed wrapper: Tasks + Schedule + Loops in one page. */
@@ -238,10 +261,16 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const [q, setQ] = useState('');
   const [hideRoutine, setHideRoutine] = useState(true);
   const [showArchived, setShowArchived] = useState(false); // done tasks auto-archive (hidden) until revealed
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [dragRef, setDragRef] = useState<string | null>(null); // task being dragged across lanes
   const [laneOverlay, setLaneOverlay] = useState<Record<string, string>>({}); // ref → fine-grained lane
   const [depsOverlay, setDepsOverlay] = useState<Record<string, string[]>>({}); // ref → prerequisite refs (app-side; manager has no deps)
   const [taskUsage, setTaskUsage] = useState<Record<string, { tokens: number; input: number; output: number; ms: number; turns: number }>>({}); // ref → token spend
+  const taskStampRef = useRef('');
+  const laneStampRef = useRef('');
+  const depsStampRef = useRef('');
+  const usageStampRef = useRef('');
+  const usageLoadedAtRef = useRef(0);
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   // Auto-decompose: describe an objective → lead splits it → create + farm out.
   const [showAssign, setShowAssign] = useState(false);
@@ -541,47 +570,118 @@ function TasksPanel({ store }: { store: FleetStore }) {
     } finally { setProposing(false); }
   }
 
-  async function reload() {
+  async function reload(opts: { forceUsage?: boolean } = {}) {
     try {
       // Holistic "All teams" → every team's tasks (tagged with teamName); else the active team.
       const t = await call<Task[]>(store.viewAll ? 'tasks:allTeams' : 'tasks');
-      setTasks([...t].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)));
+      const nextTasks = [...t].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+      const nextStamp = taskListStamp(nextTasks);
+      if (nextStamp !== taskStampRef.current) {
+        taskStampRef.current = nextStamp;
+        setTasks(nextTasks);
+      }
     } catch {
-      setTasks([]);
+      if (taskStampRef.current !== '[]') {
+        taskStampRef.current = '[]';
+        setTasks([]);
+      }
     }
-    setLaneOverlay(await call<Record<string, string>>('tasks:lanes').catch(() => ({})));
-    setDepsOverlay(await call<Record<string, string[]>>('tasks:deps').catch(() => ({})));
+    const [lanes, deps] = await Promise.all([
+      call<Record<string, string>>('tasks:lanes').catch(() => ({})),
+      call<Record<string, string[]>>('tasks:deps').catch(() => ({})),
+    ]);
+    const laneStamp = sortedRecordStamp(lanes);
+    if (laneStamp !== laneStampRef.current) {
+      laneStampRef.current = laneStamp;
+      setLaneOverlay(lanes);
+    }
+    const depsStamp = sortedRecordStamp(deps);
+    if (depsStamp !== depsStampRef.current) {
+      depsStampRef.current = depsStamp;
+      setDepsOverlay(deps);
+    }
     // Per-task token spend — fetch per displayed team (the endpoint is team-scoped) and merge.
+    const now = Date.now();
+    if (!opts.forceUsage && now - usageLoadedAtRef.current < TASK_USAGE_POLL_MS) return;
     try {
       const teamsShown = store.viewAll
         ? [...new Set(store.allAgents.map((a) => a.team).filter(Boolean) as string[])]
         : [store.team ?? 'default'];
       const maps = await Promise.all(teamsShown.map((tm) => call<Record<string, { tokens: number; input: number; output: number; ms: number; turns: number }>>('tasks:usage', tm).catch(() => ({}))));
-      setTaskUsage(Object.assign({}, ...maps));
+      const merged = Object.assign({}, ...maps);
+      const usageStamp = sortedRecordStamp(merged);
+      usageLoadedAtRef.current = now;
+      if (usageStamp !== usageStampRef.current) {
+        usageStampRef.current = usageStamp;
+        setTaskUsage(merged);
+      }
     } catch { /* usage is best-effort */ }
   }
   useEffect(() => {
-    reload();
+    reload({ forceUsage: !usageLoadedAtRef.current });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store.team, store.viewAll, store.lastUpdated, syncVersion]);
   // Auto-refresh the board so it stays live as agents claim/complete work.
   useEffect(() => {
-    const id = setInterval(() => { void reload(); }, 5000);
+    const id = setInterval(() => { void reload(); }, TASK_BOARD_POLL_MS);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store.team, store.viewAll]);
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 15000);
+    return () => clearInterval(id);
+  }, []);
   // In holistic mode each per-task action must hit the task's OWN team.
   const taskTeam = (t: Task): string | undefined => (store.viewAll ? t.teamName : undefined);
 
   // Resolve a task's prerequisites from the app-side deps overlay (the manager has none).
   // A missing prereq (removed task) counts as satisfied so nothing blocks forever.
-  const taskIndex = new Map(tasks.map((t) => [ref(t), t] as const));
+  const taskIndex = useMemo(() => new Map(tasks.map((t) => [ref(t), t] as const)), [tasks]);
+  const prereqByRef = useMemo(() => {
+    const out = new Map<string, { ref: string; task?: Task; done: boolean }[]>();
+    for (const t of tasks) {
+      out.set(ref(t), (depsOverlay[ref(t)] ?? []).map((r) => {
+        const d = taskIndex.get(r);
+        return { ref: r, task: d, done: d ? isDone(d) : true };
+      }));
+    }
+    return out;
+  }, [depsOverlay, taskIndex, tasks]);
+  const blockedRefs = useMemo(() => {
+    const out = new Set<string>();
+    for (const t of tasks) {
+      if (!isDone(t) && (prereqByRef.get(ref(t)) ?? []).some((p) => !p.done)) out.add(ref(t));
+    }
+    return out;
+  }, [prereqByRef, tasks]);
+  const blocksByRef = useMemo(() => {
+    const out = new Map<string, number>();
+    for (const [dependentRef, prereqs] of Object.entries(depsOverlay)) {
+      const dependent = taskIndex.get(dependentRef);
+      if (!dependent || isDone(dependent)) continue;
+      for (const prereq of prereqs ?? []) {
+        const current = out.get(prereq) ?? 0;
+        out.set(prereq, current + 1);
+      }
+    }
+    return out;
+  }, [depsOverlay, taskIndex]);
+  const laneByRef = useMemo(() => {
+    const out = new Map<string, Lane>();
+    for (const t of tasks) {
+      const r = ref(t);
+      if (blockedRefs.has(r)) { out.set(r, 'holding'); continue; }
+      const ov = laneOverlay[r] as Lane | undefined;
+      out.set(r, ov && LANE_STATUS[ov] === colOf(t.status) ? ov : DEFAULT_LANE[colOf(t.status)]);
+    }
+    return out;
+  }, [blockedRefs, laneOverlay, tasks]);
   function prereqsOf(t: Task): { ref: string; task?: Task; done: boolean }[] {
-    return (depsOverlay[ref(t)] ?? []).map((r) => { const d = taskIndex.get(r); return { ref: r, task: d, done: d ? isDone(d) : true }; });
+    return prereqByRef.get(ref(t)) ?? [];
   }
   // Blocked = not done AND at least one prerequisite isn't done yet.
   function isBlocked(t: Task): boolean {
-    return !isDone(t) && prereqsOf(t).some((p) => !p.done);
+    return blockedRefs.has(ref(t));
   }
   // How many still-PENDING tasks list THIS task as a prerequisite. Excludes dependents that
   // are already done (otherwise the badge stays at "blocks N" forever after they finish — the
@@ -589,21 +689,13 @@ function TasksPanel({ store }: { store: FleetStore }) {
   // poll from live task statuses, so the badge clears reactively as dependents complete.
   function blocksCount(t: Task): number {
     if (isDone(t)) return 0; // a finished task no longer blocks anything
-    const r = ref(t);
-    return Object.keys(depsOverlay).filter((k) => {
-      if (!depsOverlay[k]?.includes(r)) return false;
-      const d = taskIndex.get(k);
-      return !!d && !isDone(d); // count only dependents that are still pending
-    }).length;
+    return blocksByRef.get(ref(t)) ?? 0;
   }
   // A task's effective lane. A dependency-blocked task auto-moves to Holding (wins over a
   // stored overlay); else honor a manual drag (overlay matching the status column); else the
   // default lane for the status.
   function laneOf(t: Task): Lane {
-    if (isBlocked(t)) return 'holding';
-    const ov = laneOverlay[ref(t)] as Lane | undefined;
-    if (ov && LANE_STATUS[ov] === colOf(t.status)) return ov;
-    return DEFAULT_LANE[colOf(t.status)];
+    return laneByRef.get(ref(t)) ?? DEFAULT_LANE[colOf(t.status)];
   }
   function laneOfWith(t: Task, list: Task[], lanes: Record<string, string>, deps: Record<string, string[]>): Lane {
     const idx = new Map(list.map((x) => [ref(x), x] as const));
@@ -1037,41 +1129,69 @@ function TasksPanel({ store }: { store: FleetStore }) {
     } finally { setProposing(false); }
   }
 
-  const routineCount = tasks.filter(isRoutine).length;
-  const openCount = tasks.filter((t) => !isDone(t)).length;
-  const doneCount = tasks.filter(isDone).length;
-  // Unassigned To-Do tasks the lead can triage/assign. Triage runs on the ACTIVE team's lead,
-  // so in holistic view the count is scoped to the active team (avoids a misleading total).
-  const unassignedTodo = tasks.filter((t) => !t.ownerName && laneOf(t) === 'todo' && (!store.viewAll || t.teamName === activeTeam)).length;
-  // Owned "doing" tasks with no manager activity past the manager threshold → stalled.
-  const stalledTasks = tasks.filter((t) => {
-    if (colOf(t.status) !== 'doing' || !t.ownerName) return false;
-    if (isBlocked(t)) return false; // a blocked task isn't stalled — it's waiting on a prerequisite
-    if (isDelegatedLeadTask(t)) return false; // lead parent already delegated child work; not jump-startable
-    const up = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
-    return up > 0 && Date.now() - up > MANAGER_STALL_THRESHOLD_MS;
-  });
-  // The Done lane shows RECENT completions (the most-recent N) so the board reads as a live
-  // flow instead of looking empty when everything's finished. Older done tasks auto-archive
-  // (hidden) until "show archived" is toggled. updatedAt/completedAt share a scale, so raw sort.
-  const doneTs = (t: Task) => t.completedAt ?? t.updatedAt ?? t.createdAt ?? 0;
-  const recentDoneRefs = new Set(
-    tasks.filter(isDone).sort((a, b) => doneTs(b) - doneTs(a)).slice(0, RECENT_DONE_CAP).map(ref),
-  );
-  const isRecentDone = (t: Task) => isDone(t) && recentDoneRefs.has(ref(t));
-  // Archived = done but NOT recent (older completions hidden behind the toggle).
-  const archivedCount = tasks.filter((t) => isDone(t) && !isRecentDone(t) && (!hideRoutine || !isRoutine(t))).length;
-  const filtered = tasks.filter((t) => {
-    if (hideRoutine && isRoutine(t)) return false;
-    if (!showArchived && isDone(t) && !isRecentDone(t)) return false; // recent completions stay visible
-    const s = q.trim().toLowerCase();
-    return !s || t.title.toLowerCase().includes(s) || (t.ownerName ?? '').toLowerCase().includes(s) || ref(t).toLowerCase().includes(s);
-  });
-  const visibleOpenCount = filtered.filter((t) => !isDone(t)).length;
-  const visibleDoneCount = filtered.filter(isDone).length;
-  const hiddenOpenCount = Math.max(0, openCount - visibleOpenCount);
-  const hiddenDoneCount = Math.max(0, doneCount - visibleDoneCount);
-  const hiddenTaskCount = Math.max(0, tasks.length - filtered.length);
+  const board = useMemo(() => {
+    const routineCount = tasks.filter(isRoutine).length;
+    const openCount = tasks.filter((t) => !isDone(t)).length;
+    const doneCount = tasks.filter(isDone).length;
+    // Unassigned To-Do tasks the lead can triage/assign. Triage runs on the ACTIVE team's lead,
+    // so in holistic view the count is scoped to the active team (avoids a misleading total).
+    const unassignedTodo = tasks.filter((t) => !t.ownerName && (laneByRef.get(ref(t)) ?? DEFAULT_LANE[colOf(t.status)]) === 'todo' && (!store.viewAll || t.teamName === activeTeam)).length;
+    // Owned "doing" tasks with no manager activity past the manager threshold → stalled.
+    const stalledTasks = tasks.filter((t) => {
+      if (colOf(t.status) !== 'doing' || !t.ownerName) return false;
+      if (blockedRefs.has(ref(t))) return false; // a blocked task isn't stalled — it's waiting on a prerequisite
+      if (isDelegatedLeadTask(t)) return false; // lead parent already delegated child work; not jump-startable
+      const up = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
+      return up > 0 && nowMs - up > MANAGER_STALL_THRESHOLD_MS;
+    });
+    // The Done lane shows RECENT completions (the most-recent N) so the board reads as a live
+    // flow instead of looking empty when everything's finished. Older done tasks auto-archive
+    // (hidden) until "show archived" is toggled. updatedAt/completedAt share a scale, so raw sort.
+    const doneTs = (t: Task) => t.completedAt ?? t.updatedAt ?? t.createdAt ?? 0;
+    const recentDoneRefs = new Set(
+      tasks.filter(isDone).sort((a, b) => doneTs(b) - doneTs(a)).slice(0, RECENT_DONE_CAP).map(ref),
+    );
+    const search = q.trim().toLowerCase();
+    const filtered = tasks.filter((t) => {
+      if (hideRoutine && isRoutine(t)) return false;
+      if (!showArchived && isDone(t) && !recentDoneRefs.has(ref(t))) return false; // recent completions stay visible
+      return !search || t.title.toLowerCase().includes(search) || (t.ownerName ?? '').toLowerCase().includes(search) || ref(t).toLowerCase().includes(search);
+    });
+    const visibleOpenCount = filtered.filter((t) => !isDone(t)).length;
+    const visibleDoneCount = filtered.length - visibleOpenCount;
+    const laneItems: Record<Lane, Task[]> = { 'under-review': [], holding: [], todo: [], doing: [], done: [] };
+    for (const t of filtered) laneItems[laneByRef.get(ref(t)) ?? DEFAULT_LANE[colOf(t.status)]].push(t);
+    return {
+      routineCount,
+      openCount,
+      doneCount,
+      unassignedTodo,
+      stalledTasks,
+      archivedCount: tasks.filter((t) => isDone(t) && !recentDoneRefs.has(ref(t)) && (!hideRoutine || !isRoutine(t))).length,
+      filteredCount: filtered.length,
+      visibleOpenCount,
+      visibleDoneCount,
+      hiddenOpenCount: Math.max(0, openCount - visibleOpenCount),
+      hiddenDoneCount: Math.max(0, doneCount - visibleDoneCount),
+      hiddenTaskCount: Math.max(0, tasks.length - filtered.length),
+      laneItems,
+    };
+  }, [activeTeam, blockedRefs, hideRoutine, laneByRef, nowMs, q, showArchived, store.viewAll, tasks]);
+  const {
+    routineCount,
+    openCount,
+    doneCount,
+    unassignedTodo,
+    stalledTasks,
+    archivedCount,
+    filteredCount,
+    visibleOpenCount,
+    visibleDoneCount,
+    hiddenOpenCount,
+    hiddenDoneCount,
+    hiddenTaskCount,
+    laneItems,
+  } = board;
 
   return (
     <>
@@ -1322,8 +1442,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
             <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
             show older{archivedCount ? ` (${archivedCount})` : ''}
           </label>
-          <span className="muted small" title={`Showing ${filtered.length} of ${tasks.length} tasks after search/filter/archive rules.`}>{filtered.length}/{tasks.length} shown{hiddenTaskCount ? ` · ${hiddenTaskCount} hidden` : ''}</span>
-          <span className="muted small" title="The board re-fetches every 5s; the Done lane shows recent completions; drag a card between lanes">⟳ live flow · drag between lanes</span>
+          <span className="muted small" title={`Showing ${filteredCount} of ${tasks.length} tasks after search/filter/archive rules.`}>{filteredCount}/{tasks.length} shown{hiddenTaskCount ? ` · ${hiddenTaskCount} hidden` : ''}</span>
+          <span className="muted small" title={`The board refreshes from manager events and falls back to a ${Math.round(TASK_BOARD_POLL_MS / 1000)}s poll; token usage refreshes every ${Math.round(TASK_USAGE_POLL_MS / 1000)}s.`}>⟳ live flow · drag between lanes</span>
           <span className="grow" />
           {note ? <span className={`small ${/failed/.test(note) ? 'status-error' : 'muted'}`}>{note}</span> : null}
         </div>
@@ -1337,8 +1457,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
             const upMs = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
             const blocked = isBlocked(t);                        // waiting on a prerequisite → parked in Holding
             const delegated = owned && isDelegatedLeadTask(t);
-            const stale = owned && !blocked && !delegated && upMs > 0 && Date.now() - upMs > MANAGER_STALL_THRESHOLD_MS;
-            const needsAssignment = phase === 'todo' && !t.ownerName && upMs > 0 && Date.now() - upMs > MANAGER_STALL_THRESHOLD_MS;
+            const stale = owned && !blocked && !delegated && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS;
+            const needsAssignment = phase === 'todo' && !t.ownerName && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS;
             const working = owned && !delegated && !stale && !blocked; // recently moved to doing → plausibly active
             const cAbs = absTime(t.createdAt);
             const uAbs = absTime(t.updatedAt);
@@ -1411,12 +1531,12 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     {t.ownerName} · working
                   </span>
                 ) : stale ? (
-                  <span className="small" title={`${t.ownerName} has held this in Doing for ${ago(t.updatedAt)} with no status change — it may be stalled. Hit ↻ to ask the manager to jump-start it, or drag it back to To Do.`}
+                  <span className="small" title={`${t.ownerName} has held this in Doing for ${agoAt(t.updatedAt, nowMs)} with no status change — it may be stalled. Hit ↻ to ask the manager to jump-start it, or drag it back to To Do.`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
-                    ⏳ {t.ownerName} · stalled {ago(t.updatedAt)}
+                    ⏳ {t.ownerName} · stalled {agoAt(t.updatedAt, nowMs)}
                   </span>
                 ) : needsAssignment ? (
-                  <span className="small" title={`This To Do item has had no owner update for ${ago(t.updatedAt)}. Use Reconcile or assign it directly; it is queued, not actively running.`}
+                  <span className="small" title={`This To Do item has had no owner update for ${agoAt(t.updatedAt, nowMs)}. Use Reconcile or assign it directly; it is queued, not actively running.`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
                     ◴ needs assignment
                   </span>
@@ -1440,23 +1560,23 @@ function TasksPanel({ store }: { store: FleetStore }) {
                 )}
               </div>
               <div className="muted" style={{ marginTop: 3, display: 'flex', gap: 9, flexWrap: 'wrap', fontSize: 10.5, opacity: 0.85 }}>
-                <span title={cAbs ? `created ${cAbs}` : undefined}>⊕ created {ago(t.createdAt)} ago</span>
-                {working && t.updatedAt ? <span style={{ color: '#3ccb78' }} title={uAbs ? `moved to Doing ${uAbs}` : undefined}>▶ in Doing {ago(t.updatedAt)}</span> : null}
+                <span title={cAbs ? `created ${cAbs}` : undefined}>⊕ created {agoAt(t.createdAt, nowMs)} ago</span>
+                {working && t.updatedAt ? <span style={{ color: '#3ccb78' }} title={uAbs ? `moved to Doing ${uAbs}` : undefined}>▶ in Doing {agoAt(t.updatedAt, nowMs)}</span> : null}
                 {delegated && childRefs.length ? (
                   <span style={{ color: '#60a5fa' }} title={childSummary ? `Delegated child tasks:\n${childSummary}` : `Delegated child tasks: ${childRefs.join(', ')}`}>
                     ⇢ {activeChildren.length ? `${activeChildren.length} active / ` : ''}{childRefs.length} delegated
                   </span>
                 ) : null}
-                {stale ? <span style={{ color: '#e0a33c' }} title={uAbs ? `no status change since ${uAbs} — may be stalled` : undefined}>⏳ no update {ago(t.updatedAt)}</span> : null}
-                {phase === 'done' && (t.completedAt || t.updatedAt) ? <span title={dAbs ? `completed ${dAbs}` : undefined}>✓ done {ago(t.completedAt ?? t.updatedAt)} ago</span> : null}
-                {needsAssignment ? <span style={{ color: '#e0a33c' }} title={uAbs ? `waiting for assignment since ${uAbs}` : undefined}>◴ needs assignment {ago(t.updatedAt)}</span> : null}
+                {stale ? <span style={{ color: '#e0a33c' }} title={uAbs ? `no status change since ${uAbs} — may be stalled` : undefined}>⏳ no update {agoAt(t.updatedAt, nowMs)}</span> : null}
+                {phase === 'done' && (t.completedAt || t.updatedAt) ? <span title={dAbs ? `completed ${dAbs}` : undefined}>✓ done {agoAt(t.completedAt ?? t.updatedAt, nowMs)} ago</span> : null}
+                {needsAssignment ? <span style={{ color: '#e0a33c' }} title={uAbs ? `waiting for assignment since ${uAbs}` : undefined}>◴ needs assignment {agoAt(t.updatedAt, nowMs)}</span> : null}
                 {phase === 'todo' && t.ownerName ? <span title="assigned but not started yet">◴ queued</span> : null}
               </div>
             </div>
             );
           };
           const laneCol = (lane: { id: Lane; label: string }) => {
-            const items = filtered.filter((t) => laneOf(t) === lane.id);
+            const items = laneItems[lane.id] ?? [];
             return (
               <div
                 key={lane.id}
