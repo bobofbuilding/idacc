@@ -699,6 +699,7 @@ export function Modules({ store }: { store: FleetStore }) {
   const [brainDrift, setBrainDrift] = useState<SkillBrainDrift | null>(null);
   const [plugins, setPlugins] = useState<LibraryPluginEntry[]>([]);
   const [pluginInspections, setPluginInspections] = useState<LibraryPluginInspection[]>([]);
+  const [agentGroupsSnapshot, setAgentGroupsSnapshot] = useState<TeamAgentsGroup[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string>('');
   const modulesVersion = useSyncVersion('modules');
@@ -728,8 +729,20 @@ export function Modules({ store }: { store: FleetStore }) {
   // support is shown as an advisory execution surface, not used as a hard target
   // filter, so API/subscription/local runtimes can all receive MCP, skills, and
   // portable plugin package state without silently dropping agents.
+  const snapshotAllAgents = useMemo<TargetAgent[]>(
+    () => agentGroupsSnapshot
+      ? agentGroupsSnapshot.flatMap((g) => g.agents.map((a) => ({ ...a, team: g.team })))
+      : store.allAgents.map((a) => ({ ...a, team: (a as TargetAgent).team ?? activeTeam })),
+    [agentGroupsSnapshot, store.allAgents, activeTeam],
+  );
+  const snapshotTeamAgents = useMemo<TargetAgent[]>(
+    () => agentGroupsSnapshot
+      ? (agentGroupsSnapshot.find((g) => g.team === activeTeam)?.agents ?? []).map((a) => ({ ...a, team: activeTeam }))
+      : store.agents.map((a) => ({ ...a, team: (a as TargetAgent).team ?? activeTeam })),
+    [agentGroupsSnapshot, activeTeam, store.agents],
+  );
   const baseAgents: TargetAgent[] =
-    scope === 'team' ? store.agents : scope === 'leads' ? store.allAgents.filter((a) => coords[a.team ?? ''] === a.name) : store.allAgents;
+    scope === 'team' ? snapshotTeamAgents : scope === 'leads' ? snapshotAllAgents.filter((a) => coords[a.team ?? ''] === a.name) : snapshotAllAgents;
   const eligibleAgents = baseAgents;
   const advisoryAgents = baseAgents.filter((a) => capabilitySurface(tab, agentRuntime(a)).advisory);
   const targetTeamOf = (a: { team?: string }) => a.team ?? activeTeam;
@@ -808,16 +821,16 @@ export function Modules({ store }: { store: FleetStore }) {
       .toLowerCase();
   }
   const skillAttachAgents = useMemo<TargetAgent[]>(() => {
-    const source = store.allAgents.length
-      ? store.allAgents
-      : store.agents.map((a) => ({ ...a, team: activeTeam }));
+    const source = snapshotAllAgents.length
+      ? snapshotAllAgents
+      : snapshotTeamAgents;
     const byKey = new Map<string, TargetAgent>();
     for (const a of source) {
       const item: TargetAgent = { ...a, team: a.team ?? activeTeam };
       byKey.set(skillAgentKey(item), item);
     }
     return [...byKey.values()].sort((a, b) => skillAgentLabel(a).localeCompare(skillAgentLabel(b)));
-  }, [store.allAgents, store.agents, activeTeam]);
+  }, [snapshotAllAgents, snapshotTeamAgents]);
   function findSkillAttachAgent(key: string): TargetAgent | null {
     return skillAttachAgents.find((a) => skillAgentKey(a) === key) ?? null;
   }
@@ -1081,6 +1094,11 @@ export function Modules({ store }: { store: FleetStore }) {
   async function freshGroups(): Promise<TeamAgentsGroup[]> {
     return call<TeamAgentsGroup[]>('agents:allTeams', { force: true }).catch(() => []);
   }
+  async function refreshAgentGroupsSnapshot(): Promise<TeamAgentsGroup[]> {
+    const groups = await freshGroups();
+    setAgentGroupsSnapshot(groups);
+    return groups;
+  }
   function findFreshTarget(groups: TeamAgentsGroup[], rendered: TargetAgent): TargetAgent | null {
     const expectedTeam = targetTeamOf(rendered);
     const agents = groups.find((g) => g.team === expectedTeam)?.agents ?? [];
@@ -1178,12 +1196,12 @@ export function Modules({ store }: { store: FleetStore }) {
     await applyToTargets(`attach ${p.name}`, async (a) => {
       const next = [...curMcp(a).filter((s) => s.name !== p.name), toSpec(p)];
       await call<SetMcpResult>('setAgentMcp', a.id, next, targetTeamOf(a));
-    });
+    }, { strictCapabilities: false });
   }
   async function detachServer(p: McpServerProfile) {
     await applyToTargets(`detach ${p.name}`, async (a) => {
       await call<SetMcpResult>('setAgentMcp', a.id, curMcp(a).filter((s) => s.name !== p.name), targetTeamOf(a));
-    });
+    }, { strictCapabilities: false });
   }
   async function removeMcpProfile(name: string) {
     setBusy(true);
@@ -1211,7 +1229,7 @@ export function Modules({ store }: { store: FleetStore }) {
     }
   }
   async function rebuildTargets() {
-    await applyToTargets('rebuild', (a) => call('rebuildAgent', a.name, targetTeamOf(a)));
+    await applyToTargets('rebuild', (a) => call('rebuildAgent', a.name, targetTeamOf(a)), { strictCapabilities: false });
   }
   async function installSkillAll(skill: string) {
     let changed = 0;
@@ -1220,7 +1238,10 @@ export function Modules({ store }: { store: FleetStore }) {
       changed++;
       await call('installSkill', skill, a.name, targetTeamOf(a));
     }, { strictCapabilities: false });
-    if (changed) await reload();
+    if (changed) {
+      await refreshAgentGroupsSnapshot();
+      await reload();
+    }
   }
   async function uninstallSkillAll(skill: string) {
     let changed = 0;
@@ -1229,7 +1250,10 @@ export function Modules({ store }: { store: FleetStore }) {
       changed++;
       await call('uninstallSkill', skill, a.name, targetTeamOf(a));
     }, { strictCapabilities: false });
-    if (changed) await reload();
+    if (changed) {
+      await refreshAgentGroupsSnapshot();
+      await reload();
+    }
   }
   async function installSkillRecommended(skill: string, recommendations: SkillAgentRecommendation[]) {
     const targets = recommendations.filter((r) => !r.installed).slice(0, 4).map((r) => r.agent);
@@ -1248,6 +1272,7 @@ export function Modules({ store }: { store: FleetStore }) {
         await call('installSkill', skill, current.name, targetTeamOf(current));
         changed++;
       }
+      if (changed) await refreshAgentGroupsSnapshot();
       await reload();
       store.refresh();
       setNote(changed ? `attached ${skill} to ${changed} recommended agent${changed === 1 ? '' : 's'} ✓` : `${skill} was already attached to the recommended agents`);
@@ -1283,6 +1308,7 @@ export function Modules({ store }: { store: FleetStore }) {
       for (const a of latest) {
         await call('uninstallSkill', skill, a.name, targetTeamOf(a));
       }
+      if (latest.length) await refreshAgentGroupsSnapshot();
       await reload();
       setNote(`removed ${skill} from ${latest.length} fleet agent${latest.length === 1 ? '' : 's'} ✓`);
       store.refresh();
@@ -1540,9 +1566,7 @@ export function Modules({ store }: { store: FleetStore }) {
   const digestedPluginRows = useMemo(() => allPluginRows.filter(pluginIsDigestedSkill), [allPluginRows]);
   const pluginRows = useMemo(() => allPluginRows.filter((plugin) => !pluginIsDigestedSkill(plugin)), [allPluginRows]);
   function skillFleetUsage(skill: string): TargetAgent[] {
-    return store.allAgents
-      .filter((a) => (((a.metadata as any)?.skills ?? []) as string[]).includes(skill))
-      .map((a) => ({ ...a, team: a.team ?? activeTeam }));
+    return snapshotAllAgents.filter((a) => (((a.metadata as any)?.skills ?? []) as string[]).includes(skill));
   }
   async function freshSkillFleetUsage(skill: string): Promise<TargetAgent[] | null> {
     const groups = await call<TeamAgentsGroup[]>('agents:allTeams', { force: true }).catch(() => null);
@@ -1645,6 +1669,7 @@ export function Modules({ store }: { store: FleetStore }) {
         return;
       }
       await call(action === 'install' ? 'installSkill' : 'uninstallSkill', skill, latest.name, expectedTeam);
+      await refreshAgentGroupsSnapshot();
       await reload();
       setNote(`${skill} ${action === 'install' ? 'attached to' : 'removed from'} ${expectedTeam}/${latest.name} ✓`);
       store.refresh();

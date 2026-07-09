@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { call, resolveCoordinator, useSyncVersion, type FleetStore, type TeamEvent } from '../store.ts';
+import { call, useSyncVersion, type FleetStore, type TeamEvent } from '../store.ts';
 import { isAgentLive } from '../agentStatus.ts';
 import { Chat } from './Chat.tsx';
 import type { InboxItem, NewsItem, Task } from '../../../../idctl/src/api/types.ts';
 
 /**
- * Dashboard = talk to a team lead + watch the fleet. The main panel is a chat locked to a
- * chosen team's lead/coordinator (pick the team from the header — independent of any global
- * active team), beside a slim, live activity feed spanning every team.
+ * Dashboard = talk to default/lead + watch the fleet. The main panel is intentionally
+ * pinned to the default primary lead; team-specific routing belongs in HR Manager.
  */
+
+const DASHBOARD_CHAT_TEAM = 'default';
+const DASHBOARD_CHAT_TARGET = 'lead';
 
 function ago(ts?: number): string {
   if (!ts) return '';
@@ -427,25 +429,6 @@ export function Dashboard({ store }: { store: FleetStore }) {
     ]).filter((team) => team !== 'public'),
     [hier.teams, hier.coordinators, hier.secondaries, store.teams, store.allAgents],
   );
-  // The chat targets the current routed team's lead as a read-only dashboard view.
-  // Default to the active team (if running) else the first team with running agents.
-  const [chatTeam, setChatTeam] = useState<string>('');
-  useEffect(() => {
-    setChatTeam((cur) => {
-      if (cur && activeTeams.includes(cur)) return cur;
-      if (store.team && activeTeams.includes(store.team)) return store.team;
-      return activeTeams[0] ?? store.team ?? 'default';
-    });
-  }, [activeTeams, store.team]);
-
-  const teamAgents = useMemo(() => store.allAgents.filter((a) => a.team === chatTeam), [store.allAgents, chatTeam]);
-  const leadForTeam = useCallback((team: string) => {
-    const agents = store.allAgents.filter((a) => a.team === team);
-    const configured = hier.coordinators[team] || (team === store.team ? store.coordinator : undefined);
-    return resolveCoordinator(agents, configured) ?? 'lead';
-  }, [hier.coordinators, store.allAgents, store.coordinator, store.team]);
-  const lead = leadForTeam(chatTeam);
-
   // Holistic activity feed: recent events plus durable task/comms state across
   // EVERY team (newest first). Events alone are lossy: a task/news row can exist
   // without a retained event, so the tile merges all sources before sorting.
@@ -591,8 +574,8 @@ export function Dashboard({ store }: { store: FleetStore }) {
         <h1>Dashboard</h1>
         <div className="muted small" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           talk to
-          <span className="readonly-target" title="Dashboard chat follows the current routed team lead. Change routing in HR Manager.">
-            {chatTeam || store.team || 'default'}{chatTeam === store.team ? ' (active)' : ''} · {lead}
+          <span className="readonly-target" title="Dashboard chat is pinned to the default primary lead. Use HR Manager for team-specific conversations.">
+            {DASHBOARD_CHAT_TEAM} · {DASHBOARD_CHAT_TARGET}
           </span>
         </div>
       </header>
@@ -601,9 +584,9 @@ export function Dashboard({ store }: { store: FleetStore }) {
 
       {/* Explicit flex row so the chat fills the left and the activity tile always shows on the right. */}
       <div style={{ display: 'flex', gap: 14, flex: 1, minHeight: 0, alignItems: 'stretch' }}>
-        {/* Lead chat: locked to the chosen team's lead (no agent picker — Chat renders its own card). */}
+        {/* Primary lead chat: locked to default/lead (no team or agent picker). */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          <Chat store={store} embedded teamOverride={chatTeam} lockTarget={lead} key={chatTeam} />
+          <Chat store={store} embedded teamOverride={DASHBOARD_CHAT_TEAM} lockTarget={DASHBOARD_CHAT_TARGET} key={`${DASHBOARD_CHAT_TEAM}:${DASHBOARD_CHAT_TARGET}`} />
         </div>
 
         {/* marginTop offsets the chat's control row so the tile top squares with the chat card

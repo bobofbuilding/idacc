@@ -233,14 +233,15 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
   // teamOverride pins this chat to a specific team (independent of the global
   // active team) — its agents, lead, sessions and dispatch all scope to it.
   const team = teamOverride ?? store.team ?? 'default';
+  const pinnedTarget = lockTarget?.trim() || '';
   const teamAgents = useMemo(
     () => (teamOverride ? store.allAgents.filter((a) => a.team === teamOverride) : store.agents),
     [teamOverride, store.allAgents, store.agents],
   );
   const teamCoordinator = teamOverride ? undefined : store.coordinator;
   const defaultTarget = useMemo(
-    () => resolveCoordinator(teamAgents, teamCoordinator) ?? 'lead',
-    [teamAgents, teamCoordinator],
+    () => pinnedTarget || (resolveCoordinator(teamAgents, teamCoordinator) ?? 'lead'),
+    [pinnedTarget, teamAgents, teamCoordinator],
   );
   const orderedAgents = agentsLeadFirst(teamAgents, teamCoordinator);
 
@@ -346,7 +347,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     return () => { alive = false; clearInterval(t); };
   }, [running]);
 
-  const activeKey = `idctl.chat.session.${team}`;
+  const activeKey = pinnedTarget ? `idctl.chat.session.${team}.${pinnedTarget}` : `idctl.chat.session.${team}`;
   const draftKey = (sid: string) => `idctl.chat.draft.${sid}`;
   const attachKey = (sid: string) => `idctl.chat.attach.${sid}`;
   function readDraft(sid: string): string {
@@ -372,7 +373,16 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     return { id: newSessionId(), title: `New chat · ${stamp}`, named: false, team, target: defaultTarget, projectId: '', createdAt: Date.now(), updatedAt: Date.now(),
       messages: [{ id: 0, role: 'system', who: '', text: 'New chat. Pick an agent, optionally focus a project, attach files, or generate an image — then Send.' }] };
   }
+  function normalizeLockedSession(s: Session): Session {
+    if (!pinnedTarget && s.team === team) return s;
+    return {
+      ...s,
+      team,
+      target: pinnedTarget || s.target || defaultTarget,
+    };
+  }
   function adoptSession(s: Session) {
+    s = normalizeLockedSession(s);
     // Monotonic, never reset — ids stay unique across sessions so a late reply
     // can never land on an unrelated message that happens to share a small int.
     idRef.current = Math.max(idRef.current, ...s.messages.map((m) => m.id), 0) + 1;
@@ -535,7 +545,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
   }, [attachments, session?.id]);
 
   const msgs = session?.messages ?? [];
-  const target = lockTarget ?? (session && teamAgents.some((a) => a.name === session.target) ? session.target : defaultTarget);
+  const target = pinnedTarget || (session && teamAgents.some((a) => a.name === session.target) ? session.target : defaultTarget);
   const targetAgent = teamAgents.find((a) => a.name === target);
   const focused = projects.find((p) => p.id === session?.projectId);
   const destDir = focused?.path || targetAgent?.workingDirectory || '';
