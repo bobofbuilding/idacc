@@ -21,6 +21,10 @@ if [ -z "$NOTE" ]; then
   echo "usage: scripts/release.sh \"<changelog note>\" [explicit-version] [--commit]" >&2
   exit 1
 fi
+if printf '%s' "$NOTE" | grep -Eiq '^(automated release of outstanding|maintenance release\.?$|update\.?$|changes\.?$|misc\.?$|wip\.?$)'; then
+  echo "release note must describe what changed; placeholder summaries are not allowed" >&2
+  exit 1
+fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # repo root: …/.iacc-publish/id-agent-control-center
 export DESK="$ROOT/idctl-desktop"          # exported so the inline node helpers can read it
@@ -58,7 +62,15 @@ CHANGELOG_BODY="$(git log "$RANGE" --no-merges --format='%s' 2>/dev/null \
 if [ -z "$CHANGELOG_BODY" ]; then
   CHANGELOG_BODY="$(printf '%s' "$NOTE" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+: *//')"
 fi
-[ -z "$CHANGELOG_BODY" ] && CHANGELOG_BODY="Maintenance release."
+if [ -z "$CHANGELOG_BODY" ]; then
+  echo "release note must describe what changed; refusing to create a generic release" >&2
+  exit 1
+fi
+if printf '%s' "$CHANGELOG_BODY" | grep -Eiq '^(automated release of outstanding|maintenance release\.?$|update\.?$|changes\.?$|misc\.?$|wip\.?$)'; then
+  echo "release note/changelog body must describe what changed; got placeholder text:" >&2
+  printf '%s\n' "$CHANGELOG_BODY" >&2
+  exit 1
+fi
 printf '▶ changelog for v%s (from %s):\n%s\n' "$VER" "${RANGE}" "$CHANGELOG_BODY"
 
 # --- 0) typecheck FIRST, before mutating anything — a failure leaves the tree pristine ---
@@ -103,7 +115,7 @@ const fs = require("fs"); const [ver, note] = process.argv.slice(1);
 const f = "CHANGELOG.md"; const t = fs.readFileSync(f, "utf8");
 const date = new Date().toISOString().slice(0, 10);
 const body = note.trim().split("\n").map((l) => l.trim()).filter(Boolean).map((l) => (l.startsWith("-") ? l : "- " + l)).join("\n");
-const entry = `## [${ver}] — ${date}\n${body}\n\n`;
+const entry = `## [${ver}] — ${date}\n### What changed\n${body}\n\n`;
 const i = t.indexOf("## [");
 fs.writeFileSync(f, (i >= 0 ? t.slice(0, i) + entry + t.slice(i) : t + "\n" + entry));
 ' "$VER" "$CHANGELOG_BODY"

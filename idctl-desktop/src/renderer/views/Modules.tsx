@@ -746,16 +746,17 @@ export function Modules({ store }: { store: FleetStore }) {
     setTouched(false);
     setExplicit(new Set());
   }, [tab]);
-  // Skills/plugins default to every current agent in scope. MCP server attachment
-  // starts empty because each attached server can spawn a helper process for
-  // every active harness; require an explicit target choice before bulk changes.
-  const selectedIds: Set<string> = touched ? explicit : new Set(tab === 'mcp' ? [] : eligibleAgents.map((a) => a.id));
+  // Skills/plugins default to every current agent in scope. MCP defaults to the
+  // active team too, so single-team Attach/Detach works without an extra arming
+  // step; broad cross-team MCP changes still require an explicit "all" choice.
+  const defaultTargetAgents = tab === 'mcp' && scope !== 'team' ? [] : eligibleAgents;
+  const selectedIds: Set<string> = touched ? explicit : new Set(defaultTargetAgents.map((a) => a.id));
   const targetAgents = touched
     ? eligibleAgents.filter((a) => selectedIds.has(a.id))
-    : tab === 'mcp' ? [] : eligibleAgents;
+    : defaultTargetAgents;
   const targetCount = targetAgents.length;
   function baseSet(): Set<string> {
-    return touched ? new Set(explicit) : new Set(tab === 'mcp' ? [] : eligibleAgents.map((a) => a.id));
+    return touched ? new Set(explicit) : new Set(defaultTargetAgents.map((a) => a.id));
   }
   function toggleAgent(id: string) {
     const n = baseSet();
@@ -767,8 +768,11 @@ export function Modules({ store }: { store: FleetStore }) {
   function selectNone() { setExplicit(new Set()); setTouched(true); }
 
   // How many selected agents currently have a given MCP server / skill.
+  function mcpCountIn(agents: TargetAgent[], name: string): number {
+    return agents.filter((a) => (((a.metadata as any)?.mcpServers ?? []) as { name: string }[]).some((s) => s.name === name)).length;
+  }
   function mcpCount(name: string): number {
-    return targetAgents.filter((a) => (((a.metadata as any)?.mcpServers ?? []) as { name: string }[]).some((s) => s.name === name)).length;
+    return mcpCountIn(targetAgents, name);
   }
   function skillCount(skill: string): number {
     return targetAgents.filter((a) => (((a.metadata as any)?.skills ?? []) as string[]).includes(skill)).length;
@@ -1088,20 +1092,21 @@ export function Modules({ store }: { store: FleetStore }) {
     if (labels.length <= 6) return labels.join(', ');
     return `${labels.slice(0, 6).join(', ')}, ...and ${labels.length - 6} more`;
   }
-  async function freshCapabilityTargets(label: string): Promise<TargetAgent[] | null> {
+  async function freshCapabilityTargets(label: string, opts: { strictCapabilities?: boolean } = {}): Promise<TargetAgent[] | null> {
+    const strictCapabilities = opts.strictCapabilities !== false;
     const groups = await freshGroups();
-    if (scope !== 'team' || !touched) {
-      let latestCoords = coords;
-      if (scope === 'leads') {
-        const hierarchy = await call<{ primary?: { team: string; agent: string } | null; coordinators?: Record<string, string> }>('coordinator:hierarchy').catch(() => null);
-        if (!hierarchy) {
-          setNote(`${label} blocked: could not verify the current lead hierarchy. Refresh and try again.`);
-          return null;
-        }
-        latestCoords = { ...(hierarchy.coordinators ?? {}) };
-        if (hierarchy.primary && !latestCoords[hierarchy.primary.team]) latestCoords[hierarchy.primary.team] = hierarchy.primary.agent;
-        setCoords(latestCoords);
+    let latestCoords = coords;
+    if (scope === 'leads') {
+      const hierarchy = await call<{ primary?: { team: string; agent: string } | null; coordinators?: Record<string, string> }>('coordinator:hierarchy').catch(() => null);
+      if (!hierarchy) {
+        setNote(`${label} blocked: could not verify the current lead hierarchy. Refresh and try again.`);
+        return null;
       }
+      latestCoords = { ...(hierarchy.coordinators ?? {}) };
+      if (hierarchy.primary && !latestCoords[hierarchy.primary.team]) latestCoords[hierarchy.primary.team] = hierarchy.primary.agent;
+      setCoords(latestCoords);
+    }
+    if (!touched) {
       const currentScopeTargets: TargetAgent[] =
         scope === 'team'
           ? (groups.find((g) => g.team === activeTeam)?.agents ?? []).map((a) => ({ ...a, team: activeTeam }))
@@ -1126,8 +1131,13 @@ export function Modules({ store }: { store: FleetStore }) {
         store.refresh();
         return null;
       }
-      if (capabilityAgentStamp(current, expectedTeam) !== capabilityAgentStamp({ ...rendered, team: expectedTeam }, expectedTeam)) {
+      if (strictCapabilities && capabilityAgentStamp(current, expectedTeam) !== capabilityAgentStamp({ ...rendered, team: expectedTeam }, expectedTeam)) {
         setNote(`${label} blocked: ${expectedTeam}/${rendered.name} capability state changed. Refreshed; review the current row before applying.`);
+        store.refresh();
+        return null;
+      }
+      if (scope === 'leads' && latestCoords[expectedTeam] !== current.name) {
+        setNote(`${label} blocked: ${expectedTeam}/${rendered.name} is no longer the current team lead. Refreshed; review targets and try again.`);
         store.refresh();
         return null;
       }
@@ -1136,7 +1146,7 @@ export function Modules({ store }: { store: FleetStore }) {
     return fresh;
   }
   // Apply an action to every selected agent after fresh target validation.
-  async function applyToTargets(label: string, fn: (a: TargetAgent) => Promise<unknown>) {
+  async function applyToTargets(label: string, fn: (a: TargetAgent) => Promise<unknown>, opts: { strictCapabilities?: boolean } = {}) {
     if (targetCount === 0) {
       setNote('select at least one agent above');
       return;
@@ -1144,12 +1154,12 @@ export function Modules({ store }: { store: FleetStore }) {
     setBusy(true);
     setNote(`checking ${label} targets…`);
     try {
-      const freshTargets = await freshCapabilityTargets(label);
+      const freshTargets = await freshCapabilityTargets(label, opts);
       if (!freshTargets) return;
       const scopeLabel = scope === 'team' ? `team ${activeTeam}` : scope === 'leads' ? 'all team leads' : 'all teams';
       if (!window.confirm(`Apply "${label}" to ${freshTargets.length} current target${freshTargets.length === 1 ? '' : 's'}?\n\nScope: ${scopeLabel}\nTargets: ${describeTargets(freshTargets)}\n\nThis can change agent capabilities or rebuild running agents.`)) return;
       setNote(`rechecking ${label} targets…`);
-      const latestTargets = await freshCapabilityTargets(label);
+      const latestTargets = await freshCapabilityTargets(label, opts);
       if (!latestTargets) return;
       setNote(`${label} · ${latestTargets.length} agent${latestTargets.length > 1 ? 's' : ''}…`);
       for (const a of latestTargets) await fn(a);
@@ -1204,10 +1214,48 @@ export function Modules({ store }: { store: FleetStore }) {
     await applyToTargets('rebuild', (a) => call('rebuildAgent', a.name, targetTeamOf(a)));
   }
   async function installSkillAll(skill: string) {
-    await applyToTargets(`install ${skill}`, (a) => call('installSkill', skill, a.name, targetTeamOf(a)));
+    let changed = 0;
+    await applyToTargets(`attach ${skill}`, async (a) => {
+      if (agentHasSkill(a, skill)) return;
+      changed++;
+      await call('installSkill', skill, a.name, targetTeamOf(a));
+    }, { strictCapabilities: false });
+    if (changed) await reload();
   }
   async function uninstallSkillAll(skill: string) {
-    await applyToTargets(`uninstall ${skill}`, (a) => call('uninstallSkill', skill, a.name, targetTeamOf(a)));
+    let changed = 0;
+    await applyToTargets(`remove ${skill}`, async (a) => {
+      if (!agentHasSkill(a, skill)) return;
+      changed++;
+      await call('uninstallSkill', skill, a.name, targetTeamOf(a));
+    }, { strictCapabilities: false });
+    if (changed) await reload();
+  }
+  async function installSkillRecommended(skill: string, recommendations: SkillAgentRecommendation[]) {
+    const targets = recommendations.filter((r) => !r.installed).slice(0, 4).map((r) => r.agent);
+    if (!targets.length) {
+      setNote(`${skill} has no pending recommended agents`);
+      return;
+    }
+    setBusy(true);
+    setNote(`attaching ${skill} to recommended agents…`);
+    try {
+      const groups = await freshGroups();
+      let changed = 0;
+      for (const rendered of targets) {
+        const current = findFreshTarget(groups, rendered);
+        if (!current || agentHasSkill(current, skill)) continue;
+        await call('installSkill', skill, current.name, targetTeamOf(current));
+        changed++;
+      }
+      await reload();
+      store.refresh();
+      setNote(changed ? `attached ${skill} to ${changed} recommended agent${changed === 1 ? '' : 's'} ✓` : `${skill} was already attached to the recommended agents`);
+    } catch (err) {
+      setNote(`attach recommended failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
   }
   async function uninstallSkillFleet(skill: string) {
     setBusy(true);
@@ -1556,8 +1604,8 @@ export function Modules({ store }: { store: FleetStore }) {
         store.refresh();
         return;
       }
-      if (capabilityAgentStamp(current, expectedTeam) !== capabilityAgentStamp({ ...rendered, team: expectedTeam }, expectedTeam)) {
-        setNote(`${actionLabel} blocked: ${expectedTeam}/${rendered.name} changed since this row rendered. Refreshed; review the current row before applying.`);
+      if (current.id && rendered.id && current.id !== rendered.id) {
+        setNote(`${actionLabel} blocked: ${expectedTeam}/${rendered.name} now points to a different agent id. Refreshed; review and try again.`);
         store.refresh();
         return;
       }
@@ -1579,8 +1627,20 @@ export function Modules({ store }: { store: FleetStore }) {
       if (!window.confirm(prompt)) return;
       const recheckGroups = await freshGroups();
       const latest = findFreshTarget(recheckGroups, current);
-      if (!latest || capabilityAgentStamp(latest, expectedTeam) !== capabilityAgentStamp(current, expectedTeam)) {
-        setNote(`${actionLabel} blocked: ${expectedTeam}/${current.name} changed during confirmation. Refreshed; review and try again.`);
+      if (!latest || latest.id !== current.id || latest.name !== current.name) {
+        setNote(`${actionLabel} blocked: ${expectedTeam}/${current.name} changed identity during confirmation. Refreshed; review and try again.`);
+        store.refresh();
+        return;
+      }
+      const latestHasSkill = agentHasSkill(latest, skill);
+      if (action === 'install' && latestHasSkill) {
+        await reload();
+        setNote(`${expectedTeam}/${latest.name} already has ${skill}`);
+        return;
+      }
+      if (action === 'uninstall' && !latestHasSkill) {
+        await reload();
+        setNote(`${expectedTeam}/${latest.name} already lacks ${skill}`);
         store.refresh();
         return;
       }
@@ -1696,6 +1756,7 @@ export function Modules({ store }: { store: FleetStore }) {
   const catalogReplace = catalogDraft ? mcp.find((p) => p.name === catalogDraft.name) : undefined;
   const customReplace = customDraft ? mcp.find((p) => p.name === customDraft.name) : undefined;
   const mcpAttachedTotal = mcp.reduce((sum, profile) => sum + mcpCount(profile.name), 0);
+  const mcpAttachedScopeTotal = mcp.reduce((sum, profile) => sum + mcpCountIn(eligibleAgents, profile.name), 0);
 
   return (
     <div className="view modules">
@@ -1790,13 +1851,19 @@ export function Modules({ store }: { store: FleetStore }) {
         <div className="row-actions" style={{ alignItems: 'baseline', flexWrap: 'wrap' }}>
           <h3 className="grow">MCP</h3>
           <span className="chip tag" title="Registered MCP server profiles">Servers {mcp.length}</span>
-          <span className="chip tag" title="Total attachments across the selected targets">Attached {mcpAttachedTotal}</span>
+          <span
+            className="chip tag"
+            title={targetCount ? 'Total attachments across selected targets' : 'No MCP targets selected yet; showing attachments across the current scope'}
+          >
+            Attached {targetCount ? mcpAttachedTotal : mcpAttachedScopeTotal}
+          </span>
           <button className="btn small" onClick={() => setShowAddMcp((show) => !show)}>
             {showAddMcp ? 'Close add' : '+ Add server'}
           </button>
         </div>
         <p className="muted small" style={{ marginTop: -4 }}>
           Tool servers for <b>{targetLabel}</b>. Attach or detach, then rebuild affected agents.
+          {tab === 'mcp' && scope !== 'team' && !touched ? ' Choose all to arm a broad cross-team MCP change.' : ''}
         </p>
         <table className="grid">
           <thead>
@@ -1811,13 +1878,16 @@ export function Modules({ store }: { store: FleetStore }) {
             {mcp.map((p) => {
               const tr = test[p.name];
               const have = mcpCount(p.name);
+              const scopeHave = mcpCountIn(eligibleAgents, p.name);
               return (
                 <tr key={p.name}>
                   <td>
                     <div className="b">{p.name} <span className="muted small">{p.transport}</span></div>
                     <div className="mono small">{p.transport === 'stdio' ? [p.command, ...(p.args ?? [])].join(' ') : p.url}</div>
                   </td>
-                  <td className={have > 0 ? 'ok-text small' : 'muted small'}>{have}/{targetCount}</td>
+                  <td className={(targetCount ? have : scopeHave) > 0 ? 'ok-text small' : 'muted small'}>
+                    {targetCount ? `${have}/${targetCount}` : `${scopeHave}/${eligibleAgents.length} in scope`}
+                  </td>
                   <td className="small"><TestCell r={tr} /></td>
                   <td className="row-actions">
                     <button className="btn" disabled={busy || targetCount === 0 || have === targetCount} onClick={() => void attachServer(p)}>Attach</button>
@@ -2090,6 +2160,7 @@ export function Modules({ store }: { store: FleetStore }) {
             const all = targetCount > 0 && have === targetCount;
             const recommendations = skillRecommendations(s);
             const topRecommendations = recommendations.filter((r) => !r.installed).slice(0, 4);
+            const recommendedCount = topRecommendations.length;
             const recommendedKey = topRecommendations[0] ? skillAgentKey(topRecommendations[0].agent) : '';
             const selectedAgentKey = skillAgentDrafts[s.name] || recommendedKey || (skillAttachAgents[0] ? skillAgentKey(skillAttachAgents[0]) : '');
             const selectedAgent = selectedAgentKey ? findSkillAttachAgent(selectedAgentKey) : null;
@@ -2104,13 +2175,18 @@ export function Modules({ store }: { store: FleetStore }) {
                     selected {have}/{targetCount}
                   </span>
                   <span className="chip tag" title="Current whole-fleet install count">fleet {fleetHave}</span>
-                  <button className="btn primary small" disabled={busy || targetCount === 0 || all} onClick={() => void installSkillAll(s.name)}>
-                    {all ? 'Installed' : `Install → ${targetLabel}`}
+                  {recommendedCount > 0 ? (
+                    <button className="btn primary small" disabled={busy} title="Attach to the best matching agents for this skill" onClick={() => void installSkillRecommended(s.name, topRecommendations)}>
+                      Attach recommended ({recommendedCount})
+                    </button>
+                  ) : null}
+                  <button className={`btn small${recommendedCount ? '' : ' primary'}`} disabled={busy || targetCount === 0 || all} onClick={() => void installSkillAll(s.name)}>
+                    {all ? 'Attached to scope' : `Attach to ${targetLabel}`}
                   </button>
                 </div>
                 {s.description ? <p className="muted small skill-desc"><LinkedDescription text={s.description} /></p> : null}
                 <details className="skill-card-details">
-                  <summary>Manage agents, tags, and removal</summary>
+                  <summary>Advanced: choose one agent, remove, tags</summary>
                   <div className="row-actions skill-card-manage">
                     {have > 0 ? (
                       <button className="btn small" disabled={busy} title={`Uninstall from ${targetLabel}`} onClick={() => void uninstallSkillAll(s.name)}>

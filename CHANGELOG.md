@@ -9,7 +9,10 @@ subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## [0.1.629] — 2026-07-09
-- Automated release of outstanding ID Agents Control Center code.
+### What changed
+- Reduced Work > Tasks board lag by memoizing lane/dependency state, avoiding unchanged state updates, and slowing non-critical usage polling.
+- Simplified the Capabilities > Skills tab with a compact toolbar, collapsible local-skill imports, clearer fleet/selected install counts, and advanced controls tucked behind details.
+- Improved skill-card layout so attach/remove/delete controls wrap cleanly and avoid crowding the primary workflow.
 
 ## [0.1.628] — 2026-07-09
 - Automated release of outstanding ID Agents Control Center code.

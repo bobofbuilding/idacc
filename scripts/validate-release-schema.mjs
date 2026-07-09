@@ -38,6 +38,26 @@ function expect(condition, message) {
   if (!condition) errors.push(message);
 }
 
+function changelogEntryFor(changelog, version) {
+  const header = `## [${version}]`;
+  const lines = changelog.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.startsWith(header));
+  if (start < 0) return '';
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('## ['));
+  return lines.slice(start + 1, end < 0 ? undefined : end).join('\n').trim();
+}
+
+function meaningfulChangelogEntry(entry) {
+  const stripped = entry
+    .replace(/^###\s+What changed\s*/im, '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^#+\s*/.test(line));
+  const text = stripped.join('\n').trim();
+  if (!text) return false;
+  return !/^(?:[-*]\s*)?(?:automated release of outstanding|maintenance release\.?|update\.?|changes\.?|misc\.?|wip\.?)$/i.test(text);
+}
+
 function packageVersion(relativePath, expected) {
   const json = readJson(relativePath);
   if (!json) return;
@@ -81,6 +101,15 @@ if (!existsSync(changelogPath)) {
   expect(
     new RegExp(`^## \\[${version.replaceAll('.', '\\.')}\\](?:\\s|$)`, 'm').test(changelog),
     `CHANGELOG.md is missing a ## [${version}] entry`,
+  );
+  const entry = changelogEntryFor(changelog, version);
+  expect(
+    /^###\s+What changed\b/im.test(entry),
+    `CHANGELOG.md ## [${version}] must include a "### What changed" section`,
+  );
+  expect(
+    meaningfulChangelogEntry(entry),
+    `CHANGELOG.md ## [${version}] must describe real changes; placeholder release notes are not allowed`,
   );
 }
 
