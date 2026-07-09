@@ -740,7 +740,7 @@ export function Modules({ store }: { store: FleetStore }) {
     setTouched(false);
     setExplicit(new Set());
     setNote('');
-  }, [store.team]);
+  }, [store.team, scope]);
   // Switching tabs changes the eligible set, so reset the explicit selection.
   useEffect(() => {
     setTouched(false);
@@ -750,11 +750,9 @@ export function Modules({ store }: { store: FleetStore }) {
   // starts empty because each attached server can spawn a helper process for
   // every active harness; require an explicit target choice before bulk changes.
   const selectedIds: Set<string> = touched ? explicit : new Set(tab === 'mcp' ? [] : eligibleAgents.map((a) => a.id));
-  // Team scope honors the chip selection; cross-team scopes target every eligible
-  // agent only after the operator has explicitly chosen the MCP scope.
-  const targetAgents = scope === 'team'
+  const targetAgents = touched
     ? eligibleAgents.filter((a) => selectedIds.has(a.id))
-    : (tab === 'mcp' && !touched) ? [] : eligibleAgents;
+    : tab === 'mcp' ? [] : eligibleAgents;
   const targetCount = targetAgents.length;
   function baseSet(): Set<string> {
     return touched ? new Set(explicit) : new Set(tab === 'mcp' ? [] : eligibleAgents.map((a) => a.id));
@@ -1456,7 +1454,7 @@ export function Modules({ store }: { store: FleetStore }) {
 
   // # selected agents that have at least one MCP server attached (→ show Rebuild).
   const anyAttached = targetAgents.some((a) => curMcp(a).length > 0);
-  const targetLabel = targetCount === 0 ? 'no agents' : targetCount === 1 ? targetAgents[0].name : `${targetCount} agents`;
+  const targetLabel = targetCount === 0 ? 'no selected agents' : targetCount === 1 ? targetAgents[0].name : `${targetCount} agents`;
   const allPluginRows = useMemo<PluginRow[]>(() => {
     const inspectionByName = new Map(pluginInspections.map((inspection) => [inspection.name, inspection]));
     const idaccPortableDefaults: Partial<PluginRow> = {
@@ -1711,9 +1709,22 @@ export function Modules({ store }: { store: FleetStore }) {
             <option value="leads">All team leads</option>
           </select>
           {scope !== 'team' ? (
-            <span className="muted small" title={`Runtime-neutral target scope. ${capabilitySurfaceSummary(tab, eligibleAgents)}`}>
-              apply to <b>{eligibleAgents.length}</b> {scope === 'leads' ? 'team lead' : 'agent'}{eligibleAgents.length === 1 ? '' : 's'} across all teams
-            </span>
+            <>
+              <span className="muted small" title={`Runtime-neutral target scope. ${capabilitySurfaceSummary(tab, eligibleAgents)}`}>
+                available <b>{eligibleAgents.length}</b> {scope === 'leads' ? 'team lead' : 'agent'}{eligibleAgents.length === 1 ? '' : 's'} across all teams
+              </span>
+              <span className="muted small">
+                selected <b>{targetCount}</b>
+              </span>
+              <button
+                className="btn small"
+                disabled={busy || eligibleAgents.length === 0}
+                title={tab === 'mcp' ? 'MCP bulk changes require explicitly arming the target set' : 'Set the current cross-team target selection'}
+                onClick={() => (targetCount === eligibleAgents.length ? selectNone() : selectAll())}
+              >
+                {targetCount === eligibleAgents.length ? 'none' : 'all'}
+              </button>
+            </>
           ) : (
           <>
           <span className="muted small">team</span>

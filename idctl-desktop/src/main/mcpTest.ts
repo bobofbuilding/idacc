@@ -71,7 +71,13 @@ function testStdio(spec: McpServerSpec, timeoutMs: number): Promise<McpTestResul
       }
     });
     child.stderr?.on('data', (d) => { stderr += d.toString(); });
-    child.on('error', (e) => finish({ ok: false, error: e.message }));
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      const command = spec.command ?? 'MCP command';
+      const message = e.code === 'ENOENT'
+        ? `command not found: ${command}. Install it or edit this MCP server to use an absolute command path.`
+        : e.message;
+      finish({ ok: false, error: message });
+    });
     child.on('exit', (code) => {
       if (!done) finish({ ok: false, error: `server exited (code ${code})${stderr ? `: ${stderr.trim().slice(0, 200)}` : ''}` });
     });
