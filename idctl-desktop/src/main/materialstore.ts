@@ -10,6 +10,7 @@
  */
 
 import { BrowserWindow, dialog } from 'electron';
+import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   copyFileSync,
@@ -235,6 +236,8 @@ const MAX_WEB_BYTES = 2 * 1024 * 1024;
 const MAX_FOLDER_FILES = 160;
 const MAX_FOLDER_BYTES = 1_250_000;
 const MAX_FILE_BYTES = 90_000;
+const MAX_PDF_BYTES = 4 * 1024 * 1024;
+const MAX_PDF_TEXT_BYTES = 1_250_000;
 const MAX_TEXT_FOR_BRAIN = 50_000;
 const LEARN_BRAIN_SYNC_SCHEMA_VERSION = 3;
 const TEXT_EXTS = new Set([
@@ -1072,13 +1075,32 @@ function extractPdf(material: LearnMaterial): ExtractionResult {
   const source = material.storedPath || material.source;
   if (!source || !existsSync(source)) throw new Error('PDF source is not available in IDACC storage');
   const st = statSync(source);
-  const buf = readFileSync(source).subarray(0, Math.min(st.size, 4 * 1024 * 1024));
-  const text = printablePdfFallback(buf);
-  const warnings = [
-    'PDF was imported into IDACC storage. Packaged text extraction is a lightweight fallback, not a full PDF parser.',
-  ];
-  if (!text || text.length < 400) warnings.push('PDF text extraction produced little readable text; review before downstream automation.');
-  const snapshotText = text || `PDF stored at ${source}. Text extraction pending a full PDF parser.`;
+  const native = extractPdfTextWithPdftotext(source);
+  const warnings: string[] = [];
+  let text = native.text;
+  let bytesRead = st.size;
+  if (!text) {
+    const buf = readFileSync(source).subarray(0, Math.min(st.size, MAX_PDF_BYTES));
+    bytesRead = buf.length;
+    text = printablePdfFallback(buf);
+    warnings.push(
+      native.error
+        ? `Native PDF text extraction failed (${native.error}); used packaged lightweight fallback.`
+        : 'Native PDF text extraction is unavailable; used packaged lightweight fallback.',
+    );
+  }
+  const quality = assessPdfTextQuality(text);
+  if (!quality.reliable) {
+    warnings.push(
+      quality.rawInternals
+        ? 'PDF fallback output looked like PDF object internals, so IDACC blocked it from goal matching and Brain sync.'
+        : 'PDF text extraction produced little readable text; review before downstream automation.',
+    );
+  }
+  if (native.truncated) warnings.push(`PDF text extraction was capped at ${MAX_PDF_TEXT_BYTES.toLocaleString()} characters.`);
+  const snapshotText = quality.reliable
+    ? text.slice(0, MAX_PDF_TEXT_BYTES)
+    : `PDF stored at ${source}. Text extraction did not produce reliable document text. Reprocess after installing Poppler pdftotext, or import a text/Markdown copy.`;
   const snapshot = join(blobDir(material.id), `pdf-snapshot-${Date.now().toString(36)}.txt`);
   writeFileSync(snapshot, snapshotText, { mode: 0o600 });
   return {
@@ -1087,8 +1109,54 @@ function extractPdf(material: LearnMaterial): ExtractionResult {
     storedPath: source,
     warnings,
     injectionWarnings: detectPromptInjection(snapshotText, basename(source)),
-    bytesRead: buf.length,
+    bytesRead,
   };
+}
+
+function extractPdfTextWithPdftotext(source: string): { text: string; truncated?: boolean; error?: string } {
+  const candidates = ['/opt/homebrew/bin/pdftotext', '/usr/local/bin/pdftotext', 'pdftotext'];
+  let lastError = '';
+  for (const bin of candidates) {
+    if (bin.startsWith('/') && !existsSync(bin)) continue;
+    try {
+      const out = execFileSync(bin, ['-layout', '-enc', 'UTF-8', source, '-'], {
+        encoding: 'utf8',
+        maxBuffer: MAX_PDF_TEXT_BYTES + 64_000,
+        timeout: 20_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+      const normalized = out.replace(/\r/g, '\n').replace(/\f/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
+      return {
+        text: normalized.slice(0, MAX_PDF_TEXT_BYTES),
+        truncated: normalized.length > MAX_PDF_TEXT_BYTES,
+      };
+    } catch (e) {
+      lastError = e instanceof Error ? clip(e.message, 180) : String(e);
+    }
+  }
+  return { text: '', error: lastError || 'pdftotext not found' };
+}
+
+function assessPdfTextQuality(text: string): { reliable: boolean; rawInternals: boolean } {
+  const sample = String(text || '').slice(0, 40_000);
+  if (sample.trim().length < 400) return { reliable: false, rawInternals: false };
+  const markerMatches = sample.match(/\b(?:xref|trailer|startxref|endobj|stream)\b|\/(?:Linearized|Type|Page|Pages|Parent|Resources|Font|FontDescriptor|ProcSet|FlateDecode|MediaBox|Contents)\b/g) ?? [];
+  const objectMatches = sample.match(/\b\d+\s+\d+\s+obj\b/g) ?? [];
+  const lines = sample.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  const internalLines = lines.filter((line) => /\b(?:endobj|stream|xref|trailer|startxref)\b|\/(?:Type|Page|Parent|Resources|Font|ProcSet|FlateDecode)\b/.test(line)).length;
+  const proseLines = lines.filter((line) => {
+    const words = line.match(/[A-Za-z][A-Za-z'-]{2,}/g) ?? [];
+    return words.length >= 7 && !/\b(?:endobj|stream|xref|trailer|startxref)\b|\/(?:Type|Page|Parent|Resources|Font|ProcSet|FlateDecode)\b/.test(line);
+  }).length;
+  const rawSignature = /%PDF-\d|\/Linearized\b/.test(sample)
+    && /\b\d+\s+\d+\s+obj\b/.test(sample)
+    && /\bendobj\b|\bxref\b|\bstartxref\b/.test(sample);
+  const rawInternals = rawSignature || (markerMatches.length + objectMatches.length >= 20 && (
+    internalLines > Math.max(4, proseLines)
+    || (lines.length <= 2 && markerMatches.length + objectMatches.length >= 30)
+  ));
+  return { reliable: !rawInternals, rawInternals };
 }
 
 function printablePdfFallback(buf: Buffer): string {
@@ -1300,7 +1368,7 @@ function buildRecommendations(material: LearnMaterial, extraction: ExtractionRes
     recs.push(normalizeRecommendation({ ...r, id: recommendationId(material, r), reviewState: 'draft', createdAt: ts }));
   };
   const warnings = [...(material.injectionWarnings ?? []), ...(material.extractionWarnings ?? [])];
-  const lowText = extraction.text.length < 500 || extraction.warnings.some((w) => /little readable text|pending a full PDF parser/i.test(w));
+  const lowText = extraction.text.length < 500 || extraction.warnings.some((w) => /little readable text|pending a full PDF parser|blocked it from goal matching|did not produce reliable/i.test(w));
   if ((material.injectionWarnings ?? []).length || lowText) {
     add({
       type: 'question',

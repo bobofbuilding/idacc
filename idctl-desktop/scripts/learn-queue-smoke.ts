@@ -107,4 +107,39 @@ async function main(): Promise<void> {
   assert.equal(next, null, 'completed material should not be reprocessed as queued work');
 
   assert.ok(entities.some((entity) => entity.id === 'learn:queuesmoke'), 'Brain sync should write the Learn material entity');
+
+  const rawPdf = join(tempRoot, 'raw-object-fallback.pdf');
+  writeFileSync(rawPdf, [
+    '%PDF-1.7',
+    '958 0 obj /Linearized 1 /O 960 /H 708 803 /L 726917 /E 40892 /N 306 /T 707638 endobj',
+    'xref 958 13 0000000016 00000 n 0000000611 00000 n',
+    'trailer /Size 971 /Info 956 0 R /Root 959 0 R /Prev 707627',
+    '959 0 obj /Type /Catalog /Pages 932 0 R /Metadata 957 0 R /PageLabels 920 0 R endobj',
+    '960 0 obj /Type /Page /Parent 921 0 R /Resources 961 0 R /Contents 965 0 R /MediaBox 0 0 612 792 /CropBox 0 0 612 792 /Rotate 0 endobj',
+    '961 0 obj /ProcSet /PDF /Text /Font /TT2 963 0 R /ExtGState /GS1 967 0 R /ColorSpace /Cs6 964 0 R endobj',
+    '965 0 obj /Length 1035 /Filter /FlateDecode stream H endstream endobj',
+    'startxref 0 %%EOF',
+  ].join('\n'));
+
+  saveMaterial({
+    id: 'rawpdf',
+    title: 'Raw PDF fallback fixture',
+    kind: 'pdf',
+    source: rawPdf,
+    storedPath: rawPdf,
+    priority: 'normal',
+  });
+
+  const pdfProcessed = await processNextMaterial({ knownTeams: ['default'], defaultTeam: 'default' });
+  assert.equal(pdfProcessed?.id, 'rawpdf');
+  const pdfMaterial = getMaterial('rawpdf');
+  assert.ok(pdfMaterial, 'processed PDF material should still be readable');
+  assert.equal(pdfMaterial.status, 'blocked');
+  assert.equal(pdfMaterial.stage, 'recommendations');
+  assert.match(pdfMaterial.excerpt ?? '', /Text extraction did not produce reliable document text/);
+  assert.doesNotMatch(pdfMaterial.excerpt ?? '', /\/Linearized|xref|endobj/);
+  assert.ok(
+    (pdfMaterial.extractionWarnings ?? []).some((warning) => /blocked it from goal matching and Brain sync|little readable text/i.test(warning)),
+    'raw PDF internals should be quarantined with an extraction warning',
+  );
 }
