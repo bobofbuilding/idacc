@@ -1338,6 +1338,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
             const blocked = isBlocked(t);                        // waiting on a prerequisite → parked in Holding
             const delegated = owned && isDelegatedLeadTask(t);
             const stale = owned && !blocked && !delegated && upMs > 0 && Date.now() - upMs > MANAGER_STALL_THRESHOLD_MS;
+            const needsAssignment = phase === 'todo' && !t.ownerName && upMs > 0 && Date.now() - upMs > MANAGER_STALL_THRESHOLD_MS;
             const working = owned && !delegated && !stale && !blocked; // recently moved to doing → plausibly active
             const cAbs = absTime(t.createdAt);
             const uAbs = absTime(t.updatedAt);
@@ -1414,6 +1415,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
                     ⏳ {t.ownerName} · stalled {ago(t.updatedAt)}
                   </span>
+                ) : needsAssignment ? (
+                  <span className="small" title={`This To Do item has had no owner update for ${ago(t.updatedAt)}. Use Reconcile or assign it directly; it is queued, not actively running.`}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
+                    ◴ needs assignment
+                  </span>
                 ) : t.ownerName ? (
                   <span className="muted small" title={phase === 'done' ? 'completed by this agent' : 'assigned, not yet started'}>{phase === 'done' ? '✓' : '◴'} {t.ownerName}</span>
                 ) : !isDone(t) ? (
@@ -1443,6 +1449,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
                 ) : null}
                 {stale ? <span style={{ color: '#e0a33c' }} title={uAbs ? `no status change since ${uAbs} — may be stalled` : undefined}>⏳ no update {ago(t.updatedAt)}</span> : null}
                 {phase === 'done' && (t.completedAt || t.updatedAt) ? <span title={dAbs ? `completed ${dAbs}` : undefined}>✓ done {ago(t.completedAt ?? t.updatedAt)} ago</span> : null}
+                {needsAssignment ? <span style={{ color: '#e0a33c' }} title={uAbs ? `waiting for assignment since ${uAbs}` : undefined}>◴ needs assignment {ago(t.updatedAt)}</span> : null}
                 {phase === 'todo' && t.ownerName ? <span title="assigned but not started yet">◴ queued</span> : null}
               </div>
             </div>

@@ -55,11 +55,26 @@ export function normalizeGoalDriverConfig(input?: Partial<GoalDriverConfig> | nu
   };
 }
 
+function normalizeGoalTaskId(value: unknown): string | null {
+  const match = String(value ?? '').match(/\bgoal_[a-z0-9_]+\b/i);
+  return match ? match[0].toLowerCase() : null;
+}
+
+function goalTokens(value: unknown): Set<string> {
+  const text = String(value ?? '').toLowerCase();
+  return new Set([...text.matchAll(/\bgoal_[a-z0-9_]+\b/g)].map((match) => match[0]));
+}
+
 export function goalTaskTag(goalId: string): string {
-  return `[goal:${goalId}]`;
+  return `[goal:${normalizeGoalTaskId(goalId) || goalId}]`;
 }
 
 export function taskBelongsToGoal(task: Task, goalId: string): boolean {
+  const goalToken = normalizeGoalTaskId(goalId);
+  if (goalToken) {
+    return [task.title, task.description, task.shortId, task.name, task.uuid]
+      .some((v) => goalTokens(v).has(goalToken));
+  }
   const tag = goalTaskTag(goalId);
   return [task.title, task.description, task.shortId, task.name, task.uuid].some((v) => String(v ?? '').includes(tag));
 }
