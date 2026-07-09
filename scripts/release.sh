@@ -32,6 +32,64 @@ export TUI="$ROOT/idctl"
 PUB="$ROOT/../release-publish.py"
 cd "$ROOT"
 
+strip_version_subject() {
+  printf '%s' "$1" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+: *//'
+}
+
+summarize_placeholder_commit() {
+  local commit="$1"
+  local file extra suffix
+  local -a files=()
+  local -a meaningful=()
+
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    files+=("$file")
+    case "$file" in
+      CHANGELOG.md|docs/CONTROL_CENTER_WIKI.json|idctl/package.json|idctl/package-lock.json|idctl-desktop/package.json|idctl-desktop/package-lock.json)
+        ;;
+      *)
+        meaningful+=("$file")
+        ;;
+    esac
+  done < <(git show --name-only --format='' "$commit" 2>/dev/null)
+
+  if [ "${#meaningful[@]}" -gt 0 ]; then
+    files=("${meaningful[@]}")
+  fi
+
+  case "${#files[@]}" in
+    0) return 1 ;;
+    1) printf 'Outstanding changes in %s.' "${files[0]}" ;;
+    2) printf 'Outstanding changes in %s and %s.' "${files[0]}" "${files[1]}" ;;
+    3) printf 'Outstanding changes across %s, %s, and %s.' "${files[0]}" "${files[1]}" "${files[2]}" ;;
+    *)
+      extra=$((${#files[@]} - 3))
+      suffix="s"
+      [ "$extra" -eq 1 ] && suffix=""
+      printf 'Outstanding changes across %s, %s, %s, and %d more file%s.' "${files[0]}" "${files[1]}" "${files[2]}" "$extra" "$suffix"
+      ;;
+  esac
+}
+
+normalize_release_subject() {
+  local commit="$1"
+  local stripped
+  stripped="$(strip_version_subject "$2")"
+
+  case "$stripped" in
+    "chore(auto-release): capture outstanding WIP for the next release"|"Automated release of outstanding ID Agents Control Center code."|"Automated release of outstanding ID Agents Control Center code")
+      summarize_placeholder_commit "$commit" || printf '%s' "$stripped"
+      ;;
+    chore:\ bump*|chore\(release\)*)
+      return 1
+      ;;
+    *)
+      printf '%s' "$stripped"
+      ;;
+  esac
+}
+
 # --- resolve the new version (explicit 2nd arg, else bump the patch of the current one) ---
 COMMIT_ONLY=0
 VER_ARG=""
@@ -51,16 +109,25 @@ node "$ROOT/scripts/check-wiki.mjs"
 
 # --- derive the CHANGELOG body from the REAL commits since the last release tag, so the
 #     entry reflects TRUE contents — every feature/fix in this release, not a single passed
-#     note. Strip the off-by-one "vX.Y.Z:" hook prefix, drop auto-gen/merge/generic lines.
-#     Falls back to the passed note, then a generic line, when there are no real commits.
+#     note. Strip the off-by-one "vX.Y.Z:" hook prefix, drop housekeeping commits, and
+#     synthesize a diff-based summary when the only subject is the auto-release WIP placeholder.
 #     (Computed from local HEAD BEFORE the bump commit; the node step below bullets each line.) ---
 LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 RANGE="${LAST_TAG:+${LAST_TAG}..}HEAD"
-CHANGELOG_BODY="$(git log "$RANGE" --no-merges --format='%s' 2>/dev/null \
-  | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+: *//' \
-  | grep -vE '^(chore\(auto-release\)|chore: bump|chore\(release\)|Merge |Automated release of outstanding)' || true)"
+CHANGELOG_LINES=()
+while IFS=$'\t' read -r commit subject; do
+  [ -n "$commit" ] || continue
+  note="$(normalize_release_subject "$commit" "$subject")" || continue
+  [ -n "$note" ] || continue
+  CHANGELOG_LINES+=("$note")
+done < <(git log "$RANGE" --no-merges --format='%H%x09%s' 2>/dev/null || true)
+if [ "${#CHANGELOG_LINES[@]}" -gt 0 ]; then
+  CHANGELOG_BODY="$(printf '%s\n' "${CHANGELOG_LINES[@]}")"
+else
+  CHANGELOG_BODY=""
+fi
 if [ -z "$CHANGELOG_BODY" ]; then
-  CHANGELOG_BODY="$(printf '%s' "$NOTE" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+: *//')"
+  CHANGELOG_BODY="$(strip_version_subject "$NOTE")"
 fi
 if [ -z "$CHANGELOG_BODY" ]; then
   echo "release note must describe what changed; refusing to create a generic release" >&2
