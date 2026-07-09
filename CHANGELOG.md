@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.633] — 2026-07-09
+### What changed
+- Add GPT-5.6 Codex fallback models to curated runtime catalog
+
 ## [0.1.632] — 2026-07-09
 ### What changed
 - Learn: use native pdftotext for PDF extraction, quarantine raw PDF internals
