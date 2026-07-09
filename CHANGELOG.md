@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.630] — 2026-07-09
+### What changed
+- Modules: MCP server attach/detach now defaults to the active team scope instead of requiring an explicit selection, so single-team attach/detach works without an extra arming step (cross-team/all-team MCP changes still require an explicit choice). Added a recommended-agents quick-attach action for skill recommendations. Skill install/uninstall now skip agents that already have or lack the skill and only reload the list when something changed. Row-level and bulk staleness checks moved from full capability-stamp comparison to agent id/name identity checks, with skill state re-verified at confirmation time. release.sh and validate-release-schema.mjs now reject placeholder release notes/changelog entries (e.g. Automated release of outstanding..., Maintenance release., Update.) and require a populated What changed section in CHANGELOG.md.
+
 ## [0.1.629] — 2026-07-09
 ### What changed
 - Reduced Work > Tasks board lag by memoizing lane/dependency state, avoiding unchanged state updates, and slowing non-critical usage polling.
