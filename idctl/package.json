@@ -1,6 +1,6 @@
 {
   "name": "idctl",
-  "version": "0.1.631",
+  "version": "0.1.632",
   "description": "ID Agents Control Center — a standalone reactive terminal app for the id-agents manager (live fleet dashboard + conversational manager chat + full lifecycle control).",
   "type": "module",
   "private": true,

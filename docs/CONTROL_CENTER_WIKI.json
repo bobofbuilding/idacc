@@ -321,5 +321,5 @@
       "body": "# Wiki\n\nThis page now reads a compact app manifest. The replacement authoring contract is being rebuilt in docs/CONTROL_CENTER_WIKI.md as Markdown-first schema documentation. The renderer loads and polls the wiki manifest only while the Wiki page is open, keeping the rest of the app free from idle wiki refresh work."
     }
   ],
-  "appVersion": "0.1.631"
+  "appVersion": "0.1.632"
 }

@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.632] — 2026-07-09
+### What changed
+- Learn: use native pdftotext for PDF extraction, quarantine raw PDF internals
+
 ## [0.1.631] — 2026-07-09
 ### What changed
 - Avoid HR subscription probe churn and make plan recovery actions resolve locally
