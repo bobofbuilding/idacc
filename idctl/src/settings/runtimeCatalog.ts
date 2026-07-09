@@ -369,7 +369,9 @@ export const RUNTIME_CURATED: Record<string, string[]> = {
   'claude-code-cli': ['claude-fable-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-haiku-4-5'],
   'claude-code-local': ['claude-fable-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-haiku-4-5'],
   // Fallback only — the bridge merges the live list from ~/.codex/models_cache.json.
-  codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark', 'gpt-5.3-codex'],
+  // Keep current Codex/OpenAI model ids here so a stale local Codex cache does
+  // not hide newly rolled-out eligible models from the IDACC picker.
+  codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark', 'gpt-5.3-codex'],
   'cursor-cli': ['sonnet-4', 'composer-2'],
   grok: ['grok-composer-2.5-fast', 'grok-build'],
   antigravity: ['Gemini 3.5 Flash (Medium)', 'Gemini 3.5 Flash (High)', 'Gemini 3.5 Flash (Low)', 'Gemini 3.1 Pro (Low)', 'Gemini 3.1 Pro (High)', 'Claude Sonnet 4.6 (Thinking)', 'Claude Opus 4.6 (Thinking)', 'GPT-OSS 120B (Medium)'],

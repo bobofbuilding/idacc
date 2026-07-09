@@ -76,6 +76,12 @@ assert.deepEqual(
   'Claude Code curated fallback should include current Fable and Sonnet 5 choices before older Claude models',
 );
 
+assert.deepEqual(
+  curatedCatalog.codex.slice(0, 3),
+  ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
+  'Codex curated fallback should include current GPT-5.6 choices before older GPT models when the local Codex cache has not caught up',
+);
+
 const selectedProviderCatalog = buildRuntimeCatalog([
   {
     name: 'openrouter',
