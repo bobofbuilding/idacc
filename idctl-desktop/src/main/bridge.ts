@@ -411,6 +411,48 @@ function codexModelsFromCache(): string[] {
   }
 }
 
+const CODEX_GPT56_RE = /^gpt-5\.6(?:-|$)/i;
+const MIN_CODEX_VERSION_FOR_GPT56 = '0.144.0';
+
+function parseVersion(raw: string | undefined): [number, number, number] | null {
+  const m = String(raw || '').match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+function compareVersions(a: string | undefined, b: string): number {
+  const av = parseVersion(a);
+  const bv = parseVersion(b);
+  if (!av || !bv) return -1;
+  for (let i = 0; i < 3; i++) {
+    if (av[i] !== bv[i]) return av[i] > bv[i] ? 1 : -1;
+  }
+  return 0;
+}
+
+function codexCliVersion(): string | undefined {
+  try {
+    return execFileSync('codex', ['--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 3000,
+      env: cliEnv(),
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function codexSupportsGpt56(cachedModels: string[]): boolean {
+  if (cachedModels.some((model) => CODEX_GPT56_RE.test(model))) return true;
+  return compareVersions(codexCliVersion(), MIN_CODEX_VERSION_FOR_GPT56) >= 0;
+}
+
+function filterCodexModelsForInstalledCli(models: string[], cachedModels: string[]): string[] {
+  if (codexSupportsGpt56(cachedModels)) return models;
+  return models.filter((model) => !CODEX_GPT56_RE.test(model));
+}
+
 function cachedCliModels(runtime: CliModelRuntime, refresh: boolean, load: () => string[]): string[] {
   const cached = cliModelCache.get(runtime);
   if (cached && !refresh) return cached.models;
@@ -474,6 +516,7 @@ function runtimeCatalogWithLiveCliModels(options: { refreshCli?: boolean } = {})
   const cat = buildRuntimeCatalog(loadSettings().providers);
   const codex = codexModelsFromCache();
   if (codex.length) cat.codex = Array.from(new Set([...codex, ...(cat.codex ?? [])]));
+  cat.codex = filterCodexModelsForInstalledCli(cat.codex ?? [], codex);
   const refreshCli = Boolean(options.refreshCli);
   const grok = grokModelsFromCli(refreshCli);
   if (grok.length) cat.grok = Array.from(new Set([...grok, ...(cat.grok ?? [])]));
