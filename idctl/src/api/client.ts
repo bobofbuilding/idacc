@@ -790,6 +790,22 @@ export class ManagerClient {
   }
 
   /**
+   * Record an externally custodied controller wallet for an agent. This writes
+   * public address metadata only; it never creates, imports, or transports a
+   * signing secret through the Control Center.
+   */
+  async bindAgentWallet(agentId: string, wallet: string, signal?: AbortSignal): Promise<{ metadata?: Record<string, unknown> }> {
+    const address = String(wallet ?? '').trim();
+    return this.requireRoute('Bind controller wallet', () =>
+      this.post(`/agents/${encodeURIComponent(agentId)}/metadata`, {
+        metadata: {
+          ows_address: address,
+          ows_wallet: address,
+        },
+      }, signal));
+  }
+
+  /**
    * Switch an agent's runtime (harness) by id. Writes the DB and flips status
    * to `pending`; the agent must be rebuilt to apply. Rejects (400) for
    * non-local agents or unknown runtimes.

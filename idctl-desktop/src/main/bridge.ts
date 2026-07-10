@@ -1549,6 +1549,15 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'identity:controllerChallenge': async (agent: string, wallet: string, team?: string) => startControllerChallenge(String(agent), String(wallet), team ? String(team) : undefined),
   'identity:controllerVerify': async (agent: string, wallet: string, signature: string, team?: string) => verifyControllerChallengeForAgent(String(agent), String(wallet), String(signature), team ? String(team) : undefined),
   'identity:controllerStatus': async (agent: string, wallet: string, team?: string) => controllerProofStatusForAgent(String(agent), String(wallet), team ? String(team) : undefined),
+  'identity:bindWallet': async (agent: string, wallet: string, team?: string) => {
+    const name = String(agent).trim();
+    const teamName = team ? String(team) : undefined;
+    const address = ethAddress(wallet);
+    if (!name) throw new Error('Choose an agent before binding a controller wallet.');
+    if (!address) throw new Error('Controller wallet must be a valid 20-byte 0x address.');
+    await requireControllerProofIfWalletExists(name, teamName);
+    return (teamName ? client.withTeam(teamName) : client).bindAgentWallet(name, address);
+  },
   'identity:register': async (agent: string, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;

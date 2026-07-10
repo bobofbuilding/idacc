@@ -8,6 +8,7 @@ type EvidenceState = 'verified' | 'warn' | 'missing' | 'self';
 type IdentityAgent = TeamAgent;
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
 type ContractExecutionState = 'idle' | 'warn' | 'ready' | 'submitted';
+type ExecutionChain = (typeof EXECUTION_CHAINS)[number];
 
 const AGENT_BITTREES_SAFE_ENS = 'agent.bittrees.eth';
 const AGENT_BITTREES_SAFE_ADDRESS = '0x8A6445277b81b9dC27ef248aB25b53e6b255Cfb8';
@@ -121,6 +122,43 @@ function rpcKeyLabel(source: EvmRpcKeySource): string {
   if (source === 'config') return 'configured';
   if (source === 'env') return 'env';
   return 'none';
+}
+
+function rpcMatchesExecutionChain(rpc: EvmRpcRow, chain: ExecutionChain): boolean {
+  const label = `${rpc.id} ${rpc.network}`.toLowerCase();
+  const hasChainId = new RegExp(`(?:^|[^0-9])${chain.chainId}(?:$|[^0-9])`).test(label);
+  const hasChainHex = new RegExp(`(?:^|[^a-z0-9])${chain.hex.toLowerCase()}(?:$|[^a-z0-9])`).test(label);
+  if (hasChainId || hasChainHex) return true;
+
+  const hasBase = /(?:^|[^a-z])base(?:$|[^a-z])/.test(label);
+  const hasEthereum = /(?:^|[^a-z])(?:ethereum|eth)(?:$|[^a-z])/.test(label);
+  const hasSepolia = /(?:^|[^a-z])sepolia(?:$|[^a-z])/.test(label);
+  if (chain.chainId === 84532) return hasBase && hasSepolia;
+  if (chain.chainId === 11155111) return hasSepolia && !hasBase;
+  if (chain.chainId === 8453) return hasBase && !hasSepolia;
+  return hasEthereum && !hasSepolia && !hasBase;
+}
+
+function preferredRpc(rpcs: EvmRpcRow[]): EvmRpcRow | undefined {
+  return [...rpcs].sort((a, b) => {
+    const aAvailable = a.lastRequest?.status === 'available' ? 1 : 0;
+    const bAvailable = b.lastRequest?.status === 'available' ? 1 : 0;
+    return bAvailable - aAvailable || (b.lastRequest?.at ?? 0) - (a.lastRequest?.at ?? 0);
+  })[0];
+}
+
+function safeStatusForChain(account: AgentAccount | undefined, chain: ExecutionChain): { state: EvidenceState; note: string } {
+  if (!account?.smartAccount) return { state: 'missing', note: 'no Safe account record' };
+  if (account.chainId !== chain.chainId) {
+    return {
+      state: 'warn',
+      note: `deployment unverified on this chain (known only for chain ${account.chainId})`,
+    };
+  }
+  return {
+    state: account.deployed ? 'verified' : 'warn',
+    note: account.deployed ? 'deployed' : 'counterfactual; not deployed',
+  };
 }
 
 function identityValue(
@@ -616,6 +654,7 @@ export function Identity({ store }: { store: FleetStore }) {
   const [legacyKeys, setLegacyKeys] = useState<LegacyKeyAuthority[]>([]);
   const [brainControllers, setBrainControllers] = useState<BrainControllerReport>(null);
   const [evmRpcs, setEvmRpcs] = useState<EvmRpcRow[]>([]);
+  const [walletInput, setWalletInput] = useState('');
   const [contractAccount, setContractAccount] = useState('');
   const [contractChain, setContractChain] = useState<(typeof EXECUTION_CHAINS)[number]['hex']>('0x2105');
   const [providerChain, setProviderChain] = useState('');
@@ -667,6 +706,29 @@ export function Identity({ store }: { store: FleetStore }) {
   const standardCovered = standardCoverage.filter((r) => r.state === 'verified' || r.state === 'self').length;
   const enabledRpcs = useMemo(() => evmRpcs.filter((rpc) => rpc.enabled !== false), [evmRpcs]);
   const availableRpcs = enabledRpcs.filter((rpc) => rpc.lastRequest?.status === 'available');
+  const walletInputValid = isEthAddress(walletInput);
+  const executionChainRows = useMemo(() => EXECUTION_CHAINS.map((chain) => {
+    const matching = evmRpcs.filter((rpc) => rpcMatchesExecutionChain(rpc, chain));
+    const rpc = preferredRpc(matching.filter((row) => row.enabled !== false));
+    const disabledRpc = preferredRpc(matching.filter((row) => row.enabled === false));
+    const safe = safeStatusForChain(acct, chain);
+    const rpcState: EvidenceState = !rpc ? 'warn' : rpc.lastRequest?.status === 'available' ? 'verified' : 'warn';
+    const rpcNote = rpc
+      ? rpc.lastRequest
+        ? `${rpc.network}: ${rpc.lastRequest.status}${rpc.lastRequest.blockNumber != null ? ` · block ${rpc.lastRequest.blockNumber.toLocaleString()}` : ''} · checked ${timeAgo(rpc.lastRequest.at)}`
+        : `${rpc.network}: configured; not checked`
+      : disabledRpc
+        ? `${disabledRpc.network}: configured but disabled; unverified`
+        : 'No configured RPC; unverified';
+    const state: EvidenceState = !wallet
+      ? 'missing'
+      : safe.state === 'missing'
+        ? 'missing'
+        : safe.state === 'verified' && rpcState === 'verified'
+          ? 'verified'
+          : 'warn';
+    return { chain, rpc, safe, rpcNote, state };
+  }), [acct, evmRpcs, wallet]);
   const keyOperational = Boolean(caps?.live && acct?.deployed && activeSessionCount > 0);
   const contractStamp = useMemo(
     () => executionStamp(contractChain, contractAccount, contractTo, contractData, contractValue),
@@ -938,6 +1000,42 @@ export function Identity({ store }: { store: FleetStore }) {
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : `${action} failed`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function bindExistingWallet() {
+    const address = walletInput.trim();
+    if (!isEthAddress(address)) {
+      setError('Enter a valid 20-byte 0x controller wallet address.');
+      return;
+    }
+    const fresh = await ensureSelectedFresh('binding controller wallet');
+    if (!fresh) return;
+    if (controllerWallet(fresh)) {
+      setError(`${fresh.team ?? 'default'}/${fresh.name} already has a controller wallet. Refresh Identity and use the signed controller flow before changing it.`);
+      store.refresh();
+      return;
+    }
+    const team = fresh.team ?? 'default';
+    if (!window.confirm(`Bind existing controller wallet for ${team}/${fresh.name}?\n\n${address}\n\nThis records the public address only. You will sign a challenge with that wallet before privileged actions unlock.`)) return;
+    const afterConfirm = await ensureSelectedFresh('binding controller wallet after review');
+    if (!afterConfirm) return;
+    if (controllerWallet(afterConfirm)) {
+      setError(`${afterConfirm.team ?? 'default'}/${afterConfirm.name} gained a controller wallet after review. Refresh Identity and review the current row before changing it.`);
+      store.refresh();
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      await call('identity:bindWallet', afterConfirm.name, address, afterConfirm.team ?? 'default');
+      setWalletInput('');
+      store.refresh();
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to bind controller wallet');
     } finally {
       setBusy(false);
     }
@@ -1550,6 +1648,11 @@ export function Identity({ store }: { store: FleetStore }) {
                       {activeSessionCount > 0 ? `${activeSessionCount} active scoped key${activeSessionCount === 1 ? '' : 's'}` : 'Issue a scoped key before this agent can operate autonomously.'}
                     </span>
                   </div>
+                  <div className="risk-row">
+                    <span className="dot ok" />
+                    <b>Custody &amp; storage</b>
+                    <span className="ok-text">RPC secrets are Electron safeStorage-encrypted. Wallet keys are custodied by the external OWS CLI and never persist in IDACC state or localStorage.</span>
+                  </div>
                   {enabledRpcs.map((rpc) => (
                     <div key={rpc.id} className="risk-row">
                       <span className={`dot ${rpc.lastRequest?.status === 'available' ? 'ok' : rpc.lastRequest ? 'warn' : 'warn'}`} />
@@ -1569,6 +1672,52 @@ export function Identity({ store }: { store: FleetStore }) {
                     </div>
                   ) : null}
                 </div>
+              </section>
+
+              <section className="card" role="status">
+                <div className="identity-legacy-head">
+                  <h3>Per-chain addresses</h3>
+                  <StatusPill state={executionChainRows.every((row) => row.state === 'verified') ? 'verified' : executionChainRows.some((row) => row.state === 'missing') ? 'missing' : 'warn'} />
+                </div>
+                <p className="muted small">
+                  The controller is the same EOA on every EVM chain. Safe deployment is only known for the key provider&apos;s current chain; the remaining deployment reads are explicitly unverified.
+                </p>
+                <table className="grid identity-table">
+                  <thead>
+                    <tr>
+                      <th>Chain</th>
+                      <th>Controller EOA</th>
+                      <th>Safe account</th>
+                      <th>RPC / status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {executionChainRows.map((row) => (
+                      <tr key={row.chain.chainId}>
+                        <td>
+                          <b>{row.chain.name}</b><br />
+                          <span className="muted small mono">{row.chain.chainId}</span>
+                        </td>
+                        <td>
+                          {wallet ? (
+                            <><span className="mono" title={wallet}>{shortAddr(wallet)}</span><br /><span className="muted small">same EOA</span></>
+                          ) : <span className="status-error">not bound</span>}
+                        </td>
+                        <td>
+                          {acct?.smartAccount ? (
+                            <><span className="mono" title={acct.smartAccount}>{shortAddr(acct.smartAccount)}</span><br /><span className={statusTone(row.safe.state)}>{row.safe.note}</span></>
+                          ) : <span className="status-error">{row.safe.note}</span>}
+                        </td>
+                        <td>
+                          <StatusPill state={row.state} /><br />
+                          <span className={rpcStatusClass(row.rpc?.lastRequest?.status)}>
+                            {row.rpc ? `${row.rpcNote} · key ${rpcKeyLabel(row.rpc.keySource)}` : row.rpcNote}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </section>
 
               <section className="card identity-contract-console" role="status">
@@ -1726,11 +1875,30 @@ export function Identity({ store }: { store: FleetStore }) {
                     <span>Chain</span>
                     <b>{acct.chainId}</b>
                   </div>
+                  {!wallet ? (
+                    <div className="identity-contract-grid" style={{ marginTop: 12 }}>
+                      <label className="wide">
+                        <span>Bind existing controller wallet</span>
+                        <input
+                          className="mono"
+                          value={walletInput}
+                          onChange={(event) => setWalletInput(event.target.value)}
+                          aria-invalid={walletInput.length > 0 && !walletInputValid}
+                          placeholder="0x..."
+                        />
+                      </label>
+                    </div>
+                  ) : null}
                   <div className="row-actions identity-actions">
                     {!wallet ? (
-                      <button className="btn" disabled={busy} onClick={() => void identityAction('provision')}>
-                        Provision wallet
-                      </button>
+                      <>
+                        <button className="btn" disabled={busy || !walletInputValid} onClick={() => void bindExistingWallet()}>
+                          Bind existing wallet
+                        </button>
+                        <button className="btn" disabled={busy} onClick={() => void identityAction('provision')}>
+                          Provision wallet
+                        </button>
+                      </>
                     ) : null}
                     <button className="btn" disabled={busy || !controllerVerified} onClick={() => void createAccount()}>
                       Create account

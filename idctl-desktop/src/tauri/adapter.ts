@@ -903,6 +903,15 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   'identity:controllerChallenge': async (agent: string, wallet: string, selectedTeam?: string) => startControllerChallenge(String(agent), String(wallet), selectedTeam ? String(selectedTeam) : undefined),
   'identity:controllerVerify': async (agent: string, wallet: string, signature: string, selectedTeam?: string) => verifyControllerChallengeForAgent(String(agent), String(wallet), String(signature), selectedTeam ? String(selectedTeam) : undefined),
   'identity:controllerStatus': async (agent: string, wallet: string, selectedTeam?: string) => controllerProofStatusForAgent(String(agent), String(wallet), selectedTeam ? String(selectedTeam) : undefined),
+  'identity:bindWallet': async (agent: string, wallet: string, selectedTeam?: string) => {
+    const name = String(agent).trim();
+    const teamName = selectedTeam ? String(selectedTeam) : undefined;
+    const address = ethAddress(wallet);
+    if (!name) throw new Error('Choose an agent before binding a controller wallet.');
+    if (!address) throw new Error('Controller wallet must be a valid 20-byte 0x address.');
+    await requireControllerProofIfWalletExists(name, teamName);
+    return (teamName ? client.withTeam(teamName) : client).bindAgentWallet(name, address);
+  },
   'identity:register': async (agent: string, selectedTeam?: string) => {
     const name = String(agent);
     const teamName = selectedTeam ? String(selectedTeam) : undefined;
