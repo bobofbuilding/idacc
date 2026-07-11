@@ -3,31 +3,29 @@ import { call, type FleetStore, type TeamAgent } from '../store.ts';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
 import type { AgentAccount, KeyAuthorityTarget, KeyCapabilities, LegacyKeyAuthority, SessionKey, SessionScope } from '../../../../idctl/src/keys/types.ts';
 import type { EvmRpcKeySource, EvmRpcProfile } from '../../../../idctl/src/settings/schema.ts';
+import {
+  AGENT_BITTREES_SAFE_ADDRESS,
+  AGENT_BITTREES_SAFE_ENS,
+  EXECUTION_CHAINS,
+  buildWalletSafeTransaction,
+  chainByHex,
+  contractValidationErrors,
+  executionStamp,
+  formatExecutionPreview,
+  guardedExecutionReady,
+  isEthAddress,
+  sameAddress,
+  type ContractSimulation,
+  type ExecutionChain,
+} from '../../shared/signingGuardrails.ts';
 
 type EvidenceState = 'verified' | 'warn' | 'missing' | 'self';
 type IdentityAgent = TeamAgent;
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
 type ContractExecutionState = 'idle' | 'warn' | 'ready' | 'submitted';
-type ExecutionChain = (typeof EXECUTION_CHAINS)[number];
-
-const AGENT_BITTREES_SAFE_ENS = 'agent.bittrees.eth';
-const AGENT_BITTREES_SAFE_ADDRESS = '0x8A6445277b81b9dC27ef248aB25b53e6b255Cfb8';
-const EXECUTION_CHAINS = [
-  { chainId: 1, hex: '0x1', name: 'Ethereum mainnet' },
-  { chainId: 8453, hex: '0x2105', name: 'Base' },
-  { chainId: 11155111, hex: '0xaa36a7', name: 'Ethereum Sepolia' },
-  { chainId: 84532, hex: '0x14a34', name: 'Base Sepolia' },
-] as const;
 
 interface EthereumProvider {
   request<T = unknown>(args: { method: string; params?: unknown[] }): Promise<T>;
-}
-
-interface ContractSimulation {
-  ok: boolean;
-  stamp: string;
-  message: string;
-  preview: string;
 }
 
 interface ControllerProof {
@@ -171,89 +169,8 @@ function identityValue(
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function isEthAddress(value: string): boolean {
-  return /^0x[0-9a-fA-F]{40}$/.test(value.trim());
-}
-
-function sameAddress(a: string, b: string): boolean {
-  return a.trim().toLowerCase() === b.trim().toLowerCase();
-}
-
-function isHexCalldata(value: string): boolean {
-  return /^0x(?:[0-9a-fA-F]{2})*$/.test(value.trim());
-}
-
-function normalizeTxData(value: string): string {
-  const trimmed = value.trim();
-  return trimmed.length ? trimmed : '0x';
-}
-
-function parseWei(value: string): bigint | null {
-  const trimmed = value.trim();
-  if (!/^(0|[1-9][0-9]*)$/.test(trimmed)) return null;
-  try {
-    return BigInt(trimmed);
-  } catch {
-    return null;
-  }
-}
-
-function weiToHex(value: string): string | null {
-  const wei = parseWei(value);
-  return wei == null ? null : `0x${wei.toString(16)}`;
-}
-
 function getEthereumProvider(): EthereumProvider | null {
   return ((window as Window & { ethereum?: EthereumProvider }).ethereum) ?? null;
-}
-
-function chainByHex(hex: string): (typeof EXECUTION_CHAINS)[number] | undefined {
-  return EXECUTION_CHAINS.find((chain) => chain.hex.toLowerCase() === hex.trim().toLowerCase());
-}
-
-function executionStamp(chainHex: string, account: string, to: string, data: string, valueWei: string): string {
-  return JSON.stringify({
-    chainHex: chainHex.toLowerCase(),
-    from: account.toLowerCase(),
-    safe: AGENT_BITTREES_SAFE_ADDRESS.toLowerCase(),
-    to: to.trim().toLowerCase(),
-    data: normalizeTxData(data).toLowerCase(),
-    valueWei: valueWei.trim(),
-  });
-}
-
-function formatExecutionPreview(chainHex: string, account: string, to: string, data: string, valueWei: string): string {
-  const chain = chainByHex(chainHex);
-  return JSON.stringify({
-    chain: chain ? `${chain.name} (${chain.hex})` : chainHex,
-    safeEns: AGENT_BITTREES_SAFE_ENS,
-    from: account || 'not connected',
-    requiredSafe: AGENT_BITTREES_SAFE_ADDRESS,
-    to: to.trim() || 'not set',
-    valueWei: valueWei.trim() || '0',
-    data: normalizeTxData(data),
-  }, null, 2);
-}
-
-function contractValidationErrors(
-  account: string,
-  providerChain: string,
-  requiredChain: string,
-  to: string,
-  data: string,
-  valueWei: string,
-): string[] {
-  const errors: string[] = [];
-  const normalizedData = normalizeTxData(data);
-  if (!account) errors.push('Connect wallet/Safe first.');
-  else if (!sameAddress(account, AGENT_BITTREES_SAFE_ADDRESS)) errors.push(`Connected account must be ${AGENT_BITTREES_SAFE_ENS} (${AGENT_BITTREES_SAFE_ADDRESS}).`);
-  if (!chainByHex(requiredChain)) errors.push('Choose a supported chain.');
-  if (!providerChain) errors.push('Wallet chain is not available.');
-  else if (providerChain.toLowerCase() !== requiredChain.toLowerCase()) errors.push(`Wallet chain must match ${chainByHex(requiredChain)?.name ?? requiredChain}.`);
-  if (!isEthAddress(to)) errors.push('Contract target must be a 20-byte 0x address.');
-  if (!isHexCalldata(normalizedData)) errors.push('Calldata must be 0x-prefixed even-length hex.');
-  if (weiToHex(valueWei) == null) errors.push('Value must be a non-negative integer in wei.');
-  return errors;
 }
 
 function providerWalletFromMetadata(metadata: unknown): string {
@@ -1297,18 +1214,12 @@ export function Identity({ store }: { store: FleetStore }) {
         setContractMessage(errors.join(' '));
         return;
       }
-      const value = weiToHex(contractValue);
-      if (value == null) {
+      const tx = buildWalletSafeTransaction(contractTo, contractData, contractValue);
+      if (!tx) {
         setContractSimulation(null);
         setContractMessage('Value must be a non-negative integer in wei.');
         return;
       }
-      const tx = {
-        from: AGENT_BITTREES_SAFE_ADDRESS,
-        to: contractTo.trim(),
-        data: normalizeTxData(contractData),
-        value,
-      };
       const result = await provider.request<string>({ method: 'eth_call', params: [tx, 'latest'] });
       const stamp = executionStamp(contractChain, account, contractTo, contractData, contractValue);
       setContractSimulation({
@@ -1355,29 +1266,24 @@ export function Identity({ store }: { store: FleetStore }) {
         setContractMessage(errors.join(' '));
         return;
       }
-      const stamp = executionStamp(contractChain, account, contractTo, contractData, contractValue);
-      if (!contractSimulation?.ok || contractSimulation.stamp !== stamp) {
-        setContractMessage('Run a successful simulation for the current transaction before submit.');
-        return;
-      }
-      if (!contractConfirmed) {
-        setContractMessage('Human confirmation is required before wallet/Safe approval.');
-        return;
-      }
-      const value = weiToHex(contractValue);
-      if (value == null) {
-        setContractMessage('Value must be a non-negative integer in wei.');
+      const readiness = guardedExecutionReady({
+        account,
+        providerChain: chainHex,
+        requiredChain: contractChain,
+        to: contractTo,
+        data: contractData,
+        valueWei: contractValue,
+        simulation: contractSimulation,
+        confirmed: contractConfirmed,
+      });
+      if (!readiness.ok) {
+        setContractMessage(readiness.errors.join(' '));
         return;
       }
       if (!window.confirm(`Submit guarded transaction through ${AGENT_BITTREES_SAFE_ENS}?\n\nTarget: ${contractTo.trim()}\nValue: ${contractValue.trim()} wei\nChain: ${chainByHex(contractChain)?.name ?? contractChain}\n\nThe wallet/Safe must still approve before anything is broadcast.`)) return;
       const hash = await provider.request<string>({
         method: 'eth_sendTransaction',
-        params: [{
-          from: AGENT_BITTREES_SAFE_ADDRESS,
-          to: contractTo.trim(),
-          data: normalizeTxData(contractData),
-          value,
-        }],
+        params: [readiness.tx],
       });
       setContractMessage(`Wallet/Safe submitted transaction ${hash}.`);
       setContractConfirmed(false);

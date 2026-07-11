@@ -15,6 +15,7 @@
     "test:chat-failure": "node scripts/chat-terminal-failure-smoke.mjs",
     "test:background-policy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/background-policy-smoke.mjs",
     "test:release-payload": "node ../scripts/release-payload-smoke.mjs",
+    "test:signing-guardrails": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/signing-guardrails-smoke.mjs",
     "test:context-budget": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/context-budget-smoke.mjs",
     "test:context-history": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/context-budget-history.mjs",
     "test:dashboard-coordination": "node scripts/dashboard-coordination-roster-smoke.mjs",
