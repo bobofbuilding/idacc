@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.636] — 2026-07-11
+### What changed
+- idctl-desktop: extract signing guardrails smoke checks
+- docs: add identity keys verification note
+- feat(identity): add wallet binding and chain status
+
 ## [0.1.635] — 2026-07-10
 ### What changed
 - idctl: gate GPT-5.6 Codex model ids on installed CLI version
