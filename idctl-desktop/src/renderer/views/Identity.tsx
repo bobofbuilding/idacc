@@ -19,7 +19,7 @@ import {
   type ExecutionChain,
 } from '../../shared/signingGuardrails.ts';
 
-type EvidenceState = 'verified' | 'warn' | 'missing' | 'self';
+type EvidenceState = 'verified' | 'pending' | 'warn' | 'missing' | 'self';
 type IdentityAgent = TeamAgent;
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
 type ContractExecutionState = 'idle' | 'warn' | 'ready' | 'submitted';
@@ -149,8 +149,8 @@ function safeStatusForChain(account: AgentAccount | undefined, chain: ExecutionC
   if (!account?.smartAccount) return { state: 'missing', note: 'no Safe account record' };
   if (account.chainId !== chain.chainId) {
     return {
-      state: 'warn',
-      note: `deployment unverified on this chain (known only for chain ${account.chainId})`,
+      state: 'pending',
+      note: `deployment status unknown on this chain (known only for chain ${account.chainId})`,
     };
   }
   return {
@@ -261,9 +261,10 @@ function uniqueAgents(agents: IdentityAgent[]): IdentityAgent[] {
 
 function statusLabel(state: EvidenceState): string {
   if (state === 'verified') return 'verified';
-  if (state === 'warn') return 'review';
+  if (state === 'pending') return 'pending';
+  if (state === 'warn') return 'needs action';
   if (state === 'self') return 'declared';
-  return 'missing';
+  return 'unavailable';
 }
 
 function StatusPill({ state }: { state: EvidenceState }) {
@@ -271,7 +272,10 @@ function StatusPill({ state }: { state: EvidenceState }) {
 }
 
 function statusTone(state: EvidenceState): string {
-  return state === 'verified' ? 'ok-text' : state === 'missing' ? 'status-error' : 'warn-text';
+  if (state === 'verified') return 'ok-text';
+  if (state === 'missing') return 'status-error';
+  if (state === 'pending' || state === 'self') return 'muted';
+  return 'warn-text';
 }
 
 function dotTone(state: EvidenceState): string {
@@ -297,6 +301,15 @@ function isUnsafeTtl(ttl: { label: string; ms: number } | undefined): boolean {
 function mockProviderWarning(caps: KeyCapabilities | null): string {
   if (!caps) return 'Checking key provider...';
   return caps.live ? `${caps.chainLabel} live provider` : `${caps.chainLabel} mock provider; no on-chain authority is created.`;
+}
+
+function sessionAuthority(session: SessionKey): { label: string; tone: 'safe' | 'broad' | 'critical' }[] {
+  const badges: { label: string; tone: 'safe' | 'broad' | 'critical' }[] = [];
+  const anyTarget = session.scope.targets.includes('*');
+  badges.push(anyTarget ? { label: 'Any contract', tone: 'broad' } : { label: `${session.scope.targets.length} target${session.scope.targets.length === 1 ? '' : 's'}`, tone: 'safe' });
+  badges.push(session.scope.spendLimitWei === '0' ? { label: 'Uncapped', tone: 'critical' } : { label: 'Spend capped', tone: 'safe' });
+  if (session.validUntil === 0) badges.push({ label: 'No expiry', tone: 'critical' });
+  return badges;
 }
 
 function identityStandardRows(
@@ -464,12 +477,12 @@ function reviewRows(
     },
     {
       label: 'Session keys',
-      state: nonExpiring ? 'warn' : active.length ? 'verified' : 'warn',
+      state: nonExpiring ? 'warn' : active.length ? 'verified' : 'pending',
       note: nonExpiring ? `${nonExpiring} non-expiring grant needs review` : `${active.length} active grant${active.length === 1 ? '' : 's'}`,
     },
     {
       label: 'Live trust checks',
-      state: 'warn',
+      state: 'pending',
       note: agent ? 'ENSIP-24, ERC-8004, ERC-8048/721T, ERC-8049, and B20 live reads are tracked below' : 'select an agent',
     },
   ];
@@ -643,7 +656,9 @@ export function Identity({ store }: { store: FleetStore }) {
         ? 'missing'
         : safe.state === 'verified' && rpcState === 'verified'
           ? 'verified'
-          : 'warn';
+          : safe.state === 'pending' && rpcState === 'verified'
+            ? 'pending'
+            : 'warn';
     return { chain, rpc, safe, rpcNote, state };
   }), [acct, evmRpcs, wallet]);
   const keyOperational = Boolean(caps?.live && acct?.deployed && activeSessionCount > 0);
@@ -721,6 +736,7 @@ export function Identity({ store }: { store: FleetStore }) {
   const processReadyCount = identityProcess.filter((step) => step.state === 'verified').length;
   const processReviewCount = identityProcess.filter((step) => step.state === 'warn').length;
   const processState: EvidenceState = processReadyCount === identityProcess.length ? 'verified' : processReviewCount ? 'warn' : 'missing';
+  const readinessPercent = Math.round((processReadyCount / identityProcess.length) * 100);
   const brainControllerLabel = brainControllers
     ? `Brain controllers ${brainLinkedAgents}/${identityAgents.length}`
     : 'Brain controllers --';
@@ -1382,6 +1398,27 @@ export function Identity({ store }: { store: FleetStore }) {
                 </div>
               </section>
 
+              <section className={`card identity-readiness ${processState}`} role="status">
+                <div className="identity-readiness-score" aria-label={`${readinessPercent}% of setup checks verified`}>
+                  <b>{readinessPercent}%</b>
+                  <span>verified now</span>
+                </div>
+                <div className="identity-readiness-copy">
+                  <div className="identity-readiness-title">
+                    <h3>Operational readiness</h3>
+                    <StatusPill state={processState} />
+                  </div>
+                  <p>
+                    {processState === 'verified'
+                      ? 'Identity, account, chain routes, and scoped-key evidence are ready for the capabilities shown here.'
+                      : nextProcessStep
+                        ? <><b>Next: {nextProcessStep.label}.</b> {nextProcessStep.note}</>
+                        : 'Review the setup evidence before enabling privileged work.'}
+                  </p>
+                  <div className="identity-progress" aria-hidden="true"><span style={{ width: `${readinessPercent}%` }} /></div>
+                </div>
+              </section>
+
               {error ? (
                 <div className="identity-alert" role="alert">
                   <b>Action failed</b>
@@ -1583,10 +1620,10 @@ export function Identity({ store }: { store: FleetStore }) {
               <section className="card" role="status">
                 <div className="identity-legacy-head">
                   <h3>Per-chain addresses</h3>
-                  <StatusPill state={executionChainRows.every((row) => row.state === 'verified') ? 'verified' : executionChainRows.some((row) => row.state === 'missing') ? 'missing' : 'warn'} />
+                  <StatusPill state={executionChainRows.every((row) => row.state === 'verified') ? 'verified' : executionChainRows.some((row) => row.state === 'missing') ? 'missing' : executionChainRows.some((row) => row.state === 'warn') ? 'warn' : 'pending'} />
                 </div>
                 <p className="muted small">
-                  The controller is the same EOA on every EVM chain. Safe deployment is only known for the key provider&apos;s current chain; the remaining deployment reads are explicitly unverified.
+                  The controller is the same EOA on every EVM chain. Safe deployment is only known for the key provider&apos;s current chain; other chains remain pending until live deployment reads are available.
                 </p>
                 <table className="grid identity-table">
                   <thead>
@@ -1770,7 +1807,7 @@ export function Identity({ store }: { store: FleetStore }) {
 
               <div className="identity-grid">
                 <section className="card">
-                  <h3>Account</h3>
+                  <h3>Smart Account (Safe)</h3>
                   <div className="kv identity-kv">
                     <span>Controller</span>
                     <b className={wallet ? 'mono' : 'muted'}>{wallet ? shortAddr(wallet) : 'not provisioned'}</b>
@@ -1838,8 +1875,10 @@ export function Identity({ store }: { store: FleetStore }) {
                   <thead>
                     <tr>
                       <th>Scope</th>
+                      <th>Authority</th>
                       <th>Signer</th>
                       <th>Spend cap</th>
+                      <th>Lifetime</th>
                       <th>Status</th>
                       <th>Action</th>
                     </tr>
@@ -1848,12 +1887,20 @@ export function Identity({ store }: { store: FleetStore }) {
                     {activeSessions.map((s) => (
                       <tr key={s.id}>
                         <td className="b">{s.scope.label}</td>
+                        <td>
+                          <div className="identity-authority">
+                            {sessionAuthority(s).map((badge) => (
+                              <span key={badge.label} className={`identity-authority-badge ${badge.tone}`}>{badge.label}</span>
+                            ))}
+                          </div>
+                        </td>
                         <td className="mono muted">{shortAddr(s.address)}</td>
                         <td className={s.scope.spendLimitWei === '0' ? 'warn-text mono small' : 'mono small'}>
                           {s.scope.spendLimitWei === '0' ? 'uncapped' : s.scope.spendLimitWei}
                         </td>
+                        <td className={s.validUntil === 0 ? 'warn-text' : 'muted'}>{remaining(s.validUntil)}</td>
                         <td className={s.status === 'active' ? 'ok-text' : s.status === 'revoked' ? 'status-error' : 'muted'}>
-                          {s.status === 'active' ? remaining(s.validUntil) : s.status}
+                          {s.status}
                         </td>
                         <td className="row-actions">
                           {s.status === 'active' ? (
@@ -1866,7 +1913,7 @@ export function Identity({ store }: { store: FleetStore }) {
                     ))}
                     {activeSessions.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="muted">
+                        <td colSpan={7} className="muted">
                           No session keys yet.
                         </td>
                       </tr>
@@ -1900,6 +1947,33 @@ export function Identity({ store }: { store: FleetStore }) {
                 </p>
               </section>
 
+              <section className="card identity-plan">
+                <div className="identity-plan-head">
+                  <div>
+                    <h3>Capability path</h3>
+                    <p className="muted small">What the current authority model supports now, and the evidence and provider layers it is designed to support next.</p>
+                  </div>
+                  <StatusPill state="pending" />
+                </div>
+                <div className="identity-plan-grid">
+                  <div className="identity-plan-lane now">
+                    <span className="identity-plan-kicker">Now</span>
+                    <b>Guarded agent control</b>
+                    <p>Fresh controller proofs gate account changes. Enabled RPCs form the chain allowlist, and the UI issues only finite, spend-capped session keys.</p>
+                  </div>
+                  <div className="identity-plan-lane next">
+                    <span className="identity-plan-kicker">Next</span>
+                    <b>Live, per-chain evidence</b>
+                    <p>Resolver, manifest, reputation, runtime-signature, and per-chain deployment reads replace pending or unknown evidence.</p>
+                  </div>
+                  <div className="identity-plan-lane later">
+                    <span className="identity-plan-kicker">Later</span>
+                    <b>Provider-backed execution</b>
+                    <p>The existing key-provider interface can move from simulation to Safe ERC-4337 execution without weakening the authority model shown here.</p>
+                  </div>
+                </div>
+              </section>
+
               <details className="card identity-details">
                 <summary>Advanced evidence</summary>
                 <div className="identity-detail-grid">
@@ -1914,8 +1988,8 @@ export function Identity({ store }: { store: FleetStore }) {
                     <b>{caps?.provider ?? '-'}</b>
 	                  </div>
 	                  <div className="auth-list">
-	                    <div><StatusPill state="warn" /><span>Live ENSIP-24 / ERC-8004 / ERC-8048 / ERC-8049 / B20 reads are tracked in the standards panel.</span></div>
-	                    <div><StatusPill state="warn" /><span>Manifest hash, metadata hook trust, and runtime signature verification are still pending.</span></div>
+	                    <div><StatusPill state="pending" /><span>Live ENSIP-24 / ERC-8004 / ERC-8048 / ERC-8049 / B20 reads are tracked but not yet verifiable.</span></div>
+	                    <div><StatusPill state="pending" /><span>Manifest hash, metadata hook trust, and runtime signature verification are not yet verifiable.</span></div>
 	                    <div><StatusPill state="self" /><span>Better Auth proves operator login only; it is not wallet or agent identity proof.</span></div>
 	                  </div>
                 </div>

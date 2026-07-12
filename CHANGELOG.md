@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.637] — 2026-07-12
+### What changed
+- Identity & Keys: clarify readiness, authority boundaries, and capability path
+
 ## [0.1.636] — 2026-07-11
 ### What changed
 - idctl-desktop: extract signing guardrails smoke checks
