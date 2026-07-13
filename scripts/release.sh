@@ -11,26 +11,30 @@
 # CHANGELOG.md gets a matching "## [X.Y.Z]" entry, and the tag + GitHub release agree.
 #
 # Steps: bump version → CHANGELOG entry → typecheck → commit (hook stamps the version)
-#        → tag vX.Y.Z → push origin main --tags → build the macOS app → zip → publish
+#        → build the macOS app → zip → tag vX.Y.Z → push origin main --tags → publish
 #        the GitHub release asset (via ../release-publish.py, which reuses the deployer PAT)
 #        → delete local release zips after upload verification.
 set -euo pipefail
-
-NOTE="${1:-}"
-if [ -z "$NOTE" ]; then
-  echo "usage: scripts/release.sh \"<changelog note>\" [explicit-version] [--commit]" >&2
-  exit 1
-fi
-if printf '%s' "$NOTE" | grep -Eiq '^(automated release of outstanding|maintenance release\.?$|update\.?$|changes\.?$|misc\.?$|wip\.?$)'; then
-  echo "release note must describe what changed; placeholder summaries are not allowed" >&2
-  exit 1
-fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # repo root: …/.iacc-publish/id-agent-control-center
 export DESK="$ROOT/idctl-desktop"          # exported so the inline node helpers can read it
 export TUI="$ROOT/idctl"
 PUB="$ROOT/../release-publish.py"
 cd "$ROOT"
+
+if [ "${1:-}" = "--resume" ]; then
+  exec bash "$ROOT/scripts/resume-release.sh" "${2:-}"
+fi
+
+NOTE="${1:-}"
+if [ -z "$NOTE" ]; then
+  echo "usage: scripts/release.sh \"<changelog note>\" [explicit-version] [--commit] | scripts/release.sh --resume X.Y.Z" >&2
+  exit 1
+fi
+if printf '%s' "$NOTE" | grep -Eiq '^(automated release of outstanding|maintenance release\.?$|update\.?$|changes\.?$|misc\.?$|wip\.?$)'; then
+  echo "release note must describe what changed; placeholder summaries are not allowed" >&2
+  exit 1
+fi
 
 strip_version_subject() {
   printf '%s' "$1" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+: *//'
@@ -103,6 +107,19 @@ done
 CUR="$(node -p "require('$DESK/package.json').version")"
 VER="${VER_ARG:-$(node -e "const [a,b,c]=process.argv[1].split('.'); console.log(\`\${a}.\${b}.\${Number(c)+1}\`)" "$CUR")}"
 echo "▶ releasing v$VER  (was v$CUR)"
+
+# A prior local run can push its tag and then fail during the build or publish.
+# Never create another version while that gap exists; it must be resumed first.
+node "$ROOT/scripts/check-release-publication.mjs"
+
+PUSHED_TAG=""
+on_exit() {
+  local status=$?
+  if [ "$status" -ne 0 ] && [ -n "${PUSHED_TAG:-}" ]; then
+    echo "ERROR: $PUSHED_TAG was pushed but its GitHub Release was not confirmed. Fix the failure and rerun: scripts/release.sh --resume ${PUSHED_TAG#v}" >&2
+  fi
+}
+trap on_exit EXIT
 
 # Surface stale human-facing wiki content before mutating release files.
 node "$ROOT/scripts/check-wiki.mjs"
@@ -189,7 +206,7 @@ fs.writeFileSync(f, (i >= 0 ? t.slice(0, i) + entry + t.slice(i) : t + "\n" + en
 
 node "$ROOT/scripts/validate-release-schema.mjs" --precommit "$VER"
 
-# --- 3) commit + tag + push (typecheck already passed in step 0) ---
+# --- 3) commit, then build before exposing a release tag remotely ---
 # Stamp the version onto the subject ourselves (the commit-msg hook is idempotent and leaves a
 # "v…"-prefixed subject untouched — so this works whether or not the hook is installed in this clone).
 SUBJECT="$(printf '%s' "$CHANGELOG_BODY" | head -1 | sed -E 's/^- *//')"
@@ -197,28 +214,38 @@ git add -A
 git commit -q -m "v$VER: $SUBJECT"
 git pull --rebase origin main   # fold in any concurrent agent pushes before we publish (fail-stops on conflict)
 node "$ROOT/scripts/validate-release-schema.mjs" --postcommit "$VER"
+
+# A build failure must not leave a remotely visible release tag behind. The
+# explicit --commit path intentionally skips this build and leaves a deferred
+# tag that the preflight will force the next release to resolve.
+if [ "$COMMIT_ONLY" != "1" ]; then
+  ( cd "$DESK" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist )
+  APP="$DESK/release/mac-arm64/ID Agents Control Center.app"
+  ZIP="$DESK/release/ID-Agents-Control-Center-$VER-arm64.zip"
+  [ -d "$APP" ] || { echo "build did not produce $APP" >&2; exit 1; }
+  node "$ROOT/scripts/check-release-payload.mjs" "$APP"
+  rm -f "$ZIP"
+  ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+fi
+
+# --- 4) tag + push only after the full-release artifact is ready ---
 git tag "v$VER"
 node "$ROOT/scripts/validate-release-schema.mjs" --publish "$VER"
 git push origin main --tags
+PUSHED_TAG="v$VER"
 echo "✓ committed + tagged v$VER + pushed to origin/main"
 
 if [ "$COMMIT_ONLY" = "1" ]; then
-  echo "✓ --commit: stopped before build/publish (no GitHub release asset)."
+  echo "✓ --commit: stopped before build/publish. Publish this deferred tag before cutting another version: scripts/release.sh --resume $VER"
+  PUSHED_TAG=""
   exit 0
 fi
-
-# --- 4) build the macOS app + zip it as the release asset ---
-( cd "$DESK" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist )
-APP="$DESK/release/mac-arm64/ID Agents Control Center.app"
-ZIP="$DESK/release/ID-Agents-Control-Center-$VER-arm64.zip"
-[ -d "$APP" ] || { echo "build did not produce $APP" >&2; exit 1; }
-node "$ROOT/scripts/check-release-payload.mjs" "$APP"
-rm -f "$ZIP"
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 
 # --- 5) publish the GitHub release (creates the v$VER release + uploads + verifies the asset) ---
 export DESK
 python3 "$PUB" "$VER"
+node "$ROOT/scripts/check-release-publication.mjs" --require-tag "v$VER"
+PUSHED_TAG=""
 
 # Local zips are upload scratch space only; GitHub releases are the durable archive.
 node -e '

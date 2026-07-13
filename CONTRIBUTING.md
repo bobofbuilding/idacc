@@ -33,7 +33,15 @@ GitHub release:
 scripts/release.sh "Short summary of the change for the changelog"
 # explicit version:    scripts/release.sh "…" 0.2.0
 # commit/tag/push only: scripts/release.sh "…" --commit   (no build/publish)
+# finish a pushed but unpublished tag: scripts/release.sh --resume 0.2.0
 ```
+
+Before it changes files, the release command checks that every existing `vX.Y.Z`
+tag has a published GitHub Release. If a previous build or publish was interrupted
+after pushing its tag, the command refuses to create another version; check out the
+tag and use `--resume` to build and publish that exact version. `--commit` remains
+an explicit commit/tag/push-only mode, but its deferred tag must be resumed before
+the next version is cut.
 
 Or do it by hand:
 
