@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.638] — 2026-07-13
+### What changed
+- Release: prevent orphaned version tags
+
 ## [0.1.637] — 2026-07-12
 ### What changed
 - Identity & Keys: clarify readiness, authority boundaries, and capability path
