@@ -61,6 +61,11 @@ export function planWorkGoalId(plan: Pick<PlanWorkBrainPlan, 'file' | 'title'>):
   return `goal_plan_${stableHash(`${plan.file || ''}\n${plan.title || ''}`)}`;
 }
 
+export function mergePlanTaskRefs(current: string[] = [], incoming: string[] = [], limit = 200): string[] {
+  const refs = [...new Set([...current, ...incoming].map((ref) => String(ref || '').trim()).filter(Boolean))];
+  return refs.slice(Math.max(0, refs.length - Math.max(1, limit)));
+}
+
 function sourceLabel(plan: PlanWorkBrainPlan): string {
   return [plan.num, plan.file].filter(Boolean).join(' - ') || plan.title;
 }

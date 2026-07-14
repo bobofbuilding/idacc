@@ -226,6 +226,14 @@ function numberField(value: unknown): number | undefined {
   return undefined;
 }
 
+function timestampMs(value: unknown): number | undefined {
+  const parsed = numberField(value);
+  if (parsed == null) return undefined;
+  // The manager persists task timestamps as epoch seconds while renderer and
+  // desktop scheduling code use Date.now() milliseconds.
+  return parsed > 0 && parsed < 100_000_000_000 ? parsed * 1000 : parsed;
+}
+
 function stringList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.map((item) => textField(item)?.trim()).filter((item): item is string => !!item);
@@ -251,9 +259,9 @@ export function normalizeTaskRecord(raw: unknown): Task | null {
     ownerName: textField(row.ownerName ?? row.owner_name ?? row.owner) ?? null,
     ...(textField(row.teamName ?? row.team_name ?? row.team) ? { teamName: textField(row.teamName ?? row.team_name ?? row.team) } : {}),
     linkedEvents: stringList(row.linkedEvents ?? row.linked_events) ?? [],
-    createdAt: numberField(row.createdAt ?? row.created_at) ?? 0,
-    updatedAt: numberField(row.updatedAt ?? row.updated_at),
-    completedAt: numberField(row.completedAt ?? row.completed_at) ?? null,
+    createdAt: timestampMs(row.createdAt ?? row.created_at) ?? 0,
+    updatedAt: timestampMs(row.updatedAt ?? row.updated_at),
+    completedAt: timestampMs(row.completedAt ?? row.completed_at) ?? null,
   };
 }
 

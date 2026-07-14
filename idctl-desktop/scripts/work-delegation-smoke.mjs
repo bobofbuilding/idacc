@@ -76,16 +76,15 @@ const result = await createAndDispatchPlan(
 
 await new Promise((resolve) => setTimeout(resolve, 0));
 
-assert.equal(remoteCommands.length, 2, 'lead-owned parent task should be created and kicked off');
+assert.equal(remoteCommands.length, 1, 'lead-owned parent task should rely on the manager-owned kickoff');
 assert.match(remoteCommands[0], /--owner research-lead/, 'parent task should stay assigned to the coordinator');
-assert.match(remoteCommands[1], /^\/ask research-lead\b/, 'lead-owned parent should receive the delegation kickoff');
-assert.match(remoteCommands[1], /delegated child tasks/i, 'kickoff should require child task reporting when the lead delegates');
+assert.equal(remoteCommands.filter((cmd) => /^\/ask research-lead\b/.test(cmd)).length, 0, 'IDACC must not duplicate the manager lead kickoff');
 assert.equal(dispatchCommands.length, 0, 'work kickoff should use manager remote queueing, not blocking dispatch');
 assert.equal(result.created.length, 1);
 assert.equal(result.created[0].ok, true);
 assert.equal(result.created[0].agent, 'research-lead');
 assert.equal(result.created[0].deferred, false, 'coordinator-owned parent should not suppress kickoff');
-assert.match(result.created[0].warning || '', /kicked off for manager delegation/);
+assert.match(result.created[0].warning || '', /accepted for manager delegation/);
 assert.equal(result.dispatched, 1);
 assert.equal(result.deferred, 0);
 
@@ -128,6 +127,7 @@ const rejectedDispatch = await createAndDispatchPlan(
 
 assert.equal(remoteCommands.filter((cmd) => /^\/task create\b/.test(cmd)).length, 1);
 assert.equal(remoteCommands.filter((cmd) => /^\/ask\b/.test(cmd)).length, 1);
+assert.equal(remoteCommands.filter((cmd) => /^\/task jumpstart-stalled\b/.test(cmd)).length, 1, 'failed kickoff should be handed to manager recovery');
 assert.equal(rejectedDispatch.created.length, 1);
 assert.equal(rejectedDispatch.created[0].ok, true);
 assert.equal(rejectedDispatch.created[0].dispatched, false, 'failed /ask must not be reported as dispatched');
@@ -182,6 +182,48 @@ assert.equal(guarded.created[0].deferred, true);
 assert.match(guarded.created[0].error || '', /capacity deferred/);
 assert.equal(guarded.dispatched, 0);
 assert.equal(guarded.deferred, 1);
+
+remoteCommands.length = 0;
+dispatchCommands.length = 0;
+
+const mirroredWorkClient = {
+  ...client,
+  async tasksByStatus(status) {
+    if (status !== 'doing') return [];
+    return Array.from({ length: 3 }, (_, i) => ({
+      title: `Existing lead work ${i + 1}`,
+      status: 'doing',
+      ownerName: 'research-lead',
+      shortId: `#lead00${i + 1}`,
+      createdAt: Date.now(),
+    }));
+  },
+  async activeAgentQueries(agent) {
+    return { count: agent === 'research-lead' ? 3 : 0, queries: [] };
+  },
+};
+
+const mirrored = await createAndDispatchPlan(
+  mirroredWorkClient,
+  'Add one bounded lead coordination task.',
+  [{
+    title: 'Coordinate the remaining work',
+    description: 'Create delegated child work.',
+    agent: 'research-lead',
+    dependsOn: [],
+  }],
+  {
+    dispatch: true,
+    respectOwners: true,
+    allowCoordinatorOwners: true,
+    ownerOpenTaskCap: 4,
+    leadCoordination: true,
+  },
+);
+
+assert.equal(remoteCommands.filter((cmd) => /^\/task create\b/.test(cmd)).length, 1, 'open tasks and their queries must not be double-counted');
+assert.equal(mirrored.created[0].ok, true);
+assert.equal(mirrored.dispatched, 1);
 
 remoteCommands.length = 0;
 dispatchCommands.length = 0;

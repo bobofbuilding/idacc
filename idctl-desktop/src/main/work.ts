@@ -14,7 +14,7 @@ import { setTaskLane, setTaskDeps, loadSettings } from '../../../idctl/src/setti
 import { optimizeAskCommand } from './contextBudget.ts';
 
 export interface SubTask { title: string; description: string; agent: string; dependsOn: number[] }
-export interface CreatedTask { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; warning?: string; dependsOn: number[]; dispatched: boolean; deferred?: boolean }
+export interface CreatedTask { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; warning?: string; dependsOn: number[]; dispatched: boolean; deferred?: boolean; managerKickoff?: boolean }
 export interface DecomposeResult { ok: boolean; subtasks: SubTask[]; raw: string; error?: string }
 export interface CreatePlanResult { created: CreatedTask[]; dispatched: number; deferred: number }
 export interface TeamLeadDelegationTarget { team: string; lead: string; activeCount: number; totalCount: number; runtime?: string; status?: string; skills: string[] }
@@ -369,7 +369,7 @@ function deterministicTeamLeadSubtasks(objective: string, targets: TeamLeadDeleg
 }
 
 function warningNeedsTriage(warning?: string): boolean {
-  return !!warning && !/coordinator-owned parent kicked off for manager delegation/i.test(warning);
+  return !!warning && !/(coordinator-owned parent kicked off|lead-owned parent accepted) for manager delegation/i.test(warning);
 }
 
 function isDefaultTeamName(team?: string): boolean {
@@ -515,7 +515,10 @@ async function planCapacity(client: ManagerClient, pool: Agent[], ownerOpenTaskC
   const ownerSlots = new Map<string, number>();
   for (const agent of pool) {
     const key = agentNameKey(agent.name);
-    const used = (ownerOpen.get(key) ?? 0) + (ownerActiveQueries.get(key) ?? 0);
+    // An owned doing task and its active query normally describe the same unit
+    // of work. Summing them halves usable capacity and was the source of the
+    // "3 open + 3 active" false-capacity blocks in plan delegation.
+    const used = Math.max(ownerOpen.get(key) ?? 0, ownerActiveQueries.get(key) ?? 0);
     ownerSlots.set(key, Math.max(0, ownerOpenTaskCap - used));
   }
   const queueTodoCount = open.filter((task) => !task.ownerName && isTodoStatus(task.status)).length;
@@ -787,7 +790,8 @@ export async function createAndDispatchPlan(
       const coordinatorKickoff = dispatch
         && opts.allowCoordinatorOwners === true
         && agentNameKey(st.agent) === agentNameKey(coordinator);
-      const localWarning = coordinatorKickoff ? 'coordinator-owned parent kicked off for manager delegation' : undefined;
+      const managerKickoff = coordinatorKickoff || (dispatch && opts.leadCoordination === true);
+      const localWarning = managerKickoff ? 'lead-owned parent accepted for manager delegation' : undefined;
       const warning = [remoteWarning, localWarning].filter(Boolean).join('; ') || undefined;
       created.push({
         idx: i,
@@ -797,8 +801,9 @@ export async function createAndDispatchPlan(
         ok: true,
         warning,
         dependsOn: st.dependsOn,
-        dispatched: false,
+        dispatched: managerKickoff,
         deferred: false,
+        managerKickoff,
       });
     } catch (e) {
       created.push({ idx: i, ref: st.title, title: st.title, agent: st.agent, ok: false, error: e instanceof Error ? e.message : String(e), dependsOn: st.dependsOn, dispatched: false });
@@ -873,6 +878,14 @@ export async function createAndDispatchPlan(
     const deps = backDeps.map((d) => done[d]).filter(Boolean); // each resolves on prereq COMPLETION
     const prevForOwner = ownerChain[c.agent];
     const waits = prevForOwner ? [...deps, prevForOwner] : deps;
+    if (c.managerKickoff) {
+      // Assigned lead parents are woken and prompted by the manager during
+      // /task create. A second /ask duplicates the kickoff and consumes a
+      // second query lane for the same task.
+      const p = Promise.allSettled(waits).then(() => waitForTaskDone(c.ref));
+      ownerChain[c.agent] = p;
+      return p;
+    }
     let markEnqueued: () => void = () => {};
     const enqueued = new Promise<void>((resolve) => { markEnqueued = resolve; });
     if (!waits.length) initialEnqueues.push(enqueued);
@@ -883,6 +896,15 @@ export async function createAndDispatchPlan(
       } catch (e) {
         c.dispatched = false;
         c.error = `dispatch failed: ${e instanceof Error ? e.message : String(e)}`;
+        try {
+          await client.remote(`/task jumpstart-stalled --task ${qArg(c.ref)}`);
+          c.warning = [c.warning, 'manager recovery accepted after kickoff failure'].filter(Boolean).join('; ');
+        } catch (recoveryError) {
+          c.warning = [
+            c.warning,
+            `manager recovery failed: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+          ].filter(Boolean).join('; ');
+        }
         return;
       } finally {
         markEnqueued();

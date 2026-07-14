@@ -247,6 +247,12 @@ python3 "$PUB" "$VER"
 node "$ROOT/scripts/check-release-publication.mjs" --require-tag "v$VER"
 PUSHED_TAG=""
 
+# The tag was already pushed in step 3 (git log/CHANGELOG/tag all agree the version shipped);
+# confirm the GitHub release itself actually landed before we call this a success and delete the
+# local build evidence — release-publish.py failing/partially-succeeding after this point is exactly
+# how a tag+commit can go out with no matching GitHub release (see v0.1.637).
+node "$ROOT/scripts/check-release-published.mjs" "$VER"
+
 # Local zips are upload scratch space only; GitHub releases are the durable archive.
 node -e '
 const fs = require("fs");

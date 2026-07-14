@@ -115,12 +115,10 @@ assert.ok(!dispatchCommands.some((row) => /\b(task-master|task-manager)\b/.test(
 const creates = remoteCommands.filter((row) => /^\/task create\b/.test(row.command));
 const asks = remoteCommands.filter((row) => /^\/ask\b/.test(row.command));
 assert.equal(creates.length, 2, 'each selected team lead should get a live task row');
-assert.equal(asks.length, 2, 'each selected team lead task should be kicked off');
+assert.equal(asks.length, 0, 'IDACC should rely on the manager-owned team-lead kickoff instead of duplicating it');
 assert.ok(creates.some((row) => row.team === 'research' && /--owner research-lead/.test(row.command)));
 assert.ok(creates.some((row) => row.team === 'engineering' && /--owner engineering-lead/.test(row.command)));
 assert.ok(creates.every((row) => /child \/task rows/.test(row.command)), 'team-lead packet should require child task creation');
-assert.ok(asks.some((row) => row.team === 'research' && /^\/ask research-lead\b/.test(row.command)));
-assert.ok(asks.some((row) => row.team === 'engineering' && /^\/ask engineering-lead\b/.test(row.command)));
 
 dispatchCommands.length = 0;
 remoteCommands.length = 0;

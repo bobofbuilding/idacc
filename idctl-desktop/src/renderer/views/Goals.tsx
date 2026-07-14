@@ -21,12 +21,14 @@ type GoalSummary = { id: string; title: string; status: GoalStatus; priority?: G
 type GoalField = 'title' | 'status' | 'priority' | 'autopilot' | 'content' | 'updatedAt';
 interface GoalDriverConfig { enabled: boolean; cadenceMs: number; maxOpenTasksPerGoal: number }
 interface GoalDriverSummary { enabled: boolean; consideredGoals: number; drivenGoals: number; tasksSpawned: number; teamsSynced: number; errors: string[] }
+type TaskLite = { title: string; description?: string | null; status: string; createdAt?: number; updatedAt?: number };
+type GoalProgress = { todo: number; doing: number; stalled: number; done: number };
 
 const STATUSES: GoalStatus[] = ['draft', 'active', 'done', 'archived'];
 const PRIORITIES: GoalPriority[] = ['primary', 'secondary', 'general'];
 const STATUS_CLASS: Record<GoalStatus, string> = { draft: 'st-paused', active: 'st-active', done: 'st-done', archived: 'st-blocked' };
 const PRIORITY_LABEL: Record<GoalPriority, string> = { primary: 'Primary', secondary: 'Secondary', general: 'General' };
-const DRIVER_DEFAULTS: GoalDriverConfig = { enabled: true, cadenceMs: 15 * 60 * 1000, maxOpenTasksPerGoal: 8 };
+const DRIVER_DEFAULTS: GoalDriverConfig = { enabled: true, cadenceMs: 15 * 60 * 1000, maxOpenTasksPerGoal: 3 };
 const CADENCES = [
   { label: '15m', value: 15 * 60 * 1000 },
   { label: '30m', value: 30 * 60 * 1000 },
@@ -68,6 +70,7 @@ export function Goals({ store }: { store: FleetStore }) {
   // edit-existing form
   const [refineInstr, setRefineInstr] = useState('');
   const [confirmDel, setConfirmDel] = useState(false);
+  const [goalProgress, setGoalProgress] = useState<Record<string, GoalProgress>>({});
   const aliveRef = useRef(true);          // skip UI updates after unmount
   const genTok = useRef(0);               // bump to abandon an in-flight dispatch
   useEffect(() => () => { aliveRef.current = false; }, []);
@@ -113,6 +116,36 @@ export function Goals({ store }: { store: FleetStore }) {
     if (aliveRef.current) setDriverCfg({ ...DRIVER_DEFAULTS, ...(cfg ?? {}) });
   }
   useEffect(() => { void loadDriver(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [syncVersion]);
+  useEffect(() => {
+    let stopped = false;
+    const reloadProgress = async () => {
+      const [currentGoals, tasks] = await Promise.all([
+        call<GoalSummary[]>('goals:list', team).catch(() => [] as GoalSummary[]),
+        call<TaskLite[]>('tasks:allTeams').catch(() => [] as TaskLite[]),
+      ]);
+      if (stopped) return;
+      const next: Record<string, GoalProgress> = {};
+      for (const goal of currentGoals) {
+        const id = goal.id.toLowerCase();
+        const related = tasks.filter((task) => [task.title, task.description]
+          .some((text) => String(text || '').toLowerCase().includes(id)));
+        const todo = related.filter((task) => /todo|queued|pending/i.test(task.status || '')).length;
+        const stalled = related.filter((task) => {
+          if (/block|stall|pause/i.test(task.status || '')) return true;
+          if (!/doing|claim|progress|start|active/i.test(task.status || '')) return false;
+          const activityAt = Number(task.updatedAt || task.createdAt || 0);
+          return activityAt > 0 && Date.now() - activityAt >= 45 * 60 * 1000;
+        }).length;
+        const done = related.filter((task) => /done|complete/i.test(task.status || '')).length;
+        const open = related.filter((task) => !/done|complete|cancel|archive|reject/i.test(task.status || '')).length;
+        next[goal.id] = { todo, stalled, done, doing: Math.max(0, open - todo - stalled) };
+      }
+      setGoalProgress(next);
+    };
+    void reloadProgress();
+    const id = setInterval(() => { void reloadProgress(); }, 30_000);
+    return () => { stopped = true; clearInterval(id); };
+  }, [team]);
 
   async function open(id: string) {
     if (detail?.id === id) { setDetail(null); return; } // toggle closed
@@ -227,7 +260,7 @@ export function Goals({ store }: { store: FleetStore }) {
     const changes: string[] = [];
     if (next.enabled !== current.enabled) changes.push(`Master: ${current.enabled ? 'enabled' : 'disabled'} -> ${next.enabled ? 'enabled' : 'disabled'}`);
     if (next.cadenceMs !== current.cadenceMs) changes.push(`Cadence: ${cadenceLabel(current.cadenceMs)} -> ${cadenceLabel(next.cadenceMs)}`);
-    if (next.maxOpenTasksPerGoal !== current.maxOpenTasksPerGoal) changes.push(`Task cap per goal: ${current.maxOpenTasksPerGoal} -> ${next.maxOpenTasksPerGoal}`);
+    if (next.maxOpenTasksPerGoal !== current.maxOpenTasksPerGoal) changes.push(`Manager tasks requested per pass: ${current.maxOpenTasksPerGoal} -> ${next.maxOpenTasksPerGoal}`);
     const increasesActivity = (next.enabled && !current.enabled)
       || (current.enabled && activeGoals.length > 0 && next.cadenceMs < current.cadenceMs)
       || (current.enabled && activeGoals.length > 0 && next.maxOpenTasksPerGoal > current.maxOpenTasksPerGoal);
@@ -277,7 +310,7 @@ export function Goals({ store }: { store: FleetStore }) {
       '',
       `Current master: ${pre.cfg.enabled ? 'enabled' : 'disabled'}`,
       `Cadence: ${cadenceLabel(pre.cfg.cadenceMs)}`,
-      `Task cap per goal: ${pre.cfg.maxOpenTasksPerGoal}`,
+      `Manager tasks requested per pass: ${pre.cfg.maxOpenTasksPerGoal}`,
       `Active Autopilot goals across all teams: ${pre.activeGoals.length}`,
       activeGoalPreview(pre.activeGoals),
       '',
@@ -337,7 +370,7 @@ export function Goals({ store }: { store: FleetStore }) {
             <input type="checkbox" checked={driverCfg.enabled} disabled={driverBusy} onChange={(e) => void patchDriver({ enabled: e.target.checked })} />
             <b>Autopilot master</b>
           </label>
-          <span className="muted small">Runs only for active goals with Autopilot on; Brain sync and bounded task fanout start immediately after trigger.</span>
+          <span className="muted small">Runs only for active goals with Autopilot on; IDACC syncs Brain instructions and asks the manager to create bounded work.</span>
           <span className="grow" />
           <label className="small muted" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
             cadence
@@ -346,7 +379,7 @@ export function Goals({ store }: { store: FleetStore }) {
             </select>
           </label>
           <label className="small muted" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-            cap
+            tasks/run
             <input className="chat-title" style={{ width: 54 }} type="number" min={1} max={12} value={driverCfg.maxOpenTasksPerGoal} disabled={driverBusy} onChange={(e) => void patchDriver({ maxOpenTasksPerGoal: Number(e.target.value) })} />
           </label>
           <button className="btn" disabled={driverBusy} onClick={() => void runDriverNow()}>{driverBusy ? 'Running...' : 'Run now'}</button>
@@ -393,6 +426,10 @@ export function Goals({ store }: { store: FleetStore }) {
             </div>
             {group.goals.map((g) => {
               const isOpen = detail?.id === g.id;
+              const progress = goalProgress[g.id];
+              const progressText = progress && (progress.todo || progress.doing || progress.stalled || progress.done)
+                ? `${progress.doing} doing${progress.todo ? ` · ${progress.todo} todo` : ''}${progress.stalled ? ` · ${progress.stalled} stalled` : ''}${progress.done ? ` · ${progress.done} recently done` : ''}`
+                : '';
               return (
                 <div className={`skill-card${isOpen ? ' editing' : ''}`} key={g.id}>
                   <div className="skill-card-head" style={{ cursor: 'pointer' }} onClick={() => void open(g.id)}>
@@ -400,6 +437,7 @@ export function Goals({ store }: { store: FleetStore }) {
                     <span className="muted small">{PRIORITY_LABEL[goalPriority(g.priority)]}</span>
                     <span className="b">{g.title}</span>
                     {g.agent ? <span className="muted small">· {g.agent}</span> : null}
+                    {progressText ? <span className="muted small" title="Live manager task progress for this goal">· {progressText}</span> : null}
                     <span className="grow" />
                     <span className="muted small">{ago(g.updatedAt)}</span>
                     <span className="muted">{isOpen ? '▾' : '▸'}</span>

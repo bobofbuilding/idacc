@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 const work = await readFile(new URL('../src/main/work.ts', import.meta.url), 'utf8');
 const goaldriver = await readFile(new URL('../src/main/goaldriver.ts', import.meta.url), 'utf8');
+const goalsView = await readFile(new URL('../src/renderer/views/Goals.tsx', import.meta.url), 'utf8');
 
 assert.match(
   work,
@@ -11,8 +12,8 @@ assert.match(
 );
 assert.match(
   goaldriver,
-  /function deterministicGoalLeadSubtasks/,
-  'Goal driver should have a deterministic team-lead fallback when decomposition cannot run',
+  /\/task sync-autopilot-goals --limit/,
+  'IDACC should trigger the manager-owned Autopilot producer instead of creating competing task fanout',
 );
 assert.match(
   goaldriver,
@@ -21,33 +22,8 @@ assert.match(
 );
 assert.match(
   goaldriver,
-  /maxOpenTasksPerGoal:\s*8/,
-  'Goal driver default open-task cap should allow bounded team-lead fanout',
-);
-assert.match(
-  goaldriver,
-  /GOAL_LEAD_OWNER_OPEN_TASK_CAP\s*=\s*4/,
-  'Goal driver should allow team leads a bounded coordination queue instead of blocking at one open task plus one query',
-);
-assert.match(
-  goaldriver,
-  /function pickWakeableLead/,
-  'Goal driver should include parked but wakeable team leads in goal fanout target resolution',
-);
-assert.match(
-  goaldriver,
-  /allowInactiveOwners:\s*true/,
-  'Goal driver should preserve parked team-lead owners so the manager can wake them for assigned goal work',
-);
-assert.match(
-  goaldriver,
-  /ownerOpenTaskCap:\s*GOAL_LEAD_OWNER_OPEN_TASK_CAP/,
-  'Goal driver should use a higher explicit owner cap for team-lead coordination fanout',
-);
-assert.match(
-  goaldriver,
-  /leadCoordination:\s*true/,
-  'Goal driver should mark Autopilot team-lead packets as lead coordination work',
+  /maxOpenTasksPerGoal:\s*3/,
+  'Goal driver should request a bounded number of manager-owned tasks per pass',
 );
 assert.match(
   work,
@@ -56,36 +32,8 @@ assert.match(
 );
 assert.match(
   goaldriver,
-  /deterministicGoalLeadSubtasks\(goal, targets, slots, 'default-team Autopilot direct team-lead fanout'\)/,
-  'Default-team Autopilot should create bounded team-lead tasks directly instead of serializing on a planner',
+  /The manager is the durable owner of goal execution/,
+  'Goal driver should document the single-producer ownership boundary',
 );
-assert.doesNotMatch(
-  goaldriver,
-  /waiting on \$\{openTagged\.length\} open goal task/,
-  'Goal driver should top up toward the cap instead of waiting for every open goal task to finish',
-);
-assert.match(
-  goaldriver,
-  /existing open goal task\(s\) remain/,
-  'Goal driver metadata should report existing open goal tasks while still attempting top-up fanout',
-);
-assert.match(
-  goaldriver,
-  /via direct fanout/,
-  'Goal driver metadata should explain when task creation used direct fanout',
-);
-assert.match(
-  goaldriver,
-  /function deterministicLocalGoalSubtasks/,
-  'Goal driver should seed bounded default-team work when cross-team fanout creates no live tasks',
-);
-assert.match(
-  goaldriver,
-  /cross-team team-lead fanout created no live tasks/,
-  'Goal driver should explain local fallback when team-lead fanout is capacity-blocked',
-);
-assert.match(
-  goaldriver,
-  /GOAL_LOCAL_FALLBACK_TASK_CAP\s*=\s*2/,
-  'Goal driver local fallback should stay bounded to avoid flooding default-team workers',
-);
+assert.match(goalsView, /Live manager task progress for this goal/, 'Goals should show actual live manager progress instead of only lifetime task refs');
+assert.match(goalsView, /tasks\/run/, 'Goal driver control should describe the manager task request cap accurately');

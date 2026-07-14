@@ -28,8 +28,16 @@ const task = normalizeTaskRecord({
 assert.equal(task?.shortId, '#abc12345');
 assert.equal(task?.status, 'todo');
 assert.equal(task?.ownerName, '1234');
-assert.equal(task?.createdAt, 1780000000);
+assert.equal(task?.createdAt, 1780000000000);
 assert.equal(task?.completedAt, null);
+
+const millisecondTask = normalizeTaskRecord({
+  title: 'Keep millisecond timestamps stable',
+  created_at: 1780000000123,
+  updated_at: '1780000001123',
+});
+assert.equal(millisecondTask?.createdAt, 1780000000123);
+assert.equal(millisecondTask?.updatedAt, 1780000001123);
 
 assert.equal(normalizeTaskRecord(null), null);
 assert.equal(normalizeManagerEvent(null), null);

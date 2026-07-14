@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import { useToast } from '../components/toast.tsx';
-import { buildPrimaryLeadPlanWork } from '../../shared/planWork.ts';
+import { buildPrimaryLeadPlanWork, mergePlanTaskRefs, planWorkGoalId } from '../../shared/planWork.ts';
 import { primaryLeadReadiness } from '../../shared/planRouting.ts';
 
 /**
@@ -50,6 +50,8 @@ type TeamLead = { team: string; lead: string | null; activeCount: number; totalC
 type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
 type TeamLeadDelegatedTask = CreatedTask & { team: string; lead: string };
 type TeamLeadDelegationResult = { ok: boolean; targetCount: number; subtasks: SubTask[]; created: TeamLeadDelegatedTask[]; dispatched: number; deferred: number; errors: string[]; raw?: string };
+type TaskLite = { shortId?: string; name?: string; uuid?: string; title: string; description?: string | null; status: string; teamName?: string; createdAt?: number; updatedAt?: number };
+type PlanProgress = { todo: number; doing: number; blocked: number; done: number; open: number };
 
 const STATUSES: PlanStatus[] = ['draft', 'active', 'done', 'archived'];
 const STATUS_CLASS: Record<PlanStatus, string> = { draft: 'st-paused', active: 'st-active', done: 'st-done', archived: 'st-blocked' };
@@ -162,6 +164,7 @@ export function Plans({ store }: { store: FleetStore }) {
 
   // ---- brain plans (live, read-only content) ----
   const [brain, setBrain] = useState<BrainPlansResp>({ dir: null, plans: [] });
+  const [planProgress, setPlanProgress] = useState<Record<string, PlanProgress>>({});
   const [brainOpen, setBrainOpen] = useState<string | null>(null);
   const [brainContent, setBrainContent] = useState('');
   async function reloadBrain() { setBrain(await call<BrainPlansResp>('brain:plans').catch(() => ({ dir: null, plans: [] }))); }
@@ -171,6 +174,36 @@ export function Plans({ store }: { store: FleetStore }) {
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [team, store.lastUpdated, brainSyncVersion]);
+  useEffect(() => {
+    let stopped = false;
+    const reloadProgress = async () => {
+      const [livePlans, tasks] = await Promise.all([
+        call<BrainPlansResp>('brain:plans').catch(() => ({ dir: null, plans: [] })),
+        call<TaskLite[]>('tasks:allTeams').catch(() => [] as TaskLite[]),
+      ]);
+      if (stopped) return;
+      const next: Record<string, PlanProgress> = {};
+      for (const plan of livePlans.plans) {
+        const goalId = planWorkGoalId(plan).toLowerCase();
+        const related = tasks.filter((task) => [task.title, task.description]
+          .some((text) => String(text || '').toLowerCase().includes(goalId)));
+        const todo = related.filter((task) => /todo|queued|pending/i.test(task.status || '')).length;
+        const blocked = related.filter((task) => {
+          if (/block|stall|pause/i.test(task.status || '')) return true;
+          if (!/doing|claim|progress|start|active/i.test(task.status || '')) return false;
+          const activityAt = Number(task.updatedAt || task.createdAt || 0);
+          return activityAt > 0 && Date.now() - activityAt >= 45 * 60 * 1000;
+        }).length;
+        const done = related.filter((task) => /done|complete/i.test(task.status || '')).length;
+        const open = related.filter((task) => !/done|complete|cancel|archive|reject/i.test(task.status || '')).length;
+        next[plan.file] = { todo, blocked, done, open, doing: Math.max(0, open - todo - blocked) };
+      }
+      setPlanProgress(next);
+    };
+    void reloadProgress();
+    const id = setInterval(() => { void reloadProgress(); }, 30_000);
+    return () => { stopped = true; clearInterval(id); };
+  }, [team]);
   async function openBrain(file: string) {
     if (brainOpen === file) { setBrainOpen(null); setBrainContent(''); return; }
     setBrainOpen(file); setBrainContent('loading…');
@@ -444,6 +477,27 @@ export function Plans({ store }: { store: FleetStore }) {
       if (!fresh) throw new Error('plan changed before dispatch; refreshed');
       const work = buildPrimaryLeadPlanWork(fresh, got?.content ?? '', lead, leadTeam);
       const savedGoal = await savePrimaryLeadPlanGoal(work.goal);
+      const currentTasks = await call<TaskLite[]>('tasks:allTeams').catch(() => [] as TaskLite[]);
+      const openForGoal = currentTasks.filter((task) => {
+        const open = !/done|complete|cancel|archive|reject/i.test(task.status || '');
+        return open && [task.title, task.description].some((text) => String(text || '').toLowerCase().includes(savedGoal.id.toLowerCase()));
+      });
+      if (openForGoal.length) {
+        const refs = openForGoal.map((task) => task.shortId || task.name || task.uuid || task.title).filter(Boolean) as string[];
+        await savePrimaryLeadPlanGoal({
+          ...savedGoal,
+          driver: {
+            ...(savedGoal.driver ?? {}),
+            taskRefs: mergePlanTaskRefs(savedGoal.driver?.taskRefs, refs),
+            lastRunAt: Date.now(),
+            note: `${openForGoal.length} existing delegated task(s) still open; no duplicate work created`,
+          },
+        });
+        return {
+          text: `objective ${savedGoal.id} already has ${openForGoal.length} open delegated task(s); continuing existing work without duplicate fanout`,
+          dispatched: true,
+        };
+      }
       const ready = await primaryLeadReady(lead, leadTeam);
       if (!ready.ok) {
         await relayPlanBlocker(fresh, `Work > Plans saved objective ${savedGoal.id} for "${fresh.title}", but it could not create the primary-lead delegation task because ${ready.reason}.`, {
@@ -484,7 +538,7 @@ export function Plans({ store }: { store: FleetStore }) {
         ...savedGoal,
         driver: {
           ...(savedGoal.driver ?? {}),
-          taskRefs: [...new Set([...(savedGoal.driver?.taskRefs ?? []), ...refs])],
+          taskRefs: mergePlanTaskRefs(savedGoal.driver?.taskRefs, refs),
           lastRunAt: Date.now(),
           note: `Delegated from brain plan ${work.source} to ${created.length} team-lead task(s)`,
         },
@@ -837,6 +891,10 @@ export function Plans({ store }: { store: FleetStore }) {
     const acting = busyFiles.has(p.file);
     const key = brainStatusKey(p.status);
     const workLabel = key === 'hold' ? 'Resume & work' : key === 'partial' ? 'Continue work' : 'Work';
+    const progress = planProgress[p.file];
+    const progressText = progress?.open
+      ? `${progress.doing} doing${progress.todo ? ` · ${progress.todo} todo` : ''}${progress.blocked ? ` · ${progress.blocked} blocked/stalled` : ''}`
+      : progress?.done ? `${progress.done} recently completed · no open tasks` : '';
     return (
       <div className={`skill-card plan-row${isOpen ? ' editing' : ''}`} key={p.file}>
         <div className="plan-row-head" onClick={() => void openBrain(p.file)}>
@@ -847,6 +905,7 @@ export function Plans({ store }: { store: FleetStore }) {
             {p.effort ? <span className="muted small plan-row-effort">· {p.effort}</span> : null}
           </div>
           <div className="plan-row-note">
+            {progressText ? <span className="muted small plan-note" title="Live manager task progress for this plan objective">{progressText}</span> : null}
             {p.notes ? <span className="muted small plan-note" title={p.notes}>{p.notes}</span> : null}
             {p.mtime ? <span className="muted small" title={`file last modified ${abs(p.mtime)}`}>updated {ago(p.mtime)}</span> : null}
           </div>

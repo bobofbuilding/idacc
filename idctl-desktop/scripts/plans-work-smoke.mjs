@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { buildPrimaryLeadPlanWork, planWorkGoalId } from '../src/shared/planWork.ts';
+import { readFile } from 'node:fs/promises';
+import { buildPrimaryLeadPlanWork, mergePlanTaskRefs, planWorkGoalId } from '../src/shared/planWork.ts';
 
 const plan = {
   num: '042',
@@ -41,3 +42,19 @@ assert.equal(same.goal.id, work.goal.id, 'same brain plan should reuse a stable 
 
 const different = buildPrimaryLeadPlanWork({ ...plan, file: '/brain/plans/043-other.md' }, '', 'lead', 'default');
 assert.notEqual(different.goal.id, work.goal.id, 'different brain plan should get a distinct objective id');
+
+assert.deepEqual(
+  mergePlanTaskRefs(['#one', '#two'], ['#two', '#three'], 3),
+  ['#one', '#two', '#three'],
+  'plan task refs should deduplicate while preserving current progress',
+);
+assert.deepEqual(
+  mergePlanTaskRefs(['#one', '#two', '#three'], ['#four'], 2),
+  ['#three', '#four'],
+  'plan task history should stay bounded',
+);
+
+const plansView = await readFile(new URL('../src/renderer/views/Plans.tsx', import.meta.url), 'utf8');
+assert.match(plansView, /const openForGoal = currentTasks\.filter/, 're-running Work should inspect existing live plan tasks');
+assert.match(plansView, /continuing existing work without duplicate fanout/, 'plans should continue existing work instead of creating duplicate task batches');
+assert.match(plansView, /setInterval\(\(\) => \{ void reloadProgress\(\); \}, 30_000\)/, 'plan cards should refresh live task progress at a bounded cadence');
