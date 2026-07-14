@@ -19,7 +19,26 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # repo root: …/.iacc-publish/id-agent-control-center
 export DESK="$ROOT/idctl-desktop"          # exported so the inline node helpers can read it
 export TUI="$ROOT/idctl"
-PUB="$ROOT/../release-publish.py"
+
+resolve_publisher() {
+  local candidate
+  for candidate in \
+    "${IDACC_RELEASE_PUBLISHER:-}" \
+    "$ROOT/../release-publish.py" \
+    "$ROOT/../../../../.iacc-publish/release-publish.py"
+  do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! PUB="$(resolve_publisher)"; then
+  echo "release publisher not found; set IDACC_RELEASE_PUBLISHER to release-publish.py" >&2
+  exit 1
+fi
 cd "$ROOT"
 
 if [ "${1:-}" = "--resume" ]; then

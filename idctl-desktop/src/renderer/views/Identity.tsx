@@ -1,7 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { call, type FleetStore, type TeamAgent } from '../store.ts';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
-import type { AgentAccount, KeyAuthorityTarget, KeyCapabilities, LegacyKeyAuthority, SessionKey, SessionScope } from '../../../../idctl/src/keys/types.ts';
+import {
+  ROOT_AGENT_SAFE_ADDRESS,
+  ROOT_AGENT_SAFE_ENS,
+  agentEnsName,
+  type AgentAccount,
+  type KeyAuthorityTarget,
+  type KeyCapabilities,
+  type LegacyKeyAuthority,
+  type SessionKey,
+  type SessionScope,
+} from '../../../../idctl/src/keys/types.ts';
 import type { EvmRpcKeySource, EvmRpcProfile } from '../../../../idctl/src/settings/schema.ts';
 import {
   AGENT_BITTREES_SAFE_ADDRESS,
@@ -88,6 +98,15 @@ type BrainControllerReport = {
 
 function shortAddr(a?: string): string {
   return a ? `${a.slice(0, 6)}...${a.slice(-4)}` : '-';
+}
+
+function displayAgentEnsName(agent?: string): string {
+  if (!agent) return ROOT_AGENT_SAFE_ENS;
+  try {
+    return agentEnsName(agent);
+  } catch {
+    return `invalid-label.${ROOT_AGENT_SAFE_ENS}`;
+  }
 }
 
 function remaining(validUntil: number): string {
@@ -561,10 +580,13 @@ function sessionStamp(s: SessionKey): string {
 function accountStamp(a: AgentAccount | null | undefined): string {
   return JSON.stringify(a ? {
     agent: a.agent,
+    ensName: a.ensName,
     smartAccount: a.smartAccount,
     owner: a.owner,
     deployed: a.deployed,
     chainId: a.chainId,
+    status: a.status,
+    revokedAt: a.revokedAt,
     sessions: a.sessions.map(sessionStamp).sort(),
   } : null);
 }
@@ -615,6 +637,8 @@ export function Identity({ store }: { store: FleetStore }) {
   const acct = selectedKey ? accounts[selectedKey] : undefined;
   const selectedTeam = selAgent?.team;
   const domain = selAgent ? identityValue(selAgent, 'idchain_domain') : '';
+  const canonicalEns = acct?.ensName ?? displayAgentEnsName(selected);
+  const ensCollision = Boolean(selected && duplicateNames.has(selected));
   const wallet = controllerWallet(selAgent);
   const proof = selectedKey ? proofs[selectedKey] : undefined;
   const controllerVerified = proofMatchesWallet(proof, wallet);
@@ -630,7 +654,7 @@ export function Identity({ store }: { store: FleetStore }) {
   );
   const issueScope = presets?.scopes[scopeIdx];
   const issueTtl = presets?.ttls[ttlIdx];
-  const issueBlocked = !controllerVerified || isUnsafeScope(issueScope) || isUnsafeTtl(issueTtl);
+  const issueBlocked = !controllerVerified || acct?.status !== 'active' || isUnsafeScope(issueScope) || isUnsafeTtl(issueTtl);
   const review = useMemo(() => reviewRows(selAgent, acct, domain, wallet, controllerVerified), [selAgent, acct, domain, wallet, controllerVerified]);
   const standardCoverage = useMemo(() => identityStandardRows(selAgent, domain, wallet, acct), [selAgent, domain, wallet, acct]);
   const standardCovered = standardCoverage.filter((r) => r.state === 'verified' || r.state === 'self').length;
@@ -661,7 +685,7 @@ export function Identity({ store }: { store: FleetStore }) {
             : 'warn';
     return { chain, rpc, safe, rpcNote, state };
   }), [acct, evmRpcs, wallet]);
-  const keyOperational = Boolean(caps?.live && acct?.deployed && activeSessionCount > 0);
+  const keyOperational = Boolean(caps?.live && acct?.deployed && acct.status === 'active' && activeSessionCount > 0);
   const contractStamp = useMemo(
     () => executionStamp(contractChain, contractAccount, contractTo, contractData, contractValue),
     [contractAccount, contractChain, contractData, contractTo, contractValue],
@@ -685,53 +709,52 @@ export function Identity({ store }: { store: FleetStore }) {
   const brainAmbiguousLinks = brainControllerMatches.filter((match) => match.ambiguous).length;
   const brainControllerNeedsReview = !brainControllers || (brainControllers.activeLinks ?? 0) === 0 || brainSelectedController.state === 'warn' || brainAmbiguousLinks > 0;
   const identityProcess = useMemo<ProcessStep[]>(() => {
-    const chainState: EvidenceState = enabledRpcs.length === 0 ? 'missing' : availableRpcs.length === enabledRpcs.length ? 'verified' : 'warn';
-    const standardsState: EvidenceState = standardCovered === standardCoverage.length ? 'verified' : standardCovered > 0 ? 'warn' : 'missing';
+    const ensState: EvidenceState = ensCollision ? 'warn' : domain.toLowerCase() === canonicalEns.toLowerCase() ? 'verified' : acct?.smartAccount ? 'pending' : 'missing';
+    const rootOwnsAccount = Boolean(acct?.owner && sameAddress(acct.owner, ROOT_AGENT_SAFE_ADDRESS));
     return [
       {
-        id: 'wallet',
-        label: 'Controller wallet',
+        id: 'ens',
+        label: 'ENS identity',
+        state: ensState,
+        note: ensCollision ? 'Agent name is duplicated across teams; the ENS label is not unique.' : domain ? `${domain} must match ${canonicalEns}` : `${canonicalEns} is reserved for this agent.`,
+        action: ensState === 'verified' ? undefined : 'review-standards',
+      },
+      {
+        id: 'signer',
+        label: 'Agent signer',
         state: wallet ? 'verified' : 'missing',
-        note: wallet ? shortAddr(wallet) : 'Provision a scoped controller wallet for this agent.',
+        note: wallet ? shortAddr(wallet) : 'Provision the signer used only through scoped Safe authority.',
         action: wallet ? undefined : 'provision',
       },
       {
         id: 'proof',
-        label: 'Controller proof',
+        label: 'Signer proof',
         state: controllerVerified ? 'verified' : wallet ? 'warn' : 'missing',
-        note: controllerVerified ? `Verified until ${new Date(proof!.expiresAt).toLocaleTimeString()}` : wallet ? (proof?.signature ? 'Verify the pasted wallet signature.' : 'Start a challenge and sign it with the controller wallet.') : 'Controller wallet required first.',
+        note: controllerVerified ? `Verified until ${new Date(proof!.expiresAt).toLocaleTimeString()}` : wallet ? (proof?.signature ? 'Verify the pasted signer proof.' : 'Start a challenge and sign it with the agent signer.') : 'Agent signer required first.',
         action: controllerVerified || !wallet ? undefined : proof?.signature ? 'verify' : 'challenge',
       },
       {
         id: 'account',
-        label: 'Safe account',
-        state: acct?.deployed ? 'verified' : acct?.smartAccount ? 'warn' : 'missing',
-        note: acct?.smartAccount ? `${shortAddr(acct.smartAccount)} ${acct.deployed ? 'deployed' : 'ready to deploy'}` : 'Create the smart-account record after controller proof.',
-        action: !controllerVerified ? undefined : acct?.smartAccount ? (acct.deployed ? undefined : 'deploy') : 'create-account',
+        label: 'Agent Safe',
+        state: acct?.status === 'revoked' ? 'warn' : acct?.deployed ? 'verified' : acct?.smartAccount ? 'pending' : 'missing',
+        note: acct?.smartAccount ? `${shortAddr(acct.smartAccount)} ${acct.status === 'revoked' ? 'authority revoked' : acct.deployed ? 'deployed' : 'predicted'}` : 'Create the root-owned agent Safe after signer proof.',
+        action: acct?.status === 'revoked' || !controllerVerified ? undefined : acct?.smartAccount ? (acct.deployed ? undefined : 'deploy') : 'create-account',
       },
       {
-        id: 'key',
-        label: 'Scoped key',
-        state: activeSessionCount > 0 ? 'verified' : acct?.deployed ? 'warn' : 'missing',
-        note: activeSessionCount > 0 ? `${activeSessionCount} active finite grant${activeSessionCount === 1 ? '' : 's'}` : 'Issue a finite, spend-capped key after account deployment.',
-        action: controllerVerified && acct?.deployed && activeSessionCount === 0 ? 'issue-key' : undefined,
+        id: 'root',
+        label: 'Root recovery',
+        state: rootOwnsAccount ? 'verified' : 'missing',
+        note: rootOwnsAccount ? `${ROOT_AGENT_SAFE_ENS} controls recovery and revocation.` : `Owner must be ${ROOT_AGENT_SAFE_ADDRESS}.`,
       },
       {
-        id: 'chains',
-        label: 'Chain routes',
-        state: chainState,
-        note: enabledRpcs.length === 0 ? 'Add Agent chain RPCs in Settings.' : `${availableRpcs.length}/${enabledRpcs.length} enabled chain route${enabledRpcs.length === 1 ? '' : 's'} checked available.`,
-        action: chainState === 'verified' ? undefined : 'review-chains',
-      },
-      {
-        id: 'metadata',
-        label: 'Public metadata',
-        state: standardsState,
-        note: `${standardCovered}/${standardCoverage.length} metadata standard${standardCoverage.length === 1 ? '' : 's'} covered.`,
-        action: standardsState === 'verified' ? undefined : 'review-standards',
+        id: 'authority',
+        label: 'Autonomous authority',
+        state: acct?.status === 'revoked' ? 'warn' : activeSessionCount > 0 ? 'verified' : acct?.deployed ? 'pending' : 'missing',
+        note: acct?.status === 'revoked' ? 'All agent authority is disabled; the Safe and audit history are preserved.' : activeSessionCount > 0 ? `${activeSessionCount} active capped grant${activeSessionCount === 1 ? '' : 's'}` : 'Issue finite, spend-capped authority after deployment.',
+        action: controllerVerified && acct?.deployed && acct.status === 'active' && activeSessionCount === 0 ? 'issue-key' : undefined,
       },
     ];
-  }, [acct, activeSessionCount, availableRpcs.length, controllerVerified, enabledRpcs.length, proof, standardCoverage.length, standardCovered, wallet]);
+  }, [acct, activeSessionCount, canonicalEns, controllerVerified, domain, ensCollision, proof, wallet]);
   const nextProcessStep = identityProcess.find((step) => step.action && step.state !== 'verified') ?? identityProcess.find((step) => step.action);
   const processReadyCount = identityProcess.filter((step) => step.state === 'verified').length;
   const processReviewCount = identityProcess.filter((step) => step.state === 'warn').length;
@@ -1026,6 +1049,10 @@ export function Identity({ store }: { store: FleetStore }) {
   async function createAccount() {
     const fresh = await ensureSelectedFresh('creating account');
     if (!fresh) return;
+    if (duplicateNames.has(fresh.name)) {
+      setError(`Cannot create ${displayAgentEnsName(fresh.name)} while ${fresh.name} exists in more than one team. Agent ENS labels must be globally unique.`);
+      return;
+    }
     if (!controllerProofValidFor(fresh)) {
       setError('Create account requires a signed controller-wallet challenge first.');
       return;
@@ -1051,6 +1078,10 @@ export function Identity({ store }: { store: FleetStore }) {
   async function deployAccount() {
     const fresh = await ensureSelectedFresh('deploying account');
     if (!fresh) return;
+    if (duplicateNames.has(fresh.name)) {
+      setError(`Cannot deploy ${displayAgentEnsName(fresh.name)} while the ENS label is ambiguous across teams.`);
+      return;
+    }
     const key = agentKey(fresh);
     const latest = await latestAccountFor(key);
     if (latest?.deployed) {
@@ -1129,6 +1160,43 @@ export function Identity({ store }: { store: FleetStore }) {
       return;
     }
     await act('keys:revoke', afterConfirm.name, currentAfterConfirm.id, afterConfirm.team ?? 'default');
+  }
+
+  async function revokeAgentAuthority() {
+    const fresh = await ensureSelectedFresh('revoking agent authority');
+    if (!fresh) return;
+    const latest = await latestAccountFor(agentKey(fresh));
+    if (!latest || latest.status === 'revoked') {
+      setError('Agent authority is already revoked or no account exists. Identity has refreshed the current state.');
+      return;
+    }
+    const active = latest.sessions.filter((session) => session.status === 'active').length;
+    if (!window.confirm(`Revoke all authority for ${latest.ensName}?\n\nSafe: ${latest.smartAccount}\nActive grants revoked: ${active}\n\nThe Safe address, ENS identity, funds, and audit history are preserved under ${ROOT_AGENT_SAFE_ENS}.`)) return;
+    const afterConfirm = await latestAccountFor(agentKey(fresh));
+    if (!afterConfirm || accountStamp(afterConfirm) !== accountStamp(latest)) {
+      setError('Account authority changed after review. Identity has refreshed the latest state; review and retry.');
+      return;
+    }
+    await act('keys:revokeAccount', fresh.name, fresh.team ?? 'default');
+    setProcessMsg(`${latest.ensName} authority revoked. Root ownership and account history remain intact.`);
+  }
+
+  async function restoreAgentAuthority() {
+    const fresh = await ensureSelectedFresh('restoring agent authority');
+    if (!fresh) return;
+    const latest = await latestAccountFor(agentKey(fresh));
+    if (!latest || latest.status !== 'revoked') {
+      setError('Only a revoked agent account can be restored. Identity has refreshed the current state.');
+      return;
+    }
+    if (!window.confirm(`Restore ${latest.ensName} under root authority?\n\nThis reopens the account lifecycle but does not restore revoked session grants. New scoped authority must be issued separately.`)) return;
+    const afterConfirm = await latestAccountFor(agentKey(fresh));
+    if (!afterConfirm || accountStamp(afterConfirm) !== accountStamp(latest)) {
+      setError('Account authority changed after review. Identity has refreshed the latest state; review and retry.');
+      return;
+    }
+    await act('keys:restoreAccount', fresh.name, fresh.team ?? 'default');
+    setProcessMsg(`${latest.ensName} restored under ${ROOT_AGENT_SAFE_ENS}; issue new scoped authority when ready.`);
   }
 
   async function copyLegacyAuthority(authority: string) {
@@ -1349,7 +1417,7 @@ export function Identity({ store }: { store: FleetStore }) {
       <header className="view-head">
         <div>
           <h1>Identity & Keys</h1>
-          <div className="muted small">Verify controller control, manage the agent account, and issue only scoped session keys.</div>
+          <div className="muted small">One root-controlled Safe and ENS identity per agent, with independently usable but revocable authority.</div>
         </div>
         <div className="identity-head-status">
           <span className={caps?.live ? 'ok-text' : 'warn-text'}>{mockProviderWarning(caps)}</span>
@@ -1364,12 +1432,13 @@ export function Identity({ store }: { store: FleetStore }) {
             const agentWallet = controllerWallet(a);
             const agentProof = proofs[agentKey(a)];
             const verified = proofMatchesWallet(agentProof, agentWallet);
+            const account = accounts[agentKey(a)];
             return (
               <button key={agentKey(a)} className={`target${agentKey(a) === selectedKey ? ' active' : ''}`} onClick={() => setSel(agentKey(a))}>
                 <span>{a.name}</span>
-                <span className="muted small">{identityValue(a, 'idchain_domain') || a.team || a.status || 'unbound'}</span>
-                <span className={verified ? 'ok-text small' : agentWallet ? 'warn-text small' : 'muted small'}>
-                  {verified ? 'controller verified' : agentWallet ? `wallet ${shortAddr(agentWallet)}` : 'no wallet'}
+                <span className="muted small">{account?.ensName ?? displayAgentEnsName(a.name)}</span>
+                <span className={account?.status === 'revoked' ? 'status-error small' : account?.status === 'active' ? 'ok-text small' : verified ? 'warn-text small' : 'muted small'}>
+                  {account?.status === 'revoked' ? 'authority revoked' : account?.status === 'active' ? `${account.sessions.filter((session) => session.status === 'active').length} active grants` : verified ? 'signer verified' : agentWallet ? `signer ${shortAddr(agentWallet)}` : 'setup required'}
                 </span>
               </button>
             );
@@ -1381,21 +1450,54 @@ export function Identity({ store }: { store: FleetStore }) {
             <>
               <section className="card identity-hero">
                 <div>
-                  <div className="muted small">selected agent</div>
-                  <h2>{selected}</h2>
+                  <div className="muted small">agent wallet</div>
+                  <h2>{canonicalEns}</h2>
                   <div className="identity-subtitle">
-                    <span className={domain ? 'mono' : 'muted'}>{domain || 'no ENS / idchain name'}</span>
+                    <span>{selected}</span>
                     {selectedTeam ? <span className="muted small">{selectedTeam}</span> : null}
-                    <StatusPill state={controllerVerified ? 'verified' : wallet ? 'warn' : 'missing'} />
+                    <StatusPill state={acct.status === 'revoked' ? 'warn' : acct.status === 'active' ? 'verified' : 'pending'} />
                   </div>
                 </div>
                 <div className="identity-metrics">
-                  <div><b>{processReadyCount}/{identityProcess.length}</b><span>process</span></div>
-                  <div><b>{standardCovered}/{standardCoverage.length}</b><span>standards</span></div>
-                  <div><b>{enabledRpcs.length}</b><span>chains</span></div>
-                  <div><b>{activeSessionCount}</b><span>active keys</span></div>
-                  <div><b>{acct.deployed ? 'live' : 'draft'}</b><span>Safe account</span></div>
+                  <div><b>{acct.status}</b><span>lifecycle</span></div>
+                  <div><b>{acct.deployed ? 'deployed' : 'predicted'}</b><span>Agent Safe</span></div>
+                  <div><b>{activeSessionCount}</b><span>active grants</span></div>
+                  <div><b>{sameAddress(acct.owner, ROOT_AGENT_SAFE_ADDRESS) ? 'root' : 'review'}</b><span>recovery</span></div>
                 </div>
+              </section>
+
+              <section className="card identity-authority-model" role="status">
+                <div className="identity-authority-head">
+                  <div>
+                    <h3>Authority model</h3>
+                    <span className="muted small">{canonicalEns}</span>
+                  </div>
+                  <div className="row-actions">
+                    {acct.status === 'revoked' ? (
+                      <button className="btn primary" disabled={busy} onClick={() => void restoreAgentAuthority()}>Restore authority</button>
+                    ) : (
+                      <button className="btn icon-danger" disabled={busy || !acct.smartAccount} onClick={() => void revokeAgentAuthority()}>Revoke authority</button>
+                    )}
+                  </div>
+                </div>
+                <div className="identity-authority-flow">
+                  <div>
+                    <span>Root authority</span>
+                    <b>{ROOT_AGENT_SAFE_ENS}</b>
+                    <small className="mono">{shortAddr(ROOT_AGENT_SAFE_ADDRESS)}</small>
+                  </div>
+                  <div>
+                    <span>Agent Safe</span>
+                    <b>{acct.deployed ? 'Deployed' : 'Counterfactual'}</b>
+                    <small className="mono">{shortAddr(acct.smartAccount)}</small>
+                  </div>
+                  <div>
+                    <span>Agent authority</span>
+                    <b>{acct.status === 'revoked' ? 'Disabled' : activeSessionCount ? 'Independent' : 'Not issued'}</b>
+                    <small>{acct.status === 'revoked' ? 'Root recovery only' : `${activeSessionCount} finite grant${activeSessionCount === 1 ? '' : 's'}`}</small>
+                  </div>
+                </div>
+                {ensCollision ? <div className="identity-alert"><b>ENS collision</b><span>{selected} exists in more than one team. Wallet creation is blocked until agent names are globally unique.</span></div> : null}
               </section>
 
               <section className={`card identity-readiness ${processState}`} role="status">
@@ -1430,9 +1532,9 @@ export function Identity({ store }: { store: FleetStore }) {
               <section className="card identity-process" role="status">
                 <div className="identity-process-head">
                   <div>
-                    <h3>Identity Setup Process</h3>
+                    <h3>Agent wallet lifecycle</h3>
                     <p className="muted small">
-                      Follow the next safe step. IDACC refreshes state before privileged actions and keeps wallet signatures/manual confirmations in place.
+                      Identity, signer proof, Safe ownership, and autonomous authority are checked as one guarded lifecycle.
                     </p>
                   </div>
                   <div className="row-actions">
@@ -1776,15 +1878,15 @@ export function Identity({ store }: { store: FleetStore }) {
 
               <section className="card identity-gate">
                 <div>
-                  <h3>Security Gate</h3>
-                  <p className="muted">Privileged actions stay locked until the controller wallet signs a fresh challenge.</p>
+                  <h3>Agent signer proof</h3>
+                  <p className="muted">The signer proves possession before IDACC prepares account or authority changes. Root Safe approval remains the live administrative boundary.</p>
                 </div>
                 <div className="controller-proof">
                   <div className="risk-row">
                     <span className={`dot ${controllerVerified ? 'ok' : wallet ? 'warn' : 'err'}`} />
-                    <b>{controllerVerified ? 'Controller verified' : 'Controller proof required'}</b>
+                    <b>{controllerVerified ? 'Signer verified' : 'Signer proof required'}</b>
                     <span className={controllerVerified ? 'ok-text' : wallet ? 'warn-text' : 'status-error'}>
-                      {controllerVerified ? `valid until ${new Date(proof!.expiresAt).toLocaleTimeString()}` : wallet ? `wallet ${shortAddr(wallet)}` : 'no controller wallet'}
+                      {controllerVerified ? `valid until ${new Date(proof!.expiresAt).toLocaleTimeString()}` : wallet ? `signer ${shortAddr(wallet)}` : 'no agent signer'}
                     </span>
                   </div>
                   {proof ? (
@@ -1794,7 +1896,7 @@ export function Identity({ store }: { store: FleetStore }) {
                         className="identity-proof-input mono"
                         value={proof.signature}
                         onChange={(e) => updateSignature(e.target.value)}
-                        placeholder="Paste 0x signature from controller wallet"
+                        placeholder="Paste 0x signature from the agent signer"
                       />
                     </>
                   ) : null}
@@ -1807,21 +1909,25 @@ export function Identity({ store }: { store: FleetStore }) {
 
               <div className="identity-grid">
                 <section className="card">
-                  <h3>Smart Account (Safe)</h3>
+                  <h3>Agent Safe</h3>
                   <div className="kv identity-kv">
-                    <span>Controller</span>
+                    <span>ENS identity</span>
+                    <b className="mono">{canonicalEns}</b>
+                    <span>Agent signer</span>
                     <b className={wallet ? 'mono' : 'muted'}>{wallet ? shortAddr(wallet) : 'not provisioned'}</b>
-                    <span>Safe</span>
+                    <span>Safe address</span>
                     <b className="mono">{shortAddr(acct.smartAccount)}</b>
-                    <span>Owner</span>
-                    <b className="mono">{shortAddr(acct.owner)}</b>
+                    <span>Root owner</span>
+                    <b className={sameAddress(acct.owner, ROOT_AGENT_SAFE_ADDRESS) ? 'mono ok-text' : 'mono status-error'}>{shortAddr(acct.owner)}</b>
+                    <span>Status</span>
+                    <b className={acct.status === 'revoked' ? 'status-error' : acct.status === 'active' ? 'ok-text' : 'warn-text'}>{acct.status}</b>
                     <span>Chain</span>
                     <b>{acct.chainId}</b>
                   </div>
                   {!wallet ? (
                     <div className="identity-contract-grid" style={{ marginTop: 12 }}>
                       <label className="wide">
-                        <span>Bind existing controller wallet</span>
+                        <span>Bind existing agent signer</span>
                         <input
                           className="mono"
                           value={walletInput}
@@ -1836,21 +1942,21 @@ export function Identity({ store }: { store: FleetStore }) {
                     {!wallet ? (
                       <>
                         <button className="btn" disabled={busy || !walletInputValid} onClick={() => void bindExistingWallet()}>
-                          Bind existing wallet
+                          Bind signer
                         </button>
                         <button className="btn" disabled={busy} onClick={() => void identityAction('provision')}>
-                          Provision wallet
+                          Provision signer
                         </button>
                       </>
                     ) : null}
-                    <button className="btn" disabled={busy || !controllerVerified} onClick={() => void createAccount()}>
-                      Create account
+                    <button className="btn" disabled={busy || ensCollision || acct.status === 'revoked' || !controllerVerified} onClick={() => void createAccount()}>
+                      Prepare Safe
                     </button>
-                    <button className="btn" disabled={busy || !controllerVerified} onClick={() => void identityAction('register')}>
-                      Register identity
+                    <button className="btn" disabled={busy || ensCollision || acct.status === 'revoked' || !controllerVerified} onClick={() => void identityAction('register')}>
+                      Register ENS identity
                     </button>
-                    <button className="btn primary" disabled={busy || acct.deployed || !controllerVerified} onClick={() => void deployAccount()}>
-                      Deploy
+                    <button className="btn primary" disabled={busy || ensCollision || acct.status === 'revoked' || acct.deployed || !controllerVerified} onClick={() => void deployAccount()}>
+                      Deploy Safe
                     </button>
                   </div>
                 </section>
@@ -1870,7 +1976,10 @@ export function Identity({ store }: { store: FleetStore }) {
               </div>
 
               <section className="card">
-                <h3>Session Keys</h3>
+                <div className="identity-legacy-head">
+                  <h3>Autonomous authority</h3>
+                  <StatusPill state={acct.status === 'revoked' ? 'warn' : activeSessionCount ? 'verified' : 'pending'} />
+                </div>
                 <table className="grid identity-table">
                   <thead>
                     <tr>
@@ -1950,8 +2059,8 @@ export function Identity({ store }: { store: FleetStore }) {
               <section className="card identity-plan">
                 <div className="identity-plan-head">
                   <div>
-                    <h3>Capability path</h3>
-                    <p className="muted small">What the current authority model supports now, and the evidence and provider layers it is designed to support next.</p>
+                    <h3>Authority rollout</h3>
+                    <p className="muted small">The standard remains constant as local simulation is replaced by verified chain reads and live Safe proposals.</p>
                   </div>
                   <StatusPill state="pending" />
                 </div>
@@ -1967,9 +2076,9 @@ export function Identity({ store }: { store: FleetStore }) {
                     <p>Resolver, manifest, reputation, runtime-signature, and per-chain deployment reads replace pending or unknown evidence.</p>
                   </div>
                   <div className="identity-plan-lane later">
-                    <span className="identity-plan-kicker">Later</span>
-                    <b>Provider-backed execution</b>
-                    <p>The existing key-provider interface can move from simulation to Safe ERC-4337 execution without weakening the authority model shown here.</p>
+                    <span className="identity-plan-kicker">Live provider</span>
+                    <b>Root-approved Safe execution</b>
+                    <p>Safe ERC-4337 proposals replace local simulation while agent grants stay scoped, finite, independently usable, and root-revocable.</p>
                   </div>
                 </div>
               </section>

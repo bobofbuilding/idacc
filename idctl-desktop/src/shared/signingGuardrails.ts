@@ -1,5 +1,7 @@
-export const AGENT_BITTREES_SAFE_ENS = 'agent.bittrees.eth';
-export const AGENT_BITTREES_SAFE_ADDRESS = '0x8A6445277b81b9dC27ef248aB25b53e6b255Cfb8';
+import { ROOT_AGENT_SAFE_ADDRESS, ROOT_AGENT_SAFE_ENS } from '../../../idctl/src/keys/types.ts';
+
+export const AGENT_BITTREES_SAFE_ENS = ROOT_AGENT_SAFE_ENS;
+export const AGENT_BITTREES_SAFE_ADDRESS = ROOT_AGENT_SAFE_ADDRESS;
 
 export const EXECUTION_CHAINS = [
   { chainId: 1, hex: '0x1', name: 'Ethereum mainnet' },

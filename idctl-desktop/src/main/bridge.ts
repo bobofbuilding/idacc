@@ -1813,6 +1813,19 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     await requireControllerProof(name, teamName);
     return keys.revokeSession(scopedAgentKey(name, teamName), String(sessionId));
   },
+  // Account-level authority changes are implemented by the active provider.
+  // The mock provider records the lifecycle locally; a live provider must turn
+  // these into root-Safe proposals rather than trusting the agent signer.
+  'keys:revokeAccount': async (agent: string, team?: string) => {
+    const name = String(agent);
+    const teamName = team ? String(team) : undefined;
+    return keys.revokeAccount(scopedAgentKey(name, teamName));
+  },
+  'keys:restoreAccount': async (agent: string, team?: string) => {
+    const name = String(agent);
+    const teamName = team ? String(team) : undefined;
+    return keys.restoreAccount(scopedAgentKey(name, teamName));
+  },
   'keys:presets': async () => ({ scopes: SCOPE_PRESETS, ttls: TTL_PRESETS }),
 
   // inference providers (settings store + probe + connect/sync)

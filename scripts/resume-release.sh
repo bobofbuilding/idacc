@@ -9,7 +9,26 @@ if ! [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PUB="$ROOT/../release-publish.py"
+
+resolve_publisher() {
+  local candidate
+  for candidate in \
+    "${IDACC_RELEASE_PUBLISHER:-}" \
+    "$ROOT/../release-publish.py" \
+    "$ROOT/../../../../.iacc-publish/release-publish.py"
+  do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! PUB="$(resolve_publisher)"; then
+  echo "release publisher not found; set IDACC_RELEASE_PUBLISHER to release-publish.py" >&2
+  exit 1
+fi
 TAG="v$VER"
 cd "$ROOT"
 

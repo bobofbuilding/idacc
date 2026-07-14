@@ -12,10 +12,20 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import crypto from 'node:crypto';
 import { configDir, resolveConfigPath } from '../settings/paths.ts';
-import type { AgentAccount, KeyAuthorityTarget, KeyCapabilities, KeyProvider, LegacyKeyAuthority, SessionKey, SessionScope } from './types.ts';
+import {
+  ROOT_AGENT_SAFE_ADDRESS,
+  agentEnsName,
+  type AgentAccount,
+  type KeyAuthorityTarget,
+  type KeyCapabilities,
+  type KeyProvider,
+  type LegacyKeyAuthority,
+  type SessionKey,
+  type SessionScope,
+} from './types.ts';
 
 const MOCK_CHAIN_ID = 84532; // Base Sepolia (target for the real wiring later)
-const MOCK_OWNER = '0x' + 'a657'.padEnd(40, '0'); // stand-in owner Safe
+const MOCK_OWNER = ROOT_AGENT_SAFE_ADDRESS;
 
 function statePath(): string {
   return join(configDir(resolveConfigPath()), 'keys-mock.json');
@@ -119,9 +129,23 @@ export class MockKeyProvider implements KeyProvider {
   private assemble(agent: string): AgentAccount {
     const base = this.state.accounts[agent];
     const sessions = (this.state.sessions[agent] ?? []).map((s) => this.withStatus(s));
-    return base
-      ? { ...base, sessions }
-      : { agent, smartAccount: mockAddr(`safe:${agent}`), owner: MOCK_OWNER, deployed: false, chainId: MOCK_CHAIN_ID, sessions };
+    const fallback = {
+      agent,
+      ensName: agentEnsName(agent),
+      smartAccount: mockAddr(`safe:${agent}`),
+      owner: MOCK_OWNER,
+      deployed: false,
+      chainId: MOCK_CHAIN_ID,
+      status: 'draft' as const,
+    };
+    if (!base) return { ...fallback, sessions };
+    return {
+      ...fallback,
+      ...base,
+      ensName: base.ensName || fallback.ensName,
+      status: base.status ?? (base.deployed ? 'active' : 'draft'),
+      sessions,
+    };
   }
 
   async listAccounts(agents: string[]): Promise<AgentAccount[]> {
@@ -132,10 +156,12 @@ export class MockKeyProvider implements KeyProvider {
     if (!this.state.accounts[agent]) {
       this.state.accounts[agent] = {
         agent,
+        ensName: agentEnsName(agent),
         smartAccount: mockAddr(`safe:${agent}`),
         owner,
         deployed: false,
         chainId: MOCK_CHAIN_ID,
+        status: 'draft',
       };
       this.save();
     }
@@ -144,13 +170,17 @@ export class MockKeyProvider implements KeyProvider {
 
   async deployAccount(agent: string): Promise<AgentAccount> {
     const acct = await this.ensureAccount(agent);
-    this.state.accounts[agent] = { ...this.state.accounts[agent]!, deployed: true };
+    if (acct.status === 'revoked') throw new Error('Restore root-controlled authority before deploying this account.');
+    this.state.accounts[agent] = { ...this.state.accounts[agent]!, deployed: true, status: 'active', revokedAt: undefined };
     this.save();
     return this.assemble(agent);
   }
 
   async issueSession(agent: string, scope: SessionScope, ttlMs: number): Promise<SessionKey> {
-    await this.ensureAccount(agent);
+    const account = await this.ensureAccount(agent);
+    if (!account.deployed || account.status !== 'active') {
+      throw new Error('Agent Safe must be deployed and active before issuing autonomous authority.');
+    }
     const now = Date.now();
     const id = `sess_${now.toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
     const key: SessionKey = {
@@ -174,6 +204,28 @@ export class MockKeyProvider implements KeyProvider {
       s.status = 'revoked';
       this.save();
     }
+  }
+
+  async revokeAccount(agent: string): Promise<AgentAccount> {
+    const account = await this.ensureAccount(agent);
+    const revokedAt = Date.now();
+    this.state.accounts[agent] = { ...this.state.accounts[agent]!, status: 'revoked', revokedAt };
+    for (const session of this.state.sessions[agent] ?? []) {
+      if (session.status === 'active') session.status = 'revoked';
+    }
+    this.save();
+    return { ...account, status: 'revoked', revokedAt, sessions: (this.state.sessions[agent] ?? []).map((s) => this.withStatus(s)) };
+  }
+
+  async restoreAccount(agent: string): Promise<AgentAccount> {
+    const account = await this.ensureAccount(agent);
+    this.state.accounts[agent] = {
+      ...this.state.accounts[agent]!,
+      status: account.deployed ? 'active' : 'draft',
+      revokedAt: undefined,
+    };
+    this.save();
+    return this.assemble(agent);
   }
 }
 

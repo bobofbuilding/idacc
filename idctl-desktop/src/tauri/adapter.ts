@@ -10,7 +10,7 @@ import { inspectLibraryPluginMetadata, ManagerClient } from '../../../idctl/src/
 import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { ProviderClient } from '../../../idctl/src/settings/ProviderClient.ts';
 import { discoverLocalServers, mergeLocalDiscoveryCandidates, type DiscoveredServer } from '../../../idctl/src/settings/localDiscovery.ts';
-import { SCOPE_PRESETS, TTL_PRESETS } from '../../../idctl/src/keys/types.ts';
+import { ROOT_AGENT_SAFE_ADDRESS, SCOPE_PRESETS, TTL_PRESETS, agentEnsName } from '../../../idctl/src/keys/types.ts';
 import type { AgentAccount, KeyAuthorityTarget, LegacyKeyAuthority, SessionKey } from '../../../idctl/src/keys/types.ts';
 import { defaultHeadroomPilotSettings, type HeadroomPilotSettings, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
 import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts';
@@ -272,7 +272,7 @@ function headroomPilotState(): HeadroomPilotSettings {
 
 // ---- mock keys (localStorage) ----------------------------------------------
 const CHAIN = 84532;
-const OWNER = '0x' + 'a657'.padEnd(40, '0');
+const OWNER = ROOT_AGENT_SAFE_ADDRESS;
 function mockAddr(seed: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < seed.length; i++) {
@@ -302,9 +302,10 @@ function withStatus(s: SessionKey): SessionKey {
 function assembleAccount(agent: string, st: KeysState): AgentAccount {
   const base = st.accounts[agent];
   const sessions = (st.sessions[agent] ?? []).map(withStatus);
+  const fallback = { agent, ensName: agentEnsName(agent), smartAccount: mockAddr('safe:' + agent), owner: OWNER, deployed: false, chainId: CHAIN, status: 'draft' as const };
   return base
-    ? { ...base, sessions }
-    : { agent, smartAccount: mockAddr('safe:' + agent), owner: OWNER, deployed: false, chainId: CHAIN, sessions };
+    ? { ...fallback, ...base, ensName: base.ensName || fallback.ensName, status: base.status ?? (base.deployed ? 'active' : 'draft'), sessions }
+    : { ...fallback, sessions };
 }
 function sessionActive(s: SessionKey): boolean {
   if (s.status === 'revoked') return false;
@@ -1002,7 +1003,7 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
     const key = scopedAgentKey(String(agent), selectedTeam ? String(selectedTeam) : undefined);
     const st = keysState();
     if (!st.accounts[key]) {
-      st.accounts[key] = { agent: key, smartAccount: mockAddr('safe:' + key), owner: OWNER, deployed: false, chainId: CHAIN };
+      st.accounts[key] = { agent: key, ensName: agentEnsName(key), smartAccount: mockAddr('safe:' + key), owner: OWNER, deployed: false, chainId: CHAIN, status: 'draft' };
       lsSet('idctl.keys', st);
     }
     return assembleAccount(key, st);
@@ -1011,7 +1012,9 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
     await requireControllerProof(String(agent), selectedTeam ? String(selectedTeam) : undefined);
     const key = scopedAgentKey(String(agent), selectedTeam ? String(selectedTeam) : undefined);
     const st = keysState();
-    st.accounts[key] = { ...(st.accounts[key] ?? { agent: key, smartAccount: mockAddr('safe:' + key), owner: OWNER, deployed: false, chainId: CHAIN }), deployed: true };
+    const current = assembleAccount(key, st);
+    if (current.status === 'revoked') throw new Error('Restore root-controlled authority before deploying this account.');
+    st.accounts[key] = { ...(st.accounts[key] ?? current), ensName: current.ensName, status: 'active', revokedAt: undefined, deployed: true };
     lsSet('idctl.keys', st);
     return assembleAccount(key, st);
   },
@@ -1020,6 +1023,8 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
     if (unsafeSession(scopeIdx, ttlMs)) throw new Error('Refusing to issue uncapped, full, non-expiring, or invalid session keys from the Control Center.');
     const key = scopedAgentKey(String(agent), selectedTeam ? String(selectedTeam) : undefined);
     const st = keysState();
+    const account = assembleAccount(key, st);
+    if (!account.deployed || account.status !== 'active') throw new Error('Agent Safe must be deployed and active before issuing autonomous authority.');
     const now = Date.now();
     const id = 'sess_' + now.toString(36) + '_' + Math.floor(Math.random() * 1e6).toString(36);
     const ttl = Number(ttlMs);
@@ -1038,6 +1043,26 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
       lsSet('idctl.keys', st);
     }
     return null;
+  },
+  'keys:revokeAccount': async (agent: string, selectedTeam?: string) => {
+    const key = scopedAgentKey(String(agent), selectedTeam ? String(selectedTeam) : undefined);
+    const st = keysState();
+    const account = assembleAccount(key, st);
+    const revokedAt = Date.now();
+    const { sessions: _sessions, ...base } = account;
+    st.accounts[key] = { ...base, status: 'revoked', revokedAt };
+    for (const session of st.sessions[key] ?? []) if (session.status === 'active') session.status = 'revoked';
+    lsSet('idctl.keys', st);
+    return assembleAccount(key, st);
+  },
+  'keys:restoreAccount': async (agent: string, selectedTeam?: string) => {
+    const key = scopedAgentKey(String(agent), selectedTeam ? String(selectedTeam) : undefined);
+    const st = keysState();
+    const account = assembleAccount(key, st);
+    const { sessions: _sessions, ...base } = account;
+    st.accounts[key] = { ...base, status: account.deployed ? 'active' : 'draft', revokedAt: undefined };
+    lsSet('idctl.keys', st);
+    return assembleAccount(key, st);
   },
 
   // providers (localStorage + live probe + connect/sync)

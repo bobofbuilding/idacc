@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.640] — 2026-07-14
+### What changed
+- Identity & Keys: standardize root-controlled per-agent Safes and portable release publishing
+
 ## [0.1.639] — 2026-07-14
 ### What changed
 - Goal Autopilot: delegate work creation to the manager and verify release publication

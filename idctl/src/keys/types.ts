@@ -1,10 +1,30 @@
 /**
- * Agent key-management model: a Safe smart account per agent + scoped,
- * revocable, time-boxed ERC-4337 session keys. The TUI talks to a KeyProvider;
- * MockKeyProvider simulates everything locally so the UX is testable with no
- * bundler/testnet. A Safe4337KeyProvider (real bundler + manager endpoints)
- * implements the same interface later — no view changes needed.
+ * Agent key-management model: agent.bittrees.eth controls one Safe smart
+ * account per agent. Agents act through scoped, revocable, time-boxed session
+ * authority; the root Safe retains recovery and revocation authority.
  */
+
+export const ROOT_AGENT_SAFE_ENS = 'agent.bittrees.eth';
+export const ROOT_AGENT_SAFE_ADDRESS = '0x8A6445277b81b9dC27ef248aB25b53e6b255Cfb8';
+
+export type AgentAccountStatus = 'draft' | 'active' | 'revoked';
+
+/** Normalize a fleet agent name into its reserved ENS label. */
+export function agentEnsLabel(agent: string): string {
+  const unscoped = String(agent).trim().split(':').pop() ?? '';
+  const label = unscoped
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 63);
+  if (!label) throw new Error('Agent name cannot produce a valid ENS label.');
+  return label;
+}
+
+export function agentEnsName(agent: string): string {
+  return `${agentEnsLabel(agent)}.${ROOT_AGENT_SAFE_ENS}`;
+}
 
 export interface SessionScope {
   /** Human label, e.g. "skill-publish", "registry-write". */
@@ -31,13 +51,17 @@ export interface SessionKey {
 
 export interface AgentAccount {
   agent: string;
+  /** Canonical public identity controlled by the root Safe. */
+  ensName: string;
   /** The agent's Safe smart-account address (counterfactual until deployed). */
   smartAccount: string;
-  /** The controlling owner (a Safe multisig or owner EOA). */
+  /** The root Safe with recovery and authority-revocation control. */
   owner: string;
   /** Whether the Safe is deployed on-chain (vs counterfactual). */
   deployed: boolean;
   chainId: number;
+  status: AgentAccountStatus;
+  revokedAt?: number;
   sessions: SessionKey[];
 }
 
@@ -79,6 +103,10 @@ export interface KeyProvider {
   issueSession(agent: string, scope: SessionScope, ttlMs: number): Promise<SessionKey>;
   /** Revoke a session key. */
   revokeSession(agent: string, sessionId: string): Promise<void>;
+  /** Revoke every agent session while preserving the root-owned Safe. */
+  revokeAccount(agent: string): Promise<AgentAccount>;
+  /** Restore a previously revoked account under root authority. */
+  restoreAccount(agent: string): Promise<AgentAccount>;
 }
 
 /** Preset scopes offered in the issue-session wizard. */
