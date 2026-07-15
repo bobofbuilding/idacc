@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { cancelRootSafePairing, subscribeWalletConnect, walletConnectSnapshot } from '../walletConnect.ts';
+import { cancelRootSafePairing, retryRootSafeQr, subscribeWalletConnect, walletConnectSnapshot } from '../walletConnect.ts';
 
 export function WalletConnectPrompt() {
   const state = useSyncExternalStore(subscribeWalletConnect, walletConnectSnapshot);
@@ -17,8 +17,18 @@ export function WalletConnectPrompt() {
           Scan with a WalletConnect-compatible wallet or Safe. This session is reserved for provisioning or revoking agent Safes; agents use their own scoped session keys afterward.
         </p>
         <div className="walletconnect-qr">
-          {state.qrDataUrl ? <img src={state.qrDataUrl} alt="WalletConnect pairing QR code" /> : <span className="muted">Preparing QR code...</span>}
+          {state.qrDataUrl ? (
+            <img src={state.qrDataUrl} alt="WalletConnect pairing QR code" />
+          ) : state.error ? (
+            <div className="walletconnect-qr-error">
+              <span className="status-error">The QR code could not be rendered.</span>
+              <button className="btn" type="button" onClick={() => void retryRootSafeQr()}>Retry QR</button>
+            </div>
+          ) : (
+            <span className="muted">Preparing QR code...</span>
+          )}
         </div>
+        {state.error ? <div className="status-error small walletconnect-error">{state.error} You can still copy the pairing URI.</div> : null}
         <div className="row-actions" style={{ marginTop: 12 }}>
           <button className="btn" type="button" onClick={() => void copyUri()}>Copy pairing URI</button>
           <button className="btn" type="button" onClick={() => void cancelRootSafePairing()}>Cancel</button>

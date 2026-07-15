@@ -36,10 +36,16 @@ try {
   assert.match(identity, /Rotate authority/);
   assert.match(identity, /resolveRootSafeProvider/);
   assert.match(connector, /optionalNamespaces/);
+  assert.match(connector, /const \{ default: qr \} = await import\('qrcode'\)/);
+  assert.match(connector, /retryRootSafeQr/);
   assert.match(connector, /accounts\.some\(\(account\) => sameAddress\(account, AGENT_BITTREES_SAFE_ADDRESS\)\)/);
   assert.match(connector, /abortPairingAttempt/);
   assert.doesNotMatch(connector, /setInterval|setTimeout/);
   assert.match(html, /connect-src 'self' https:\/\/\*\.walletconnect\.org/);
+
+  const { default: qr } = await import('qrcode');
+  assert.equal(typeof qr.toDataURL, 'function');
+  assert.match(await qr.toDataURL('wc:idacc-smoke', { width: 128 }), /^data:image\/png;base64,/);
 
   console.log('walletconnect bootstrap smoke: ok');
 } finally {

@@ -691,6 +691,8 @@ textarea.composer-input { resize: none; line-height: 1.4; min-height: 38px; max-
 .walletconnect-modal { width: 390px; }
 .walletconnect-qr { min-height: 280px; display: flex; align-items: center; justify-content: center; margin-top: 14px; }
 .walletconnect-qr img { display: block; width: 280px; height: 280px; border-radius: 6px; }
+.walletconnect-qr-error { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 24px; text-align: center; }
+.walletconnect-error { margin-top: 10px; }
 .walletconnect-settings { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .walletconnect-settings > input[type="text"], .walletconnect-settings > input:not([type]) { min-width: 260px; }
 .walletconnect-enable { display: inline-flex; align-items: center; gap: 7px; color: var(--text); white-space: nowrap; }

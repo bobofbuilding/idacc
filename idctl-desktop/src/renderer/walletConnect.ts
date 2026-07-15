@@ -81,7 +81,10 @@ function sessionDetails(current: UniversalProvider): Pick<WalletConnectState, 'a
 }
 
 async function qrDataUrl(uri: string): Promise<string> {
-  const qr = await import('qrcode');
+  // qrcode's browser bundle is CommonJS and esbuild exposes it as the default
+  // export in a split chunk. Reading a named export works in Node but fails in
+  // the packaged renderer, leaving the pairing modal without a QR code.
+  const { default: qr } = await import('qrcode');
   return qr.toDataURL(uri, {
     width: 280,
     margin: 1,
@@ -90,12 +93,21 @@ async function qrDataUrl(uri: string): Promise<string> {
   });
 }
 
+async function renderPairingQr(uri: string): Promise<void> {
+  try {
+    const data = await qrDataUrl(uri);
+    if (state.pairingUri === uri) emit({ qrDataUrl: data, error: '' });
+  } catch (err) {
+    if (state.pairingUri === uri) {
+      emit({ qrDataUrl: '', error: `QR generation failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+}
+
 function bindProviderEvents(current: UniversalProvider): void {
   current.on('display_uri', (uri: string) => {
     emit({ phase: 'pairing', pairingUri: uri, qrDataUrl: '', error: '' });
-    void qrDataUrl(uri).then((data) => {
-      if (state.pairingUri === uri) emit({ qrDataUrl: data });
-    }).catch((err) => emit({ error: err instanceof Error ? err.message : String(err) }));
+    void renderPairingQr(uri);
   });
   current.on('chainChanged', (chain: unknown) => emit({ chainId: hexChain(chain) }));
   current.on('accountsChanged', (accounts: unknown) => {
@@ -142,6 +154,12 @@ export function subscribeWalletConnect(listener: () => void): () => void {
 
 export function walletConnectSnapshot(): WalletConnectState {
   return state;
+}
+
+export async function retryRootSafeQr(): Promise<void> {
+  if (!state.pairingUri) return;
+  emit({ qrDataUrl: '', error: '' });
+  await renderPairingQr(state.pairingUri);
 }
 
 export function injectedRootSigner(): Eip1193Provider | null {
