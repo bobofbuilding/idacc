@@ -47,6 +47,9 @@ const OPTIONAL_METHODS = [
   'personal_sign',
   'eth_signTypedData_v4',
   'wallet_switchEthereumChain',
+  'wallet_getCapabilities',
+  'wallet_sendCalls',
+  'wallet_getCallsStatus',
 ];
 
 function emit(next: Partial<WalletConnectState>): void {

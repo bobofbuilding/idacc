@@ -90,6 +90,13 @@ export const SAFE_MODULE_MANIFEST: SafeModuleManifest = {
       runtimeCodeHashByChain: SHARED_HASHES('0x7c6007a5d711cea8dfd5d91f5940ec29c7f200fe511eb1fc1397b367af3c42f9'),
     },
     {
+      name: 'Safe CreateAndAddModules 1.1.1',
+      address: '0xF61A721642B0c0C8b334bA3763BA1326F53798C0',
+      runtimeCodeHashByChain: {
+        1: '0x83941bb48a3e3302a6e502e61513981ad02f3870f2d15e6d9cd301d616a0ba38',
+      },
+    },
+    {
       name: 'Zodiac ModuleProxyFactory 3.0.1',
       address: '0x000000000000aDdb49795B0f9BA5bc298CdDA236',
       runtimeCodeHashByChain: SHARED_HASHES('0x01623cbcf010a1c326230f1b2d5f48a66b440232ee49096102bc84967dc5f21e'),

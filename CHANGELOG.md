@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.645] — 2026-07-15
+### What changed
+- Identity & Keys: replace the desktop mock lifecycle with receipt-verified Safe 1.4.1 and Zodiac Roles proposals, atomic WalletConnect submission, and bounded zero-value contract/function authority.
+
 ## [0.1.644] — 2026-07-15
 ### What changed
 - Identity & Keys: repair persisted WalletConnect chain detection, keep Safe simulation off the signing session, and route guarded reads through the configured chain RPC.

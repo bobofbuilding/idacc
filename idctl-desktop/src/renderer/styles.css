@@ -800,6 +800,10 @@ textarea.composer-input { resize: none; line-height: 1.4; min-height: 38px; max-
   font-variant-numeric: tabular-nums;
 }
 .issue-row, .add-provider { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+.issue-policy { margin-top: 12px; }
+.issue-policy-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.issue-policy-fields label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.issue-policy-fields input { width: 100%; min-width: 0; }
 .add-provider input { flex: 1; min-width: 120px; }
 .provider-catalog-note { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-2); }
 .provider-catalog-note .chip { font-size: 10px; }
@@ -1013,6 +1017,7 @@ select:focus, input:focus { border-color: var(--accent); }
   .identity-alert { grid-template-columns: 1fr; }
   .identity-readiness-score { width: 100%; min-height: 0; padding-bottom: 12px; border-right: 0; border-bottom: 1px solid var(--line); }
   .identity-contract-grid { grid-template-columns: 1fr; }
+  .issue-policy-fields { grid-template-columns: 1fr; }
   .evidence-row { grid-template-columns: 1fr; gap: 6px; }
 }
 

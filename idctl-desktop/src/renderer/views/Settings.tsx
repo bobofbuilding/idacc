@@ -2367,7 +2367,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       <section className="card">
         <h3>Root Safe connection</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Optional WalletConnect approval for the root Safe transaction that provisions or revokes an agent Safe. It is not used for routine agent transactions: deployed agents act through their own finite, spend-capped session keys. IDACC stores only the public Reown project ID; wallet keys never enter the app.
+          Optional WalletConnect approval for the root Safe transaction that provisions or revokes an agent Safe. It is not used for routine agent transactions: deployed agents act through zero-value, target- and function-scoped session keys. IDACC stores only the public Reown project ID; wallet keys never enter the app.
         </p>
         <div className="walletconnect-settings">
           <label className="walletconnect-enable">

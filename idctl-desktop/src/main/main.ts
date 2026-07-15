@@ -6,7 +6,7 @@
 import { app, BrowserWindow, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage } from 'electron';
 import { join } from 'node:path';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { call as bridgeCall, startDraftDispatcher, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
+import { call as bridgeCall, configureKeyProvider, startDraftDispatcher, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
 import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
 import { cachedSubsStatus, invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubsStatusOptions, type SubProvider } from './subscriptions.ts';
@@ -43,8 +43,9 @@ import { planInboxResolutionForOption } from '../shared/planInbox.ts';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { SAFE_MODULE_MANIFEST } from '../../../idctl/src/keys/safeManifest.ts';
 import { readSafeRehearsalRecord, SAFE_REHEARSAL_STEPS } from '../../../idctl/src/keys/safeRehearsal.ts';
-import { agentSignerVaultStatus } from './agentSignerVault.ts';
+import { agentSignerVaultStatus, ensureAgentSigner, rotateAgentSigner } from './agentSignerVault.ts';
 import { inspectAlchemyAssets } from './alchemyAssetInspector.ts';
+import { SafeRolesKeyProvider } from './safeRolesProvider.ts';
 
 // Bundled as CommonJS → __dirname is the output dir (out/main/).
 declare const __dirname: string;
@@ -852,9 +853,9 @@ async function probeEvmRpc(id: string): Promise<{ rpcs: EvmRpcRow[]; outcome: Ev
   return { rpcs: loadEvmRpcsMigratingSecrets().map(redactEvmRpc), outcome };
 }
 
-type JsonRpcResponse = { result?: string; error?: { code?: number; message?: string } };
+type JsonRpcResponse = { result?: unknown; error?: { code?: number; message?: string } };
 
-async function evmJsonRpc(rpc: EvmRpcProfile, method: string, params: unknown[]): Promise<string> {
+async function evmJsonRpcValue(rpc: EvmRpcProfile, method: string, params: unknown[]): Promise<unknown> {
   const key = resolveEvmRpcKey(rpc);
   const response = await fetch(rpcUrlForRequest(rpc.httpsUrl, key), {
     method: 'POST',
@@ -863,11 +864,17 @@ async function evmJsonRpc(rpc: EvmRpcProfile, method: string, params: unknown[])
     signal: AbortSignal.timeout(10_000),
   });
   const body = await response.json().catch(() => null) as JsonRpcResponse | null;
-  if (!response.ok || body?.error || typeof body?.result !== 'string') {
+  if (!response.ok || body?.error || body?.result === undefined) {
     const reason = redactRpcSecretText(body?.error?.message ?? `HTTP ${response.status}`, rpc, key) ?? 'invalid JSON-RPC response';
     throw new Error(reason);
   }
   return body.result;
+}
+
+async function evmJsonRpc(rpc: EvmRpcProfile, method: string, params: unknown[]): Promise<string> {
+  const result = await evmJsonRpcValue(rpc, method, params);
+  if (typeof result !== 'string') throw new Error(`${method} returned a non-string JSON-RPC result`);
+  return result;
 }
 
 function decodeAbiUint(data: string): bigint {
@@ -929,7 +936,26 @@ async function guardedEvmRead(chainId: number, method: string, params: unknown[]
   if (actualChainId !== chainId) {
     throw new Error(`Configured ${rpc.network} endpoint returned chain ${actualChainId}, expected ${chainId}.`);
   }
-  return evmJsonRpc(rpc, method, params);
+  const result = await evmJsonRpcValue(rpc, method, params);
+  return typeof result === 'string' ? result : JSON.stringify(result);
+}
+
+function configureLiveKeyProvider(): void {
+  configureKeyProvider(new SafeRolesKeyProvider({
+    statePath: () => join(app.getPath('userData'), 'keys', 'safe-roles-state.json'),
+    rpcRead: guardedEvmRead,
+    ensureSigner: ensureAgentSigner,
+    rotateSigner: rotateAgentSigner,
+    inspectAssets: async (chainId, safeAddress) => {
+      const rpc = evmRpcForChain(chainId);
+      if (!rpc) throw new Error(`No enabled RPC is configured for chain ${chainId}.`);
+      return inspectAlchemyAssets({
+        rpcUrl: rpcUrlForRequest(rpc.httpsUrl, resolveEvmRpcKey(rpc)),
+        safeAddress,
+        chainId,
+      });
+    },
+  }));
 }
 
 function runtimeCodeHash(code: string): string {
@@ -1750,6 +1776,7 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
   });
 } else {
   app.whenReady().then(() => {
+    configureLiveKeyProvider();
     createWindow();
     if (win) startUpdater(win);
     // Persist window geometry on EVERY quit path (Cmd-Q, menu, and the self-update relaunch,

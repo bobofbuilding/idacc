@@ -12,8 +12,7 @@ import type { BrainAgentsReport, BrainControllerReport, BrainCoreHealthReport, B
 import { runOnboarding, type OnboardPlan, type PreparedRuntime } from '../../../idctl/src/api/onboard.ts';
 import { slugName } from '../../../idctl/src/api/teamSpec.ts';
 import { loadConfig, type Config } from '../../../idctl/src/config.ts';
-import { getKeyProvider, legacyMockAuthorityReport } from '../../../idctl/src/keys/mockProvider.ts';
-import type { KeyAuthorityTarget } from '../../../idctl/src/keys/types.ts';
+import type { KeyAuthorityTarget, KeyProvider, PreparedKeyOperation, SessionScope } from '../../../idctl/src/keys/types.ts';
 import { SCOPE_PRESETS, TTL_PRESETS } from '../../../idctl/src/keys/types.ts';
 import {
   loadSettings,
@@ -1106,7 +1105,19 @@ function requireCurrentComputerUseAgent(agents: Agent[], agentId: string, agentN
 // so it is a legitimate admin client (admin-gated routes: skill install, MCP attach).
 let cfg: Config = loadConfig({ team: 'default', admin: true });
 let client = new ManagerClient(cfg);
-const keys = getKeyProvider();
+let activeKeyProvider: KeyProvider | null = null;
+const keys = new Proxy({} as KeyProvider, {
+  get(_target, property) {
+    if (!activeKeyProvider) throw new Error('Live Safe/Zodiac provider is still initializing. Retry after Identity refreshes.');
+    const value = activeKeyProvider[property as keyof KeyProvider];
+    return typeof value === 'function' ? value.bind(activeKeyProvider) : value;
+  },
+});
+
+/** Install the Electron main-process provider before the Identity renderer starts. */
+export function configureKeyProvider(provider: KeyProvider): void {
+  activeKeyProvider = provider;
+}
 const RECENT_DONE_TASK_LIMIT = 25;
 let doneTaskLimitUnsupportedAt = 0;
 
@@ -1117,6 +1128,24 @@ function requireLiveKeyProvider(action: string): void {
       `${action} is disabled because the active key provider is ${capabilities.provider}. `
       + 'Configure and verify the live Safe/ERC-7579 provider in Identity production readiness before changing on-chain authority.',
     );
+  }
+}
+
+function resolveRequestedScope(input: number | SessionScope): SessionScope {
+  if (typeof input === 'object' && input) return input;
+  return SCOPE_PRESETS[Number(input) || 0] ?? SCOPE_PRESETS[0];
+}
+
+function requireBoundedLiveScope(scope: SessionScope): void {
+  if (scope.label.toLowerCase().includes('full')) throw new Error('Full autonomous authority is not permitted.');
+  if (!scope.targets.length || scope.targets.some((target) => target === '*')) {
+    throw new Error('Live authority requires concrete contract targets; wildcard targets are refused.');
+  }
+  if (!(scope.functions ?? []).length) {
+    throw new Error('Live authority requires explicit contract function signatures.');
+  }
+  if (scope.spendLimitWei !== '0') {
+    throw new Error('Native-token value remains disabled until an attested allowance policy is configured.');
   }
 }
 
@@ -1790,10 +1819,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     return { ok: true, root, added, adopted, total: projects.length };
   },
 
-  // identity & keys (Safe + scoped Zodiac Roles authority; mock today)
+  // identity & keys (chain-backed Safe + scoped Zodiac Roles proposals)
   'keys:caps': async () => keys.capabilities(),
   'keys:list': (agents: string[]) => keys.listAccounts(agents ?? []),
-  'keys:legacyAuthority': async (targets: KeyAuthorityTarget[]) => legacyMockAuthorityReport(targets ?? []),
+  'keys:legacyAuthority': async (_targets: KeyAuthorityTarget[]) => [],
   'keys:ensure': async (agent: string, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
@@ -1808,28 +1837,26 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     await requireControllerProof(name, teamName);
     return keys.deployAccount(scopedAgentKey(name, teamName));
   },
-  'keys:provision': async (agent: string, scopeIdx: number, ttlMs: number, team?: string) => {
+  'keys:provision': async (agent: string, scopeInput: number | SessionScope, ttlMs: number, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
-    const scope = SCOPE_PRESETS[Number(scopeIdx) || 0] ?? SCOPE_PRESETS[0];
+    const scope = resolveRequestedScope(scopeInput);
     const ttl = Number(ttlMs);
     requireLiveKeyProvider('Safe and initial authority provisioning');
     await requireControllerProof(name, teamName);
-    if (!Number.isFinite(ttl) || ttl <= 0 || scope.label.toLowerCase().includes('full') || scope.spendLimitWei === '0') {
-      throw new Error('Refusing to provision uncapped, full, non-expiring, or invalid autonomous authority.');
-    }
+    if (ttl !== 0) throw new Error('Choose Until revoked; finite expiry is not advertised without on-chain enforcement.');
+    requireBoundedLiveScope(scope);
     return keys.provisionAccount(scopedAgentKey(name, teamName), scope, ttl);
   },
-  'keys:issue': async (agent: string, scopeIdx: number, ttlMs: number, team?: string) => {
+  'keys:issue': async (agent: string, scopeInput: number | SessionScope, ttlMs: number, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
-    const scope = SCOPE_PRESETS[Number(scopeIdx) || 0] ?? SCOPE_PRESETS[0];
+    const scope = resolveRequestedScope(scopeInput);
     const ttl = Number(ttlMs);
     requireLiveKeyProvider('Session authority issuance');
     await requireControllerProof(name, teamName);
-    if (!Number.isFinite(ttl) || ttl <= 0 || scope.label.toLowerCase().includes('full') || scope.spendLimitWei === '0') {
-      throw new Error('Refusing to issue uncapped, full, non-expiring, or invalid session keys from the Control Center.');
-    }
+    if (ttl !== 0) throw new Error('Choose Until revoked; finite expiry is not advertised without on-chain enforcement.');
+    requireBoundedLiveScope(scope);
     return keys.issueSession(scopedAgentKey(name, teamName), scope, ttl);
   },
   'keys:revoke': async (agent: string, sessionId: string, team?: string) => {
@@ -1839,24 +1866,22 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     await requireControllerProof(name, teamName);
     return keys.revokeSession(scopedAgentKey(name, teamName), String(sessionId));
   },
-  'keys:rotate': async (agent: string, sessionId: string, scopeIdx: number, ttlMs: number, team?: string) => {
+  'keys:rotate': async (agent: string, sessionId: string, scopeInput: number | SessionScope, ttlMs: number, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
-    const scope = SCOPE_PRESETS[Number(scopeIdx) || 0] ?? SCOPE_PRESETS[0];
+    const scope = resolveRequestedScope(scopeInput);
     const ttl = Number(ttlMs);
     requireLiveKeyProvider('Session authority rotation');
     await requireControllerProof(name, teamName);
-    if (!Number.isFinite(ttl) || ttl <= 0 || scope.label.toLowerCase().includes('full') || scope.spendLimitWei === '0') {
-      throw new Error('Refusing to rotate to uncapped, full, non-expiring, or invalid autonomous authority.');
-    }
+    if (ttl !== 0) throw new Error('Choose Until revoked; finite expiry is not advertised without on-chain enforcement.');
+    requireBoundedLiveScope(scope);
     return keys.rotateSession(scopedAgentKey(name, teamName), String(sessionId), scope, ttl);
   },
   'keys:assetGuard': async (agent: string, team?: string) => {
     return keys.inspectAssets(scopedAgentKey(String(agent), team ? String(team) : undefined));
   },
-  // Account-level authority changes are implemented by the active provider.
-  // The mock provider records the lifecycle locally; a live provider must turn
-  // these into root-Safe proposals rather than trusting the agent signer.
+  // Account-level authority changes return guarded root-Safe proposals. Live
+  // state is recorded only after the submitted receipts verify successfully.
   'keys:revokeAccount': async (agent: string, team?: string, assetsAcknowledged = false) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
@@ -1876,6 +1901,20 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const teamName = team ? String(team) : undefined;
     requireLiveKeyProvider('Agent authority restoration');
     return keys.restoreAccount(scopedAgentKey(name, teamName));
+  },
+  'keys:recordSubmission': async (operationId: string, submissionId: string, chainId: number, rootSafe: string) => {
+    const provider = activeKeyProvider as (KeyProvider & {
+      recordSubmission?: (id: string, submission: string, chain: number, safe: string) => PreparedKeyOperation;
+    }) | null;
+    if (!provider?.recordSubmission) throw new Error('The active key provider cannot record root-Safe submissions.');
+    return provider.recordSubmission(String(operationId), String(submissionId), Number(chainId), String(rootSafe));
+  },
+  'keys:finalizeOperation': async (operationId: string, txHashes: string[]) => {
+    const provider = activeKeyProvider as (KeyProvider & {
+      finalizeOperation?: (id: string, hashes: string[]) => Promise<unknown>;
+    }) | null;
+    if (!provider?.finalizeOperation) throw new Error('The active key provider cannot verify proposal receipts.');
+    return provider.finalizeOperation(String(operationId), Array.isArray(txHashes) ? txHashes.map(String) : []);
   },
   'keys:presets': async () => ({ scopes: SCOPE_PRESETS, ttls: TTL_PRESETS }),
 

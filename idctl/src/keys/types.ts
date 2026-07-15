@@ -32,7 +32,9 @@ export interface SessionScope {
   label: string;
   /** Allowed target contract addresses ('*' = any). */
   targets: string[];
-  /** Max native-token spend over the session lifetime, in wei (string). */
+  /** Allowed contract function signatures, for example transfer(address,uint256). */
+  functions?: string[];
+  /** Max native-token spend over the session lifetime, in wei. Zero disables native value. */
   spendLimitWei: string;
 }
 
@@ -64,6 +66,46 @@ export interface AgentAccount {
   status: AgentAccountStatus;
   revokedAt?: number;
   sessions: SessionKey[];
+  /** Latest root-Safe proposal awaiting or completing on-chain execution. */
+  pendingOperation?: PreparedKeyOperation;
+}
+
+export type KeyOperationKind = 'deploy' | 'provision' | 'issue' | 'rotate' | 'revoke' | 'revoke-account' | 'restore';
+export type KeyOperationStatus = 'prepared' | 'submitted' | 'executed' | 'failed' | 'expired';
+
+export interface KeyOperationCall {
+  to: string;
+  data: string;
+  value: string;
+}
+
+export interface KeyOperationSummary {
+  id: string;
+  kind: KeyOperationKind;
+  chainId: number;
+  status: KeyOperationStatus;
+  createdAt: number;
+  submittedAt?: number;
+  completedAt?: number;
+  submissionId?: string;
+  error?: string;
+}
+
+/** Public transaction plan prepared for atomic submission by the connected root Safe. */
+export interface PreparedKeyOperation extends KeyOperationSummary {
+  agent: string;
+  rootSafe: string;
+  smartAccount: string;
+  authorityModule: string;
+  signerAddress?: string;
+  revokedSignerAddresses?: string[];
+  roleKey?: string;
+  calls: KeyOperationCall[];
+  scope?: SessionScope;
+  validUntil?: number;
+  previousSessionId?: string;
+  expiresAt: number;
+  digest: string;
 }
 
 export interface KeyCapabilities {
@@ -73,6 +115,8 @@ export interface KeyCapabilities {
   chainLabel: string;
   /** Whether the provider can actually deploy/broadcast (false for mock). */
   live: boolean;
+  /** Concrete provider implementation revision used by proposal evidence. */
+  providerRevision?: string;
   /** Active on-chain authority model; mock providers must omit this. */
   authorityModel?: 'zodiac-roles-v2';
   /** Asset classes checked before authority revocation. */
@@ -153,35 +197,35 @@ export interface KeyProvider {
   /** Ensure an account exists for the agent (deterministic), returning it. */
   ensureAccount(agent: string, owner?: string): Promise<AgentAccount>;
   /** Mark the agent's Safe as deployed on-chain. */
-  deployAccount(agent: string): Promise<AgentAccount>;
+  deployAccount(agent: string): Promise<AgentAccount | PreparedKeyOperation>;
   /** Deploy the Safe and install its initial scoped authority as one proposal. */
-  provisionAccount(agent: string, scope: SessionScope, ttlMs: number): Promise<ProvisionedAgentAuthority>;
+  provisionAccount(agent: string, scope: SessionScope, ttlMs: number): Promise<ProvisionedAgentAuthority | PreparedKeyOperation>;
   /** Issue scoped authority; expiry semantics are provider-specific. */
-  issueSession(agent: string, scope: SessionScope, ttlMs: number): Promise<SessionKey>;
+  issueSession(agent: string, scope: SessionScope, ttlMs: number): Promise<SessionKey | PreparedKeyOperation>;
   /** Atomically authorize a replacement session and revoke the prior grant. */
-  rotateSession(agent: string, sessionId: string, scope: SessionScope, ttlMs: number): Promise<SessionKey>;
+  rotateSession(agent: string, sessionId: string, scope: SessionScope, ttlMs: number): Promise<SessionKey | PreparedKeyOperation>;
   /** Revoke a session key. */
-  revokeSession(agent: string, sessionId: string): Promise<void>;
+  revokeSession(agent: string, sessionId: string): Promise<void | PreparedKeyOperation>;
   /** Inspect native/token holdings before account-level authority changes. */
   inspectAssets(agent: string): Promise<AssetGuardReport>;
   /** Revoke every agent session while preserving the root-owned Safe. */
-  revokeAccount(agent: string): Promise<AgentAccount>;
+  revokeAccount(agent: string): Promise<AgentAccount | PreparedKeyOperation>;
   /** Restore a previously revoked account under root authority. */
-  restoreAccount(agent: string): Promise<AgentAccount>;
+  restoreAccount(agent: string): Promise<AgentAccount | PreparedKeyOperation>;
 }
 
 /** Preset scopes offered in the issue-session wizard. */
 export const SCOPE_PRESETS: SessionScope[] = [
-  { label: 'registry-write', targets: ['*'], spendLimitWei: '0' },
-  { label: 'skill-publish', targets: ['*'], spendLimitWei: '10000000000000000' /* 0.01 */ },
-  { label: 'payments', targets: ['*'], spendLimitWei: '100000000000000000' /* 0.1 */ },
-  { label: 'full (no spend cap)', targets: ['*'], spendLimitWei: '0' },
+  { label: 'registry-write', targets: [], functions: [], spendLimitWei: '0' },
+  { label: 'skill-publish', targets: [], functions: [], spendLimitWei: '0' },
+  { label: 'payments-readonly', targets: [], functions: [], spendLimitWei: '0' },
+  { label: 'full (disabled)', targets: [], functions: [], spendLimitWei: '0' },
 ];
 
 /**
- * TTL options (ms) offered in the issue-session wizard. `ms: 0` is the sentinel
- * for a non-expiring key — it stays active until explicitly revoked (stored as
- * validUntil: 0). The provider and views treat validUntil===0 as "until revoked".
+ * TTL options retained for provider compatibility. Zodiac Roles v2 does not
+ * enforce wall-clock expiry, so the live provider exposes only "Until revoked"
+ * and refuses to advertise finite TTLs as an on-chain security property.
  */
 export const NO_EXPIRY_MS = 0;
 export const TTL_PRESETS: { label: string; ms: number }[] = [

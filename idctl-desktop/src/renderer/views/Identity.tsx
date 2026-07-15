@@ -9,13 +9,14 @@ import {
   type AssetGuardReport,
   type KeyAuthorityTarget,
   type KeyCapabilities,
+  type PreparedKeyOperation,
   type KeyProductionReadiness,
   type LegacyKeyAuthority,
   type SessionKey,
   type SessionScope,
 } from '../../../../idctl/src/keys/types.ts';
 import type { EvmRpcKeySource, EvmRpcProfile } from '../../../../idctl/src/settings/schema.ts';
-import { resolveRootSafeProvider } from '../walletConnect.ts';
+import { resolveRootSafeProvider, type Eip1193Provider } from '../walletConnect.ts';
 import {
   AGENT_BITTREES_SAFE_ADDRESS,
   AGENT_BITTREES_SAFE_ENS,
@@ -309,14 +310,19 @@ function proofMatchesWallet(proof: ControllerProof | undefined, wallet: string):
 }
 
 function isUnsafeScope(scope: SessionScope | undefined): boolean {
-  return !scope || scope.label.toLowerCase().includes('full') || scope.spendLimitWei === '0';
+  return !scope
+    || scope.label.toLowerCase().includes('full')
+    || scope.spendLimitWei !== '0'
+    || !scope.targets.length
+    || scope.targets.some((target) => target === '*' || !isEthAddress(target))
+    || !(scope.functions ?? []).length;
 }
 
 function isUnsafeTtl(ttl: { label: string; ms: number } | undefined): boolean {
-  return !ttl || !Number.isFinite(ttl.ms) || ttl.ms <= 0;
+  return !ttl || ttl.ms !== 0;
 }
 
-function mockProviderWarning(caps: KeyCapabilities | null): string {
+function providerStatusLabel(caps: KeyCapabilities | null): string {
   if (!caps) return 'Checking key provider...';
   return caps.live ? `${caps.chainLabel} live provider` : `${caps.chainLabel} mock provider; no on-chain authority is created.`;
 }
@@ -325,7 +331,7 @@ function sessionAuthority(session: SessionKey): { label: string; tone: 'safe' | 
   const badges: { label: string; tone: 'safe' | 'broad' | 'critical' }[] = [];
   const anyTarget = session.scope.targets.includes('*');
   badges.push(anyTarget ? { label: 'Any contract', tone: 'broad' } : { label: `${session.scope.targets.length} target${session.scope.targets.length === 1 ? '' : 's'}`, tone: 'safe' });
-  badges.push(session.scope.spendLimitWei === '0' ? { label: 'Uncapped', tone: 'critical' } : { label: 'Spend capped', tone: 'safe' });
+  badges.push(session.scope.spendLimitWei === '0' ? { label: 'No native spend', tone: 'safe' } : { label: 'Spend policy', tone: 'safe' });
   if (session.validUntil === 0) badges.push({ label: 'No expiry', tone: 'critical' });
   return badges;
 }
@@ -586,6 +592,7 @@ function accountStamp(a: AgentAccount | null | undefined): string {
     chainId: a.chainId,
     status: a.status,
     revokedAt: a.revokedAt,
+    pendingOperation: a.pendingOperation ? `${a.pendingOperation.id}:${a.pendingOperation.status}:${a.pendingOperation.digest}` : '',
     sessions: a.sessions.map(sessionStamp).sort(),
   } : null);
 }
@@ -598,6 +605,8 @@ export function Identity({ store }: { store: FleetStore }) {
   const [sel, setSel] = useState<string | null>(null);
   const [scopeIdx, setScopeIdx] = useState(1);
   const [ttlIdx, setTtlIdx] = useState(1);
+  const [authorityTargetsInput, setAuthorityTargetsInput] = useState('');
+  const [authorityFunctionsInput, setAuthorityFunctionsInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [processMsg, setProcessMsg] = useState<string | null>(null);
@@ -645,14 +654,23 @@ export function Identity({ store }: { store: FleetStore }) {
   const activeSessions = useMemo(() => [...(acct?.sessions ?? [])].sort(activeSessionSort), [acct]);
   const activeSessionCount = activeSessions.filter((s) => s.status === 'active').length;
   const safeScopes = useMemo(
-    () => (presets?.scopes ?? []).map((scope, idx) => ({ scope, idx })).filter(({ scope }) => !isUnsafeScope(scope)),
+    () => (presets?.scopes ?? []).map((scope, idx) => ({ scope, idx })).filter(({ scope }) => !scope.label.toLowerCase().includes('full')),
     [presets],
   );
   const finiteTtls = useMemo(
-    () => (presets?.ttls ?? []).map((ttl, idx) => ({ ttl, idx })).filter(({ ttl }) => !isUnsafeTtl(ttl)),
+    () => (presets?.ttls ?? []).map((ttl, idx) => ({ ttl, idx })).filter(({ ttl }) => ttl.ms === 0),
     [presets],
   );
-  const issueScope = presets?.scopes[scopeIdx];
+  const selectedScopePreset = presets?.scopes[scopeIdx];
+  const issueScope = useMemo<SessionScope | undefined>(() => {
+    if (!selectedScopePreset) return undefined;
+    return {
+      label: selectedScopePreset.label,
+      targets: authorityTargetsInput.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean),
+      functions: authorityFunctionsInput.split(/[\n,]+/).map((value) => value.trim()).filter(Boolean),
+      spendLimitWei: '0',
+    };
+  }, [selectedScopePreset, authorityTargetsInput, authorityFunctionsInput]);
   const issueTtl = presets?.ttls[ttlIdx];
   const productionReady = productionReadiness?.ready === true;
   const issueBlocked = !productionReady || !controllerVerified || acct?.status !== 'active' || isUnsafeScope(issueScope) || isUnsafeTtl(issueTtl);
@@ -754,7 +772,7 @@ export function Identity({ store }: { store: FleetStore }) {
         id: 'authority',
         label: 'Autonomous authority',
         state: !liveProvider ? 'warn' : acct?.status === 'revoked' ? 'warn' : activeSessionCount > 0 ? 'verified' : acct?.deployed ? 'pending' : 'missing',
-        note: !liveProvider ? 'Mock grants are test records, not on-chain autonomous authority.' : acct?.status === 'revoked' ? 'All agent authority is disabled; the Safe and audit history are preserved.' : activeSessionCount > 0 ? `${activeSessionCount} active capped grant${activeSessionCount === 1 ? '' : 's'}` : 'Issue finite, spend-capped authority after deployment.',
+        note: !liveProvider ? 'Mock grants are test records, not on-chain autonomous authority.' : acct?.status === 'revoked' ? 'All agent authority is disabled; the Safe and audit history are preserved.' : activeSessionCount > 0 ? `${activeSessionCount} active scoped grant${activeSessionCount === 1 ? '' : 's'}` : 'Issue target- and function-scoped authority after deployment.',
         action: productionReady && controllerVerified && acct?.status !== 'revoked' && activeSessionCount === 0 ? 'provision-authority' : undefined,
       },
     ];
@@ -895,9 +913,9 @@ export function Identity({ store }: { store: FleetStore }) {
 
   useEffect(() => {
     const nextScope = safeScopes[0]?.idx;
-    if (nextScope !== undefined && isUnsafeScope(presets?.scopes[scopeIdx])) setScopeIdx(nextScope);
+    if (nextScope !== undefined && !(safeScopes.some(({ idx }) => idx === scopeIdx))) setScopeIdx(nextScope);
     const nextTtl = finiteTtls[0]?.idx;
-    if (nextTtl !== undefined && isUnsafeTtl(presets?.ttls[ttlIdx])) setTtlIdx(nextTtl);
+    if (nextTtl !== undefined && !(finiteTtls.some(({ idx }) => idx === ttlIdx))) setTtlIdx(nextTtl);
   }, [presets, safeScopes, finiteTtls, scopeIdx, ttlIdx]);
 
   useEffect(() => {
@@ -921,6 +939,107 @@ export function Identity({ store }: { store: FleetStore }) {
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : `${method} failed`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function finalizeSubmittedOperation(operationId: string, submissionId: string, provider: Eip1193Provider): Promise<boolean> {
+    try {
+      const status = await provider.request<{
+        status?: number;
+        receipts?: Array<{ transactionHash?: string; status?: string }>;
+      }>({ method: 'wallet_getCallsStatus', params: [submissionId] });
+      const receipts = Array.isArray(status?.receipts) ? status.receipts : [];
+      const hashes = receipts
+        .filter((receipt) => receipt.status === '0x1' && /^0x[0-9a-f]{64}$/i.test(receipt.transactionHash ?? ''))
+        .map((receipt) => receipt.transactionHash as string);
+      if (Number(status?.status) === 200 && hashes.length) {
+        await call('keys:finalizeOperation', operationId, hashes);
+        return true;
+      }
+    } catch {
+      // Some wallets expose sendCalls before calls-status. The submitted state
+      // remains visible and can be refreshed after the wallet gains support.
+    }
+    return false;
+  }
+
+  async function submitPreparedKeyOperation(operation: PreparedKeyOperation): Promise<void> {
+    const connection = await resolveRootSafeProvider(true);
+    if (!connection) throw new Error('Connect agent.bittrees.eth through WalletConnect before submitting this root-Safe proposal.');
+    const provider = connection.provider;
+    const accounts = await provider.request<string[]>({ method: 'eth_requestAccounts' });
+    const rootSafe = accounts.find((value) => isEthAddress(value)) ?? '';
+    if (!sameAddress(rootSafe, operation.rootSafe)) throw new Error(`Connected account must be ${operation.rootSafe}.`);
+    const requiredChain = `0x${operation.chainId.toString(16)}`;
+    let chain = normalizeChainHex(await provider.request<unknown>({ method: 'eth_chainId' }));
+    if (chain !== requiredChain) {
+      await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: requiredChain }] });
+      chain = normalizeChainHex(await provider.request<unknown>({ method: 'eth_chainId' }));
+    }
+    if (chain !== requiredChain) throw new Error(`Wallet remained on ${chain}; proposal requires ${requiredChain}.`);
+    if (operation.expiresAt <= Date.now()) throw new Error('Prepared proposal expired before wallet submission. Prepare it again.');
+    setProcessMsg(`Submitting ${operation.calls.length} atomic Safe/Zodiac calls through ${connection.source}...`);
+    let submission: unknown;
+    try {
+      submission = await provider.request({
+        method: 'wallet_sendCalls',
+        params: [{
+          from: rootSafe,
+          chainId: requiredChain,
+          atomicRequired: true,
+          calls: operation.calls,
+        }],
+      });
+    } catch (error) {
+      throw new Error(`The connected root Safe must support atomic wallet_sendCalls; no partial lifecycle was submitted. ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const submissionId = typeof submission === 'string'
+      ? submission
+      : (submission && typeof submission === 'object' && 'id' in submission ? String((submission as { id: unknown }).id) : '');
+    if (!submissionId) throw new Error('WalletConnect did not return a batch submission id. No lifecycle state was recorded.');
+    await call('keys:recordSubmission', operation.id, submissionId, operation.chainId, rootSafe);
+    const finalized = await finalizeSubmittedOperation(operation.id, submissionId, provider);
+    setProcessMsg(finalized
+      ? `${operation.kind} executed and verified on-chain for ${operation.smartAccount}.`
+      : `${operation.kind} proposal submitted. Identity remains pending until the root Safe executes it and receipts verify.`);
+  }
+
+  async function prepareAndSubmit(method: string, ...args: unknown[]) {
+    setError(null);
+    setBusy(true);
+    try {
+      const operation = await call<PreparedKeyOperation>(method, ...args);
+      if (!operation?.id || !Array.isArray(operation.calls) || !operation.calls.length) {
+        throw new Error('Live key provider did not return a guarded root-Safe operation.');
+      }
+      await submitPreparedKeyOperation(operation);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `${method} failed`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function syncPendingKeyOperation() {
+    const pending = acct?.pendingOperation;
+    if (!pending) return;
+    setError(null);
+    setBusy(true);
+    try {
+      if (pending.status === 'prepared') {
+        await submitPreparedKeyOperation(pending);
+      } else if (pending.status === 'submitted' && pending.submissionId) {
+        const connection = await resolveRootSafeProvider(true);
+        if (!connection) throw new Error('Reconnect the root Safe to check this proposal.');
+        const finalized = await finalizeSubmittedOperation(pending.id, pending.submissionId, connection.provider);
+        setProcessMsg(finalized ? 'Root-Safe proposal executed and verified on-chain.' : 'Root-Safe proposal is still awaiting execution or receipts.');
+      }
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Pending proposal sync failed.');
     } finally {
       setBusy(false);
     }
@@ -1058,20 +1177,19 @@ export function Identity({ store }: { store: FleetStore }) {
     }
     const fresh = await ensureSelectedFresh('issuing session key');
     if (!presets || !fresh) {
-      setError(controllerVerified ? 'Choose a capped scope and finite TTL.' : 'Issue session key requires a signed controller-wallet challenge first.');
+      setError(controllerVerified ? 'Choose a concrete contract and function policy.' : 'Issue session key requires a signed controller-wallet challenge first.');
       return;
     }
-    const reviewedScopeIdx = scopeIdx;
     const reviewedTtlIdx = ttlIdx;
-    const reviewedScope = presets.scopes[reviewedScopeIdx];
+    const reviewedScope = issueScope;
     const reviewedTtl = presets.ttls[reviewedTtlIdx];
-    if (!controllerProofValidFor(fresh) || isUnsafeScope(reviewedScope) || isUnsafeTtl(reviewedTtl)) {
-      setError(controllerProofValidFor(fresh) ? 'Choose a capped scope and finite TTL.' : 'Issue session key requires a signed controller-wallet challenge first.');
+    if (!reviewedScope || !reviewedTtl || !controllerProofValidFor(fresh) || isUnsafeScope(reviewedScope) || isUnsafeTtl(reviewedTtl)) {
+      setError(controllerProofValidFor(fresh) ? 'Choose concrete contracts and function signatures; native value remains disabled.' : 'Issue session key requires a signed controller-wallet challenge first.');
       return;
     }
     const team = fresh.team ?? 'default';
     const reviewedAccount = await latestAccountFor(agentKey(fresh));
-    if (!window.confirm(`Issue session key for ${team}/${fresh.name}?\n\nScope: ${reviewedScope.label}\nTTL: ${reviewedTtl.label}\n\nThis creates a live spend-capped delegated key until it expires or is revoked.`)) return;
+    if (!window.confirm(`Issue session key for ${team}/${fresh.name}?\n\nScope: ${reviewedScope.label}\nDuration: ${reviewedTtl.label}\n\nThis creates live target- and function-scoped authority that remains active until explicitly revoked.`)) return;
     const afterConfirm = await ensureSelectedFresh('issuing session key after review');
     if (!afterConfirm) return;
     if (!controllerProofValidFor(afterConfirm)) {
@@ -1083,7 +1201,7 @@ export function Identity({ store }: { store: FleetStore }) {
       setError('Account or session state changed after confirmation. Identity has refreshed the latest account state; review and retry.');
       return;
     }
-    await act('keys:issue', afterConfirm.name, reviewedScopeIdx, reviewedTtl.ms, afterConfirm.team ?? 'default');
+    await prepareAndSubmit('keys:issue', afterConfirm.name, reviewedScope, reviewedTtl.ms, afterConfirm.team ?? 'default');
   }
 
   async function provisionAuthority() {
@@ -1097,12 +1215,11 @@ export function Identity({ store }: { store: FleetStore }) {
       setError(`Cannot provision ${displayAgentEnsName(fresh.name)} while its ENS label is ambiguous across teams.`);
       return;
     }
-    const reviewedScopeIdx = scopeIdx;
     const reviewedTtlIdx = ttlIdx;
-    const reviewedScope = presets.scopes[reviewedScopeIdx];
+    const reviewedScope = issueScope;
     const reviewedTtl = presets.ttls[reviewedTtlIdx];
-    if (!controllerProofValidFor(fresh) || isUnsafeScope(reviewedScope) || isUnsafeTtl(reviewedTtl)) {
-      setError(controllerProofValidFor(fresh) ? 'Choose a capped policy and finite duration.' : 'Provisioning requires a fresh signer proof.');
+    if (!reviewedScope || !reviewedTtl || !controllerProofValidFor(fresh) || isUnsafeScope(reviewedScope) || isUnsafeTtl(reviewedTtl)) {
+      setError(controllerProofValidFor(fresh) ? 'Choose concrete contracts and function signatures; native value remains disabled.' : 'Provisioning requires a fresh signer proof.');
       return;
     }
     const reviewedAccount = await latestAccountFor(agentKey(fresh));
@@ -1126,8 +1243,7 @@ export function Identity({ store }: { store: FleetStore }) {
       setError('Account or session state changed after confirmation. Identity refreshed the latest state; review and retry.');
       return;
     }
-    await act('keys:provision', afterConfirm.name, reviewedScopeIdx, reviewedTtl.ms, afterConfirm.team ?? 'default');
-    setProcessMsg(`${displayAgentEnsName(afterConfirm.name)} provisioned with ${reviewedScope.label} authority for ${reviewedTtl.label}.`);
+    await prepareAndSubmit('keys:provision', afterConfirm.name, reviewedScope, reviewedTtl.ms, afterConfirm.team ?? 'default');
   }
 
   async function rotateSession(session: SessionKey) {
@@ -1137,12 +1253,11 @@ export function Identity({ store }: { store: FleetStore }) {
     }
     const fresh = await ensureSelectedFresh('rotating session authority');
     if (!presets || !fresh) return;
-    const reviewedScopeIdx = scopeIdx;
     const reviewedTtlIdx = ttlIdx;
-    const reviewedScope = presets.scopes[reviewedScopeIdx];
+    const reviewedScope = issueScope;
     const reviewedTtl = presets.ttls[reviewedTtlIdx];
-    if (!controllerProofValidFor(fresh) || isUnsafeScope(reviewedScope) || isUnsafeTtl(reviewedTtl)) {
-      setError(controllerProofValidFor(fresh) ? 'Choose a capped policy and finite duration.' : 'Rotation requires a fresh signer proof.');
+    if (!reviewedScope || !reviewedTtl || !controllerProofValidFor(fresh) || isUnsafeScope(reviewedScope) || isUnsafeTtl(reviewedTtl)) {
+      setError(controllerProofValidFor(fresh) ? 'Choose concrete contracts and function signatures; native value remains disabled.' : 'Rotation requires a fresh signer proof.');
       return;
     }
     const reviewedAccount = await latestAccountFor(agentKey(fresh));
@@ -1162,8 +1277,7 @@ export function Identity({ store }: { store: FleetStore }) {
       setError('Account or session state changed after confirmation. Identity refreshed the latest state; review and retry.');
       return;
     }
-    await act('keys:rotate', afterConfirm.name, current.id, reviewedScopeIdx, reviewedTtl.ms, afterConfirm.team ?? 'default');
-    setProcessMsg(`${reviewedAccount!.ensName} authority rotated without changing the Safe address or custody.`);
+    await prepareAndSubmit('keys:rotate', afterConfirm.name, current.id, reviewedScope, reviewedTtl.ms, afterConfirm.team ?? 'default');
   }
 
   async function revokeSession(s: SessionKey) {
@@ -1194,7 +1308,7 @@ export function Identity({ store }: { store: FleetStore }) {
       setError('Session key changed after confirmation. Identity has refreshed the latest account state; review and retry.');
       return;
     }
-    await act('keys:revoke', afterConfirm.name, currentAfterConfirm.id, afterConfirm.team ?? 'default');
+    await prepareAndSubmit('keys:revoke', afterConfirm.name, currentAfterConfirm.id, afterConfirm.team ?? 'default');
   }
 
   async function revokeAgentAuthority() {
@@ -1230,8 +1344,7 @@ export function Identity({ store }: { store: FleetStore }) {
       setError('Account authority changed after review. Identity has refreshed the latest state; review and retry.');
       return;
     }
-    await act('keys:revokeAccount', fresh.name, fresh.team ?? 'default', assets.status === 'assets-present');
-    setProcessMsg(`${latest.ensName} authority revoked. Root ownership and account history remain intact.`);
+    await prepareAndSubmit('keys:revokeAccount', fresh.name, fresh.team ?? 'default', assets.status === 'assets-present');
   }
 
   async function restoreAgentAuthority() {
@@ -1501,7 +1614,7 @@ export function Identity({ store }: { store: FleetStore }) {
           <div className="muted small">One root-controlled Safe and ENS identity per agent, with independently usable but revocable authority.</div>
         </div>
         <div className="identity-head-status">
-          <span className={caps?.live ? 'ok-text' : 'warn-text'}>{mockProviderWarning(caps)}</span>
+          <span className={caps?.live ? 'ok-text' : 'warn-text'}>{providerStatusLabel(caps)}</span>
           <span className={brainControllerNeedsReview ? 'warn-text' : 'ok-text'} title={brainControllerTitle}>{brainControllerLabel}</span>
         </div>
       </header>
@@ -1579,6 +1692,15 @@ export function Identity({ store }: { store: FleetStore }) {
                   </div>
                 </div>
                 {ensCollision ? <div className="identity-alert"><b>ENS collision</b><span>{selected} exists in more than one team. Wallet creation is blocked until agent names are globally unique.</span></div> : null}
+                {acct.pendingOperation ? (
+                  <div className="identity-alert">
+                    <b>{acct.pendingOperation.status === 'prepared' ? 'Proposal ready' : 'Proposal pending'}</b>
+                    <span>{acct.pendingOperation.kind} · {acct.pendingOperation.calls.length} atomic call{acct.pendingOperation.calls.length === 1 ? '' : 's'} · {shortAddr(acct.pendingOperation.smartAccount)}</span>
+                    <button className="btn primary" disabled={busy} onClick={() => void syncPendingKeyOperation()}>
+                      {acct.pendingOperation.status === 'prepared' ? 'Submit proposal' : 'Check receipts'}
+                    </button>
+                  </div>
+                ) : null}
               </section>
 
               <section className={`card identity-readiness ${processState}`} role="status">
@@ -1792,7 +1914,7 @@ export function Identity({ store }: { store: FleetStore }) {
                     <span className={`dot ${caps?.live ? 'ok' : 'warn'}`} />
                     <b>Signing mode</b>
                     <span className={caps?.live ? 'ok-text' : 'warn-text'}>
-                      {caps?.live ? 'Live key provider can broadcast through configured chains.' : 'Mock key provider only; configured chains are visible but transactions are not broadcast from IDACC yet.'}
+                      {caps?.live ? 'Live provider prepares atomic root-Safe proposals; agent sessions use the guarded signer path.' : 'Mock key provider only; configured chains are visible but transactions are not broadcast from IDACC yet.'}
                     </span>
                   </div>
                   <div className="risk-row">
@@ -1880,7 +2002,7 @@ export function Identity({ store }: { store: FleetStore }) {
                   <StatusPill state={contractExecutionState === 'ready' ? 'verified' : contractInputErrors.length ? 'warn' : 'missing'} />
                 </div>
                 <p className="muted small">
-                  Root Safe: <span className="mono">{AGENT_BITTREES_SAFE_ENS}</span> <span className="mono">{AGENT_BITTREES_SAFE_ADDRESS}</span>. Use this proposal boundary only to provision or revoke an agent Safe. Routine agent transactions use the agent&apos;s own finite, spend-capped session keys and do not prompt the root signer.
+                  Root Safe: <span className="mono">{AGENT_BITTREES_SAFE_ENS}</span> <span className="mono">{AGENT_BITTREES_SAFE_ADDRESS}</span>. Use this proposal boundary only to provision or revoke an agent Safe. Routine agent transactions use the agent&apos;s target- and function-scoped session key and do not prompt the root signer.
                 </p>
                 <div className="identity-contract-grid">
                   <label>
@@ -2138,30 +2260,52 @@ export function Identity({ store }: { store: FleetStore }) {
                 </table>
 
                 {presets ? (
-                  <div className="issue-row">
-                    <select value={scopeIdx} onChange={(e) => setScopeIdx(Number(e.target.value))} disabled={!safeScopes.length}>
-                      {safeScopes.map(({ scope, idx }) => (
-                        <option key={idx} value={idx}>
-                          {scope.label}
-                        </option>
-                      ))}
-                    </select>
-                    <select value={ttlIdx} onChange={(e) => setTtlIdx(Number(e.target.value))} disabled={!finiteTtls.length}>
-                      {finiteTtls.map(({ ttl, idx }) => (
-                        <option key={idx} value={idx}>
-                          {ttl.label}
-                        </option>
-                      ))}
-                    </select>
-                    {acct.deployed && activeSessionCount > 0 ? (
-                      <button className="btn" disabled={busy || issueBlocked} onClick={() => void issueSession()}>Add scoped key</button>
-                    ) : (
-                      <button className="btn primary" disabled={busy || provisionBlocked || ensCollision} onClick={() => void provisionAuthority()}>Provision Safe + authority</button>
-                    )}
+                  <div className="issue-policy">
+                    <div className="issue-policy-fields">
+                      <label>
+                        <span>Allowed contracts</span>
+                        <input
+                          value={authorityTargetsInput}
+                          onChange={(event) => setAuthorityTargetsInput(event.target.value)}
+                          placeholder="0x..."
+                          spellCheck={false}
+                        />
+                      </label>
+                      <label>
+                        <span>Allowed functions</span>
+                        <input
+                          value={authorityFunctionsInput}
+                          onChange={(event) => setAuthorityFunctionsInput(event.target.value)}
+                          placeholder="functionName(type,type)"
+                          spellCheck={false}
+                        />
+                      </label>
+                    </div>
+                    <div className="issue-row">
+                      <select value={scopeIdx} onChange={(e) => setScopeIdx(Number(e.target.value))} disabled={!safeScopes.length}>
+                        {safeScopes.map(({ scope, idx }) => (
+                          <option key={idx} value={idx}>
+                            {scope.label}
+                          </option>
+                        ))}
+                      </select>
+                      <select value={ttlIdx} onChange={(e) => setTtlIdx(Number(e.target.value))} disabled={!finiteTtls.length}>
+                        {finiteTtls.map(({ ttl, idx }) => (
+                          <option key={idx} value={idx}>
+                            {ttl.label}
+                          </option>
+                        ))}
+                      </select>
+                      {acct.deployed && activeSessionCount > 0 ? (
+                        <button className="btn" disabled={busy || issueBlocked} onClick={() => void issueSession()}>Add scoped key</button>
+                      ) : (
+                        <button className="btn primary" disabled={busy || provisionBlocked || ensCollision} onClick={() => void provisionAuthority()}>Provision Safe + authority</button>
+                      )}
+                    </div>
                   </div>
                 ) : null}
                 <p className="muted small">
-                  Live provisioning bundles Safe deployment, audited policy-module setup, and the initial public session authority into one root proposal. It remains disabled while the production gate reports a blocker. Private keys stay in the agent runtime. Rotation replaces authority without changing the Safe address or its assets. Full, uncapped, and non-expiring grants are blocked.
+                  Live provisioning submits one atomic root-Safe batch and remains pending until receipts verify. Private keys stay in macOS Keychain-backed storage. Authority is limited to the listed contracts and function selectors, cannot send native value, and remains active until an explicit on-chain revoke.
                 </p>
               </section>
 
@@ -2177,7 +2321,7 @@ export function Identity({ store }: { store: FleetStore }) {
                   <div className="identity-plan-lane now">
                     <span className="identity-plan-kicker">Now</span>
                     <b>Guarded agent control</b>
-                    <p>Fresh controller proofs gate account changes. Enabled RPCs form the chain allowlist, and the UI issues only finite, spend-capped session keys.</p>
+                    <p>Fresh controller proofs gate account changes. Enabled RPCs form the chain allowlist, and the UI issues only zero-value, target- and function-scoped session keys.</p>
                   </div>
                   <div className="identity-plan-lane next">
                     <span className="identity-plan-kicker">Next</span>

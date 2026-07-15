@@ -30,7 +30,7 @@ try {
   assert.ok(settings.indexOf('Root Safe connection') < settings.indexOf('Agent chain RPCs'));
   assert.match(settings, /routine agent transactions:[\s\S]*session keys/);
   assert.match(identity, /Root Safe Bootstrap Proposal/);
-  assert.match(identity, /Routine agent transactions use the agent&apos;s own finite, spend-capped session keys/);
+  assert.match(identity, /Routine agent transactions use the agent&apos;s target- and function-scoped session key/);
   assert.match(identity, /Provision Safe \+ authority/);
   assert.match(identity, /keys:assetGuard/);
   assert.match(identity, /Rotate authority/);
