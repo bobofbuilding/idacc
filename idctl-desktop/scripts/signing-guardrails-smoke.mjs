@@ -7,8 +7,17 @@ import {
   executionStamp,
   guardedExecutionReady,
   isRootSafeThresholdRepair,
+  normalizeChainHex,
   ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA,
 } from '../src/shared/signingGuardrails.ts';
+
+assert.equal(normalizeChainHex(1), '0x1');
+assert.equal(normalizeChainHex(8453n), '0x2105');
+assert.equal(normalizeChainHex('11155111'), '0xaa36a7');
+assert.equal(normalizeChainHex('eip155:84532'), '0x14a34');
+assert.equal(normalizeChainHex('0x01'), '0x1');
+assert.equal(normalizeChainHex(0), '');
+assert.equal(normalizeChainHex('not-a-chain'), '');
 
 const valid = {
   account: AGENT_BITTREES_SAFE_ADDRESS,

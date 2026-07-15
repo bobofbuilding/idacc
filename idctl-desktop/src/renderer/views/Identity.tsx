@@ -28,6 +28,7 @@ import {
   guardedExecutionReady,
   isEthAddress,
   isRootSafeThresholdRepair,
+  normalizeChainHex,
   ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA,
   ROOT_SAFE_THRESHOLD_REPAIR_CHAIN,
   sameAddress,
@@ -1298,13 +1299,14 @@ export function Identity({ store }: { store: FleetStore }) {
       }
       const provider = connection.provider;
       const accounts = await provider.request<string[]>({ method: 'eth_requestAccounts' });
-      const chain = await provider.request<string>({ method: 'eth_chainId' });
+      const chain = await provider.request<unknown>({ method: 'eth_chainId' });
       const account = accounts.find((row) => typeof row === 'string' && isEthAddress(row)) ?? '';
+      const chainHex = normalizeChainHex(chain);
       setContractAccount(account);
-      setProviderChain(typeof chain === 'string' ? chain : '');
+      setProviderChain(chainHex);
       setContractSimulation(null);
       setContractConfirmed(false);
-      const errors = contractValidationErrors(account, typeof chain === 'string' ? chain : '', contractChain, contractTo, contractData, contractValue);
+      const errors = contractValidationErrors(account, chainHex, contractChain, contractTo, contractData, contractValue);
       setContractMessage(errors.length ? errors.join(' ') : `Root Safe connection is ready through ${connection.source}.`);
     } catch (err) {
       setContractMessage(err instanceof Error ? err.message : 'Root Safe connection failed.');
@@ -1324,11 +1326,12 @@ export function Identity({ store }: { store: FleetStore }) {
       }
       const provider = connection.provider;
       await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: contractChain }] });
-      const chain = await provider.request<string>({ method: 'eth_chainId' });
-      setProviderChain(typeof chain === 'string' ? chain : '');
+      const chain = await provider.request<unknown>({ method: 'eth_chainId' });
+      const chainHex = normalizeChainHex(chain);
+      setProviderChain(chainHex);
       setContractSimulation(null);
       setContractConfirmed(false);
-      setContractMessage(typeof chain === 'string' && chain.toLowerCase() === contractChain.toLowerCase() ? 'Wallet chain matches the guarded transaction.' : 'Wallet chain did not switch; review wallet/Safe state.');
+      setContractMessage(chainHex === contractChain.toLowerCase() ? 'Wallet chain matches the guarded transaction.' : 'Wallet chain did not switch; review wallet/Safe state.');
     } catch (err) {
       setContractMessage(err instanceof Error ? err.message : 'Chain switch was rejected or failed.');
     } finally {
@@ -1347,9 +1350,9 @@ export function Identity({ store }: { store: FleetStore }) {
       }
       const provider = connection.provider;
       const accounts = await provider.request<string[]>({ method: 'eth_accounts' });
-      const chain = await provider.request<string>({ method: 'eth_chainId' });
+      const chain = await provider.request<unknown>({ method: 'eth_chainId' });
       const account = accounts.find((row) => typeof row === 'string' && isEthAddress(row)) ?? contractAccount;
-      const chainHex = typeof chain === 'string' ? chain : '';
+      const chainHex = normalizeChainHex(chain);
       setContractAccount(account);
       setProviderChain(chainHex);
       const errors = contractValidationErrors(account, chainHex, contractChain, contractTo, contractData, contractValue);
@@ -1364,7 +1367,9 @@ export function Identity({ store }: { store: FleetStore }) {
         setContractMessage('Value must be a non-negative integer in wei.');
         return;
       }
-      const result = await provider.request<string>({ method: 'eth_call', params: [tx, 'latest'] });
+      const requiredChainId = chainByHex(contractChain)?.chainId;
+      if (!requiredChainId) throw new Error('Choose a supported chain before simulation.');
+      const result = await call<string>('evmRpc:read', requiredChainId, 'eth_call', [tx, 'latest']);
       const stamp = executionStamp(contractChain, account, contractTo, contractData, contractValue);
       setContractSimulation({
         ok: true,
@@ -1406,9 +1411,9 @@ export function Identity({ store }: { store: FleetStore }) {
       }
       const provider = connection.provider;
       const accounts = await provider.request<string[]>({ method: 'eth_accounts' });
-      const chain = await provider.request<string>({ method: 'eth_chainId' });
+      const chain = await provider.request<unknown>({ method: 'eth_chainId' });
       const account = accounts.find((row) => typeof row === 'string' && isEthAddress(row)) ?? contractAccount;
-      const chainHex = typeof chain === 'string' ? chain : '';
+      const chainHex = normalizeChainHex(chain);
       setContractAccount(account);
       setProviderChain(chainHex);
       const errors = contractValidationErrors(account, chainHex, contractChain, contractTo, contractData, contractValue);

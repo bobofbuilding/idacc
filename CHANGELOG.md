@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.644] — 2026-07-15
+### What changed
+- Identity & Keys: repair persisted WalletConnect chain detection, keep Safe simulation off the signing session, and route guarded reads through the configured chain RPC.
+
 ## [0.1.643] — 2026-07-15
 ### What changed
 - Repair automatic updates by migrating the retired id-agent-control-center release channel to bobofbuilding/idacc while preserving custom repositories.

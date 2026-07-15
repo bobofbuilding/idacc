@@ -81,6 +81,21 @@ export function sameAddress(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
+/** Normalize EIP-1193 and WalletConnect chain values to canonical 0x hex. */
+export function normalizeChainHex(value: unknown): string {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? `0x${value.toString(16)}` : '';
+  }
+  if (typeof value === 'bigint') return value > 0n ? `0x${value.toString(16)}` : '';
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!raw) return '';
+  if (/^0x[0-9a-f]+$/.test(raw)) return `0x${BigInt(raw).toString(16)}`;
+  const tail = raw.includes(':') ? raw.split(':').pop() ?? '' : raw;
+  if (!/^[0-9]+$/.test(tail)) return '';
+  const chainId = BigInt(tail);
+  return chainId > 0n ? `0x${chainId.toString(16)}` : '';
+}
+
 /** The only pre-readiness transaction IDACC allows: root Safe 2-of-2 repair. */
 export function isRootSafeThresholdRepair(chain: string, to: string, data: string, valueWei: string): boolean {
   return chain.trim().toLowerCase() === ROOT_SAFE_THRESHOLD_REPAIR_CHAIN

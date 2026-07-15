@@ -1,6 +1,6 @@
 import type UniversalProviderType from '@walletconnect/universal-provider';
 import type { WalletConnectSettings } from '../../../idctl/src/settings/schema.ts';
-import { AGENT_BITTREES_SAFE_ADDRESS, EXECUTION_CHAINS, sameAddress } from '../shared/signingGuardrails.ts';
+import { AGENT_BITTREES_SAFE_ADDRESS, EXECUTION_CHAINS, normalizeChainHex, sameAddress } from '../shared/signingGuardrails.ts';
 import { call } from './store.ts';
 
 export interface Eip1193Provider {
@@ -43,7 +43,6 @@ let connectInFlight: Promise<UniversalProvider> | null = null;
 const OPTIONAL_METHODS = [
   'eth_accounts',
   'eth_requestAccounts',
-  'eth_call',
   'eth_sendTransaction',
   'personal_sign',
   'eth_signTypedData_v4',
@@ -53,15 +52,6 @@ const OPTIONAL_METHODS = [
 function emit(next: Partial<WalletConnectState>): void {
   state = { ...state, ...next };
   for (const listener of listeners) listener();
-}
-
-function hexChain(value: unknown): string {
-  const raw = String(value ?? '').trim().toLowerCase();
-  if (!raw) return '';
-  if (/^0x[0-9a-f]+$/.test(raw)) return raw;
-  const tail = raw.includes(':') ? raw.split(':').pop() ?? '' : raw;
-  const id = Number(tail);
-  return Number.isSafeInteger(id) && id > 0 ? `0x${id.toString(16)}` : '';
 }
 
 function sessionDetails(current: UniversalProvider): Pick<WalletConnectState, 'account' | 'chainId' | 'walletName'> {
@@ -75,7 +65,7 @@ function sessionDetails(current: UniversalProvider): Pick<WalletConnectState, 'a
   const selected = parsed.find((value) => value.chain === String(defaultChain).replace(/^eip155:/, '')) ?? parsed[0];
   return {
     account: selected?.address ?? '',
-    chainId: hexChain(selected?.chain ?? defaultChain),
+    chainId: normalizeChainHex(selected?.chain ?? defaultChain),
     walletName: current.session?.peer?.metadata?.name ?? 'WalletConnect wallet',
   };
 }
@@ -109,7 +99,7 @@ function bindProviderEvents(current: UniversalProvider): void {
     emit({ phase: 'pairing', pairingUri: uri, qrDataUrl: '', error: '' });
     void renderPairingQr(uri);
   });
-  current.on('chainChanged', (chain: unknown) => emit({ chainId: hexChain(chain) }));
+  current.on('chainChanged', (chain: unknown) => emit({ chainId: normalizeChainHex(chain) }));
   current.on('accountsChanged', (accounts: unknown) => {
     const account = Array.isArray(accounts) ? String(accounts[0] ?? '') : '';
     emit({ account });

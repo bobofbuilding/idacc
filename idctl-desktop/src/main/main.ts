@@ -904,6 +904,34 @@ function ethereumSepoliaRpc(): EvmRpcProfile | undefined {
   });
 }
 
+function evmRpcForChain(chainId: number): EvmRpcProfile | undefined {
+  if (chainId === 1) return ethereumMainnetRpc();
+  if (chainId === 11155111) return ethereumSepoliaRpc();
+  const patterns: Record<number, RegExp> = {
+    8453: /(?:^|\b)base(?:\s+|-)?mainnet(?:\b|$)|^base$/,
+    84532: /(?:^|\b)base(?:\s+|-)?sepolia(?:\b|$)/,
+  };
+  const pattern = patterns[chainId];
+  if (!pattern) return undefined;
+  return loadEvmRpcsMigratingSecrets().find((rpc) => (
+    rpc.enabled !== false && pattern.test(`${rpc.id} ${rpc.network}`.toLowerCase())
+  ));
+}
+
+const GUARDED_EVM_READ_METHODS = new Set(['eth_call', 'eth_getCode', 'eth_getTransactionReceipt']);
+
+async function guardedEvmRead(chainId: number, method: string, params: unknown[]): Promise<string> {
+  if (!Number.isSafeInteger(chainId) || chainId <= 0) throw new Error('A valid EVM chain id is required.');
+  if (!GUARDED_EVM_READ_METHODS.has(method)) throw new Error(`EVM read method is not allowed: ${method}`);
+  const rpc = evmRpcForChain(chainId);
+  if (!rpc) throw new Error(`No enabled RPC is configured for chain ${chainId}.`);
+  const actualChainId = Number(BigInt(await evmJsonRpc(rpc, 'eth_chainId', [])));
+  if (actualChainId !== chainId) {
+    throw new Error(`Configured ${rpc.network} endpoint returned chain ${actualChainId}, expected ${chainId}.`);
+  }
+  return evmJsonRpc(rpc, method, params);
+}
+
 function runtimeCodeHash(code: string): string {
   if (!/^0x(?:[0-9a-f]{2})+$/i.test(code)) throw new Error('contract has no runtime bytecode');
   return `0x${Buffer.from(keccak_256(Buffer.from(code.slice(2), 'hex'))).toString('hex')}`;
@@ -1336,6 +1364,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return loadEvmRpcsMigratingSecrets().map(redactEvmRpc);
     case 'evmRpc:probe':
       return probeEvmRpc(String(args[0] ?? ''));
+    case 'evmRpc:read':
+      return guardedEvmRead(Number(args[0]), String(args[1] ?? ''), Array.isArray(args[2]) ? args[2] : []);
     case 'walletConnect:get':
       return loadSettings().walletConnect ?? { enabled: false, projectId: '' };
     case 'walletConnect:set':
