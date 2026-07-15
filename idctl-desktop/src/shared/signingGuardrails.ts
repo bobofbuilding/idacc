@@ -2,6 +2,8 @@ import { ROOT_AGENT_SAFE_ADDRESS, ROOT_AGENT_SAFE_ENS } from '../../../idctl/src
 
 export const AGENT_BITTREES_SAFE_ENS = ROOT_AGENT_SAFE_ENS;
 export const AGENT_BITTREES_SAFE_ADDRESS = ROOT_AGENT_SAFE_ADDRESS;
+export const ROOT_SAFE_THRESHOLD_REPAIR_CHAIN = '0x1';
+export const ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA = '0x694e80c30000000000000000000000000000000000000000000000000000000000000002';
 
 export const EXECUTION_CHAINS = [
   { chainId: 1, hex: '0x1', name: 'Ethereum mainnet' },
@@ -77,6 +79,14 @@ export function isEthAddress(value: string): boolean {
 
 export function sameAddress(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/** The only pre-readiness transaction IDACC allows: root Safe 2-of-2 repair. */
+export function isRootSafeThresholdRepair(chain: string, to: string, data: string, valueWei: string): boolean {
+  return chain.trim().toLowerCase() === ROOT_SAFE_THRESHOLD_REPAIR_CHAIN
+    && sameAddress(to, AGENT_BITTREES_SAFE_ADDRESS)
+    && normalizeTxData(data).toLowerCase() === ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA
+    && parseWei(valueWei) === 0n;
 }
 
 export function isHexCalldata(value: string): boolean {

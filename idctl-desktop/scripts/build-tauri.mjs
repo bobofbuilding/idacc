@@ -10,10 +10,12 @@ rmSync(resolve(ROOT, 'dist-tauri'), { recursive: true, force: true });
 mkdirSync(resolve(ROOT, 'dist-tauri'), { recursive: true });
 
 await build({
-  entryPoints: [resolve(ROOT, 'src/tauri/main.tsx')],
-  outfile: resolve(ROOT, 'dist-tauri/renderer.js'),
+  entryPoints: { renderer: resolve(ROOT, 'src/tauri/main.tsx') },
+  outdir: resolve(ROOT, 'dist-tauri'),
   bundle: true,
-  format: 'iife',
+  format: 'esm',
+  splitting: true,
+  chunkNames: 'chunks/[name]-[hash]',
   platform: 'browser',
   target: 'safari16',
   jsx: 'automatic',
@@ -23,9 +25,4 @@ await build({
 });
 
 cpSync(resolve(ROOT, 'src/tauri/index.html'), resolve(ROOT, 'dist-tauri/index.html'));
-mkdirSync(resolve(ROOT, 'dist-tauri/docs'), { recursive: true });
-cpSync(
-  resolve(ROOT, '../docs/CONTROL_CENTER_WIKI.json'),
-  resolve(ROOT, 'dist-tauri/docs/CONTROL_CENTER_WIKI.json'),
-);
 console.log('built → dist-tauri/');

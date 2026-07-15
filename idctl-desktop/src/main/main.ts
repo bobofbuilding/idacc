@@ -24,9 +24,14 @@ import { listQuestions, addQuestion, removeQuestion, type BlockerQuestion } from
 import { resolveBrainApprovalFromInbox, syncBrainApprovalInbox } from './brainApprovalInbox.ts';
 import { autoCreatePendingLearnTasks, getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, recoverStaleMaterials, removeMaterial, routePendingLearnMaterials, saveMaterial, subscribeMaterialChanges, syncUnsyncedMaterialsToBrain, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
 import { generateImage, readImage, imageModels, getImageServer, detectImageServer, probeImageServer } from './images.ts';
-import { readWiki } from './wiki.ts';
-import { listLocalModelCatalog, loadSettings, mergeLocalModelCatalog, removeEvmRpc, saveSettings, setUpdateSettings, setImageServer, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
+import { listLocalModelCatalog, loadSettings, mergeLocalModelCatalog, removeEvmRpc, saveSettings, setUpdateSettings, setImageServer, setWalletConnectSettings, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
 import type { EvmRpcKeySource, EvmRpcProfile, EvmRpcRequest, ImageServerConfig } from '../../../idctl/src/settings/schema.ts';
+import {
+  ROOT_AGENT_SAFE_ADDRESS,
+  type KeyCapabilities,
+  type KeyProductionReadiness,
+  type KeyReadinessCheck,
+} from '../../../idctl/src/keys/types.ts';
 import { startBroker, armBroker, disarmBroker, setWatching, brokerStatus, auditTail, panicBroker, setSupervised, setPaused, confirmAction, pendingActions, setPanicHotkey, mintAgentToken, brokerUrl, stopBroker, legacyAgentTokenReport } from './computeruse/broker.ts';
 import { getPermissions, openPermissionSettings, relaunchApp, type CuPermissionPane } from './computeruse/permissions.ts';
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
@@ -35,6 +40,11 @@ import { buildLearnProcessContext } from '../shared/learnContext.ts';
 import { LEARN_BRAIN_BACKFILL_RUNNER_DELAYS, LEARN_QUEUE_RUNNER_DELAYS } from '../shared/backgroundPolicy.ts';
 import { buildPrimaryLeadPlanWork } from '../shared/planWork.ts';
 import { planInboxResolutionForOption } from '../shared/planInbox.ts';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { SAFE_MODULE_MANIFEST } from '../../../idctl/src/keys/safeManifest.ts';
+import { readSafeRehearsalRecord, SAFE_REHEARSAL_STEPS } from '../../../idctl/src/keys/safeRehearsal.ts';
+import { agentSignerVaultStatus } from './agentSignerVault.ts';
+import { inspectAlchemyAssets } from './alchemyAssetInspector.ts';
 
 // Bundled as CommonJS → __dirname is the output dir (out/main/).
 declare const __dirname: string;
@@ -842,6 +852,289 @@ async function probeEvmRpc(id: string): Promise<{ rpcs: EvmRpcRow[]; outcome: Ev
   return { rpcs: loadEvmRpcsMigratingSecrets().map(redactEvmRpc), outcome };
 }
 
+type JsonRpcResponse = { result?: string; error?: { code?: number; message?: string } };
+
+async function evmJsonRpc(rpc: EvmRpcProfile, method: string, params: unknown[]): Promise<string> {
+  const key = resolveEvmRpcKey(rpc);
+  const response = await fetch(rpcUrlForRequest(rpc.httpsUrl, key), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const body = await response.json().catch(() => null) as JsonRpcResponse | null;
+  if (!response.ok || body?.error || typeof body?.result !== 'string') {
+    const reason = redactRpcSecretText(body?.error?.message ?? `HTTP ${response.status}`, rpc, key) ?? 'invalid JSON-RPC response';
+    throw new Error(reason);
+  }
+  return body.result;
+}
+
+function decodeAbiUint(data: string): bigint {
+  if (!/^0x[0-9a-f]+$/i.test(data) || data.length < 66) throw new Error('invalid uint256 response');
+  return BigInt(`0x${data.slice(2, 66)}`);
+}
+
+function decodeAbiAddressArray(data: string): string[] {
+  if (!/^0x[0-9a-f]+$/i.test(data) || data.length < 130) throw new Error('invalid address[] response');
+  const hex = data.slice(2);
+  const offsetBytes = Number(BigInt(`0x${hex.slice(0, 64)}`));
+  const offset = offsetBytes * 2;
+  const count = Number(BigInt(`0x${hex.slice(offset, offset + 64)}`));
+  if (!Number.isSafeInteger(count) || count < 0 || count > 64 || hex.length < offset + 64 + count * 64) {
+    throw new Error('invalid address[] length');
+  }
+  return Array.from({ length: count }, (_, index) => {
+    const word = hex.slice(offset + 64 + index * 64, offset + 128 + index * 64);
+    return `0x${word.slice(24)}`;
+  });
+}
+
+function ethereumMainnetRpc(): EvmRpcProfile | undefined {
+  return loadEvmRpcsMigratingSecrets().find((rpc) => {
+    const label = `${rpc.id} ${rpc.network}`.toLowerCase();
+    return rpc.enabled !== false && /ethereum|eth-mainnet|mainnet-eth/.test(label) && !/sepolia|testnet|holesky/.test(label);
+  });
+}
+
+function ethereumSepoliaRpc(): EvmRpcProfile | undefined {
+  return loadEvmRpcsMigratingSecrets().find((rpc) => {
+    const label = `${rpc.id} ${rpc.network}`.toLowerCase();
+    return rpc.enabled !== false && /sepolia/.test(label) && !/base|optimism|rootstock/.test(label);
+  });
+}
+
+function runtimeCodeHash(code: string): string {
+  if (!/^0x(?:[0-9a-f]{2})+$/i.test(code)) throw new Error('contract has no runtime bytecode');
+  return `0x${Buffer.from(keccak_256(Buffer.from(code.slice(2), 'hex'))).toString('hex')}`;
+}
+
+async function verifySafeModuleManifest(rpc: EvmRpcProfile, chainId: number): Promise<{ ok: boolean; detail: string }> {
+  const failures: string[] = [];
+  for (const artifact of SAFE_MODULE_MANIFEST.artifacts) {
+    const expected = artifact.runtimeCodeHashByChain[chainId];
+    if (!expected) {
+      failures.push(`${artifact.name}: no pinned chain ${chainId} hash`);
+      continue;
+    }
+    try {
+      const actual = runtimeCodeHash(await evmJsonRpc(rpc, 'eth_getCode', [artifact.address, 'latest']));
+      if (actual.toLowerCase() !== expected.toLowerCase()) failures.push(`${artifact.name}: runtime hash mismatch`);
+    } catch (error) {
+      failures.push(`${artifact.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return failures.length
+    ? { ok: false, detail: failures.join('; ') }
+    : { ok: true, detail: `${SAFE_MODULE_MANIFEST.id}: ${SAFE_MODULE_MANIFEST.artifacts.length} runtime hashes match chain ${chainId}.` };
+}
+
+async function verifySafeRehearsal(): Promise<{ ok: boolean; detail: string }> {
+  const loaded = readSafeRehearsalRecord();
+  if (!loaded.record) return { ok: false, detail: loaded.error ?? 'No lifecycle evidence was found.' };
+  if (loaded.record.moduleManifestId !== SAFE_MODULE_MANIFEST.id) {
+    return { ok: false, detail: `Lifecycle evidence used ${loaded.record.moduleManifestId}, expected ${SAFE_MODULE_MANIFEST.id}.` };
+  }
+  const rpc = ethereumSepoliaRpc();
+  if (!rpc) return { ok: false, detail: 'No enabled Ethereum Sepolia RPC is configured.' };
+  try {
+    const chainId = Number(BigInt(await evmJsonRpc(rpc, 'eth_chainId', [])));
+    if (chainId !== loaded.record.chainId) throw new Error(`configured endpoint returned chain ${chainId}`);
+    const moduleEvidence = await verifySafeModuleManifest(rpc, chainId);
+    if (!moduleEvidence.ok) throw new Error(moduleEvidence.detail);
+    for (const step of SAFE_REHEARSAL_STEPS) {
+      const evidence = loaded.record.steps[step];
+      if (evidence.kind !== 'transaction') continue;
+      const result = await fetch(rpcUrlForRequest(rpc.httpsUrl, resolveEvmRpcKey(rpc)), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [evidence.txHash] }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const body = await result.json().catch(() => null) as { result?: { status?: string; blockHash?: string } | null; error?: { message?: string } } | null;
+      if (!result.ok || body?.error || body?.result?.status !== '0x1' || !/^0x[0-9a-f]{64}$/i.test(body.result.blockHash ?? '')) {
+        throw new Error(`${step} receipt is missing or unsuccessful`);
+      }
+    }
+    return {
+      ok: true,
+      detail: `Verified ${SAFE_REHEARSAL_STEPS.length} Sepolia lifecycle steps for provider revision ${loaded.record.providerRevision}.`,
+    };
+  } catch (error) {
+    return { ok: false, detail: `Sepolia lifecycle verification failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
+  const checkedAt = Date.now();
+  const caps = await bridgeCall('keys:caps', []) as KeyCapabilities;
+  const settings = loadSettings();
+  const checks: KeyReadinessCheck[] = [];
+  checks.push({
+    id: 'live-provider',
+    label: 'Live Safe provider',
+    status: caps.live && caps.provider === 'safe-roles' && caps.authorityModel === 'zodiac-roles-v2' ? 'pass' : 'block',
+    detail: caps.live
+      ? `${caps.provider} is active on ${caps.chainLabel}.`
+      : `${caps.provider} is simulation-only; it cannot deploy Safes or change authority.`,
+    remediation: caps.live ? undefined : 'Install and configure the Safe 1.4.1 + Zodiac Roles live provider before provisioning.',
+  });
+  const signerVault = agentSignerVaultStatus();
+  checks.push({
+    id: 'signer-custody',
+    label: 'Agent signer custody',
+    status: signerVault.available ? 'pass' : 'block',
+    detail: signerVault.available
+      ? `${signerVault.backend} is available; ${signerVault.signerCount} encrypted agent signer(s) are present.`
+      : signerVault.error ?? 'Agent signer encryption is unavailable.',
+    remediation: signerVault.available ? undefined : 'Unlock macOS Keychain and retry. IDACC will not store plaintext agent keys.',
+  });
+  const walletConnect = settings.walletConnect ?? { enabled: false, projectId: '' };
+  const connectorReady = walletConnect.enabled && /^[a-f0-9]{32}$/i.test(walletConnect.projectId);
+  checks.push({
+    id: 'root-connector',
+    label: 'Root Safe connector',
+    status: connectorReady ? 'pass' : 'block',
+    detail: connectorReady ? 'WalletConnect is enabled with a valid public Reown project ID.' : 'Root Safe WalletConnect is not configured.',
+    remediation: connectorReady ? undefined : 'Enable the root Safe connector in Settings and save a valid Reown project ID.',
+  });
+
+  const rpc = ethereumMainnetRpc();
+  if (!rpc) {
+    checks.push({
+      id: 'asset-inspection',
+      label: 'Asset revocation guard',
+      status: 'block',
+      detail: 'Full asset inspection requires an enabled Ethereum mainnet Alchemy RPC.',
+      remediation: 'Configure the encrypted Alchemy RPC used for native, ERC-20, ERC-721, and ERC-1155 inspection.',
+    });
+    checks.push({
+      id: 'ethereum-rpc',
+      label: 'Ethereum mainnet RPC',
+      status: 'block',
+      detail: 'No enabled Ethereum mainnet RPC is configured.',
+      remediation: 'Add and successfully check an Ethereum mainnet RPC in Settings.',
+    });
+    checks.push({
+      id: 'module-attestation',
+      label: 'Pinned module bytecode',
+      status: 'block',
+      detail: 'Module runtime bytecode cannot be verified without Ethereum mainnet RPC access.',
+      remediation: 'Add and successfully check an Ethereum mainnet RPC in Settings.',
+    });
+    checks.push({
+      id: 'root-safe-contract',
+      label: 'Root Safe contract',
+      status: 'block',
+      detail: 'Root Safe bytecode, owners, and threshold cannot be verified without Ethereum mainnet RPC access.',
+    });
+  } else {
+    try {
+      const chainId = Number(BigInt(await evmJsonRpc(rpc, 'eth_chainId', [])));
+      if (chainId !== 1) throw new Error(`configured endpoint returned chain ${chainId}, expected Ethereum mainnet (1)`);
+      checks.push({ id: 'ethereum-rpc', label: 'Ethereum mainnet RPC', status: 'pass', detail: `${rpc.network} returned chain 1.` });
+    } catch (error) {
+      checks.push({
+        id: 'ethereum-rpc',
+        label: 'Ethereum mainnet RPC',
+        status: 'block',
+        detail: `Production preflight failed: ${error instanceof Error ? error.message : String(error)}`,
+        remediation: 'Check the Ethereum mainnet endpoint and retry production readiness.',
+      });
+    }
+    if (checks.at(-1)?.id === 'ethereum-rpc' && checks.at(-1)?.status === 'pass') {
+      const assets = await inspectAlchemyAssets({
+        rpcUrl: rpcUrlForRequest(rpc.httpsUrl, resolveEvmRpcKey(rpc)),
+        safeAddress: ROOT_AGENT_SAFE_ADDRESS,
+        chainId: 1,
+      });
+      checks.push({
+        id: 'asset-inspection',
+        label: 'Asset revocation guard',
+        status: assets.status === 'unknown' ? 'block' : 'pass',
+        detail: assets.message,
+        remediation: assets.status === 'unknown' ? 'Fix the configured Alchemy Token/NFT API access; revocation remains fail-closed.' : undefined,
+      });
+      const moduleEvidence = await verifySafeModuleManifest(rpc, 1);
+      checks.push({
+        id: 'module-attestation',
+        label: 'Pinned module bytecode',
+        status: moduleEvidence.ok ? 'pass' : 'block',
+        detail: moduleEvidence.detail,
+        remediation: moduleEvidence.ok ? undefined : 'Do not use the module stack until every deployed runtime matches the pinned manifest.',
+      });
+      try {
+        const code = await evmJsonRpc(rpc, 'eth_getCode', [ROOT_AGENT_SAFE_ADDRESS, 'latest']);
+        if (!/^0x[0-9a-f]{40,}$/i.test(code)) throw new Error('root address has no verified contract bytecode');
+        const owners = decodeAbiAddressArray(await evmJsonRpc(rpc, 'eth_call', [{ to: ROOT_AGENT_SAFE_ADDRESS, data: '0xa0e67e2b' }, 'latest']));
+        const threshold = Number(decodeAbiUint(await evmJsonRpc(rpc, 'eth_call', [{ to: ROOT_AGENT_SAFE_ADDRESS, data: '0xe75235b8' }, 'latest'])));
+        const hardened = owners.length >= 2 && threshold >= 2;
+        checks.push({
+          id: 'root-safe-contract',
+          label: 'Root Safe contract',
+          status: hardened ? 'pass' : 'block',
+          detail: `Verified Safe proxy at ${ROOT_AGENT_SAFE_ADDRESS}: ${owners.length} owners, threshold ${threshold}.`,
+          remediation: hardened ? undefined : 'Raise the root Safe threshold to at least 2 before it can authorize independent agent Safes.',
+        });
+      } catch (error) {
+        checks.push({
+          id: 'root-safe-contract',
+          label: 'Root Safe contract',
+          status: 'block',
+          detail: `Root Safe verification failed: ${error instanceof Error ? error.message : String(error)}`,
+          remediation: 'Verify the configured root Safe address and retry production readiness.',
+        });
+      }
+    } else {
+      checks.push({
+        id: 'asset-inspection',
+        label: 'Asset revocation guard',
+        status: 'block',
+        detail: 'Full asset inspection was not attempted because Ethereum RPC preflight failed.',
+        remediation: 'Fix the configured Ethereum mainnet Alchemy RPC and retry.',
+      });
+      checks.push({
+        id: 'module-attestation',
+        label: 'Pinned module bytecode',
+        status: 'block',
+        detail: 'Module runtime bytecode was not verified because Ethereum RPC preflight failed.',
+      });
+      checks.push({
+        id: 'root-safe-contract',
+        label: 'Root Safe contract',
+        status: 'block',
+        detail: 'Root Safe bytecode, owners, and threshold were not verified because Ethereum RPC preflight failed.',
+      });
+    }
+  }
+
+  const authorityStable = SAFE_MODULE_MANIFEST.stability === 'stable';
+  checks.push({
+    id: 'authority-module-stability',
+    label: 'Authority module production status',
+    status: authorityStable ? 'pass' : 'block',
+    detail: `${SAFE_MODULE_MANIFEST.authority.package} ${SAFE_MODULE_MANIFEST.authority.sdkVersion} / Roles ${SAFE_MODULE_MANIFEST.authority.contractVersion} is pinned to the audited ${SAFE_MODULE_MANIFEST.architecture} profile.`,
+    remediation: authorityStable ? undefined : 'Keep live autonomous authority disabled until an independently audited stable authority module is active.',
+  });
+
+  const rehearsal = await verifySafeRehearsal();
+  checks.push({
+    id: 'testnet-rehearsal',
+    label: 'Testnet rehearsal',
+    status: rehearsal.ok ? 'pass' : 'block',
+    detail: rehearsal.detail,
+    remediation: rehearsal.ok ? undefined : 'Complete create, scoped action, rotation, asset inspection, and revoke on Sepolia; save the public evidence record and retry.',
+  });
+  return {
+    ready: checks.every((check) => check.status !== 'block'),
+    checkedAt,
+    chainId: 1,
+    rootSafe: ROOT_AGENT_SAFE_ADDRESS,
+    provider: caps.provider,
+    checks,
+  };
+}
+
 // --- window state: reopen the app where/how the user left it ---
 interface WinState { x?: number; y?: number; width: number; height: number; fullScreen?: boolean }
 function winStatePath(): string { return join(app.getPath('userData'), 'window-state.json'); }
@@ -1043,6 +1336,12 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return loadEvmRpcsMigratingSecrets().map(redactEvmRpc);
     case 'evmRpc:probe':
       return probeEvmRpc(String(args[0] ?? ''));
+    case 'walletConnect:get':
+      return loadSettings().walletConnect ?? { enabled: false, projectId: '' };
+    case 'walletConnect:set':
+      return setWalletConnectSettings((args[0] as Record<string, unknown>) ?? {}).walletConnect;
+    case 'keys:productionReadiness':
+      return keyProductionReadiness();
     case 'subs:status':
       return subsStatus(
         args[0] && typeof args[0] === 'object'
@@ -1299,8 +1598,6 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return probeImageServer((args[0] as ImageServerConfig | null | undefined) ?? undefined);
     case 'app:runInTerminal':
       return runInTerminal(args[0] as string);
-    case 'wiki:get':
-      return readWiki();
     // Computer Use (broker + macOS permissions live in the Electron main process)
     case 'cu:status':
       return brokerStatus();

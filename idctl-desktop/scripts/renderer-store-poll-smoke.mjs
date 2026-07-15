@@ -7,7 +7,6 @@ assert.equal(viewNeedsAllTeamsAgents('dashboard'), true);
 assert.equal(viewNeedsAllTeamsAgents('tasks'), true);
 assert.equal(viewNeedsAllTeamsAgents('teams'), true);
 assert.equal(viewNeedsAllTeamsAgents('settings'), false);
-assert.equal(viewNeedsAllTeamsAgents('wiki'), false);
 assert.equal(viewNeedsAllTeamsAgents('inbox'), false);
 assert.equal(viewNeedsAllTeamsAgents('modules'), true);
 assert.equal(viewNeedsAllTeamsAgents('projects'), true);
@@ -22,7 +21,6 @@ assert.equal(allTeamsAgentsPollDelay('modules'), 60000);
 assert.equal(eventsInvalidateViews([ev('task:created')], 'tasks'), true);
 assert.equal(eventsInvalidateViews([ev('task:created')], 'dashboard'), true);
 assert.equal(eventsInvalidateViews([ev('task:created')], 'settings'), false);
-assert.equal(eventsInvalidateViews([ev('task:created')], 'wiki'), false);
 
 assert.equal(eventsInvalidateViews([ev('agent:started')], 'teams'), true);
 assert.equal(eventsInvalidateViews([ev('agent:started')], 'computer'), true);

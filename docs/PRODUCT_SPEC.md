@@ -34,9 +34,9 @@ and drives, it never owns the runtime.
 ## 2. Global UI (present on every page)
 
 ### 2.1 Sidebar navigation
-Ten destinations: **Dashboard** ▦, **Inbox** ✉ (badge = pending messages), **Work** ☑,
+Nine destinations: **Dashboard** ▦, **Inbox** ✉ (badge = pending messages), **Work** ☑,
 **Projects** ◆, **HR Manager** ⛌, **Capabilities** ◫, **Identity & Keys** ⬡,
-**Computer Use** 🖥, **Settings** ⚙, and **Wiki** ▤. Health now lives inside HR Manager as
+**Computer Use** 🖥, and **Settings** ⚙. Health now lives inside HR Manager as
 the **Health** tab, while the legacy `health` route still opens that tab for compatibility.
 The last-open view is remembered across launches (and self-update relaunches).
 

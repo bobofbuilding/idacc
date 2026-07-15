@@ -69,7 +69,7 @@ summarize_placeholder_commit() {
     [ -n "$file" ] || continue
     files+=("$file")
     case "$file" in
-      CHANGELOG.md|docs/CONTROL_CENTER_WIKI.json|idctl/package.json|idctl/package-lock.json|idctl-desktop/package.json|idctl-desktop/package-lock.json)
+      CHANGELOG.md|idctl/package.json|idctl/package-lock.json|idctl-desktop/package.json|idctl-desktop/package-lock.json)
         ;;
       *)
         meaningful+=("$file")
@@ -140,9 +140,6 @@ on_exit() {
 }
 trap on_exit EXIT
 
-# Surface stale human-facing wiki content before mutating release files.
-node "$ROOT/scripts/check-wiki.mjs"
-
 # --- derive the CHANGELOG body from the REAL commits since the last release tag, so the
 #     entry reflects TRUE contents — every feature/fix in this release, not a single passed
 #     note. Strip the off-by-one "vX.Y.Z:" hook prefix, drop housekeeping commits, and
@@ -199,18 +196,6 @@ for (const dir of [process.env.DESK, process.env.TUI]) {
   updateLock(path.join(dir, "package-lock.json"));
 }
 ' "$VER"
-
-# Keep the human-facing wiki in lockstep with the release: check-wiki.mjs (run above) requires
-# docs/CONTROL_CENTER_WIKI.json appVersion === package.json version + a current `updated` date.
-# Bump them here so the gate self-sustains instead of blocking the NEXT release.
-node -e '
-const fs = require("fs"); const [cur, ver] = process.argv.slice(1);
-const f = "docs/CONTROL_CENTER_WIKI.json";
-let s = fs.readFileSync(f, "utf8");
-s = s.replace(`"appVersion": "${cur}"`, `"appVersion": "${ver}"`);
-s = s.replace(/"updated":\s*"\d{4}-\d{2}-\d{2}"/, `"updated": "${new Date().toISOString().slice(0, 10)}"`);
-fs.writeFileSync(f, s);
-' "$CUR" "$VER"
 
 # --- 2) prepend a CHANGELOG entry under the title block (before the first "## [" heading) ---
 node -e '

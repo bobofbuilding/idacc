@@ -138,7 +138,7 @@ const RECOMMENDED_TEAM_BLUEPRINTS: TeamBlueprint[] = [
     id: 'operations-team',
     team: 'ops-team',
     label: 'Operations team',
-    description: 'git, release, monitoring, maintenance, wiki/content ops',
+    description: 'git, release, monitoring, maintenance, and documentation',
     spec: `team: ops-team
 
 - **ops-lead** - Coordinator for operational work. Breaks requests into specialist tasks, delegates in parallel, reports one concise status, and escalates production deploys, deletes, mainnet, or release ambiguity.
@@ -146,7 +146,7 @@ const RECOMMENDED_TEAM_BLUEPRINTS: TeamBlueprint[] = [
 - **deployer** - Runs build/test/release readiness, cuts versioned releases, prepares deploys, and confirms before production changes.
 - **monitor** - Watches service and agent health, probes failures, tails logs, and reports incidents with next steps.
 - **maintainer** - Handles low-risk dependency updates, cleanup, maintenance scripts, and reversible chores.
-- **content-ops** - Keeps IDACC wiki and release documentation current with shipped behavior.
+- **content-ops** - Keeps IDACC operator and release documentation current with shipped behavior.
 - **content-moderator** - Performs safety, compliance, and policy-fit screening before content is published or routed onward.`,
   },
   {

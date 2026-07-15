@@ -1,7 +1,7 @@
 {
   "name": "idagents-control-center",
   "productName": "ID Agents Control Center",
-  "version": "0.1.640",
+  "version": "0.1.641",
   "description": "Desktop control center for id-agents — live fleet dashboard, manager chat, teams, keys.",
   "private": true,
   "main": "out/main/main.cjs",
@@ -18,9 +18,15 @@
     "test:release-published": "node ../scripts/release-published-smoke.mjs",
     "test:signing-guardrails": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/signing-guardrails-smoke.mjs",
     "test:agent-wallet-lifecycle": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/agent-wallet-lifecycle-smoke.mjs",
+    "test:walletconnect-bootstrap": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/walletconnect-bootstrap-smoke.mjs",
+    "test:safe-production-readiness": "node scripts/safe-production-readiness-smoke.mjs",
+    "test:agent-signer-vault": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/agent-signer-vault-smoke.mjs",
+    "test:safe-roles-execution": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/safe-roles-execution-smoke.mjs",
+    "test:alchemy-asset-inspector": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/alchemy-asset-inspector-smoke.mjs",
     "test:context-budget": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/context-budget-smoke.mjs",
     "test:context-history": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/context-budget-history.mjs",
     "test:dashboard-coordination": "node scripts/dashboard-coordination-roster-smoke.mjs",
+    "test:org-hierarchy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/org-hierarchy-coordinator-smoke.mjs",
     "test:learn-context": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/learn-context-smoke.mjs",
     "test:learn-failure-display": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/learn-failure-display-smoke.mjs",
     "test:learn-task-automation": "node scripts/learn-task-automation-smoke.mjs",
@@ -65,10 +71,6 @@
       {
         "from": "resources/idacc-context-retrieval",
         "to": "idacc-context-retrieval"
-      },
-      {
-        "from": "../docs/CONTROL_CENTER_WIKI.json",
-        "to": "docs/CONTROL_CENTER_WIKI.json"
       }
     ],
     "mac": {
@@ -82,6 +84,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",
     "@types/node": "^22.19.21",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "electron": "^33.2.0",
@@ -92,10 +95,13 @@
     "typescript": "^5.6.3"
   },
   "dependencies": {
-    "@noble/curves": "^1.9.1",
+    "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
     "@nut-tree-fork/libnut-darwin": "^2.7.5",
     "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-http": "^2.5.9"
+    "@tauri-apps/plugin-http": "^2.5.9",
+    "@walletconnect/universal-provider": "^2.23.10",
+    "ethers": "6.17.0",
+    "qrcode": "^1.5.4"
   }
 }

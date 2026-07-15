@@ -6,13 +6,16 @@ import {
   ROOT_AGENT_SAFE_ENS,
   agentEnsName,
   type AgentAccount,
+  type AssetGuardReport,
   type KeyAuthorityTarget,
   type KeyCapabilities,
+  type KeyProductionReadiness,
   type LegacyKeyAuthority,
   type SessionKey,
   type SessionScope,
 } from '../../../../idctl/src/keys/types.ts';
 import type { EvmRpcKeySource, EvmRpcProfile } from '../../../../idctl/src/settings/schema.ts';
+import { resolveRootSafeProvider } from '../walletConnect.ts';
 import {
   AGENT_BITTREES_SAFE_ADDRESS,
   AGENT_BITTREES_SAFE_ENS,
@@ -24,6 +27,9 @@ import {
   formatExecutionPreview,
   guardedExecutionReady,
   isEthAddress,
+  isRootSafeThresholdRepair,
+  ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA,
+  ROOT_SAFE_THRESHOLD_REPAIR_CHAIN,
   sameAddress,
   type ContractSimulation,
   type ExecutionChain,
@@ -33,10 +39,6 @@ type EvidenceState = 'verified' | 'pending' | 'warn' | 'missing' | 'self';
 type IdentityAgent = TeamAgent;
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
 type ContractExecutionState = 'idle' | 'warn' | 'ready' | 'submitted';
-
-interface EthereumProvider {
-  request<T = unknown>(args: { method: string; params?: unknown[] }): Promise<T>;
-}
 
 interface ControllerProof {
   agent: string;
@@ -56,7 +58,7 @@ interface ReviewRow {
 
 interface ProcessStep extends ReviewRow {
   id: string;
-  action?: 'provision' | 'challenge' | 'verify' | 'create-account' | 'deploy' | 'issue-key' | 'review-chains' | 'review-standards' | 'refresh';
+  action?: 'provision' | 'challenge' | 'verify' | 'provision-authority' | 'issue-key' | 'review-chains' | 'review-standards' | 'refresh';
 }
 
 interface MetadataHit {
@@ -186,10 +188,6 @@ function identityValue(
   const direct = key === 'idchain_domain' ? a.idchain_domain : key === 'ows_wallet' ? a.ows_wallet : a.ows_address;
   const value = direct ?? meta?.[key];
   return typeof value === 'string' ? value.trim() : '';
-}
-
-function getEthereumProvider(): EthereumProvider | null {
-  return ((window as Window & { ethereum?: EthereumProvider }).ethereum) ?? null;
 }
 
 function providerWalletFromMetadata(metadata: unknown): string {
@@ -593,6 +591,7 @@ function accountStamp(a: AgentAccount | null | undefined): string {
 
 export function Identity({ store }: { store: FleetStore }) {
   const [caps, setCaps] = useState<KeyCapabilities | null>(null);
+  const [productionReadiness, setProductionReadiness] = useState<KeyProductionReadiness | null>(null);
   const [accounts, setAccounts] = useState<Record<string, AgentAccount>>({});
   const [presets, setPresets] = useState<{ scopes: SessionScope[]; ttls: { label: string; ms: number }[] } | null>(null);
   const [sel, setSel] = useState<string | null>(null);
@@ -616,7 +615,7 @@ export function Identity({ store }: { store: FleetStore }) {
   const [contractConfirmed, setContractConfirmed] = useState(false);
   const [contractBusy, setContractBusy] = useState(false);
   const [contractSimulation, setContractSimulation] = useState<ContractSimulation | null>(null);
-  const [contractMessage, setContractMessage] = useState('Connect a wallet or Safe to prepare a guarded transaction.');
+  const [contractMessage, setContractMessage] = useState('Connect the root Safe to prepare an agent Safe bootstrap or revocation proposal.');
 
   const identityAgents = useMemo(() => {
     const all = store.allAgents.length ? store.allAgents : store.agents.map((a) => ({ ...a, team: store.team ?? 'default' }));
@@ -654,7 +653,9 @@ export function Identity({ store }: { store: FleetStore }) {
   );
   const issueScope = presets?.scopes[scopeIdx];
   const issueTtl = presets?.ttls[ttlIdx];
-  const issueBlocked = !controllerVerified || acct?.status !== 'active' || isUnsafeScope(issueScope) || isUnsafeTtl(issueTtl);
+  const productionReady = productionReadiness?.ready === true;
+  const issueBlocked = !productionReady || !controllerVerified || acct?.status !== 'active' || isUnsafeScope(issueScope) || isUnsafeTtl(issueTtl);
+  const provisionBlocked = !productionReady || !controllerVerified || acct?.status === 'revoked' || isUnsafeScope(issueScope) || isUnsafeTtl(issueTtl);
   const review = useMemo(() => reviewRows(selAgent, acct, domain, wallet, controllerVerified), [selAgent, acct, domain, wallet, controllerVerified]);
   const standardCoverage = useMemo(() => identityStandardRows(selAgent, domain, wallet, acct), [selAgent, domain, wallet, acct]);
   const standardCovered = standardCoverage.filter((r) => r.state === 'verified' || r.state === 'self').length;
@@ -695,7 +696,8 @@ export function Identity({ store }: { store: FleetStore }) {
     [contractAccount, contractChain, contractData, contractTo, contractValue, providerChain],
   );
   const contractSimulationFresh = Boolean(contractSimulation?.ok && contractSimulation.stamp === contractStamp);
-  const contractCanSubmit = contractInputErrors.length === 0 && contractSimulationFresh && contractConfirmed && !contractBusy;
+  const thresholdRepairPrepared = isRootSafeThresholdRepair(contractChain, contractTo, contractData, contractValue);
+  const contractCanSubmit = (productionReady || thresholdRepairPrepared) && contractInputErrors.length === 0 && contractSimulationFresh && contractConfirmed && !contractBusy;
   const contractPreview = contractSimulation?.stamp === contractStamp
     ? contractSimulation.preview
     : formatExecutionPreview(contractChain, contractAccount, contractTo, contractData, contractValue);
@@ -710,7 +712,8 @@ export function Identity({ store }: { store: FleetStore }) {
   const brainControllerNeedsReview = !brainControllers || (brainControllers.activeLinks ?? 0) === 0 || brainSelectedController.state === 'warn' || brainAmbiguousLinks > 0;
   const identityProcess = useMemo<ProcessStep[]>(() => {
     const ensState: EvidenceState = ensCollision ? 'warn' : domain.toLowerCase() === canonicalEns.toLowerCase() ? 'verified' : acct?.smartAccount ? 'pending' : 'missing';
-    const rootOwnsAccount = Boolean(acct?.owner && sameAddress(acct.owner, ROOT_AGENT_SAFE_ADDRESS));
+    const liveProvider = caps?.live === true;
+    const rootOwnsAccount = Boolean(liveProvider && acct?.owner && sameAddress(acct.owner, ROOT_AGENT_SAFE_ADDRESS));
     return [
       {
         id: 'ens',
@@ -736,25 +739,25 @@ export function Identity({ store }: { store: FleetStore }) {
       {
         id: 'account',
         label: 'Agent Safe',
-        state: acct?.status === 'revoked' ? 'warn' : acct?.deployed ? 'verified' : acct?.smartAccount ? 'pending' : 'missing',
-        note: acct?.smartAccount ? `${shortAddr(acct.smartAccount)} ${acct.status === 'revoked' ? 'authority revoked' : acct.deployed ? 'deployed' : 'predicted'}` : 'Create the root-owned agent Safe after signer proof.',
-        action: acct?.status === 'revoked' || !controllerVerified ? undefined : acct?.smartAccount ? (acct.deployed ? undefined : 'deploy') : 'create-account',
+        state: !liveProvider ? 'warn' : acct?.status === 'revoked' ? 'warn' : acct?.deployed ? 'verified' : acct?.smartAccount ? 'pending' : 'missing',
+        note: !liveProvider ? 'Simulation record only; no on-chain Safe has been verified.' : acct?.smartAccount ? `${shortAddr(acct.smartAccount)} ${acct.status === 'revoked' ? 'authority revoked' : acct.deployed ? 'deployed' : 'predicted'}` : 'Create the root-owned agent Safe after signer proof.',
+        action: !productionReady || acct?.status === 'revoked' || !controllerVerified || acct?.deployed ? undefined : 'provision-authority',
       },
       {
         id: 'root',
         label: 'Root recovery',
         state: rootOwnsAccount ? 'verified' : 'missing',
-        note: rootOwnsAccount ? `${ROOT_AGENT_SAFE_ENS} controls recovery and revocation.` : `Owner must be ${ROOT_AGENT_SAFE_ADDRESS}.`,
+        note: rootOwnsAccount ? `${ROOT_AGENT_SAFE_ENS} controls recovery and revocation.` : liveProvider ? `Owner must be ${ROOT_AGENT_SAFE_ADDRESS}.` : 'Root ownership is not live-verified while the mock provider is active.',
       },
       {
         id: 'authority',
         label: 'Autonomous authority',
-        state: acct?.status === 'revoked' ? 'warn' : activeSessionCount > 0 ? 'verified' : acct?.deployed ? 'pending' : 'missing',
-        note: acct?.status === 'revoked' ? 'All agent authority is disabled; the Safe and audit history are preserved.' : activeSessionCount > 0 ? `${activeSessionCount} active capped grant${activeSessionCount === 1 ? '' : 's'}` : 'Issue finite, spend-capped authority after deployment.',
-        action: controllerVerified && acct?.deployed && acct.status === 'active' && activeSessionCount === 0 ? 'issue-key' : undefined,
+        state: !liveProvider ? 'warn' : acct?.status === 'revoked' ? 'warn' : activeSessionCount > 0 ? 'verified' : acct?.deployed ? 'pending' : 'missing',
+        note: !liveProvider ? 'Mock grants are test records, not on-chain autonomous authority.' : acct?.status === 'revoked' ? 'All agent authority is disabled; the Safe and audit history are preserved.' : activeSessionCount > 0 ? `${activeSessionCount} active capped grant${activeSessionCount === 1 ? '' : 's'}` : 'Issue finite, spend-capped authority after deployment.',
+        action: productionReady && controllerVerified && acct?.status !== 'revoked' && activeSessionCount === 0 ? 'provision-authority' : undefined,
       },
     ];
-  }, [acct, activeSessionCount, canonicalEns, controllerVerified, domain, ensCollision, proof, wallet]);
+  }, [acct, activeSessionCount, canonicalEns, caps?.live, controllerVerified, domain, ensCollision, productionReady, proof, wallet]);
   const nextProcessStep = identityProcess.find((step) => step.action && step.state !== 'verified') ?? identityProcess.find((step) => step.action);
   const processReadyCount = identityProcess.filter((step) => step.state === 'verified').length;
   const processReviewCount = identityProcess.filter((step) => step.state === 'warn').length;
@@ -835,6 +838,7 @@ export function Identity({ store }: { store: FleetStore }) {
 
   useEffect(() => {
     call<KeyCapabilities>('keys:caps').then(setCaps).catch((err) => setError(err instanceof Error ? err.message : 'Failed to load key capabilities'));
+    call<KeyProductionReadiness>('keys:productionReadiness').then(setProductionReadiness).catch((err) => setError(err instanceof Error ? err.message : 'Failed to run production readiness'));
     call<{ scopes: SessionScope[]; ttls: { label: string; ms: number }[] }>('keys:presets').then(setPresets).catch((err) => setError(err instanceof Error ? err.message : 'Failed to load key presets'));
   }, []);
 
@@ -1046,65 +1050,11 @@ export function Identity({ store }: { store: FleetStore }) {
     }
   }
 
-  async function createAccount() {
-    const fresh = await ensureSelectedFresh('creating account');
-    if (!fresh) return;
-    if (duplicateNames.has(fresh.name)) {
-      setError(`Cannot create ${displayAgentEnsName(fresh.name)} while ${fresh.name} exists in more than one team. Agent ENS labels must be globally unique.`);
-      return;
-    }
-    if (!controllerProofValidFor(fresh)) {
-      setError('Create account requires a signed controller-wallet challenge first.');
-      return;
-    }
-    const key = agentKey(fresh);
-    const reviewedAccount = await latestAccountFor(key);
-    const team = fresh.team ?? 'default';
-    if (!window.confirm(`Create account for ${team}/${fresh.name}?\n\nThis ensures a smart-account record for the selected agent.`)) return;
-    const afterConfirm = await ensureSelectedFresh('creating account after review');
-    if (!afterConfirm) return;
-    if (!controllerProofValidFor(afterConfirm)) {
-      setError('Controller proof expired or changed after confirmation. Sign a fresh challenge before creating the account.');
-      return;
-    }
-    const latestAccount = await latestAccountFor(agentKey(afterConfirm));
-    if (accountStamp(latestAccount) !== accountStamp(reviewedAccount)) {
-      setError('Account state changed after confirmation. Identity has refreshed the latest account state; review and retry.');
-      return;
-    }
-    await act('keys:ensure', afterConfirm.name, afterConfirm.team ?? 'default');
-  }
-
-  async function deployAccount() {
-    const fresh = await ensureSelectedFresh('deploying account');
-    if (!fresh) return;
-    if (duplicateNames.has(fresh.name)) {
-      setError(`Cannot deploy ${displayAgentEnsName(fresh.name)} while the ENS label is ambiguous across teams.`);
-      return;
-    }
-    const key = agentKey(fresh);
-    const latest = await latestAccountFor(key);
-    if (latest?.deployed) {
-      setError('Account is already deployed. Identity has refreshed the latest account state.');
-      return;
-    }
-    const team = fresh.team ?? 'default';
-    if (!window.confirm(`Deploy account for ${team}/${fresh.name}?\n\nThis deploys the selected smart account using the verified controller authority.`)) return;
-    const afterConfirm = await ensureSelectedFresh('deploying account after review');
-    if (!afterConfirm) return;
-    if (!controllerProofValidFor(afterConfirm)) {
-      setError('Controller proof expired or changed after confirmation. Sign a fresh challenge before deploying.');
-      return;
-    }
-    const latestAfterConfirm = await latestAccountFor(agentKey(afterConfirm));
-    if (!latestAfterConfirm || accountStamp(latestAfterConfirm) !== accountStamp(latest) || latestAfterConfirm.deployed) {
-      setError('Account state changed after confirmation. Identity has refreshed the latest account state; review and retry.');
-      return;
-    }
-    await act('keys:deploy', afterConfirm.name, afterConfirm.team ?? 'default');
-  }
-
   async function issueSession() {
+    if (!productionReady) {
+      setError('Session issuance is blocked until production readiness passes.');
+      return;
+    }
     const fresh = await ensureSelectedFresh('issuing session key');
     if (!presets || !fresh) {
       setError(controllerVerified ? 'Choose a capped scope and finite TTL.' : 'Issue session key requires a signed controller-wallet challenge first.');
@@ -1135,7 +1085,91 @@ export function Identity({ store }: { store: FleetStore }) {
     await act('keys:issue', afterConfirm.name, reviewedScopeIdx, reviewedTtl.ms, afterConfirm.team ?? 'default');
   }
 
+  async function provisionAuthority() {
+    if (!productionReady) {
+      setError('Live Safe changes are blocked until every production readiness blocker is resolved. Run the production preflight and review its remediation steps.');
+      return;
+    }
+    const fresh = await ensureSelectedFresh('provisioning agent Safe and authority');
+    if (!presets || !fresh) return;
+    if (duplicateNames.has(fresh.name)) {
+      setError(`Cannot provision ${displayAgentEnsName(fresh.name)} while its ENS label is ambiguous across teams.`);
+      return;
+    }
+    const reviewedScopeIdx = scopeIdx;
+    const reviewedTtlIdx = ttlIdx;
+    const reviewedScope = presets.scopes[reviewedScopeIdx];
+    const reviewedTtl = presets.ttls[reviewedTtlIdx];
+    if (!controllerProofValidFor(fresh) || isUnsafeScope(reviewedScope) || isUnsafeTtl(reviewedTtl)) {
+      setError(controllerProofValidFor(fresh) ? 'Choose a capped policy and finite duration.' : 'Provisioning requires a fresh signer proof.');
+      return;
+    }
+    const reviewedAccount = await latestAccountFor(agentKey(fresh));
+    if (reviewedAccount?.status === 'revoked') {
+      setError('Restore root-controlled authority before provisioning a replacement session.');
+      return;
+    }
+    if (reviewedAccount?.deployed && reviewedAccount.sessions.some((session) => session.status === 'active')) {
+      setError('This Safe already has active authority. Rotate an existing grant or issue an additional scoped key.');
+      return;
+    }
+    const team = fresh.team ?? 'default';
+    if (!window.confirm(`Provision ${displayAgentEnsName(fresh.name)} for ${team}/${fresh.name}?\n\nPolicy: ${reviewedScope.label}\nDuration: ${reviewedTtl.label}\n\nThe live provider bundles Safe deployment, policy-module setup, and initial public session authority into one root-Safe proposal. The private session key remains in the agent runtime.`)) return;
+    const afterConfirm = await ensureSelectedFresh('provisioning authority after review');
+    if (!afterConfirm || !controllerProofValidFor(afterConfirm)) {
+      setError('Signer proof expired or changed after confirmation. Sign a fresh challenge and retry.');
+      return;
+    }
+    const latestAccount = await latestAccountFor(agentKey(afterConfirm));
+    if (accountStamp(latestAccount) !== accountStamp(reviewedAccount)) {
+      setError('Account or session state changed after confirmation. Identity refreshed the latest state; review and retry.');
+      return;
+    }
+    await act('keys:provision', afterConfirm.name, reviewedScopeIdx, reviewedTtl.ms, afterConfirm.team ?? 'default');
+    setProcessMsg(`${displayAgentEnsName(afterConfirm.name)} provisioned with ${reviewedScope.label} authority for ${reviewedTtl.label}.`);
+  }
+
+  async function rotateSession(session: SessionKey) {
+    if (!productionReady) {
+      setError('Authority rotation is blocked until production readiness passes.');
+      return;
+    }
+    const fresh = await ensureSelectedFresh('rotating session authority');
+    if (!presets || !fresh) return;
+    const reviewedScopeIdx = scopeIdx;
+    const reviewedTtlIdx = ttlIdx;
+    const reviewedScope = presets.scopes[reviewedScopeIdx];
+    const reviewedTtl = presets.ttls[reviewedTtlIdx];
+    if (!controllerProofValidFor(fresh) || isUnsafeScope(reviewedScope) || isUnsafeTtl(reviewedTtl)) {
+      setError(controllerProofValidFor(fresh) ? 'Choose a capped policy and finite duration.' : 'Rotation requires a fresh signer proof.');
+      return;
+    }
+    const reviewedAccount = await latestAccountFor(agentKey(fresh));
+    const current = reviewedAccount?.sessions.find((row) => row.id === session.id);
+    if (!current || current.status !== 'active' || sessionStamp(current) !== sessionStamp(session)) {
+      setError('Session authority changed before rotation. Identity refreshed the latest state; review and retry.');
+      return;
+    }
+    if (!window.confirm(`Rotate authority for ${reviewedAccount!.ensName}?\n\nNew policy: ${reviewedScope.label}\nNew duration: ${reviewedTtl.label}\n\nThe replacement public key is authorized before the old grant is revoked in the same live Safe proposal. Safe ownership and assets do not change.`)) return;
+    const afterConfirm = await ensureSelectedFresh('rotating authority after review');
+    if (!afterConfirm || !controllerProofValidFor(afterConfirm)) {
+      setError('Signer proof expired or changed after confirmation. Sign a fresh challenge and retry.');
+      return;
+    }
+    const latestAccount = await latestAccountFor(agentKey(afterConfirm));
+    if (accountStamp(latestAccount) !== accountStamp(reviewedAccount)) {
+      setError('Account or session state changed after confirmation. Identity refreshed the latest state; review and retry.');
+      return;
+    }
+    await act('keys:rotate', afterConfirm.name, current.id, reviewedScopeIdx, reviewedTtl.ms, afterConfirm.team ?? 'default');
+    setProcessMsg(`${reviewedAccount!.ensName} authority rotated without changing the Safe address or custody.`);
+  }
+
   async function revokeSession(s: SessionKey) {
+    if (!productionReady) {
+      setError('Session revocation is blocked until production readiness passes.');
+      return;
+    }
     const fresh = await ensureSelectedFresh('revoking session key');
     if (!fresh) return;
     const key = agentKey(fresh);
@@ -1163,6 +1197,10 @@ export function Identity({ store }: { store: FleetStore }) {
   }
 
   async function revokeAgentAuthority() {
+    if (!productionReady) {
+      setError('Agent authority revocation is blocked until production readiness passes.');
+      return;
+    }
     const fresh = await ensureSelectedFresh('revoking agent authority');
     if (!fresh) return;
     const latest = await latestAccountFor(agentKey(fresh));
@@ -1171,17 +1209,35 @@ export function Identity({ store }: { store: FleetStore }) {
       return;
     }
     const active = latest.sessions.filter((session) => session.status === 'active').length;
-    if (!window.confirm(`Revoke all authority for ${latest.ensName}?\n\nSafe: ${latest.smartAccount}\nActive grants revoked: ${active}\n\nThe Safe address, ENS identity, funds, and audit history are preserved under ${ROOT_AGENT_SAFE_ENS}.`)) return;
+    let assets: AssetGuardReport;
+    try {
+      assets = await call<AssetGuardReport>('keys:assetGuard', fresh.name, fresh.team ?? 'default');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Asset inspection failed; authority revocation was not submitted.');
+      return;
+    }
+    if (assets.status === 'unknown') {
+      setError(`Authority revocation blocked until assets can be inspected. ${assets.message}`);
+      return;
+    }
+    const assetWarning = assets.status === 'assets-present'
+      ? `\n\nASSET WARNING\nNative balance: ${assets.nativeBalanceWei ?? 'unknown'} wei\nDetected tokens: ${assets.tokenCount ?? 'unknown'}\nAssets remain at this Safe and recoverable by ${ROOT_AGENT_SAFE_ENS}; they are not deleted or transferred.`
+      : `\n\nAsset check: ${assets.message}`;
+    if (!window.confirm(`Revoke all autonomous authority for ${latest.ensName}?\n\nSafe: ${latest.smartAccount}\nActive grants revoked: ${active}${assetWarning}\n\nThe Safe address, ownership, ENS identity, assets, and audit history are preserved. New scoped authority can be issued later.`)) return;
     const afterConfirm = await latestAccountFor(agentKey(fresh));
     if (!afterConfirm || accountStamp(afterConfirm) !== accountStamp(latest)) {
       setError('Account authority changed after review. Identity has refreshed the latest state; review and retry.');
       return;
     }
-    await act('keys:revokeAccount', fresh.name, fresh.team ?? 'default');
+    await act('keys:revokeAccount', fresh.name, fresh.team ?? 'default', assets.status === 'assets-present');
     setProcessMsg(`${latest.ensName} authority revoked. Root ownership and account history remain intact.`);
   }
 
   async function restoreAgentAuthority() {
+    if (!productionReady) {
+      setError('Agent authority restoration is blocked until production readiness passes.');
+      return;
+    }
     const fresh = await ensureSelectedFresh('restoring agent authority');
     if (!fresh) return;
     const latest = await latestAccountFor(agentKey(fresh));
@@ -1216,6 +1272,7 @@ export function Identity({ store }: { store: FleetStore }) {
       await Promise.allSettled([
         reload(),
         call<KeyCapabilities>('keys:caps').then(setCaps),
+        call<KeyProductionReadiness>('keys:productionReadiness').then(setProductionReadiness),
         call<{ scopes: SessionScope[]; ttls: { label: string; ms: number }[] }>('keys:presets').then(setPresets),
         call<EvmRpcRow[]>('evmRpc:list').then(setEvmRpcs),
         call<BrainControllerReport>('brain:controllerReport').then(setBrainControllers),
@@ -1232,13 +1289,14 @@ export function Identity({ store }: { store: FleetStore }) {
 
   async function connectContractWallet() {
     setContractBusy(true);
-    setContractMessage('Requesting wallet/Safe connection...');
+    setContractMessage('Requesting root Safe connection...');
     try {
-      const provider = getEthereumProvider();
-      if (!provider) {
-        setContractMessage('No EIP-1193 wallet or Safe provider is available in this window.');
+      const connection = await resolveRootSafeProvider(true);
+      if (!connection) {
+        setContractMessage('No root Safe provider is connected. Configure WalletConnect in Settings or use an injected wallet.');
         return;
       }
+      const provider = connection.provider;
       const accounts = await provider.request<string[]>({ method: 'eth_requestAccounts' });
       const chain = await provider.request<string>({ method: 'eth_chainId' });
       const account = accounts.find((row) => typeof row === 'string' && isEthAddress(row)) ?? '';
@@ -1247,9 +1305,9 @@ export function Identity({ store }: { store: FleetStore }) {
       setContractSimulation(null);
       setContractConfirmed(false);
       const errors = contractValidationErrors(account, typeof chain === 'string' ? chain : '', contractChain, contractTo, contractData, contractValue);
-      setContractMessage(errors.length ? errors.join(' ') : 'Wallet/Safe connection is ready for simulation.');
+      setContractMessage(errors.length ? errors.join(' ') : `Root Safe connection is ready through ${connection.source}.`);
     } catch (err) {
-      setContractMessage(err instanceof Error ? err.message : 'Wallet/Safe connection failed.');
+      setContractMessage(err instanceof Error ? err.message : 'Root Safe connection failed.');
     } finally {
       setContractBusy(false);
     }
@@ -1259,11 +1317,12 @@ export function Identity({ store }: { store: FleetStore }) {
     setContractBusy(true);
     setContractMessage(`Requesting switch to ${chainByHex(contractChain)?.name ?? contractChain}...`);
     try {
-      const provider = getEthereumProvider();
-      if (!provider) {
-        setContractMessage('No EIP-1193 wallet or Safe provider is available in this window.');
+      const connection = await resolveRootSafeProvider(false);
+      if (!connection) {
+        setContractMessage('Connect the root Safe before switching chains.');
         return;
       }
+      const provider = connection.provider;
       await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: contractChain }] });
       const chain = await provider.request<string>({ method: 'eth_chainId' });
       setProviderChain(typeof chain === 'string' ? chain : '');
@@ -1279,13 +1338,14 @@ export function Identity({ store }: { store: FleetStore }) {
 
   async function simulateContractExecution() {
     setContractBusy(true);
-    setContractMessage('Running wallet/Safe simulation...');
+    setContractMessage('Simulating the root Safe proposal...');
     try {
-      const provider = getEthereumProvider();
-      if (!provider) {
-        setContractMessage('No EIP-1193 wallet or Safe provider is available in this window.');
+      const connection = await resolveRootSafeProvider(false);
+      if (!connection) {
+        setContractMessage('Connect the root Safe before simulation.');
         return;
       }
+      const provider = connection.provider;
       const accounts = await provider.request<string[]>({ method: 'eth_accounts' });
       const chain = await provider.request<string>({ method: 'eth_chainId' });
       const account = accounts.find((row) => typeof row === 'string' && isEthAddress(row)) ?? contractAccount;
@@ -1331,14 +1391,20 @@ export function Identity({ store }: { store: FleetStore }) {
   }
 
   async function submitContractExecution() {
+    const thresholdRepair = isRootSafeThresholdRepair(contractChain, contractTo, contractData, contractValue);
+    if (!productionReady && !thresholdRepair) {
+      setContractMessage('Root Safe proposal submission is blocked until production readiness passes.');
+      return;
+    }
     setContractBusy(true);
     setContractMessage('Checking guarded submit state...');
     try {
-      const provider = getEthereumProvider();
-      if (!provider) {
-        setContractMessage('No EIP-1193 wallet or Safe provider is available in this window.');
+      const connection = await resolveRootSafeProvider(false);
+      if (!connection) {
+        setContractMessage('Connect the root Safe before submitting a proposal.');
         return;
       }
+      const provider = connection.provider;
       const accounts = await provider.request<string[]>({ method: 'eth_accounts' });
       const chain = await provider.request<string>({ method: 'eth_chainId' });
       const account = accounts.find((row) => typeof row === 'string' && isEthAddress(row)) ?? contractAccount;
@@ -1364,18 +1430,31 @@ export function Identity({ store }: { store: FleetStore }) {
         setContractMessage(readiness.errors.join(' '));
         return;
       }
-      if (!window.confirm(`Submit guarded transaction through ${AGENT_BITTREES_SAFE_ENS}?\n\nTarget: ${contractTo.trim()}\nValue: ${contractValue.trim()} wei\nChain: ${chainByHex(contractChain)?.name ?? contractChain}\n\nThe wallet/Safe must still approve before anything is broadcast.`)) return;
+      const purpose = thresholdRepair
+        ? 'Raise the existing root Safe from threshold 1 to threshold 2. This exact self-call is the only proposal allowed before production readiness passes.'
+        : 'Use this boundary only to provision or revoke an agent Safe.';
+      if (!window.confirm(`Submit root Safe proposal through ${AGENT_BITTREES_SAFE_ENS}?\n\n${purpose}\nTarget: ${contractTo.trim()}\nValue: ${contractValue.trim()} wei\nChain: ${chainByHex(contractChain)?.name ?? contractChain}\n\nThe root Safe must still approve before anything is broadcast.`)) return;
       const hash = await provider.request<string>({
         method: 'eth_sendTransaction',
         params: [readiness.tx],
       });
-      setContractMessage(`Wallet/Safe submitted transaction ${hash}.`);
+      setContractMessage(`Root Safe submitted proposal ${hash}. Agent runtime transactions remain on the agent Safe session-key path.`);
       setContractConfirmed(false);
     } catch (err) {
-      setContractMessage(err instanceof Error ? err.message : 'Wallet/Safe submit failed or was rejected.');
+      setContractMessage(err instanceof Error ? err.message : 'Root Safe proposal failed or was rejected.');
     } finally {
       setContractBusy(false);
     }
+  }
+
+  function prepareRootThresholdRepair() {
+    setContractChain(ROOT_SAFE_THRESHOLD_REPAIR_CHAIN);
+    setContractTo(AGENT_BITTREES_SAFE_ADDRESS);
+    setContractData(ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA);
+    setContractValue('0');
+    setContractSimulation(null);
+    setContractConfirmed(false);
+    setContractMessage('Threshold repair prepared. Connect agent.bittrees.eth on Ethereum mainnet, simulate, review, and submit the Safe self-call. Both owners must approve the resulting 2-of-2 policy going forward.');
   }
 
   async function runProcessAction(action = nextProcessStep?.action) {
@@ -1389,11 +1468,8 @@ export function Identity({ store }: { store: FleetStore }) {
       case 'verify':
         await verifyControllerProof();
         break;
-      case 'create-account':
-        await createAccount();
-        break;
-      case 'deploy':
-        await deployAccount();
+      case 'provision-authority':
+        await provisionAuthority();
         break;
       case 'issue-key':
         await issueSession();
@@ -1455,12 +1531,12 @@ export function Identity({ store }: { store: FleetStore }) {
                   <div className="identity-subtitle">
                     <span>{selected}</span>
                     {selectedTeam ? <span className="muted small">{selectedTeam}</span> : null}
-                    <StatusPill state={acct.status === 'revoked' ? 'warn' : acct.status === 'active' ? 'verified' : 'pending'} />
+                    <StatusPill state={!caps?.live ? 'warn' : acct.status === 'revoked' ? 'warn' : acct.status === 'active' ? 'verified' : 'pending'} />
                   </div>
                 </div>
                 <div className="identity-metrics">
-                  <div><b>{acct.status}</b><span>lifecycle</span></div>
-                  <div><b>{acct.deployed ? 'deployed' : 'predicted'}</b><span>Agent Safe</span></div>
+                  <div><b>{caps?.live ? acct.status : 'simulation'}</b><span>lifecycle</span></div>
+                  <div><b>{caps?.live ? (acct.deployed ? 'deployed' : 'predicted') : 'not verified'}</b><span>Agent Safe</span></div>
                   <div><b>{activeSessionCount}</b><span>active grants</span></div>
                   <div><b>{sameAddress(acct.owner, ROOT_AGENT_SAFE_ADDRESS) ? 'root' : 'review'}</b><span>recovery</span></div>
                 </div>
@@ -1474,9 +1550,9 @@ export function Identity({ store }: { store: FleetStore }) {
                   </div>
                   <div className="row-actions">
                     {acct.status === 'revoked' ? (
-                      <button className="btn primary" disabled={busy} onClick={() => void restoreAgentAuthority()}>Restore authority</button>
+                      <button className="btn primary" disabled={busy || !productionReady} onClick={() => void restoreAgentAuthority()}>Restore authority</button>
                     ) : (
-                      <button className="btn icon-danger" disabled={busy || !acct.smartAccount} onClick={() => void revokeAgentAuthority()}>Revoke authority</button>
+                      <button className="btn icon-danger" disabled={busy || !productionReady || !acct.smartAccount} onClick={() => void revokeAgentAuthority()}>Revoke authority</button>
                     )}
                   </div>
                 </div>
@@ -1488,7 +1564,7 @@ export function Identity({ store }: { store: FleetStore }) {
                   </div>
                   <div>
                     <span>Agent Safe</span>
-                    <b>{acct.deployed ? 'Deployed' : 'Counterfactual'}</b>
+                    <b>{caps?.live ? (acct.deployed ? 'Deployed' : 'Counterfactual') : 'Simulation only'}</b>
                     <small className="mono">{shortAddr(acct.smartAccount)}</small>
                   </div>
                   <div>
@@ -1519,6 +1595,34 @@ export function Identity({ store }: { store: FleetStore }) {
                   </p>
                   <div className="identity-progress" aria-hidden="true"><span style={{ width: `${readinessPercent}%` }} /></div>
                 </div>
+              </section>
+
+              <section className="card identity-process" role="status" aria-label="Safe production readiness">
+                <div className="identity-process-head">
+                  <div>
+                    <h3>Production release gate</h3>
+                    <p className="muted small">
+                      Main-process checks must pass before IDACC can prepare any live Safe or session-authority change.
+                    </p>
+                  </div>
+                  <div className="row-actions">
+                    <StatusPill state={productionReady ? 'verified' : 'warn'} />
+                    <button className="btn" disabled={busy} onClick={() => void refreshIdentityProcess()}>Re-run preflight</button>
+                  </div>
+                </div>
+                {productionReadiness ? (
+                  <div className="risk-list">
+                    {productionReadiness.checks.map((check) => (
+                      <div key={check.id} className="risk-row">
+                        <span className={`dot ${check.status === 'pass' ? 'ok' : check.status === 'block' ? 'err' : 'warn'}`} />
+                        <b>{check.label}</b>
+                        <span className={check.status === 'pass' ? 'ok-text' : check.status === 'block' ? 'status-error' : 'warn-text'}>
+                          {check.detail}{check.remediation ? ` ${check.remediation}` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="muted small">Running production preflight...</p>}
               </section>
 
               {error ? (
@@ -1767,15 +1871,15 @@ export function Identity({ store }: { store: FleetStore }) {
 
               <section className="card identity-contract-console" role="status">
                 <div className="identity-legacy-head">
-                  <h3>Guarded Contract Execution</h3>
+                  <h3>Root Safe Bootstrap Proposal</h3>
                   <StatusPill state={contractExecutionState === 'ready' ? 'verified' : contractInputErrors.length ? 'warn' : 'missing'} />
                 </div>
                 <p className="muted small">
-                  Safe: <span className="mono">{AGENT_BITTREES_SAFE_ENS}</span> <span className="mono">{AGENT_BITTREES_SAFE_ADDRESS}</span>. IDACC prepares a wallet/Safe transaction only after simulation and human confirmation.
+                  Root Safe: <span className="mono">{AGENT_BITTREES_SAFE_ENS}</span> <span className="mono">{AGENT_BITTREES_SAFE_ADDRESS}</span>. Use this proposal boundary only to provision or revoke an agent Safe. Routine agent transactions use the agent&apos;s own finite, spend-capped session keys and do not prompt the root signer.
                 </p>
                 <div className="identity-contract-grid">
                   <label>
-                    <span>Connected wallet/Safe</span>
+                    <span>Connected root Safe</span>
                     <input className="mono" value={contractAccount || 'not connected'} readOnly />
                   </label>
                   <label>
@@ -1846,8 +1950,11 @@ export function Identity({ store }: { store: FleetStore }) {
                   <span>I reviewed the Safe, chain, target, calldata, value, and current simulation preview.</span>
                 </label>
                 <div className="row-actions identity-actions">
+                  <button className="btn" disabled={contractBusy} onClick={prepareRootThresholdRepair}>
+                    Prepare threshold 2
+                  </button>
                   <button className="btn" disabled={contractBusy} onClick={() => void connectContractWallet()}>
-                    Connect wallet/Safe
+                    Connect root Safe
                   </button>
                   <button className="btn" disabled={contractBusy || !contractAccount} onClick={() => void switchContractChain()}>
                     Switch chain
@@ -1856,7 +1963,7 @@ export function Identity({ store }: { store: FleetStore }) {
                     Simulate
                   </button>
                   <button className="btn primary" disabled={!contractCanSubmit} onClick={() => void submitContractExecution()}>
-                    Submit with wallet/Safe
+                    Submit root proposal
                   </button>
                 </div>
                 {contractInputErrors.length ? (
@@ -1920,7 +2027,7 @@ export function Identity({ store }: { store: FleetStore }) {
                     <span>Root owner</span>
                     <b className={sameAddress(acct.owner, ROOT_AGENT_SAFE_ADDRESS) ? 'mono ok-text' : 'mono status-error'}>{shortAddr(acct.owner)}</b>
                     <span>Status</span>
-                    <b className={acct.status === 'revoked' ? 'status-error' : acct.status === 'active' ? 'ok-text' : 'warn-text'}>{acct.status}</b>
+                    <b className={!caps?.live ? 'warn-text' : acct.status === 'revoked' ? 'status-error' : acct.status === 'active' ? 'ok-text' : 'warn-text'}>{caps?.live ? acct.status : 'simulation only'}</b>
                     <span>Chain</span>
                     <b>{acct.chainId}</b>
                   </div>
@@ -1949,14 +2056,8 @@ export function Identity({ store }: { store: FleetStore }) {
                         </button>
                       </>
                     ) : null}
-                    <button className="btn" disabled={busy || ensCollision || acct.status === 'revoked' || !controllerVerified} onClick={() => void createAccount()}>
-                      Prepare Safe
-                    </button>
                     <button className="btn" disabled={busy || ensCollision || acct.status === 'revoked' || !controllerVerified} onClick={() => void identityAction('register')}>
                       Register ENS identity
-                    </button>
-                    <button className="btn primary" disabled={busy || ensCollision || acct.status === 'revoked' || acct.deployed || !controllerVerified} onClick={() => void deployAccount()}>
-                      Deploy Safe
                     </button>
                   </div>
                 </section>
@@ -1978,7 +2079,7 @@ export function Identity({ store }: { store: FleetStore }) {
               <section className="card">
                 <div className="identity-legacy-head">
                   <h3>Autonomous authority</h3>
-                  <StatusPill state={acct.status === 'revoked' ? 'warn' : activeSessionCount ? 'verified' : 'pending'} />
+                  <StatusPill state={!caps?.live ? 'warn' : acct.status === 'revoked' ? 'warn' : activeSessionCount ? 'verified' : 'pending'} />
                 </div>
                 <table className="grid identity-table">
                   <thead>
@@ -2013,9 +2114,10 @@ export function Identity({ store }: { store: FleetStore }) {
                         </td>
                         <td className="row-actions">
                           {s.status === 'active' ? (
-                            <button className="btn" disabled={busy || !controllerVerified} onClick={() => void revokeSession(s)}>
-                              Revoke
-                            </button>
+                            <>
+                              <button className="btn" disabled={busy || !productionReady || !controllerVerified} onClick={() => void rotateSession(s)}>Rotate</button>
+                              <button className="btn" disabled={busy || !productionReady || !controllerVerified} onClick={() => void revokeSession(s)}>Revoke</button>
+                            </>
                           ) : null}
                         </td>
                       </tr>
@@ -2046,13 +2148,15 @@ export function Identity({ store }: { store: FleetStore }) {
                         </option>
                       ))}
                     </select>
-                    <button className="btn primary" disabled={busy || issueBlocked} onClick={() => void issueSession()}>
-                      Issue scoped key
-                    </button>
+                    {acct.deployed && activeSessionCount > 0 ? (
+                      <button className="btn" disabled={busy || issueBlocked} onClick={() => void issueSession()}>Add scoped key</button>
+                    ) : (
+                      <button className="btn primary" disabled={busy || provisionBlocked || ensCollision} onClick={() => void provisionAuthority()}>Provision Safe + authority</button>
+                    )}
                   </div>
                 ) : null}
                 <p className="muted small">
-                  This screen only issues finite, spend-capped keys. Full, uncapped, and non-expiring grants are blocked by the UI and bridge.
+                  Live provisioning bundles Safe deployment, audited policy-module setup, and the initial public session authority into one root proposal. It remains disabled while the production gate reports a blocker. Private keys stay in the agent runtime. Rotation replaces authority without changing the Safe address or its assets. Full, uncapped, and non-expiring grants are blocked.
                 </p>
               </section>
 
@@ -2078,7 +2182,7 @@ export function Identity({ store }: { store: FleetStore }) {
                   <div className="identity-plan-lane later">
                     <span className="identity-plan-kicker">Live provider</span>
                     <b>Root-approved Safe execution</b>
-                    <p>Safe ERC-4337 proposals replace local simulation while agent grants stay scoped, finite, independently usable, and root-revocable.</p>
+                    <p>Safe proposals replace local simulation while Zodiac Roles grants stay scoped, independently usable, and root-revocable. Expiry is shown only when the live provider enforces it.</p>
                   </div>
                 </div>
               </section>

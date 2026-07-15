@@ -1,7 +1,8 @@
 /**
  * Agent key-management model: agent.bittrees.eth controls one Safe smart
- * account per agent. Agents act through scoped, revocable, time-boxed session
- * authority; the root Safe retains recovery and revocation authority.
+ * account per agent. Agents act through scoped, revocable authority; the root
+ * Safe retains recovery and revocation authority. Expiry is only advertised
+ * when the active provider can enforce it on-chain.
  */
 
 export const ROOT_AGENT_SAFE_ENS = 'agent.bittrees.eth';
@@ -66,12 +67,66 @@ export interface AgentAccount {
 }
 
 export interface KeyCapabilities {
-  provider: 'mock' | 'safe-4337';
+  provider: 'mock' | 'safe-roles';
   chainId: number;
   /** Human label for the active chain, e.g. "Base Sepolia (mock)". */
   chainLabel: string;
   /** Whether the provider can actually deploy/broadcast (false for mock). */
   live: boolean;
+  /** Active on-chain authority model; mock providers must omit this. */
+  authorityModel?: 'zodiac-roles-v2';
+  /** Asset classes checked before authority revocation. */
+  assetInspection?: 'none' | 'native-only' | 'full';
+  /** Pinned, independently verified production module deployment evidence. */
+  moduleSet?: {
+    name: string;
+    version: string;
+    authorityModule: string;
+    artifacts: string[];
+    verified: boolean;
+  };
+}
+
+export type KeyReadinessStatus = 'pass' | 'warn' | 'block';
+
+export interface KeyReadinessCheck {
+  id: string;
+  label: string;
+  status: KeyReadinessStatus;
+  detail: string;
+  remediation?: string;
+}
+
+/** Main-process evidence required before IDACC may prepare live Safe changes. */
+export interface KeyProductionReadiness {
+  ready: boolean;
+  checkedAt: number;
+  chainId: number;
+  rootSafe: string;
+  provider: KeyCapabilities['provider'];
+  checks: KeyReadinessCheck[];
+}
+
+export type AssetGuardStatus = 'clear' | 'assets-present' | 'unknown';
+
+/** Asset evidence checked before disabling an agent's autonomous authority. */
+export interface AssetGuardReport {
+  status: AssetGuardStatus;
+  checkedAt: number;
+  chainId: number;
+  safeAddress: string;
+  nativeBalanceWei?: string;
+  tokenCount?: number;
+  erc20Count?: number;
+  nftCount?: number;
+  source: 'mock' | 'rpc' | 'indexer';
+  message: string;
+}
+
+export interface ProvisionedAgentAuthority {
+  account: AgentAccount;
+  session: SessionKey;
+  reused: boolean;
 }
 
 export interface KeyAuthorityTarget {
@@ -99,10 +154,16 @@ export interface KeyProvider {
   ensureAccount(agent: string, owner?: string): Promise<AgentAccount>;
   /** Mark the agent's Safe as deployed on-chain. */
   deployAccount(agent: string): Promise<AgentAccount>;
-  /** Issue a scoped, expiring session key for the agent. */
+  /** Deploy the Safe and install its initial scoped authority as one proposal. */
+  provisionAccount(agent: string, scope: SessionScope, ttlMs: number): Promise<ProvisionedAgentAuthority>;
+  /** Issue scoped authority; expiry semantics are provider-specific. */
   issueSession(agent: string, scope: SessionScope, ttlMs: number): Promise<SessionKey>;
+  /** Atomically authorize a replacement session and revoke the prior grant. */
+  rotateSession(agent: string, sessionId: string, scope: SessionScope, ttlMs: number): Promise<SessionKey>;
   /** Revoke a session key. */
   revokeSession(agent: string, sessionId: string): Promise<void>;
+  /** Inspect native/token holdings before account-level authority changes. */
+  inspectAssets(agent: string): Promise<AssetGuardReport>;
   /** Revoke every agent session while preserving the root-owned Safe. */
   revokeAccount(agent: string): Promise<AgentAccount>;
   /** Restore a previously revoked account under root authority. */

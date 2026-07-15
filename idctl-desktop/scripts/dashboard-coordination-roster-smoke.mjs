@@ -10,8 +10,13 @@ assert.match(
 );
 assert.match(
   dashboard,
-  /\.\.\.hier\.teams[\s\S]*\.\.\.store\.allAgents\.map\(\(a\) => a\.team \?\? ''\)[\s\S]*\.\.\.Object\.keys\(hier\.coordinators\)[\s\S]*\.\.\.hier\.secondaries\.flatMap/,
-  'Live Coordination teams should include hierarchy teams, all-agent team tags, configured coordinators, and secondary coverage',
+  /\.\.\.hier\.teams[\s\S]*\.\.\.store\.allAgents\.map\(\(a\) => a\.team \?\? ''\)[\s\S]*\.\.\.hier\.secondaries\.flatMap/,
+  'Live Coordination teams should include hierarchy teams, all-agent team tags, and secondary coverage',
+);
+assert.doesNotMatch(
+  dashboard,
+  /\.\.\.Object\.keys\(hier\.coordinators\)/,
+  'Stale coordinator keys must not create phantom team rows',
 );
 assert.match(
   dashboard,

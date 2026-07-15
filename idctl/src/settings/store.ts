@@ -9,7 +9,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, chmodSync, renameSync, unlinkSync } from 'node:fs';
 import { resolveConfigPath, configDir } from './paths.ts';
-import { emptyConfig, defaultHeadroomPilotSettings, defaultUpdateSettings, DEFAULT_TEAM, type DraftDispatcherSettings, type EvmRpcProfile, type EvmRpcRequest, type GoalDriverSettings, type HeadroomPilotSettings, type IdctlConfig, type ImageServerConfig, type LocalModelCatalogEntry, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderModelSelection, type ProviderProfile, type ProviderSync, type UpdateSettings } from './schema.ts';
+import { emptyConfig, defaultHeadroomPilotSettings, defaultUpdateSettings, DEFAULT_TEAM, type DraftDispatcherSettings, type EvmRpcProfile, type EvmRpcRequest, type GoalDriverSettings, type HeadroomPilotSettings, type IdctlConfig, type ImageServerConfig, type LocalModelCatalogEntry, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderModelSelection, type ProviderProfile, type ProviderSync, type UpdateSettings, type WalletConnectSettings } from './schema.ts';
 import { filterParkedMcpServers, isParkedMcpServer } from './mcpCatalog.ts';
 
 function normalizeGoalDriver(input: unknown): GoalDriverSettings | undefined {
@@ -71,6 +71,17 @@ function cleanOptionalString(value: unknown, max = 240): string | undefined {
 function cleanPositiveNumber(value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
   return Math.round(value * 1000) / 1000;
+}
+
+function normalizeWalletConnect(input: unknown): WalletConnectSettings | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = input as Partial<WalletConnectSettings>;
+  const projectId = typeof raw.projectId === 'string' ? raw.projectId.trim() : '';
+  return {
+    enabled: raw.enabled === true && /^[a-f0-9]{32}$/i.test(projectId),
+    projectId: /^[a-f0-9]{32}$/i.test(projectId) ? projectId : '',
+    updatedAt: typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? Math.floor(raw.updatedAt) : undefined,
+  };
 }
 
 function normalizeLocalModelCatalogEntry(raw: unknown): LocalModelCatalogEntry | null {
@@ -163,6 +174,7 @@ export function loadSettings(file = resolveConfigPath()): IdctlConfig {
       managers: Array.isArray(raw.managers) ? raw.managers : [],
       providers: Array.isArray(raw.providers) ? raw.providers : [],
       evmRpcs: Array.isArray(raw.evmRpcs) ? raw.evmRpcs : [],
+      walletConnect: normalizeWalletConnect(raw.walletConnect),
       mcpServers: Array.isArray(raw.mcpServers) ? filterParkedMcpServers(raw.mcpServers) : [],
       defaultManager: raw.defaultManager,
       // Merge so an absent block → defaults (autoUpgrade true), per-field overridable.
@@ -406,6 +418,25 @@ export function recordEvmRpcRequest(id: string, lastRequest: EvmRpcRequest, file
   const cfg = loadSettings(file);
   const rpc = (cfg.evmRpcs ?? []).find((x) => x.id === id);
   if (rpc) rpc.lastRequest = lastRequest;
+  saveSettings(cfg, file);
+  return cfg;
+}
+
+// ---- WalletConnect operator signer ---------------------------------------
+
+export function setWalletConnectSettings(
+  input: Partial<WalletConnectSettings>,
+  file = resolveConfigPath(),
+): IdctlConfig {
+  const cfg = loadSettings(file);
+  const previous = cfg.walletConnect ?? { enabled: false, projectId: '' };
+  const projectId = typeof input.projectId === 'string' ? input.projectId.trim() : previous.projectId;
+  if (projectId && !/^[a-f0-9]{32}$/i.test(projectId)) {
+    throw new Error('WalletConnect project ID must be 32 hexadecimal characters');
+  }
+  const enabled = input.enabled === undefined ? previous.enabled : input.enabled === true;
+  if (enabled && !projectId) throw new Error('WalletConnect project ID is required when the connector is enabled');
+  cfg.walletConnect = { enabled, projectId, updatedAt: Date.now() };
   saveSettings(cfg, file);
   return cfg;
 }

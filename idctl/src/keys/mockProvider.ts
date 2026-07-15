@@ -1,10 +1,10 @@
 /**
- * MockKeyProvider — simulates the Safe-account + 4337-session-key model locally
+ * MockKeyProvider — simulates the Safe-account + scoped-authority model locally
  * so the Keys UX is fully testable with no bundler/testnet. State persists to
  * ~/.config/idctl/keys-mock.json so it survives across runs (realistic UX).
  * Addresses are deterministic sha256-derived stand-ins (clearly not real keys).
  *
- * Swap this for a Safe4337KeyProvider (same KeyProvider interface) to go live —
+ * Swap this for an attested SafeRolesKeyProvider (same interface) to go live —
  * the views never change.
  */
 
@@ -15,11 +15,13 @@ import { configDir, resolveConfigPath } from '../settings/paths.ts';
 import {
   ROOT_AGENT_SAFE_ADDRESS,
   agentEnsName,
+  type AssetGuardReport,
   type AgentAccount,
   type KeyAuthorityTarget,
   type KeyCapabilities,
   type KeyProvider,
   type LegacyKeyAuthority,
+  type ProvisionedAgentAuthority,
   type SessionKey,
   type SessionScope,
 } from './types.ts';
@@ -100,7 +102,7 @@ export class MockKeyProvider implements KeyProvider {
   }
 
   capabilities(): KeyCapabilities {
-    return { provider: 'mock', chainId: MOCK_CHAIN_ID, chainLabel: 'Base Sepolia (mock)', live: false };
+    return { provider: 'mock', chainId: MOCK_CHAIN_ID, chainLabel: 'Base Sepolia (mock)', live: false, assetInspection: 'none' };
   }
 
   private load(): void {
@@ -176,25 +178,79 @@ export class MockKeyProvider implements KeyProvider {
     return this.assemble(agent);
   }
 
-  async issueSession(agent: string, scope: SessionScope, ttlMs: number): Promise<SessionKey> {
-    const account = await this.ensureAccount(agent);
-    if (!account.deployed || account.status !== 'active') {
-      throw new Error('Agent Safe must be deployed and active before issuing autonomous authority.');
+  private newSession(agent: string, scope: SessionScope, ttlMs: number): SessionKey {
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0 || scope.spendLimitWei === '0' || scope.label.toLowerCase().includes('full')) {
+      throw new Error('Session authority must be finite, scoped, and spend-capped.');
     }
     const now = Date.now();
     const id = `sess_${now.toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
-    const key: SessionKey = {
+    return {
       id,
       agent,
       address: mockAddr(`session:${agent}:${id}`),
       scope,
       createdAt: now,
-      validUntil: ttlMs > 0 ? now + ttlMs : 0, // 0 = until revoked
+      validUntil: now + ttlMs,
       status: 'active',
     };
+  }
+
+  async provisionAccount(agent: string, scope: SessionScope, ttlMs: number): Promise<ProvisionedAgentAuthority> {
+    const existing = this.assemble(agent);
+    if (existing.status === 'revoked') throw new Error('Restore root-controlled authority before provisioning this account.');
+    const active = existing.sessions.find((session) => sessionActive(session));
+    if (existing.deployed && active) return { account: existing, session: active, reused: true };
+    const account = this.state.accounts[agent] ?? {
+      agent,
+      ensName: agentEnsName(agent),
+      smartAccount: mockAddr(`safe:${agent}`),
+      owner: MOCK_OWNER,
+      deployed: false,
+      chainId: MOCK_CHAIN_ID,
+      status: 'draft' as const,
+    };
+    this.state.accounts[agent] = { ...account, deployed: true, status: 'active', revokedAt: undefined };
+    const session = this.newSession(agent, scope, ttlMs);
+    (this.state.sessions[agent] ??= []).push(session);
+    this.save();
+    return { account: this.assemble(agent), session, reused: false };
+  }
+
+  async issueSession(agent: string, scope: SessionScope, ttlMs: number): Promise<SessionKey> {
+    const account = await this.ensureAccount(agent);
+    if (!account.deployed || account.status !== 'active') {
+      throw new Error('Agent Safe must be deployed and active before issuing autonomous authority.');
+    }
+    const key = this.newSession(agent, scope, ttlMs);
     (this.state.sessions[agent] ??= []).push(key);
     this.save();
     return key;
+  }
+
+  async rotateSession(agent: string, sessionId: string, scope: SessionScope, ttlMs: number): Promise<SessionKey> {
+    const account = this.assemble(agent);
+    if (!account.deployed || account.status !== 'active') throw new Error('Agent Safe must be deployed and active before rotating authority.');
+    const current = (this.state.sessions[agent] ?? []).find((session) => session.id === sessionId);
+    if (!current || !sessionActive(current)) throw new Error('The session selected for rotation is no longer active.');
+    const replacement = this.newSession(agent, scope, ttlMs);
+    (this.state.sessions[agent] ??= []).push(replacement);
+    current.status = 'revoked';
+    this.save();
+    return replacement;
+  }
+
+  async inspectAssets(agent: string): Promise<AssetGuardReport> {
+    const account = this.assemble(agent);
+    return {
+      status: 'clear',
+      checkedAt: Date.now(),
+      chainId: account.chainId,
+      safeAddress: account.smartAccount,
+      nativeBalanceWei: '0',
+      tokenCount: 0,
+      source: 'mock',
+      message: 'Mock provider only: no live Safe or on-chain assets exist in this lifecycle record.',
+    };
   }
 
   async revokeSession(agent: string, sessionId: string): Promise<void> {
@@ -230,7 +286,7 @@ export class MockKeyProvider implements KeyProvider {
 }
 
 let singleton: KeyProvider | null = null;
-/** The active key provider (mock today; Safe4337 once wired). */
+/** The active key provider (mock today; Safe + Zodiac Roles once wired). */
 export function getKeyProvider(): KeyProvider {
   if (!singleton) singleton = new MockKeyProvider();
   return singleton;

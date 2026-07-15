@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { call, type FleetStore } from '../store.ts';
-import { defaultBaseUrl, type EvmRpcKeySource, type EvmRpcProfile, type EvmRpcRequest, type ProviderKind, type ProviderModelSelection, type ProviderProfile } from '../../../../idctl/src/settings/schema.ts';
+import { defaultBaseUrl, type EvmRpcKeySource, type EvmRpcProfile, type EvmRpcRequest, type ProviderKind, type ProviderModelSelection, type ProviderProfile, type WalletConnectSettings } from '../../../../idctl/src/settings/schema.ts';
+import { connectRootSafe, disconnectRootSafe, injectedRootSigner, subscribeWalletConnect, walletConnectSnapshot } from '../walletConnect.ts';
 import type { ProbeOutcome } from '../../../../idctl/src/settings/ProviderClient.ts';
 import type { DiscoveredServer, LocalServerCandidate } from '../../../../idctl/src/settings/localDiscovery.ts';
 import { PROVIDER_CATALOG, findProvider, providerNeedsKey } from '../../../../idctl/src/settings/providerCatalog.ts';
@@ -253,6 +254,12 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [rpcEditing, setRpcEditing] = useState<string | null>(null);
   const [rpcBusy, setRpcBusy] = useState<string | null>(null);
   const [rpcMsg, setRpcMsg] = useState('');
+  const [walletConnect, setWalletConnect] = useState<WalletConnectSettings>({ enabled: false, projectId: '' });
+  const [walletConnectEnabled, setWalletConnectEnabled] = useState(false);
+  const [walletConnectProjectId, setWalletConnectProjectId] = useState('');
+  const [walletConnectBusy, setWalletConnectBusy] = useState(false);
+  const [walletConnectMsg, setWalletConnectMsg] = useState('');
+  const walletConnectState = useSyncExternalStore(subscribeWalletConnect, walletConnectSnapshot);
   const [probe, setProbe] = useState<Record<string, ProbeOutcome>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -384,6 +391,10 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   async function reload() {
     setProviders(await call<ProviderRow[]>('providers:list').catch(() => []));
     setEvmRpcs(await call<EvmRpcRow[]>('evmRpc:list').catch(() => []));
+    const rootConnector = await call<WalletConnectSettings>('walletConnect:get').catch(() => ({ enabled: false, projectId: '' }));
+    setWalletConnect(rootConnector);
+    setWalletConnectEnabled(rootConnector.enabled);
+    setWalletConnectProjectId(rootConnector.projectId);
     setVersion(await call<string>('app:version').catch(() => ''));
     setManagerCaps(await call<ManagerCapabilities>('manager:capabilities').catch(() => null));
     const u = await call<typeof upd>('update:getSettings').catch(() => null);
@@ -805,6 +816,43 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setEvmRpcs(r.rpcs);
     } finally {
       setRpcBusy(null);
+    }
+  }
+  async function saveRootSafeConnector(connect: boolean) {
+    setWalletConnectBusy(true);
+    setWalletConnectMsg(connect ? 'Saving and opening root Safe pairing...' : 'Saving root Safe connector...');
+    try {
+      const saved = await call<WalletConnectSettings>('walletConnect:set', {
+        enabled: walletConnectEnabled,
+        projectId: walletConnectProjectId.trim(),
+      });
+      setWalletConnect(saved);
+      setWalletConnectEnabled(saved.enabled);
+      setWalletConnectProjectId(saved.projectId);
+      if (!saved.enabled) {
+        await disconnectRootSafe().catch(() => {});
+        setWalletConnectMsg('Root Safe connector disabled. Agent session-key execution is unchanged.');
+      } else if (connect) {
+        await connectRootSafe(saved);
+        setWalletConnectMsg('Root Safe connected for agent Safe provisioning and revocation proposals.');
+      } else {
+        setWalletConnectMsg('Root Safe connector saved. It will remain idle until Connect is pressed.');
+      }
+    } catch (err) {
+      setWalletConnectMsg(`connector failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setWalletConnectBusy(false);
+    }
+  }
+  async function disconnectRootSafeConnector() {
+    setWalletConnectBusy(true);
+    try {
+      await disconnectRootSafe();
+      setWalletConnectMsg('Root Safe disconnected. Agent Safes and their scoped session keys remain independent.');
+    } catch (err) {
+      setWalletConnectMsg(`disconnect failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setWalletConnectBusy(false);
     }
   }
   function rpcStatusClass(status?: string): string {
@@ -2313,6 +2361,40 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
               Open HR Manage
             </button>
           </div>
+        </div>
+      </section>
+
+      <section className="card">
+        <h3>Root Safe connection</h3>
+        <p className="muted small" style={{ marginTop: -4 }}>
+          Optional WalletConnect approval for the root Safe transaction that provisions or revokes an agent Safe. It is not used for routine agent transactions: deployed agents act through their own finite, spend-capped session keys. IDACC stores only the public Reown project ID; wallet keys never enter the app.
+        </p>
+        <div className="walletconnect-settings">
+          <label className="walletconnect-enable">
+            <input type="checkbox" checked={walletConnectEnabled} disabled={walletConnectBusy} onChange={(event) => setWalletConnectEnabled(event.target.checked)} />
+            <span>Enable root Safe WalletConnect</span>
+          </label>
+          <input
+            className="mono grow"
+            aria-label="Reown project ID"
+            placeholder="32-character Reown project ID"
+            value={walletConnectProjectId}
+            disabled={walletConnectBusy}
+            onChange={(event) => setWalletConnectProjectId(event.target.value)}
+          />
+          <a className="btn" href="https://dashboard.reown.com/" target="_blank" rel="noreferrer">Create project ID</a>
+          <button className="btn" type="button" disabled={walletConnectBusy} onClick={() => void saveRootSafeConnector(false)}>Save</button>
+          <button className="btn primary" type="button" disabled={walletConnectBusy || !walletConnectEnabled || !walletConnectProjectId.trim()} onClick={() => void saveRootSafeConnector(true)}>
+            {walletConnectState.phase === 'pairing' || walletConnectState.phase === 'initializing' ? 'Connecting...' : 'Connect root Safe'}
+          </button>
+          {walletConnectState.phase === 'connected' ? <button className="btn" type="button" disabled={walletConnectBusy} onClick={() => void disconnectRootSafeConnector()}>Disconnect</button> : null}
+        </div>
+        <div className={`small ${walletConnectState.phase === 'error' || /failed/i.test(walletConnectMsg) ? 'status-error' : walletConnectState.phase === 'connected' ? 'ok-text' : 'muted'}`} style={{ marginTop: 8 }}>
+          {injectedRootSigner()
+            ? 'Injected wallet provider detected. Identity uses it only when it exposes the root Safe account; otherwise it uses WalletConnect.'
+            : walletConnectState.phase === 'connected'
+              ? `${walletConnectState.walletName} connected · ${walletConnectState.account || 'account pending'}${walletConnectState.chainId ? ` · chain ${walletConnectState.chainId}` : ''}`
+              : walletConnectState.error || walletConnectMsg || (walletConnect.enabled ? 'Configured and idle.' : 'Not configured.')}
         </div>
       </section>
 

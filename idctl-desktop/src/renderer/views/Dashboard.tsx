@@ -424,10 +424,9 @@ export function Dashboard({ store }: { store: FleetStore }) {
       ...hier.teams,
       ...store.teams.map((t) => t.name),
       ...store.allAgents.map((a) => a.team ?? ''),
-      ...Object.keys(hier.coordinators),
       ...hier.secondaries.flatMap((s) => s.leadsTeams ?? []),
     ]).filter((team) => team !== 'public'),
-    [hier.teams, hier.coordinators, hier.secondaries, store.teams, store.allAgents],
+    [hier.teams, hier.secondaries, store.teams, store.allAgents],
   );
   // Holistic activity feed: recent events plus durable task/comms state across
   // EVERY team (newest first). Events alone are lossy: a task/news row can exist

@@ -3,7 +3,7 @@
  * Bundle the three Electron entry points with esbuild:
  *   main    → out/main/main.cjs        (Node, CommonJS)
  *   preload → out/preload/preload.cjs  (Node, CommonJS)
- *   renderer→ out/renderer/renderer.js (+ .css)  (browser, IIFE)
+ *   renderer→ out/renderer/renderer.js (+ lazy ESM chunks + .css)
  * Then copy index.html. The main/preload bundles pull in the idctl ManagerClient
  * (pure TS) from the sibling project; node: builtins stay external.
  */
@@ -15,7 +15,6 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 rmSync(resolve(ROOT, 'out'), { recursive: true, force: true });
 mkdirSync(resolve(ROOT, 'out/renderer'), { recursive: true });
-mkdirSync(resolve(ROOT, 'out/docs'), { recursive: true });
 
 const common = { bundle: true, sourcemap: true, logLevel: 'info', loader: { '.ts': 'ts', '.tsx': 'tsx' } };
 
@@ -43,14 +42,15 @@ await build({
 
 await build({
   ...common,
-  entryPoints: [resolve(ROOT, 'src/renderer/main.tsx')],
-  outfile: resolve(ROOT, 'out/renderer/renderer.js'),
+  entryPoints: { renderer: resolve(ROOT, 'src/renderer/main.tsx') },
+  outdir: resolve(ROOT, 'out/renderer'),
   platform: 'browser',
-  format: 'iife',
+  format: 'esm',
+  splitting: true,
+  chunkNames: 'chunks/[name]-[hash]',
   target: 'chrome120',
   jsx: 'automatic',
 });
 
 cpSync(resolve(ROOT, 'src/renderer/index.html'), resolve(ROOT, 'out/renderer/index.html'));
-cpSync(resolve(ROOT, '../docs/CONTROL_CENTER_WIKI.json'), resolve(ROOT, 'out/docs/CONTROL_CENTER_WIKI.json'));
 console.log('built → out/');

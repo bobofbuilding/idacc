@@ -139,10 +139,17 @@ function mergeConfiguredSecondaries(configured: SecondaryLead[], teams: string[]
   return sortSecondaries(configuredCopy);
 }
 
+export function activeCoordinators(configured: Record<string, string>, teams: string[]): Record<string, string> {
+  const activeTeams = new Set(teams.filter((team) => team && team !== 'public'));
+  return Object.fromEntries(
+    Object.entries(configured).filter(([team, agent]) => activeTeams.has(team) && Boolean(agent)),
+  );
+}
+
 export async function buildOrgHierarchy(client: ManagerClient): Promise<OrgHierarchy> {
   const cfg = loadSettings();
   const teams = (await client.teams().catch(() => [])).map((t) => t.name).filter(Boolean).sort((a, b) => a.localeCompare(b));
-  const coordinators = { ...(cfg.coordinators ?? {}), [PRIMARY_TEAM]: DEFAULT_PRIMARY_AGENT };
+  const coordinators = { ...activeCoordinators(cfg.coordinators ?? {}, teams), [PRIMARY_TEAM]: DEFAULT_PRIMARY_AGENT };
   const primary = { team: PRIMARY_TEAM, agent: DEFAULT_PRIMARY_AGENT };
   const secondaries = cfg.secondaryLeads?.length ? mergeConfiguredSecondaries(cfg.secondaryLeads, teams) : defaultSecondaries(teams);
   return { primary, secondaries, coordinators, teams };

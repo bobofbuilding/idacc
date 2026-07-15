@@ -196,7 +196,6 @@ const VIEW_EVENT_PREFIXES: Record<string, string[]> = {
   computer: ['agent:', 'team:'],
   inbox: [],
   settings: [],
-  wiki: [],
 };
 
 function fleetSnapshotSig(input: {

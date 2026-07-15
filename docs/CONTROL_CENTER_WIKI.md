@@ -1,34 +1,27 @@
-# IDACC Wiki Schema
+# IDACC Documentation Schema
 
-This file is the Markdown-first replacement plan for the old oversized `CONTROL_CENTER_WIKI.json`. The JSON file remains as a small app manifest for sidebar navigation, source-file ownership, and release drift checks. Long-form operator documentation should move here or into sibling Markdown pages.
+The in-app Wiki and its JSON manifest have been removed. This file records a Markdown-first schema for repository documentation without coupling app navigation, startup, or releases to documentation state.
 
 ## Goals
 
-- Keep the app payload small and cheap to parse.
-- Keep release-history notes out of the live UI manifest.
+- Keep documentation out of the packaged app payload.
+- Keep release-history notes out of operator documentation.
 - Make authoring readable in normal Markdown review tools.
-- Preserve a tiny machine-readable manifest for navigation and source ownership.
+- Keep navigation defined by the renderer and documentation maintained independently.
 
-## Current Split
+## Current Layout
 
-- `docs/CONTROL_CENTER_WIKI.json`: compact manifest read by the desktop app.
-- `docs/CONTROL_CENTER_WIKI.md`: schema and authoring contract.
-- Future page docs: `docs/wiki/<page>.md` once the renderer can load Markdown pages directly.
+- `docs/CONTROL_CENTER_WIKI.md`: schema and authoring contract retained for repository maintainers.
+- Optional page docs: `docs/pages/<page>.md` for focused operator documentation.
+- `CHANGELOG.md`: release history and shipped behavior.
 
 ## Proposed Page Schema
 
-Each Markdown page should use frontmatter for the fields the app needs and Markdown for the body.
+Each Markdown page can use frontmatter for ownership and review metadata, with Markdown for the body.
 
 ```md
 ---
 id: work
-route: tasks
-component: Tasks
-nav:
-  label: Work
-  icon: "☑"
-  order: 40
-  visible: true
 sourceFiles:
   - idctl-desktop/src/renderer/views/Tasks.tsx
   - idctl-desktop/src/renderer/views/Learn.tsx
@@ -41,13 +34,8 @@ scope: Current operator behavior and safety boundaries only.
 Concise operator documentation for the current UI. Historical release notes stay in CHANGELOG.md.
 ```
 
-## Migration Rules
+## Authoring Rules
 
-- The JSON manifest must stay valid until the app loader supports Markdown frontmatter.
-- Every implemented app route must keep one manifest entry.
-- Every page must list real source files so `scripts/check-wiki.mjs` can keep docs and page code changes coupled.
+- Documentation must not be loaded, polled, or packaged by the desktop app.
+- Page docs should list real source files when source ownership is useful.
 - Release notes and pass-by-pass implementation logs belong in `CHANGELOG.md`, not in page docs.
-
-## Next Implementation Step
-
-Teach `idctl-desktop/src/main/wiki.ts` to prefer Markdown pages under `docs/wiki/`, parse frontmatter, and synthesize the same `ControlCenterWiki` object the renderer already understands. After that, the JSON manifest can shrink further or become generated output.

@@ -2,6 +2,7 @@ import { Component, useCallback, useEffect, useMemo, useState, type ReactNode } 
 import { useFleet, call, useSyncVersion } from './store.ts';
 import { PromptProvider } from './components/prompt.tsx';
 import { ToastProvider } from './components/toast.tsx';
+import { WalletConnectPrompt } from './components/WalletConnectPrompt.tsx';
 import { Dashboard } from './views/Dashboard.tsx';
 import { Teams } from './views/Teams.tsx';
 import { Inbox } from './views/Inbox.tsx';
@@ -11,11 +12,10 @@ import { Modules } from './views/Modules.tsx';
 import { Projects } from './views/Projects.tsx';
 import { ComputerUse } from './views/ComputerUse.tsx';
 import { Settings } from './views/Settings.tsx';
-import { Wiki, type ControlCenterWiki, type WikiPayload } from './views/Wiki.tsx';
 import { CommandPalette } from './views/dashboard/CommandPalette.tsx';
 import { ControlDrawer } from './views/dashboard/ControlDrawer.tsx';
 
-type ViewId = 'dashboard' | 'inbox' | 'tasks' | 'projects' | 'health' | 'identity' | 'schedule' | 'teams' | 'modules' | 'computer' | 'settings' | 'wiki';
+type ViewId = 'dashboard' | 'inbox' | 'tasks' | 'projects' | 'health' | 'identity' | 'schedule' | 'teams' | 'modules' | 'computer' | 'settings';
 type TeamsFocus = 'route-hierarchy' | 'health';
 
 const DEFAULT_NAV: { id: ViewId; label: string; icon: string; order: number }[] = [
@@ -28,11 +28,8 @@ const DEFAULT_NAV: { id: ViewId; label: string; icon: string; order: number }[] 
   { id: 'identity', label: 'Identity & Keys', icon: '⬡', order: 95 },
   { id: 'computer', label: 'Computer Use', icon: '🖥', order: 100 },
   { id: 'settings', label: 'Settings', icon: '⚙', order: 110 },
-  { id: 'wiki', label: 'Wiki', icon: '▤', order: 120 },
 ];
 const IMPLEMENTED_VIEWS = new Set<ViewId>([...DEFAULT_NAV.map((n) => n.id), 'health', 'inbox', 'schedule']);
-const WIKI_REFRESH_MS = 30000;
-const WIKI_REFRESH_HIDDEN_MS = 120000;
 
 class CrashBoundary extends Component<{ children: ReactNode; scope: string }, { error: string | null }> {
   state = { error: null };
@@ -65,25 +62,6 @@ function isViewId(id: string | null | undefined): id is ViewId {
   return !!id && IMPLEMENTED_VIEWS.has(id as ViewId);
 }
 
-function navFromWiki(doc?: ControlCenterWiki | null): typeof DEFAULT_NAV {
-  const defaults = new Map(DEFAULT_NAV.map((n) => [n.id, n]));
-  const pages = doc?.pages ?? [];
-  const nav = pages
-    .filter((p) => isViewId(p.route) && p.nav?.visible !== false)
-    .map((p) => {
-      const id = p.route as ViewId;
-      const base = defaults.get(id);
-      return {
-        id,
-        label: p.nav?.label ?? base?.label ?? id,
-        icon: p.nav?.icon ?? base?.icon ?? '•',
-        order: p.nav?.order ?? base?.order ?? 999,
-      };
-    })
-    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
-  return nav.length ? nav : DEFAULT_NAV;
-}
-
 interface UpdateStatus {
   current: string;
   latest?: string;
@@ -113,13 +91,9 @@ export function App() {
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [applying, setApplying] = useState(false);
   const [dismissed, setDismissed] = useState<string>(''); // latest version the user said "Later" to
-  const [wiki, setWiki] = useState<WikiPayload | null>(null);
-  const [wikiError, setWikiError] = useState<string>();
-  const [wikiQuery, setWikiQuery] = useState('');
-  const [wikiPageId, setWikiPageId] = useState('');
   const [questionCount, setQuestionCount] = useState(0);
   const inboxSyncVersion = useSyncVersion(['questions', 'inbox']);
-  const nav = navFromWiki(wiki?.doc);
+  const nav = DEFAULT_NAV;
   // ⌘K command palette + right-side control drawer — the "drive everything" surface.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerPanel, setDrawerPanel] = useState<string | null>(null);
@@ -161,26 +135,6 @@ export function App() {
     call<{ id: string }[]>('questions:list').then((qs) => { if (live) setQuestionCount(qs.length); }).catch(() => { if (live) setQuestionCount(0); });
     return () => { live = false; };
   }, [store.lastUpdated, inboxSyncVersion]);
-
-  useEffect(() => {
-    if (view !== 'wiki') return;
-    let live = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const load = async () => {
-      try {
-        const next = await call<WikiPayload>('wiki:get');
-        if (!live) return;
-        setWiki((prev) => (prev?.path === next.path && prev.mtimeMs === next.mtimeMs ? prev : next));
-        setWikiError(undefined);
-      } catch (err) {
-        if (live) setWikiError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (live) timer = setTimeout(load, document.hidden ? WIKI_REFRESH_HIDDEN_MS : WIKI_REFRESH_MS);
-      }
-    };
-    void load();
-    return () => { live = false; clearTimeout(timer); };
-  }, [view]);
 
   async function applyUpdate() {
     setApplying(true);
@@ -236,12 +190,6 @@ export function App() {
               navigate={navigateTo}
               teamsFocus={teamsFocus}
               onTeamsFocusHandled={clearTeamsFocus}
-              wiki={wiki}
-              wikiError={wikiError}
-              wikiQuery={wikiQuery}
-              setWikiQuery={setWikiQuery}
-              wikiPageId={wikiPageId}
-              setWikiPageId={setWikiPageId}
             />
           </CrashBoundary>
           <StatusBar store={store} />
@@ -255,24 +203,19 @@ export function App() {
         openDrawer={(id) => setDrawerPanel(id)}
       />
       <ControlDrawer store={store} panel={drawerPanel} onClose={() => setDrawerPanel(null)} navigate={navigateTo} />
+      <WalletConnectPrompt />
     </div>
     </PromptProvider>
     </ToastProvider>
   );
 }
 
-function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled, wiki, wikiError, wikiQuery, setWikiQuery, wikiPageId, setWikiPageId }: {
+function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled }: {
   view: ViewId;
   store: ReturnType<typeof useFleet>;
   navigate: (target: string) => void;
   teamsFocus?: TeamsFocus;
   onTeamsFocusHandled: () => void;
-  wiki: WikiPayload | null;
-  wikiError?: string;
-  wikiQuery: string;
-  setWikiQuery: (q: string) => void;
-  wikiPageId: string;
-  setWikiPageId: (id: string) => void;
 }) {
   switch (view) {
     case 'dashboard':
@@ -297,8 +240,6 @@ function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled, wiki, 
       return <Projects store={store} />;
     case 'settings':
       return <Settings store={store} navigate={navigate} />;
-    case 'wiki':
-      return <Wiki store={store} wiki={wiki} error={wikiError} query={wikiQuery} setQuery={setWikiQuery} pageId={wikiPageId} setPageId={setWikiPageId} />;
     default:
       return <Dashboard store={store} />;
   }

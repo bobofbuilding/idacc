@@ -11,8 +11,8 @@ import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { ProviderClient } from '../../../idctl/src/settings/ProviderClient.ts';
 import { discoverLocalServers, mergeLocalDiscoveryCandidates, type DiscoveredServer } from '../../../idctl/src/settings/localDiscovery.ts';
 import { ROOT_AGENT_SAFE_ADDRESS, SCOPE_PRESETS, TTL_PRESETS, agentEnsName } from '../../../idctl/src/keys/types.ts';
-import type { AgentAccount, KeyAuthorityTarget, LegacyKeyAuthority, SessionKey } from '../../../idctl/src/keys/types.ts';
-import { defaultHeadroomPilotSettings, type HeadroomPilotSettings, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
+import type { AgentAccount, AssetGuardReport, KeyAuthorityTarget, LegacyKeyAuthority, SessionKey } from '../../../idctl/src/keys/types.ts';
+import { defaultHeadroomPilotSettings, type HeadroomPilotSettings, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry, type WalletConnectSettings } from '../../../idctl/src/settings/schema.ts';
 import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts';
 import { buildProviderModelLanes, buildRuntimeCatalog, isLocalProvider, providerKindToRuntimes, RUNTIMES, settingsAvailableRuntimeSet } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import type { LibraryPluginInspection, LibrarySkillEntry, McpServerSpec, CreateSkillInput, ProjectPluginSkillResult } from '../../../idctl/src/api/client.ts';
@@ -24,7 +24,6 @@ import { COALESCED_READ_METHODS, ReadCallCache } from '../shared/readCallCache.t
 import { mapTeamAgentGroups } from '../shared/teamAgentGroups.ts';
 
 const MGR_DEFAULT = 'http://127.0.0.1:4100';
-const WIKI_URL = 'docs/CONTROL_CENTER_WIKI.json';
 let managerUrl = localStorage.getItem('idctl.managerUrl') || MGR_DEFAULT;
 let team = localStorage.getItem('idctl.team') || 'default';
 let client = makeClient();
@@ -43,13 +42,6 @@ function assertDefaultCoordinatorWrite(targetTeam: string, agent: string): void 
   if (targetTeam === PRIMARY_TEAM && agent !== DEFAULT_PRIMARY_AGENT) {
     throw new Error(`default coordinator is locked to ${PRIMARY_TEAM}/${DEFAULT_PRIMARY_AGENT}`);
   }
-}
-
-interface WikiPayload {
-  path: string;
-  mtimeMs: number;
-  loadedAt: number;
-  doc: Record<string, unknown>;
 }
 
 function makeClient(): ManagerClient {
@@ -150,14 +142,6 @@ function lsGet<T>(key: string, fallback: T): T {
 }
 function lsSet(key: string, val: unknown): void {
   localStorage.setItem(key, JSON.stringify(val));
-}
-
-async function fetchWiki(): Promise<WikiPayload> {
-  const res = await fetch(WIKI_URL, { cache: 'no-cache' });
-  if (!res.ok) throw new Error(`wiki load failed: ${res.status} ${res.statusText}`);
-  const doc = await res.json() as Record<string, unknown>;
-  const now = Date.now();
-  return { path: WIKI_URL, mtimeMs: now, loadedAt: now, doc };
 }
 
 /** Enrich provider rows with key source (no env in the webview) + needsKey flag. */
@@ -799,7 +783,17 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
     const groups = await mapTeamAgentGroups<Agent>(names, (name) => client.withTeam(name).agents());
     return groups.filter((g) => g.agents.length > 0);
   },
-  'wiki:get': () => fetchWiki(),
+  'walletConnect:get': async () => lsGet<WalletConnectSettings>('idctl.walletConnect', { enabled: false, projectId: '' }),
+  'walletConnect:set': async (input: Partial<WalletConnectSettings>) => {
+    const previous = lsGet<WalletConnectSettings>('idctl.walletConnect', { enabled: false, projectId: '' });
+    const projectId = typeof input?.projectId === 'string' ? input.projectId.trim() : previous.projectId;
+    if (projectId && !/^[a-f0-9]{32}$/i.test(projectId)) throw new Error('WalletConnect project ID must be 32 hexadecimal characters');
+    const enabled = input?.enabled === undefined ? previous.enabled : input.enabled === true;
+    if (enabled && !projectId) throw new Error('WalletConnect project ID is required when the connector is enabled');
+    const next = { enabled, projectId, updatedAt: Date.now() };
+    lsSet('idctl.walletConnect', next);
+    return next;
+  },
   events: (since: number) => client.events(Number(since) || 0, { wait: 20, limit: 100 }),
   inboxPending: () => client.inboxPending(),
   tasks: () => boardTasksForTeam(team || 'default'),
@@ -991,78 +985,60 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   },
 
   // keys (localStorage mock)
-  'keys:caps': async () => ({ provider: 'mock', chainId: CHAIN, chainLabel: 'Base Sepolia (mock)', live: false }),
+  'keys:caps': async () => ({ provider: 'mock', chainId: CHAIN, chainLabel: 'Base Sepolia (mock)', live: false, assetInspection: 'none' }),
+  'keys:productionReadiness': async () => {
+    const connector = lsGet<WalletConnectSettings>('idctl.walletConnect', { enabled: false, projectId: '' });
+    const connectorReady = connector.enabled && /^[a-f0-9]{32}$/i.test(connector.projectId);
+    return {
+      ready: false,
+      checkedAt: Date.now(),
+      chainId: 1,
+      rootSafe: OWNER,
+      provider: 'mock',
+      checks: [
+        { id: 'live-provider', label: 'Live Safe provider', status: 'block', detail: 'The Tauri adapter is simulation-only and cannot deploy Safes or change authority.', remediation: 'Use a build with the audited live Safe ERC-7579 provider.' },
+        { id: 'module-attestation', label: 'Audited module set', status: 'block', detail: 'No pinned, verified Safe module deployment is active.' },
+        { id: 'asset-inspection', label: 'Asset revocation guard', status: 'block', detail: 'The mock adapter cannot inspect native, token, or NFT holdings.' },
+        { id: 'root-connector', label: 'Root Safe connector', status: connectorReady ? 'pass' : 'block', detail: connectorReady ? 'WalletConnect configuration is present.' : 'Root Safe WalletConnect is not configured.', remediation: connectorReady ? undefined : 'Enable WalletConnect and save a valid Reown project ID.' },
+        { id: 'root-safe-contract', label: 'Root Safe contract', status: 'block', detail: 'The browser adapter cannot verify root Safe bytecode, owners, or threshold with trusted main-process RPC custody.' },
+        { id: 'testnet-rehearsal', label: 'Testnet rehearsal', status: 'block', detail: 'Complete and retain the full Sepolia lifecycle receipts before mainnet.' },
+      ],
+    };
+  },
   'keys:presets': async () => ({ scopes: SCOPE_PRESETS, ttls: TTL_PRESETS }),
   'keys:list': async (agents: string[]) => {
     const st = keysState();
     return (agents ?? []).map((a) => assembleAccount(a, st));
   },
   'keys:legacyAuthority': async (targets: KeyAuthorityTarget[]) => legacyKeyAuthorityReport(targets ?? []),
-  'keys:ensure': async (agent: string, selectedTeam?: string) => {
-    await requireControllerProof(String(agent), selectedTeam ? String(selectedTeam) : undefined);
-    const key = scopedAgentKey(String(agent), selectedTeam ? String(selectedTeam) : undefined);
-    const st = keysState();
-    if (!st.accounts[key]) {
-      st.accounts[key] = { agent: key, ensName: agentEnsName(key), smartAccount: mockAddr('safe:' + key), owner: OWNER, deployed: false, chainId: CHAIN, status: 'draft' };
-      lsSet('idctl.keys', st);
-    }
-    return assembleAccount(key, st);
+  'keys:ensure': async (_agent: string, _selectedTeam?: string) => {
+    throw new Error('Safe account preparation is disabled in the simulation-only Tauri adapter.');
   },
-  'keys:deploy': async (agent: string, selectedTeam?: string) => {
-    await requireControllerProof(String(agent), selectedTeam ? String(selectedTeam) : undefined);
-    const key = scopedAgentKey(String(agent), selectedTeam ? String(selectedTeam) : undefined);
-    const st = keysState();
-    const current = assembleAccount(key, st);
-    if (current.status === 'revoked') throw new Error('Restore root-controlled authority before deploying this account.');
-    st.accounts[key] = { ...(st.accounts[key] ?? current), ensName: current.ensName, status: 'active', revokedAt: undefined, deployed: true };
-    lsSet('idctl.keys', st);
-    return assembleAccount(key, st);
+  'keys:deploy': async (_agent: string, _selectedTeam?: string) => {
+    throw new Error('Safe deployment is disabled in the simulation-only Tauri adapter.');
   },
-  'keys:issue': async (agent: string, scopeIdx: number, ttlMs: number, selectedTeam?: string) => {
-    await requireControllerProof(String(agent), selectedTeam ? String(selectedTeam) : undefined);
-    if (unsafeSession(scopeIdx, ttlMs)) throw new Error('Refusing to issue uncapped, full, non-expiring, or invalid session keys from the Control Center.');
-    const key = scopedAgentKey(String(agent), selectedTeam ? String(selectedTeam) : undefined);
-    const st = keysState();
-    const account = assembleAccount(key, st);
-    if (!account.deployed || account.status !== 'active') throw new Error('Agent Safe must be deployed and active before issuing autonomous authority.');
-    const now = Date.now();
-    const id = 'sess_' + now.toString(36) + '_' + Math.floor(Math.random() * 1e6).toString(36);
-    const ttl = Number(ttlMs);
-    const session: SessionKey = { id, agent: key, address: mockAddr('session:' + key + id), scope: SCOPE_PRESETS[Number(scopeIdx) || 0], createdAt: now, validUntil: ttl > 0 ? now + ttl : 0, status: 'active' };
-    (st.sessions[key] ??= []).push(session);
-    lsSet('idctl.keys', st);
-    return session;
+  'keys:provision': async (_agent: string, _scopeIdx: number, _ttlMs: number, _selectedTeam?: string) => {
+    throw new Error('Safe and authority provisioning is disabled in the simulation-only Tauri adapter.');
   },
-  'keys:revoke': async (agent: string, sessionId: string, selectedTeam?: string) => {
-    await requireControllerProof(String(agent), selectedTeam ? String(selectedTeam) : undefined);
-    const key = scopedAgentKey(String(agent), selectedTeam ? String(selectedTeam) : undefined);
-    const st = keysState();
-    const s = (st.sessions[key] ?? []).find((x) => x.id === sessionId);
-    if (s) {
-      s.status = 'revoked';
-      lsSet('idctl.keys', st);
-    }
-    return null;
+  'keys:issue': async (_agent: string, _scopeIdx: number, _ttlMs: number, _selectedTeam?: string) => {
+    throw new Error('Session authority issuance is disabled in the simulation-only Tauri adapter.');
   },
-  'keys:revokeAccount': async (agent: string, selectedTeam?: string) => {
-    const key = scopedAgentKey(String(agent), selectedTeam ? String(selectedTeam) : undefined);
-    const st = keysState();
-    const account = assembleAccount(key, st);
-    const revokedAt = Date.now();
-    const { sessions: _sessions, ...base } = account;
-    st.accounts[key] = { ...base, status: 'revoked', revokedAt };
-    for (const session of st.sessions[key] ?? []) if (session.status === 'active') session.status = 'revoked';
-    lsSet('idctl.keys', st);
-    return assembleAccount(key, st);
+  'keys:revoke': async (_agent: string, _sessionId: string, _selectedTeam?: string) => {
+    throw new Error('Session authority revocation is disabled in the simulation-only Tauri adapter.');
   },
-  'keys:restoreAccount': async (agent: string, selectedTeam?: string) => {
+  'keys:rotate': async (_agent: string, _sessionId: string, _scopeIdx: number, _ttlMs: number, _selectedTeam?: string) => {
+    throw new Error('Session authority rotation is disabled in the simulation-only Tauri adapter.');
+  },
+  'keys:assetGuard': async (agent: string, selectedTeam?: string): Promise<AssetGuardReport> => {
     const key = scopedAgentKey(String(agent), selectedTeam ? String(selectedTeam) : undefined);
-    const st = keysState();
-    const account = assembleAccount(key, st);
-    const { sessions: _sessions, ...base } = account;
-    st.accounts[key] = { ...base, status: account.deployed ? 'active' : 'draft', revokedAt: undefined };
-    lsSet('idctl.keys', st);
-    return assembleAccount(key, st);
+    const account = assembleAccount(key, keysState());
+    return { status: 'clear', checkedAt: Date.now(), chainId: account.chainId, safeAddress: account.smartAccount, nativeBalanceWei: '0', tokenCount: 0, source: 'mock', message: 'Mock provider only: no live Safe or on-chain assets exist in this lifecycle record.' };
+  },
+  'keys:revokeAccount': async (_agent: string, _selectedTeam?: string, _assetsAcknowledged = false) => {
+    throw new Error('Agent authority revocation is disabled in the simulation-only Tauri adapter.');
+  },
+  'keys:restoreAccount': async (_agent: string, _selectedTeam?: string) => {
+    throw new Error('Agent authority restoration is disabled in the simulation-only Tauri adapter.');
   },
 
   // providers (localStorage + live probe + connect/sync)

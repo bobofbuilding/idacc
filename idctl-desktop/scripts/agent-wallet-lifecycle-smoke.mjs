@@ -18,6 +18,40 @@ try {
   assert.equal(agentEnsName('default:Research Lead'), 'research-lead.agent.bittrees.eth');
 
   const provider = new MockKeyProvider();
+  await assert.rejects(
+    provider.provisionAccount('default:unsafe', { label: 'full', targets: ['*'], spendLimitWei: '0' }, 0),
+    /finite, scoped, and spend-capped/,
+  );
+  const bundled = await provider.provisionAccount(
+    'default:researcher',
+    { label: 'research', targets: ['0x2222222222222222222222222222222222222222'], spendLimitWei: '2' },
+    60_000,
+  );
+  assert.equal(bundled.reused, false);
+  assert.equal(bundled.account.deployed, true);
+  assert.equal(bundled.account.status, 'active');
+  assert.equal(bundled.account.sessions.length, 1);
+  const bundledAgain = await provider.provisionAccount(
+    'default:researcher',
+    { label: 'research', targets: ['0x2222222222222222222222222222222222222222'], spendLimitWei: '2' },
+    60_000,
+  );
+  assert.equal(bundledAgain.reused, true);
+  assert.equal(bundledAgain.account.sessions.length, 1, 'provision retries must not duplicate authority');
+  const replacement = await provider.rotateSession(
+    'default:researcher',
+    bundled.session.id,
+    { label: 'research-v2', targets: ['0x3333333333333333333333333333333333333333'], spendLimitWei: '3' },
+    120_000,
+  );
+  const rotated = (await provider.listAccounts(['default:researcher']))[0];
+  assert.equal(replacement.status, 'active');
+  assert.equal(rotated.sessions.find((row) => row.id === bundled.session.id)?.status, 'revoked');
+  assert.equal(rotated.sessions.filter((row) => row.status === 'active').length, 1);
+  const assets = await provider.inspectAssets('default:researcher');
+  assert.equal(assets.status, 'clear');
+  assert.equal(assets.source, 'mock');
+
   const draft = await provider.ensureAccount('default:coder');
   assert.equal(draft.ensName, 'coder.agent.bittrees.eth');
   assert.equal(draft.owner, ROOT_AGENT_SAFE_ADDRESS);

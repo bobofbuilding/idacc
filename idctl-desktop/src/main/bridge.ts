@@ -1110,6 +1110,16 @@ const keys = getKeyProvider();
 const RECENT_DONE_TASK_LIMIT = 25;
 let doneTaskLimitUnsupportedAt = 0;
 
+function requireLiveKeyProvider(action: string): void {
+  const capabilities = keys.capabilities();
+  if (!capabilities.live) {
+    throw new Error(
+      `${action} is disabled because the active key provider is ${capabilities.provider}. `
+      + 'Configure and verify the live Safe/ERC-7579 provider in Identity production readiness before changing on-chain authority.',
+    );
+  }
+}
+
 function textValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -1780,27 +1790,42 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     return { ok: true, root, added, adopted, total: projects.length };
   },
 
-  // identity & keys (Safe + ERC-4337 session keys; mock today)
+  // identity & keys (Safe + scoped Zodiac Roles authority; mock today)
   'keys:caps': async () => keys.capabilities(),
   'keys:list': (agents: string[]) => keys.listAccounts(agents ?? []),
   'keys:legacyAuthority': async (targets: KeyAuthorityTarget[]) => legacyMockAuthorityReport(targets ?? []),
   'keys:ensure': async (agent: string, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
+    requireLiveKeyProvider('Safe account preparation');
     await requireControllerProof(name, teamName);
     return keys.ensureAccount(scopedAgentKey(name, teamName));
   },
   'keys:deploy': async (agent: string, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
+    requireLiveKeyProvider('Safe deployment');
     await requireControllerProof(name, teamName);
     return keys.deployAccount(scopedAgentKey(name, teamName));
+  },
+  'keys:provision': async (agent: string, scopeIdx: number, ttlMs: number, team?: string) => {
+    const name = String(agent);
+    const teamName = team ? String(team) : undefined;
+    const scope = SCOPE_PRESETS[Number(scopeIdx) || 0] ?? SCOPE_PRESETS[0];
+    const ttl = Number(ttlMs);
+    requireLiveKeyProvider('Safe and initial authority provisioning');
+    await requireControllerProof(name, teamName);
+    if (!Number.isFinite(ttl) || ttl <= 0 || scope.label.toLowerCase().includes('full') || scope.spendLimitWei === '0') {
+      throw new Error('Refusing to provision uncapped, full, non-expiring, or invalid autonomous authority.');
+    }
+    return keys.provisionAccount(scopedAgentKey(name, teamName), scope, ttl);
   },
   'keys:issue': async (agent: string, scopeIdx: number, ttlMs: number, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
     const scope = SCOPE_PRESETS[Number(scopeIdx) || 0] ?? SCOPE_PRESETS[0];
     const ttl = Number(ttlMs);
+    requireLiveKeyProvider('Session authority issuance');
     await requireControllerProof(name, teamName);
     if (!Number.isFinite(ttl) || ttl <= 0 || scope.label.toLowerCase().includes('full') || scope.spendLimitWei === '0') {
       throw new Error('Refusing to issue uncapped, full, non-expiring, or invalid session keys from the Control Center.');
@@ -1810,20 +1835,46 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'keys:revoke': async (agent: string, sessionId: string, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
+    requireLiveKeyProvider('Session authority revocation');
     await requireControllerProof(name, teamName);
     return keys.revokeSession(scopedAgentKey(name, teamName), String(sessionId));
+  },
+  'keys:rotate': async (agent: string, sessionId: string, scopeIdx: number, ttlMs: number, team?: string) => {
+    const name = String(agent);
+    const teamName = team ? String(team) : undefined;
+    const scope = SCOPE_PRESETS[Number(scopeIdx) || 0] ?? SCOPE_PRESETS[0];
+    const ttl = Number(ttlMs);
+    requireLiveKeyProvider('Session authority rotation');
+    await requireControllerProof(name, teamName);
+    if (!Number.isFinite(ttl) || ttl <= 0 || scope.label.toLowerCase().includes('full') || scope.spendLimitWei === '0') {
+      throw new Error('Refusing to rotate to uncapped, full, non-expiring, or invalid autonomous authority.');
+    }
+    return keys.rotateSession(scopedAgentKey(name, teamName), String(sessionId), scope, ttl);
+  },
+  'keys:assetGuard': async (agent: string, team?: string) => {
+    return keys.inspectAssets(scopedAgentKey(String(agent), team ? String(team) : undefined));
   },
   // Account-level authority changes are implemented by the active provider.
   // The mock provider records the lifecycle locally; a live provider must turn
   // these into root-Safe proposals rather than trusting the agent signer.
-  'keys:revokeAccount': async (agent: string, team?: string) => {
+  'keys:revokeAccount': async (agent: string, team?: string, assetsAcknowledged = false) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
-    return keys.revokeAccount(scopedAgentKey(name, teamName));
+    requireLiveKeyProvider('Agent authority revocation');
+    const key = scopedAgentKey(name, teamName);
+    const assets = await keys.inspectAssets(key);
+    if (assets.status === 'unknown' && keys.capabilities().live) {
+      throw new Error(`Authority revocation blocked: assets could not be inspected. ${assets.message}`);
+    }
+    if (assets.status === 'assets-present' && !assetsAcknowledged) {
+      throw new Error('Authority revocation requires explicit acknowledgement because the Safe holds assets. Assets remain in the Safe under root recovery control.');
+    }
+    return keys.revokeAccount(key);
   },
   'keys:restoreAccount': async (agent: string, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
+    requireLiveKeyProvider('Agent authority restoration');
     return keys.restoreAccount(scopedAgentKey(name, teamName));
   },
   'keys:presets': async () => ({ scopes: SCOPE_PRESETS, ttls: TTL_PRESETS }),
@@ -1927,11 +1978,7 @@ async function callRaw(method: string, args: unknown[] = []): Promise<unknown> {
     return info();
   }
   if (method === 'coordinator:hierarchy') {
-    const s = loadSettings();
-    return {
-      primary: { team: PRIMARY_TEAM, agent: DEFAULT_PRIMARY_AGENT },
-      coordinators: { ...(s.coordinators ?? {}), [PRIMARY_TEAM]: DEFAULT_PRIMARY_AGENT },
-    };
+    return buildOrgHierarchy(client);
   }
   // ---- Org sync (reactive goals & instructions) ----
   if (method === 'org:hierarchy') return buildOrgHierarchy(client);

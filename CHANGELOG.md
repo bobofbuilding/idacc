@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.641] — 2026-07-15
+### What changed
+- Settings and Identity & Keys: add WalletConnect/Reown setup, encrypted agent signer custody, Safe Roles execution and asset guards, align coordination hierarchy, and remove the in-app Wiki runtime.
+
 ## [0.1.640] — 2026-07-14
 ### What changed
 - Identity & Keys: standardize root-controlled per-agent Safes and portable release publishing

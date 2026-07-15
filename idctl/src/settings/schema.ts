@@ -19,6 +19,12 @@ export interface IdctlConfig {
    */
   evmRpcs?: EvmRpcProfile[];
   /**
+   * Optional operator-controlled WalletConnect signer. The project id is a
+   * public Reown identifier; pairing/session data stays in WalletConnect's
+   * browser storage and private keys are never written to this config.
+   */
+  walletConnect?: WalletConnectSettings;
+  /**
    * External MCP servers the operator has registered (the "Modules" catalog).
    * These are definitions; attaching one to an agent writes it to that agent's
    * metadata.mcpServers via the manager and takes effect on rebuild.
@@ -346,6 +352,12 @@ export interface ProviderSync {
 
 export type EvmRpcKeySource = 'encrypted' | 'config' | 'env' | 'none';
 export type EvmRpcStatus = 'unknown' | 'available' | 'auth-error' | 'unreachable' | 'error';
+
+export interface WalletConnectSettings {
+  enabled: boolean;
+  projectId: string;
+  updatedAt?: number;
+}
 
 /** Cached status from the most recent data-availability probe. */
 export interface EvmRpcRequest {

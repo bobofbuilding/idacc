@@ -6,6 +6,8 @@ import {
   contributorSigningPolicyErrors,
   executionStamp,
   guardedExecutionReady,
+  isRootSafeThresholdRepair,
+  ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA,
 } from '../src/shared/signingGuardrails.ts';
 
 const valid = {
@@ -16,6 +18,19 @@ const valid = {
   data: '0x1234',
   valueWei: '0',
 };
+
+assert.equal(isRootSafeThresholdRepair(
+  '0x1',
+  AGENT_BITTREES_SAFE_ADDRESS,
+  ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA,
+  '0',
+), true, 'the exact root Safe threshold repair must be recognized');
+assert.equal(isRootSafeThresholdRepair(
+  '0x1',
+  AGENT_BITTREES_SAFE_ADDRESS,
+  `${ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA.slice(0, -1)}3`,
+  '0',
+), false, 'modified threshold calldata must not use the repair exception');
 
 function simulation(overrides = {}) {
   const input = { ...valid, ...overrides };
