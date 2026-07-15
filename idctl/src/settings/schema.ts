@@ -217,13 +217,16 @@ export interface ProjectEntry {
 export interface UpdateSettings {
   /** Auto-download and stage a found update. Restart still requires explicit user action. Default true. */
   autoUpgrade: boolean;
-  /** GitHub repo to poll, "owner/name". Default "bobofbuilding/id-agent-control-center". */
+  /** GitHub repo to poll, "owner/name". Default "bobofbuilding/idacc". */
   updateRepo?: string;
   /** Self-hosted version.json URL; when set, used instead of GitHub. */
   updateManifestUrl?: string;
   /** Hours between background checks. Default 12. */
   checkIntervalHours: number;
 }
+
+export const DEFAULT_UPDATE_REPO = 'bobofbuilding/idacc';
+const LEGACY_UPDATE_REPOS = new Set(['bobofbuilding/id-agent-control-center']);
 
 export interface GoalDriverSettings {
   enabled?: boolean;
@@ -256,7 +259,25 @@ export interface HeadroomPilotSettings {
 }
 
 export function defaultUpdateSettings(): UpdateSettings {
-  return { autoUpgrade: true, updateRepo: 'bobofbuilding/id-agent-control-center', checkIntervalHours: 1 };
+  return { autoUpgrade: true, updateRepo: DEFAULT_UPDATE_REPO, checkIntervalHours: 1 };
+}
+
+export function normalizeUpdateSettings(input?: Partial<UpdateSettings>): UpdateSettings {
+  const defaults = defaultUpdateSettings();
+  const configuredRepo = typeof input?.updateRepo === 'string' ? input.updateRepo.trim() : defaults.updateRepo;
+  const updateRepo = configuredRepo && LEGACY_UPDATE_REPOS.has(configuredRepo)
+    ? DEFAULT_UPDATE_REPO
+    : configuredRepo;
+  const interval = Number(input?.checkIntervalHours);
+  const updateManifestUrl = typeof input?.updateManifestUrl === 'string' && input.updateManifestUrl.trim()
+    ? input.updateManifestUrl.trim()
+    : undefined;
+  return {
+    autoUpgrade: input?.autoUpgrade !== false,
+    updateRepo,
+    updateManifestUrl,
+    checkIntervalHours: Number.isFinite(interval) && interval >= 1 ? interval : defaults.checkIntervalHours,
+  };
 }
 
 export function defaultHeadroomPilotSettings(): HeadroomPilotSettings {

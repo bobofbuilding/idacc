@@ -9,7 +9,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, chmodSync, renameSync, unlinkSync } from 'node:fs';
 import { resolveConfigPath, configDir } from './paths.ts';
-import { emptyConfig, defaultHeadroomPilotSettings, defaultUpdateSettings, DEFAULT_TEAM, type DraftDispatcherSettings, type EvmRpcProfile, type EvmRpcRequest, type GoalDriverSettings, type HeadroomPilotSettings, type IdctlConfig, type ImageServerConfig, type LocalModelCatalogEntry, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderModelSelection, type ProviderProfile, type ProviderSync, type UpdateSettings, type WalletConnectSettings } from './schema.ts';
+import { emptyConfig, defaultHeadroomPilotSettings, normalizeUpdateSettings, DEFAULT_TEAM, type DraftDispatcherSettings, type EvmRpcProfile, type EvmRpcRequest, type GoalDriverSettings, type HeadroomPilotSettings, type IdctlConfig, type ImageServerConfig, type LocalModelCatalogEntry, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderModelSelection, type ProviderProfile, type ProviderSync, type UpdateSettings, type WalletConnectSettings } from './schema.ts';
 import { filterParkedMcpServers, isParkedMcpServer } from './mcpCatalog.ts';
 
 function normalizeGoalDriver(input: unknown): GoalDriverSettings | undefined {
@@ -178,7 +178,7 @@ export function loadSettings(file = resolveConfigPath()): IdctlConfig {
       mcpServers: Array.isArray(raw.mcpServers) ? filterParkedMcpServers(raw.mcpServers) : [],
       defaultManager: raw.defaultManager,
       // Merge so an absent block → defaults (autoUpgrade true), per-field overridable.
-      update: { ...defaultUpdateSettings(), ...(raw.update ?? {}) },
+      update: normalizeUpdateSettings(raw.update),
       coordinators: raw.coordinators ?? {},
       primaryCoordinator: raw.primaryCoordinator,
       goalDriver: normalizeGoalDriver(raw.goalDriver),
@@ -445,7 +445,7 @@ export function setWalletConnectSettings(
 
 export function setUpdateSettings(partial: Partial<UpdateSettings>, file = resolveConfigPath()): IdctlConfig {
   const cfg = loadSettings(file);
-  cfg.update = { ...defaultUpdateSettings(), ...(cfg.update ?? {}), ...partial };
+  cfg.update = normalizeUpdateSettings({ ...(cfg.update ?? {}), ...partial });
   saveSettings(cfg, file);
   return cfg;
 }

@@ -30,7 +30,7 @@ Headline features, plus everything the manager exposes:
 
 ```bash
 # One-liner installer (downloads the right binary for your OS/arch):
-curl -fsSL https://github.com/bobofbuilding/id-agent-control-center/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/bobofbuilding/idacc/releases/latest/download/install.sh | sh
 idctl --help
 ```
 
@@ -204,7 +204,7 @@ idctl upgrade --check    # report only; exit 10 if an update is available
 | field | default | meaning |
 |-------|---------|---------|
 | `autoUpgrade` | `true` | download and stage a found update; applying it is explicit |
-| `updateRepo` | `bobofbuilding/id-agent-control-center` | GitHub `owner/name` to poll |
+| `updateRepo` | `bobofbuilding/idacc` | GitHub `owner/name` to poll |
 | `updateManifestUrl` | *(unset)* | self-hosted `version.json` URL; used instead of GitHub |
 | `checkIntervalHours` | `12` | background check cadence |
 

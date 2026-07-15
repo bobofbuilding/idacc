@@ -8,7 +8,7 @@ elif [ -x "$HOME/.local/bin/idctl" ]; then
   exec "$HOME/.local/bin/idctl"
 else
   echo "idctl is not installed yet. Install it with:"
-  echo "  curl -fsSL https://github.com/bobofbuilding/id-agent-control-center/releases/latest/download/install.sh | sh"
+  echo "  curl -fsSL https://github.com/bobofbuilding/idacc/releases/latest/download/install.sh | sh"
   echo
   printf "Press Return to close… "; read _
 fi

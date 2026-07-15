@@ -12,6 +12,7 @@ import { checkCacheFile, updateStateDir } from './paths.ts';
 import { detectPlatform, isCompiledBinary } from './platform.ts';
 import { isNewer } from './version.ts';
 import { IDCTL_VERSION } from '../version.ts';
+import { DEFAULT_UPDATE_REPO } from '../settings/schema.ts';
 import type { CheckResult, UpdateInfo } from './types.ts';
 
 const UA = `idctl/${IDCTL_VERSION}`;
@@ -57,7 +58,7 @@ export async function checkForUpdate(opts: CheckOpts): Promise<CheckResult> {
   try {
     const info = opts.manifestUrl
       ? await checkManifest(opts.manifestUrl, cache)
-      : await checkGitHub(opts.repo ?? 'bobofbuilding/id-agent-control-center', cache);
+      : await checkGitHub(opts.repo ?? DEFAULT_UPDATE_REPO, cache);
     writeCache({ ...cache, lastCheck: now, lastTag: info?.tag ?? cache.lastTag });
     if (!info || !isNewer(info.version, IDCTL_VERSION)) {
       return { status: 'up-to-date', current: IDCTL_VERSION, checkedAt: now };

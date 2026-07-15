@@ -110,7 +110,7 @@ async function genViaChatModalities(prov: { name: string; baseUrl?: string }, ke
       headers: {
         Authorization: `Bearer ${key}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://github.com/bobofbuilding/id-agent-control-center',
+        'HTTP-Referer': 'https://github.com/bobofbuilding/idacc',
         'X-Title': 'ID Agents Control Center',
       },
       body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], modalities: ['image', 'text'] }),

@@ -978,7 +978,7 @@ async function fetchUrlSnapshot(material: LearnMaterial): Promise<ExtractionResu
     const res = await fetch(url.toString(), {
       redirect: 'follow',
       signal: ac.signal,
-      headers: { 'User-Agent': 'IDACC-Learn/1.0 (+https://github.com/bobofbuilding/id-agent-control-center)' },
+      headers: { 'User-Agent': 'IDACC-Learn/1.0 (+https://github.com/bobofbuilding/idacc)' },
     });
     if (!res.ok) throw new Error(`snapshot fetch failed: HTTP ${res.status}`);
     const raw = await boundedText(res, MAX_WEB_BYTES);

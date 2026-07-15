@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.643] — 2026-07-15
+### What changed
+- Repair automatic updates by migrating the retired id-agent-control-center release channel to bobofbuilding/idacc while preserving custom repositories.
+
 ## [0.1.642] — 2026-07-15
 ### What changed
 - Fix WalletConnect root Safe pairing by loading the packaged QR module through its default export and surface retryable QR errors with pairing-URI fallback.

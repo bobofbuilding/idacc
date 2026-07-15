@@ -5,7 +5,7 @@
 # checksum, installs it to ~/.local/bin (no root), and clears macOS quarantine.
 set -eu
 
-REPO="${IDCTL_REPO:-bobofbuilding/id-agent-control-center}"  # override with IDCTL_REPO=owner/repo
+REPO="${IDCTL_REPO:-bobofbuilding/idacc}"  # override with IDCTL_REPO=owner/repo
 PREFIX="${IDCTL_PREFIX:-$HOME/.local/bin}"        # override with IDCTL_PREFIX=/usr/local/bin
 BASE="https://github.com/$REPO/releases/latest/download"
 
