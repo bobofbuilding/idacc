@@ -90,11 +90,12 @@ function run(cmd, args, options = {}) {
     console.log(`dry-run: ${cmd} ${args.map(shellQuote).join(' ')}`);
     return '';
   }
-  return execFileSync(cmd, args, {
+  const output = execFileSync(cmd, args, {
     cwd: options.cwd,
     encoding: 'utf8',
     stdio: options.capture === false ? 'inherit' : ['ignore', 'pipe', 'pipe'],
-  }).trim();
+  });
+  return typeof output === 'string' ? output.trim() : '';
 }
 
 function tryRun(cmd, args, options = {}) {

@@ -92,15 +92,27 @@ headless platform doesn't ship a UI for:
 
 ## Quick start
 
-You need a reachable **id-agents manager** first (see the
-[id-agents](https://github.com/idchain-world/id-agents) README to run one). By
-default the control center connects to `http://127.0.0.1:4100`; point it elsewhere
-with `MANAGER_URL`. After launch, open Settings and confirm the Connection,
-Local models & backends, and Inference backends cards. The app can observe a
-stock manager, but the full downloadable control-center experience needs a
-manager that advertises the Control Center extension contract via
-`GET /capabilities`. Some panels need those manager routes — see
-**[Manager compatibility](#how-this-relates-to-id-agents-the-difference)** above.
+The supported macOS install builds IDACC, installs the app in `~/Applications`,
+installs or safely updates the compatible manager fork beside this checkout,
+and keeps that manager running as a per-user service:
+
+```bash
+git clone https://github.com/bobofbuilding/idacc.git ~/Projects/idacc-stack/idacc
+cd ~/Projects/idacc-stack/idacc
+node scripts/install-idacc-stack.mjs
+```
+
+The installer requires Node.js 20 or newer. It preserves existing IDACC
+settings, refuses dirty or foreign manager checkouts, performs only
+fast-forward manager updates, atomically replaces the app bundle, and refuses
+to take over an unknown process on the manager port. Preview every action first
+with `node scripts/install-idacc-stack.mjs --dry-run`.
+
+After launch, open Settings and confirm the Connection, Local models &
+backends, and Inference backends cards. The app can observe a stock manager,
+but the full downloadable control-center experience needs a manager that
+advertises the Control Center extension contract via `GET /capabilities`. Some
+panels need those manager routes — see **[Manager compatibility](#how-this-relates-to-id-agents-the-difference)** above.
 
 ### Desktop GUI
 
@@ -124,7 +136,7 @@ npm run status     # one‑shot, scriptable snapshot (no TTY needed)
 > The two packages live as **siblings** in this repo on purpose: `idctl-desktop`
 > imports the shared backend from `../idctl/src/…`. Keep them side‑by‑side.
 
-### Install or update the manager source alongside a project
+### Install or update only the manager source
 
 If you want a local manager checkout that matches the maintained IDACC-compatible
 fork, use the guarded installer:
