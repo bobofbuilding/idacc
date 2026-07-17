@@ -8,6 +8,11 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.646] — 2026-07-17
+### What changed
+- Dashboard: surface public wallet addresses and add expandable, copyable communications
+- Add guarded stack installer and persistent manager service
+
 ## [0.1.645] — 2026-07-15
 ### What changed
 - Identity & Keys: replace the desktop mock lifecycle with receipt-verified Safe 1.4.1 and Zodiac Roles proposals, atomic WalletConnect submission, and bounded zero-value contract/function authority.
