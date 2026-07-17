@@ -3,7 +3,7 @@
  * id-agents manager, and loads the React renderer.
  */
 
-import { app, BrowserWindow, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage, clipboard } from 'electron';
 import { join } from 'node:path';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { call as bridgeCall, configureKeyProvider, startDraftDispatcher, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
@@ -1702,6 +1702,13 @@ ipcMain.handle('idagents:call', async (_e, method: string, args: unknown[]) => {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+});
+
+// Write-only clipboard channel for user-invoked copy actions. Keep this separate
+// from idagents:call so copied communication text never enters the control log.
+ipcMain.handle('idagents:clipboardWrite', (_e, value: unknown) => {
+  clipboard.writeText(String(value ?? ''));
+  return true;
 });
 
 // Headless self-test of the update flow (no window). IDCTL_UPDATE_SELFTEST=
