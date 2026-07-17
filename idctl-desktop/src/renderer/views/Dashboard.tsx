@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { call, useSyncVersion, type FleetStore, type TeamEvent } from '../store.ts';
 import { isAgentLive } from '../agentStatus.ts';
+import {
+  activityAddressExplorerUrl,
+  activityAddressLabel,
+  broadcasterActivityScope,
+  buildBroadcasterAddressHints,
+  extractPublicEvmAddresses,
+  normalizeActivityText,
+  shortPublicAddress,
+} from '../activityFeed.ts';
 import { Chat } from './Chat.tsx';
 import type { InboxItem, NewsItem, Task } from '../../../../idctl/src/api/types.ts';
 
@@ -20,6 +29,28 @@ function ago(ts?: number): string {
   return `${Math.round(s / 3600)}h`;
 }
 function str(x: unknown): string { return typeof x === 'string' ? x : ''; }
+async function writeActivityClipboard(value: string): Promise<boolean> {
+  try {
+    if (window.idagents?.copyText) return await window.idagents.copyText(value);
+  } catch {
+    // Fall through for browser/Tauri builds without the Electron clipboard bridge.
+  }
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    const input = document.createElement('textarea');
+    input.value = value;
+    input.setAttribute('readonly', '');
+    input.style.position = 'fixed';
+    input.style.left = '-9999px';
+    document.body.appendChild(input);
+    input.select();
+    const copied = document.execCommand('copy');
+    input.remove();
+    return copied;
+  }
+}
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1e6).toFixed(1)}M`;
   if (n >= 10_000) return `${Math.round(n / 1000)}k`;
@@ -208,6 +239,11 @@ function newsDesc(n: DashboardNews): string {
   const preview = clip(n.message || previewOf(n.data ?? {}) || n.type, 120);
   return [actor, preview].filter(Boolean).join(' — ');
 }
+function newsFullDesc(n: DashboardNews): string {
+  const actor = newsActor(n);
+  const message = normalizeActivityText(n.message || previewOf(n.data ?? {}) || n.type);
+  return [actor, message].filter(Boolean).join(' — ');
+}
 function newsWorkDraftDesc(n: DashboardNews): string | null {
   if (isInternalWorkDecompositionNews(n)) return null;
   const raw = n.message || previewOf(n.data ?? {});
@@ -230,11 +266,14 @@ type OrgHier = {
 };
 type LiteTask = { ownerName?: string | null; status: string; title?: string; shortId?: string };
 type DashboardNews = NewsItem & { teamName?: string };
+type ActivityAddress = { address: string; label: string; explorerUrl?: string };
 type ActivityFeedItem = {
   key: string;
   topic: string;
   className: string;
   desc: string;
+  fullDesc?: string;
+  addresses?: ActivityAddress[];
   team?: string;
   agent?: string; // raw agent id/name, used for active-agent filtering
   at: number;
@@ -435,6 +474,9 @@ export function Dashboard({ store }: { store: FleetStore }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [news, setNews] = useState<DashboardNews[]>([]);
   const [activityClockTick, setActivityClockTick] = useState(0);
+  const [expandedActivityKeys, setExpandedActivityKeys] = useState<Set<string>>(() => new Set());
+  const [activityMenu, setActivityMenu] = useState<{ item: ActivityFeedItem; x: number; y: number } | null>(null);
+  const [copiedActivityKey, setCopiedActivityKey] = useState('');
   const activityLiveRef = useRef(true);
   useEffect(() => () => { activityLiveRef.current = false; }, []);
   const loadActivity = useCallback(() => {
@@ -459,6 +501,44 @@ export function Dashboard({ store }: { store: FleetStore }) {
     const iv = setInterval(() => { setActivityClockTick((n) => (n + 1) % 60); }, 1000);
     return () => clearInterval(iv);
   }, []);
+  useEffect(() => {
+    if (!activityMenu) return undefined;
+    const close = () => setActivityMenu(null);
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
+    window.addEventListener('click', close);
+    window.addEventListener('blur', close);
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('blur', close);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [activityMenu]);
+  const toggleActivityExpanded = useCallback((key: string) => {
+    setExpandedActivityKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const copyActivity = useCallback(async (item: ActivityFeedItem) => {
+    const addressLines = (item.addresses ?? [])
+      .filter(({ address }) => !(item.fullDesc ?? item.desc).includes(address))
+      .map(({ label, address }) => `${label}: ${address}`);
+    const team = item.team ? `[${item.team}] ` : '';
+    const value = `${team}${item.fullDesc ?? item.desc}${addressLines.length ? `\n${addressLines.join('\n')}` : ''}`;
+    const copied = await writeActivityClipboard(value);
+    setCopiedActivityKey(copied ? item.key : `failed:${item.key}`);
+    window.setTimeout(() => {
+      setCopiedActivityKey((current) => current === item.key || current === `failed:${item.key}` ? '' : current);
+      setActivityMenu((current) => current?.item.key === item.key ? null : current);
+    }, 700);
+  }, []);
   const activityTaskStats = useMemo(() => {
     const activeTeamSet = new Set(activeTeams);
     const scoped = tasks.filter((t) => !t.teamName || activeTeamSet.has(t.teamName));
@@ -477,6 +557,12 @@ export function Dashboard({ store }: { store: FleetStore }) {
       if (isAgentLive(a.status)) { activeAgentKeys.add(a.id); activeAgentKeys.add(a.name); }
     }
     const items: ActivityFeedItem[] = [];
+    const broadcasterAddressByScope = buildBroadcasterAddressHints(news.map((n) => ({
+      team: n.teamName,
+      actor: str(n.data?.from) || str(n.data?.sender) || str(n.data?.agent) || str(n.data?.source),
+      timestamp: toMs(n.timestamp),
+      text: n.message || previewOf(n.data ?? {}),
+    })));
     for (const e of events) {
       const at = toMs(e.timestamp ?? e.occurred_at);
       items.push({
@@ -524,10 +610,24 @@ export function Dashboard({ store }: { store: FleetStore }) {
         topic: 'comms',
         className: newsClass(n),
         desc: newsDesc(n),
+        fullDesc: newsFullDesc(n),
         team: n.teamName,
         agent: str(n.data?.from) || str(n.data?.sender) || str(n.data?.agent) || str(n.data?.source) || undefined,
         at: toMs(n.timestamp),
         title: n.type,
+        addresses: (() => {
+          const raw = n.message || previewOf(n.data ?? {});
+          const actor = str(n.data?.from) || str(n.data?.sender) || str(n.data?.agent) || str(n.data?.source);
+          const direct = extractPublicEvmAddresses(raw);
+          const scoped = /broadcaster\s+EOA/i.test(raw)
+            ? broadcasterAddressByScope.get(broadcasterActivityScope(n.teamName, actor)) ?? []
+            : [];
+          return Array.from(new Set([...direct, ...scoped])).map((address) => ({
+            address,
+            label: activityAddressLabel(raw),
+            explorerUrl: activityAddressExplorerUrl(raw, address),
+          }));
+        })(),
       });
     }
     for (const [key, bucket] of draftBuckets) {
@@ -594,16 +694,96 @@ export function Dashboard({ store }: { store: FleetStore }) {
           <h3 style={{ marginTop: 0 }}>
             Activity <span className="muted small">· {activeTeams.length} active teams · {feedItems.length} recent rows · {activityTaskStats.working} working · {activityTaskStats.open} open tasks · {activityTaskStats.total} total · {news.length + store.inbox.length} recent comms</span>
           </h3>
-          <div className="feed-list" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-            {feedItems.map((item) => (
-              <div className="feed-row" key={item.key} title={item.title}>
+          <div className="feed-list activity-feed" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+            {feedItems.map((item) => {
+              const expanded = expandedActivityKeys.has(item.key);
+              const expandable = !!item.fullDesc && item.fullDesc !== item.desc;
+              return (
+              <div
+                className={`feed-row activity-feed-row${expanded ? ' expanded' : ''}`}
+                key={item.key}
+                title={expandable ? item.fullDesc : item.title}
+                tabIndex={expandable ? 0 : undefined}
+                aria-expanded={expandable ? expanded : undefined}
+                onDoubleClick={() => { if (expandable) toggleActivityExpanded(item.key); }}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (!expandable || (event.key !== 'Enter' && event.key !== ' ')) return;
+                  event.preventDefault();
+                  toggleActivityExpanded(item.key);
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  const menuWidth = 196;
+                  const menuHeight = expandable ? 78 : 42;
+                  setActivityMenu({
+                    item,
+                    x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+                    y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+                  });
+                }}
+              >
                 <span className={`topic ${item.className}`}>{item.topic}</span>
-                <span className="desc">{item.team ? <span className="muted" style={{ marginRight: 4 }}>[{item.team}]</span> : null}{item.desc}</span>
+                <span className="desc">
+                  {item.team ? <span className="muted" style={{ marginRight: 4 }}>[{item.team}]</span> : null}
+                  {expanded ? item.fullDesc ?? item.desc : item.desc}
+                  {(item.addresses ?? []).length > 0 ? (
+                    <span className="activity-addresses">
+                      {item.addresses?.map(({ address, label, explorerUrl }) => explorerUrl ? (
+                        <a
+                          className="activity-address"
+                          href={explorerUrl}
+                          key={address}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={`${label}: ${address}`}
+                          onDoubleClick={(event) => event.stopPropagation()}
+                        >
+                          {label}: {expanded ? address : shortPublicAddress(address)}
+                        </a>
+                      ) : (
+                        <span className="activity-address" key={address} title={`${label}: ${address}`}>
+                          {label}: {expanded ? address : shortPublicAddress(address)}
+                        </span>
+                      ))}
+                    </span>
+                  ) : null}
+                </span>
                 {item.at ? <span className="muted t" data-clock={activityClockTick}>{ago(item.at)}</span> : null}
               </div>
-            ))}
+              );
+            })}
             {feedItems.length === 0 ? <div className="muted">waiting for activity…</div> : null}
           </div>
+          {activityMenu ? (
+            <div
+              className="activity-context-menu"
+              role="menu"
+              style={{ left: activityMenu.x, top: activityMenu.y }}
+              onClick={(event) => event.stopPropagation()}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              {activityMenu.item.fullDesc && activityMenu.item.fullDesc !== activityMenu.item.desc ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    toggleActivityExpanded(activityMenu.item.key);
+                    setActivityMenu(null);
+                  }}
+                >
+                  {expandedActivityKeys.has(activityMenu.item.key) ? 'Collapse message' : 'Expand full message'}
+                </button>
+              ) : null}
+              <button type="button" role="menuitem" onClick={() => { void copyActivity(activityMenu.item); }}>
+                {copiedActivityKey === activityMenu.item.key
+                  ? 'Copied'
+                  : copiedActivityKey === `failed:${activityMenu.item.key}`
+                    ? 'Copy failed'
+                    : 'Copy full message'}
+              </button>
+            </div>
+          ) : null}
         </aside>
       </div>
     </div>

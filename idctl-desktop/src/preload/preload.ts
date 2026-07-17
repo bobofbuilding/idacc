@@ -9,6 +9,8 @@ import type { StoreChangeEvent } from '../shared/syncDomains.ts';
 
 export interface IdAgentsApi {
   call<T = unknown>(method: string, ...args: unknown[]): Promise<{ ok: boolean; result?: T; error?: string }>;
+  /** Write user-selected text without exposing clipboard reads to the renderer. */
+  copyText(value: string): Promise<boolean>;
   /** Subscribe to dashboard/work-store invalidation pushes from the main process. */
   onStoreChange(cb: (event: StoreChangeEvent) => void): () => void;
   /** Subscribe to self-update status pushes from the main process. Returns an unsubscribe fn. */
@@ -25,6 +27,7 @@ export interface IdAgentsApi {
 
 const api: IdAgentsApi = {
   call: (method, ...args) => ipcRenderer.invoke('idagents:call', method, args),
+  copyText: (value) => ipcRenderer.invoke('idagents:clipboardWrite', value),
   onStoreChange: (cb) => {
     const listener = (_e: unknown, event: StoreChangeEvent) => cb(event);
     ipcRenderer.on('idagents:sync', listener);
