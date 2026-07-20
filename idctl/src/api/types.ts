@@ -144,6 +144,8 @@ export interface Task {
   status: string;
   ownerName?: string | null;
   teamName?: string;
+  projectId?: string;
+  planId?: string;
   linkedEvents?: string[];
   createdAt: number;
   updatedAt?: number;

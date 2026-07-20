@@ -258,6 +258,8 @@ export function normalizeTaskRecord(raw: unknown): Task | null {
     status: textField(row.status) ?? 'todo',
     ownerName: textField(row.ownerName ?? row.owner_name ?? row.owner) ?? null,
     ...(textField(row.teamName ?? row.team_name ?? row.team) ? { teamName: textField(row.teamName ?? row.team_name ?? row.team) } : {}),
+    ...(textField(row.projectId ?? row.project_id) ? { projectId: textField(row.projectId ?? row.project_id) } : {}),
+    ...(textField(row.planId ?? row.plan_id) ? { planId: textField(row.planId ?? row.plan_id) } : {}),
     linkedEvents: stringList(row.linkedEvents ?? row.linked_events) ?? [],
     createdAt: timestampMs(row.createdAt ?? row.created_at) ?? 0,
     updatedAt: timestampMs(row.updatedAt ?? row.updated_at),
@@ -531,6 +533,93 @@ export class ManagerClient {
 
   async health(signal?: AbortSignal): Promise<{ status: string; team?: string; agents?: number }> {
     return this.get('/health', signal);
+  }
+
+  /** Manager-mediated Brain transport. The desktop must not access Brain directly. */
+  async brainRequest<T = unknown>(request: {
+    method: 'GET' | 'POST';
+    path: string;
+    body?: unknown;
+    idempotency_key?: string;
+    timeoutMs?: number;
+  }, signal?: AbortSignal): Promise<{ body: T | null; cacheControl: string | null; noStore: boolean }> {
+    const response = await this.requireRoute('Manager-mediated Brain access', () =>
+      this.post<{
+        body?: T | null;
+        cacheControl?: string | null;
+        noStore?: boolean;
+      }>('/control/brain', request, signal, Math.max(1_000, Number(request.timeoutMs ?? 2_500) + 1_500)));
+    return {
+      body: response.body ?? null,
+      cacheControl: response.cacheControl ?? null,
+      noStore: response.noStore === true,
+    };
+  }
+
+  /** Append a durable control/config event for Brain and other Manager consumers. */
+  async emitControlEvent(input: {
+    topic: string;
+    subject?: { kind?: string; id?: string } | string;
+    actor?: string;
+    data?: Record<string, unknown>;
+    idempotency_key?: string;
+  }, signal?: AbortSignal): Promise<{ ok: boolean; seq: number; duplicate?: boolean }> {
+    const idempotencyKey = input.idempotency_key
+      || `idacc:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await this.requireRoute('Manager control events', () =>
+          this.post<{ ok: boolean; seq: number; duplicate?: boolean }>('/control-event', {
+            ...input,
+            idempotency_key: idempotencyKey,
+          }, signal));
+      } catch (error) {
+        lastError = error;
+        if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 125));
+      }
+    }
+    throw lastError;
+  }
+
+  async controlStateList<T extends object>(scope: 'global' | 'team' | 'project', signal?: AbortSignal): Promise<Array<{ key: string; value: T; version: number; updatedAt: number }>> {
+    const response = await this.requireRoute('Manager control state', () =>
+      this.get<{ items?: Array<{ state_key: string; value: T; version: number; updated_at: number }> }>(`/control/state/${scope}`, signal));
+    return (response.items ?? []).map((item) => ({ key: item.state_key, value: item.value, version: Number(item.version), updatedAt: Number(item.updated_at) }));
+  }
+
+  async controlStateGet<T extends object>(scope: 'global' | 'team' | 'project', key: string, signal?: AbortSignal): Promise<{ key: string; value: T; version: number; updatedAt: number } | null> {
+    try {
+      // A missing key is a valid cache-miss, so do not pass this read through
+      // requireRoute(), which intentionally translates every 404 into an
+      // unsupported-manager error.
+      const response = await this.get<{ item: { state_key: string; value: T; version: number; updated_at: number } }>(`/control/state/${scope}/${encodeURIComponent(key)}`, signal);
+      return { key: response.item.state_key, value: response.item.value, version: Number(response.item.version), updatedAt: Number(response.item.updated_at) };
+    } catch (error) {
+      if (error instanceof ManagerError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  async controlStateSet<T extends object>(scope: 'global' | 'team' | 'project', key: string, value: T, expectedVersion?: number, signal?: AbortSignal): Promise<{ key: string; value: T; version: number; updatedAt: number }> {
+    const response = await this.requireRoute('Manager control state', () =>
+      this.post<{ item: { state_key: string; value: T; version: number; updated_at: number } }>(`/control/state/${scope}/${encodeURIComponent(key)}`, {
+        value,
+        ...(expectedVersion === undefined ? {} : { expected_version: expectedVersion }),
+      }, signal));
+    return { key: response.item.state_key, value: response.item.value, version: Number(response.item.version), updatedAt: Number(response.item.updated_at) };
+  }
+
+  async controlStateDelete(scope: 'global' | 'team' | 'project', key: string, signal?: AbortSignal): Promise<boolean> {
+    const response = await this.requireRoute('Manager control state', () =>
+      this.del<{ ok: boolean; deleted?: boolean }>(`/control/state/${scope}/${encodeURIComponent(key)}`, signal));
+    return response.deleted === true;
+  }
+
+  async controlMemory(agentId: string, input: { key: string; content: string; tags?: string[]; shared?: boolean; project?: string }, signal?: AbortSignal): Promise<boolean> {
+    const response = await this.requireRoute('Manager-mediated Brain memory', () =>
+      this.post<{ ok?: boolean }>('/control/memory', { agent_id: agentId, input }, signal));
+    return response.ok === true;
   }
 
   // ---- Teams & agents ---------------------------------------------------

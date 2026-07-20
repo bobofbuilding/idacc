@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import { useToast } from '../components/toast.tsx';
-import type { ProjectEntry, ProjectStatus } from '../../../../idctl/src/settings/schema.ts';
+import type { ProjectEntry, ProjectPolicy, ProjectStatus } from '../../../../idctl/src/settings/schema.ts';
 
 const STATUSES: ProjectStatus[] = ['active', 'paused', 'blocked', 'done'];
 const STATUS_LABEL: Record<ProjectStatus, string> = { active: 'active', paused: 'paused', blocked: 'blocked', done: 'done' };
@@ -63,7 +63,7 @@ function newId(): string {
 function splitList(s: string): string[] {
   return s.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
 }
-const BLANK = { name: '', status: 'active' as ProjectStatus, description: '', team: '', tags: '', links: '', path: '', notes: '' };
+const BLANK = { name: '', status: 'active' as ProjectStatus, description: '', team: '', lead: '', policy: 'balanced' as ProjectPolicy, tags: '', links: '', path: '', notes: '' };
 
 /** Compact git status: branch + ahead/behind/fork + dirty. */
 function GitStatus({ g }: { g?: GitInfo }) {
@@ -198,6 +198,8 @@ function projectStamp(p: ProjectEntry): string {
     status: p.status,
     description: p.description ?? '',
     team: p.team ?? '',
+    lead: p.lead ?? '',
+    policy: p.policy ?? 'balanced',
     tags: p.tags ?? [],
     links: p.links ?? [],
     path: p.path ?? '',
@@ -472,7 +474,7 @@ export function Projects({ store }: { store: FleetStore }) {
 
   function openNew() { setForm({ ...BLANK, team: defaultTeamName }); setEditBaseline(null); setEditing('new'); setNote(''); }
   function openEdit(p: ProjectEntry) {
-    setForm({ name: p.name, status: p.status, description: p.description ?? '', team: p.team ?? '', tags: (p.tags ?? []).join(', '), links: (p.links ?? []).join('\n'), path: p.path ?? '', notes: p.notes ?? '' });
+    setForm({ name: p.name, status: p.status, description: p.description ?? '', team: p.team ?? '', lead: p.lead ?? '', policy: p.policy ?? 'balanced', tags: (p.tags ?? []).join(', '), links: (p.links ?? []).join('\n'), path: p.path ?? '', notes: p.notes ?? '' });
     setEditBaseline(p);
     setEditing(p.id); setNote('');
   }
@@ -588,6 +590,8 @@ export function Projects({ store }: { store: FleetStore }) {
         status: form.status,
         description: form.description.trim() || undefined,
         team: form.team.trim() || undefined,
+        lead: form.lead.trim() || undefined,
+        policy: form.policy,
         tags: splitList(form.tags),
         links: splitList(form.links),
         path: form.path.trim() || undefined,
@@ -832,6 +836,8 @@ export function Projects({ store }: { store: FleetStore }) {
           ...keep,
           description: keep.description || drop.find((d) => d.description)?.description || '',
           team: keep.team || drop.find((d) => d.team)?.team,
+          lead: keep.lead || drop.find((d) => d.lead)?.lead,
+          policy: keep.policy || drop.find((d) => d.policy)?.policy || 'balanced',
           path: keep.path || drop.find((d) => d.path)?.path,
           tags: uniqStrings([...(keep.tags ?? []), ...drop.flatMap((d) => d.tags ?? [])]),
           links: uniqStrings([...(keep.links ?? []), ...drop.flatMap((d) => d.links ?? [])]),
@@ -977,6 +983,16 @@ export function Projects({ store }: { store: FleetStore }) {
             <select className="cell-select" value={form.team} onChange={(e) => setForm((f) => ({ ...f, team: e.target.value }))}>
               <option value="">(none)</option>
               {store.teams.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
+            </select>
+          </b>
+          <span>accountable lead</span>
+          <b><input style={{ width: '100%' }} placeholder={formLead || 'team lead'} value={form.lead} onChange={(e) => setForm((f) => ({ ...f, lead: e.target.value }))} /></b>
+          <span>execution policy</span>
+          <b>
+            <select className="cell-select" value={form.policy} onChange={(e) => setForm((f) => ({ ...f, policy: e.target.value as ProjectPolicy }))}>
+              <option value="balanced">balanced</option>
+              <option value="review-first">review first</option>
+              <option value="fast-track">fast track</option>
             </select>
           </b>
           <span>tags</span>

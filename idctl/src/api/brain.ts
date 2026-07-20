@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 /**
- * BrainClient — the Control Center's typed channel to the self-learning brain (:4200).
+ * BrainClient — the Control Center's typed channel to the self-learning brain.
  *
  * Until now the CC had exactly ONE brain write (orgSync.writeOrgToBrain — an inline fetch).
  * This generalizes that precedent so EVERY operator control action can be recorded to the
  * brain: an audit event on the timeline, structured facts, entities, ingested text, or keyed
  * shared memory. It is the app-side half of "everything updated in the self-learning brain"
  * (Phase 1): config/control mutations that never touch the manager (and so are invisible to
- * the manager→brain event stream) are mirrored here directly instead.
+ * the manager→brain event stream) are mirrored through the manager's acknowledged relay.
  *
  * EVERY write is best-effort: short timeout, errors swallowed, never throws. The brain is an
  * observer — a brain hiccup must never block, slow, or fail a control action. Callers should
@@ -284,25 +284,50 @@ export interface BrainClientOptions {
   token?: string;
   source?: string;
   timeoutMs?: number;
+  transport?: BrainTransport;
 }
 
-type BrainResponse<T> = {
+export type BrainResponse<T> = {
   body: T | null;
   cacheControl: string | null;
   noStore: boolean;
 };
+
+export interface BrainTransportRequest {
+  method: 'GET' | 'POST';
+  path: string;
+  body?: unknown;
+  idempotency_key?: string;
+  timeoutMs: number;
+}
+
+export type BrainTransport = (request: BrainTransportRequest) => Promise<BrainResponse<unknown>>;
+
+let brainRequestSequence = 0;
+
+function nextBrainIdempotencyKey(): string {
+  brainRequestSequence = (brainRequestSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `idacc:${Date.now().toString(36)}:${brainRequestSequence.toString(36)}`;
+}
 
 export class BrainClient {
   readonly url: string;
   private readonly token: string;
   private readonly source: string;
   private readonly timeoutMs: number;
+  private transport?: BrainTransport;
 
   constructor(opts: BrainClientOptions = {}) {
     this.url = (opts.url || DEFAULT_URL).replace(/\/+$/, '');
     this.token = opts.token ?? DEFAULT_TOKEN;
     this.source = opts.source || DEFAULT_SOURCE;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.transport = opts.transport;
+  }
+
+  /** Route all Brain traffic through an owning process such as the id-agents manager. */
+  setTransport(transport: BrainTransport | undefined): void {
+    this.transport = transport;
   }
 
   private headers(json: boolean): Record<string, string> {
@@ -314,6 +339,23 @@ export class BrainClient {
 
   /** Best-effort request with response-header metadata. Never throws. */
   private async reqWithMeta<T = unknown>(method: string, path: string, body?: unknown): Promise<BrainResponse<T>> {
+    if (this.transport) {
+      const idempotencyKey = method === 'POST' ? nextBrainIdempotencyKey() : undefined;
+      for (let attempt = 0; attempt < (method === 'POST' ? 2 : 1); attempt++) {
+        try {
+          return await this.transport({
+            method: method as 'GET' | 'POST',
+            path,
+            ...(body === undefined ? {} : { body }),
+            ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+            timeoutMs: this.timeoutMs,
+          }) as BrainResponse<T>;
+        } catch {
+          if (attempt === 0 && method === 'POST') await new Promise((resolve) => setTimeout(resolve, 125));
+        }
+      }
+      return { body: null, cacheControl: null, noStore: false };
+    }
     try {
       const r = await fetch(`${this.url}${path}`, {
         method,
@@ -335,6 +377,11 @@ export class BrainClient {
   /** Best-effort request. Returns the parsed body on 2xx, else null. Never throws. */
   private async req<T = unknown>(method: string, path: string, body?: unknown): Promise<T | null> {
     return (await this.reqWithMeta<T>(method, path, body)).body;
+  }
+
+  /** Typed escape hatch for manager-allowlisted Brain routes not yet modeled above. */
+  async route<T = unknown>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T | null> {
+    return this.req<T>(method, path, body);
   }
 
   private noStoreWarnings(route: string, response: BrainResponse<unknown>): string[] {

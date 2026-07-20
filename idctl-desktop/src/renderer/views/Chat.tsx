@@ -229,7 +229,7 @@ function ChatImage({ path }: { path: string }) {
   return <img className="chat-img" src={url} alt="generated" />;
 }
 
-export function Chat({ store, embedded = false, lockTarget, teamOverride, navigate }: { store: FleetStore; embedded?: boolean; lockTarget?: string; teamOverride?: string; navigate?: (view: string) => void }) {
+export function Chat({ store, embedded = false, lockTarget, teamOverride, navigate, onControlIntent }: { store: FleetStore; embedded?: boolean; lockTarget?: string; teamOverride?: string; navigate?: (view: string) => void; onControlIntent?: (input: string) => boolean }) {
   // teamOverride pins this chat to a specific team (independent of the global
   // active team) — its agents, lead, sessions and dispatch all scope to it.
   const team = teamOverride ?? store.team ?? 'default';
@@ -943,6 +943,10 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     // and the inflight being committed, where state-based guards could both read
     // false within one render and let a fast second Enter/Send double-dispatch.
     if ((!text && attachments.length === 0) || busy || sendingRef.current || !session || !!session.inflight) return;
+    if (text && attachments.length === 0 && onControlIntent?.(text)) {
+      setInput('');
+      return;
+    }
     // Unified composer: a clear image request (with no file attachments) generates
     // an image; everything else goes to the agent. Decision is free + local.
     if (text && !attachments.length && canImage && isImageRequest(text)) {

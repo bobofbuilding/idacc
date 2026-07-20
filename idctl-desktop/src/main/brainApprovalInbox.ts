@@ -1,4 +1,5 @@
 import { addQuestion, listQuestions, removeQuestion, type BlockerQuestion } from './questionstore.ts';
+import { brain } from '../../../idctl/src/api/brain.ts';
 
 type BrainApproval = {
   id: number | string;
@@ -56,19 +57,11 @@ function asArray(value: unknown): unknown[] {
 }
 
 async function brainJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${brainBaseUrl()}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(init?.headers ?? {}),
-    },
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`Brain ${res.status} ${res.statusText}: ${clip(body, 400)}`);
-  }
-  return await res.json() as T;
+  const method = String(init?.method || 'GET').toUpperCase() as 'GET' | 'POST';
+  const body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body;
+  const response = await brain.route<T>(method, path, body);
+  if (!response) throw new Error(`Manager-mediated Brain request failed: ${method} ${path}`);
+  return response;
 }
 
 function resolutionPath(kind: string): string {

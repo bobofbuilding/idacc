@@ -1,16 +1,25 @@
 # Dashboard Command Surface — Refactor Plan
 
-> Locked decisions (2026-06-26): (1) **patch the local manager** to add a generic
-> control-event route so the brain learns via the event stream as designed (id-agents is
-> upstream/no-push, so these are local-only patches that must be re-applied after a manager
-> reinstall); (2) **full single-page** Dashboard — fold the other views into Dashboard panels;
-> (3) **chat propose-then-confirm** — natural-language control with an approval card.
+> Locked decisions (updated 2026-07-20): (1) the maintained
+> `bobofbuilding/id-agents` fork is the compatible Manager and owns the control-event,
+> Brain relay, and control-state contracts; (2) Dashboard is the default command surface,
+> while Work and its tabs remain available as power-user drill-downs; (3) explicit chat
+> control intents use propose-then-confirm; (4) all operational control and Brain traffic
+> flows through Manager; (5) Brain stores durable decisions, commitments, outcomes, and
+> cited learning artifacts, with duplicate/no-op suppression rather than raw transcript noise.
 >
 > Source: six-way audit + architect synthesis (workflow cc-drive-everything-audit).
 
 ---
 
-All claims confirmed against source. The manifest is at `id-agents/src/control-center/manifest.ts` (CC_API_VERSION=1, line 15), the `/capabilities` route is at `agent-manager-db.ts:2729`, and the bridge `call()` dispatcher shows the client-side-only mutations writing straight to `saveSettings` with no manager round-trip. I have everything needed.
+## Implementation status (2026-07-20)
+
+All six phases are implemented on the IDACC, compatible Manager, and Brain working
+branches. The final gates cover Manager-mediated Brain access, durable control/config
+events, versioned Manager control state, project/plan/task lineage, Dashboard panels,
+and confirm-before-execute chat intents. The historical audit below is retained to show
+the gaps this refactor closes; line numbers and the old `CC_API_VERSION=1` statement are
+not descriptions of the current implementation.
 
 ---
 
@@ -106,7 +115,7 @@ Dashboard control (palette / panel / chat-intent)
               → brain :4200 (/timeline + /facts + /entities)
 ```
 
-Client-local-only facts (e.g. window prefs, or any setting we deliberately keep client-side) are mirrored explicitly via a new `BrainClient` (`idctl/src/api/brain.ts`). The current `orgSync` inline `fetch` to `:4200` (`orgSync.ts:152`) is refactored to use either the manager passthrough (preferred) or `BrainClient`, eliminating the lone ad-hoc back-channel.
+Client-local durable facts are mirrored explicitly via `BrainClient` (`idctl/src/api/brain.ts`), whose desktop transport is hardwired to the Manager relay. The current `orgSync` inline `fetch` to `:4200` (`orgSync.ts:152`) is replaced by manager passthrough, eliminating the lone ad-hoc back-channel.
 
 ## 4. Harness changes (manager-side, in id-agents)
 
@@ -118,9 +127,9 @@ Minimal manager additions (if/when id-agents is editable):
 2. **Config-write events** — after the DB write in each existing handler (`/agents/:id/{model,runtime,instructions,mcp,delegates,team,metadata}`, `/teams/:name/delegates`, `/agents/spawn`, `/tasks`, `/deploy`, `/sync`), call the new emit helper (`config:agent-updated`, `config:team-updated`, `agent:spawned`, `task:created`, `team:deployed`). No new client surface — already-routed controls become learned.
 3. **Manager-fronted control-state store** — `POST/GET /control/state/:scope/:key` (`scope=global|team|project`) persisted to a new `control_state` table, mirrored to the brain via the manager's **existing private `postBrain()`** primitive (`agent-manager-db.ts:1604-1856`). Migrate coordinators/primary/secondary, `projects[]`, `taskLanes/taskDeps/taskReview` here.
 4. **Brain memory passthrough** — `POST /control/memory` forwarding to brain via `postBrain()`, so `orgSync.ts:152`'s direct `:4200` write becomes harness-mediated.
-5. **Manifest bump** — add routes to `id-agents/src/control-center/manifest.ts` `CC_ROUTES`, add features `control-events`, `control-state` to `CC_FEATURES`, bump `CC_API_VERSION` from 1 → 2 (line 15). The Dashboard gates new panels on `client.capabilities()` (`client.ts:417`), degrading gracefully on a stock manager via the existing `requireRoute()` pattern (`client.ts:275`).
+5. **Manifest bump** — add routes to `id-agents/src/control-center/manifest.ts` `CC_ROUTES`, add features `control-events`, `control-state`, and `brain-relay` to `CC_FEATURES`, and bump `CC_API_VERSION` to 4. The Dashboard gates new panels on `client.capabilities()`, degrading gracefully on a stock manager via the existing `requireRoute()` pattern.
 
-**App-side fallback (if id-agents stays frozen):** the CC posts control actions **directly to the brain at :4200** via the new `BrainClient` (`POST /timeline` + `/facts` + `/text-units/ingest`) — the same channel `orgSync` already proves works. This loses the "single manager mutation path" purity for config (config still lands in config.json) but **fully closes the brain-learning gap** today. The recommended sequencing in §6 ships the brain-write fallback first (no id-agents dependency) and routes through the manager later.
+**Selected implementation:** the app-side direct fallback is not used by the desktop app. `BrainClient` keeps a transport abstraction for isolated tests and non-desktop consumers, while IDACC installs the Manager transport before operational calls.
 
 ## 5. Brain wiring — how every control action is recorded
 
@@ -141,17 +150,19 @@ All explicit writes go through **one** new `idctl/src/api/brain.ts` `BrainClient
 
 ## 6. Phased implementation plan
 
-> Ordered by value/risk. Phases 1–3 have **zero id-agents dependency** (pure CC + direct brain writes), so they ship even with the repo frozen. Phases 4–5 add the manager routes once id-agents is editable. Each phase = one versioned release.
+> Ordered by value/risk. The maintained Manager fork is available, so the implementation
+> uses Manager-mediated Brain transport from Phase 1 and adds the durable Manager contracts
+> in Phases 4–5. Release cadence is intentionally separate from these implementation gates.
 
 ### Phase 1 — BrainClient + close the explicit-write learning gap (highest value, lowest risk)
-- **Goal:** every existing client-side mutation becomes brain-learned via direct `:4200` writes, with zero manager change and zero UI restructure. Proves the wiring on the established `orgSync` channel.
+- **Goal:** every existing client-side mutation becomes brain-learned through the Manager relay, with zero UI restructure. The app never needs a direct operational connection to `:4200`.
 - **Files:**
-  - **New** `idctl/src/api/brain.ts` — `BrainClient` (timeline/facts/entities/memory/text-units, mirrors `orgSync` fetch pattern at `orgSync.ts:148-167`).
+  - **New** `idctl/src/api/brain.ts` — `BrainClient` (timeline/facts/entities/memory/text-units) with a Manager-installed transport and stable idempotency keys across retries.
   - `idctl-desktop/src/main/orgSync.ts` — refactor `writeOrgToBrain`/`brainInstructions` onto `BrainClient`; add per-change `control:org-changed` timeline write in the `coordinator:*`/`org:setSecondaryLeads` paths.
   - `idctl-desktop/src/main/bridge.ts` — in the `call()` dispatcher (lines 685-724) for `coordinator:set/setPrimary`, `org:setSecondaryLeads`, `org:setConfig`, `projects:save/remove`, `tasks:setLane/setDeps/setReview`, and METHODS entries `providers:*`/`mcp:*`, append a `BrainClient.timeline()/facts()` mirror after `saveSettings`.
   - `idctl-desktop/src/main/brainplans.ts:122-201` — after disk/git, BrainClient `/timeline`+`/facts`+`/text-units/ingest`.
   - `idctl-desktop/src/main/dreamstore.ts` (save call site) — BrainClient `/text-units/ingest`.
-- **Acceptance:** flip a provider default + promote a coordinator + mark a brain plan DONE from the existing UI → all three appear in brain `/timeline` and as facts within seconds; `GET :4200/memory/shared` / timeline query confirms.
+- **Acceptance:** flip a provider default + promote a coordinator + mark a brain plan DONE from the existing UI → Manager acknowledges the relay and all three appear in brain `/timeline` and as facts within seconds.
 
 ### Phase 2 — Dashboard command palette + control drawer scaffold (UI primitive, read-safe)
 - **Goal:** add `Cmd-K` palette + slide-over drawer to the Dashboard, wired to a shared command registry, with no new mutations yet (registry initially routes to existing pages/IPC).
@@ -171,14 +182,14 @@ All explicit writes go through **one** new `idctl/src/api/brain.ts` `BrainClient
 - **Acceptance:** from the Dashboard, register a workspace folder → assign team+lead+policy → decompose an objective → review proposal → dispatch → watch tasks land in CoordinationTree filtered to that project. Brain timeline shows project entity + dispatches correlated to it.
 
 ### Phase 4 — Manager control-event + config-event routes (route through the harness)
-- **Goal:** flip the §4.1/4.2 mutations from direct-brain-write to manager-routed (event-derived), making "everything through the manager" literally true. *Requires id-agents editable.*
+- **Goal:** add durable control/config event production so manager-routed mutations become event-derived learning as well as acknowledged explicit writes.
 - **Files:**
   - `id-agents/src/agent-manager-db.ts` — add `POST /control-event` (near line 2729); emit config events from existing `/agents/:id/*`, `/teams/:name/delegates`, `/agents/spawn`, `/tasks`, `/deploy`, `/sync` handlers.
   - `id-agents/src/wakeup-service/event-producer.ts:18-30` — add `control:*`/`config:*` producers.
   - `workspace/projects/brain/brain-listener.mjs` (`handleEvent`) — add `control:*` branch → `/timeline`+`/facts`.
-  - `idctl/src/api/client.ts` — `emitControlEvent(topic,subject,data)`; switch Phase-1 direct writes to this where a manager round-trip exists.
-  - `id-agents/src/control-center/manifest.ts:15` — bump `CC_API_VERSION` → 2, add routes/features.
-- **Acceptance:** with the new manager, a config change emits a `config:*` row in `GET /events`; brain-listener converts it; **disabling the direct BrainClient mirror still leaves the action learned** (proof it's manager-routed). Stock manager → panels degrade via `requireRoute`.
+  - `idctl/src/api/client.ts` — `emitControlEvent(topic,subject,data)` for durable event production alongside the Manager Brain relay.
+  - `id-agents/src/control-center/manifest.ts` — bump `CC_API_VERSION` to 4 and add routes/features.
+- **Acceptance:** a config change emits a `config:*` row in `GET /events`; brain-listener converts it to a bounded timeline/fact update. Duplicate idempotency keys do not produce duplicate events.
 
 ### Phase 5 — Manager control-state store + project/lineage entities (single source of truth)
 - **Goal:** migrate `projects[]`, coordinators, `taskDeps/taskLanes/taskReview` out of config.json into manager-side `control_state`, with project + plan↔task lineage as first-class.
@@ -194,18 +205,12 @@ All explicit writes go through **one** new `idctl/src/api/brain.ts` `BrainClient
 - **Files:** **new** `idctl-desktop/src/renderer/dashboard/chatIntents.ts`; extend `Chat.tsx`; remaining panels under `views/dashboard/panels/`.
 - **Acceptance:** typing `/dispatch "build X" to research` in chat produces a proposal card → approve → routed mutation appears in brain timeline; declining executes nothing.
 
-## 7. Risks & open decisions (need your call)
+## 7. Resolved decisions and remaining release decision
 
-1. **id-agents push access.** Your memory says no push to id-agents (`feedback_keep_tooling_in_brain_cc.md`). If that still holds, Phases 4–5 (manager routes) are blocked and the **app-side fallback** (Phases 1–3, direct brain writes) is the ceiling — config stays in config.json, learned via `BrainClient` but not "manager-routed." **Decision:** is id-agents now editable (Phase 4-5 viable), or do we commit to the direct-brain-write model permanently?
+1. **Manager ownership:** `bobofbuilding/id-agents` is the maintained compatible fork. It owns control state, control/config events, and the Brain relay.
+2. **Single mutation path:** operational mutations and Brain traffic go through Manager. `config.json` is a recoverable cache mirror, not the source of truth for migrated control state.
+3. **Surface boundary:** Dashboard is the default command surface; Projects, Work, Tasks, and Plans remain power-user drill-downs.
+4. **Chat autonomy:** explicit slash control intents always render a confirmation card before mutation. Ordinary chat remains pinned to `default/lead`.
+5. **Learning quality:** Brain retains cited durable decisions, commitments, outcomes, and learning artifacts. Duplicate and no-op windows suppress low-value repetition; raw transcripts are not mirrored as durable memory.
 
-2. **Single mutation path vs. pragmatic dual-write.** True "everything through the manager" requires the control-state store (Phase 5) and means config.json becomes a cache. That's the cleanest design but the biggest migration. **Decision:** migrate config server-side (purist), or keep config.json authoritative and *mirror* to the brain (pragmatic, less risk)?
-
-3. **How far to fold views into the Dashboard.** Plan keeps Projects/Tasks/Plans as drill-downs and composes their IPC into Dashboard panels. **Decision:** do you want those pages eventually *removed* (Dashboard-only), or kept as power-user surfaces?
-
-4. **Chat autonomy.** Phase 6 chat intents use confirm-before-execute. **Decision:** should the chat ever execute control intents **autonomously** (no confirm) for low-risk actions, or always require an approval card? (Bears on the orchestration-reliability concern in your memory — agents marking work done without doing it.)
-
-5. **Granularity of brain learning.** Mirroring every provider toggle / lane move to the brain could be noisy. **Decision:** learn **all** control actions, or a curated subset (org changes, project decisions, plan status, dispatches) with low-signal toggles excluded? This sets the `control:*` topic allow-list in §4.1.
-
----
-
-**Engineer can start Phase 1 immediately:** create `idctl/src/api/brain.ts` modeled on the `fetch` block at `orgSync.ts:148-167`, then add `BrainClient` mirror calls after `saveSettings` in the `bridge.ts` `call()` dispatcher (lines 685-724) and in `brainplans.ts:122-201` / `dreamstore.ts`. No manager change, no UI change, fully reversible.
+The remaining operational choice is release cadence: publish the completed phases as one coordinated compatibility release, or preserve six separately versioned release milestones. The implementation and verification do not depend on that choice.

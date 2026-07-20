@@ -6,14 +6,16 @@
  * Most config/control mutations write only the local settings store (or local fs) and never
  * reach the manager, so the manager→brain event stream never learns them. Even the ones that
  * DO route through the manager (runtime/instructions/spawn/deploy/concurrency) are event-silent
- * server-side. This module mirrors them all to the brain directly — a timeline audit event for
- * every action, plus richer entity/fact/text writes for the ones that deserve them — via the
- * shared BrainClient.
+ * server-side. This module sends durable summaries through the manager-mediated Brain transport:
+ * a timeline audit event for meaningful actions, plus richer entity/fact/text writes where
+ * warranted.
  *
  * It is invoked from ONE choke point: the ipcMain 'idagents:call' handler in main.ts. Because
  * every renderer call funnels there (bridge METHODS, bridge specials, and app-level appCall
  * methods all flow through it), a single registry covers the whole surface without editing any
- * call site. Fire-and-forget + best-effort: it never throws and never delays the IPC reply.
+ * call site. Delivery is asynchronous so it never delays the IPC reply, while the manager
+ * journals and acknowledges writes. Repeated identical observations are suppressed here before
+ * they consume Brain storage or future retrieval tokens.
  *
  * Granularity note: this records ALL recognized control actions (the locked "learn everything"
  * decision). The ACTIONS map IS the allow-list — drop an entry to stop learning that action.
@@ -22,6 +24,17 @@ import { brain } from '../../../idctl/src/api/brain.ts';
 import { createHash } from 'node:crypto';
 
 type Summary = { subject?: string; data?: Record<string, unknown>; tags?: string[] };
+type ControlEventEmitter = (input: {
+  topic: string;
+  subject: { kind: string; id: string };
+  data: Record<string, unknown>;
+  idempotency_key?: string;
+}) => Promise<unknown>;
+let emitControlEvent: ControlEventEmitter | null = null;
+
+export function configureControlEventEmitter(emitter: ControlEventEmitter): void {
+  emitControlEvent = emitter;
+}
 type TrackingCandidate = {
   contributionType: string;
   title: string;
@@ -53,6 +66,44 @@ function safeJson(value: unknown, n = 3000): string {
 
 function shortHash(value: unknown): string {
   return createHash('sha1').update(typeof value === 'string' ? value : safeJson(value, 12000)).digest('hex').slice(0, 12);
+}
+
+const recentControlFingerprints = new Map<string, number>();
+const CONTROL_DEDUPE_MS = 30_000;
+const CONTROL_NOOP_DEDUPE_MS = 5 * 60_000;
+
+function isRepeatedControlAction(method: string, summary: Summary): boolean {
+  const fingerprint = shortHash({ method, subject: summary.subject, data: summary.data, tags: summary.tags });
+  const now = Date.now();
+  const ttl = /found no queued material|no[- ]?op/i.test(summary.subject ?? '')
+    ? CONTROL_NOOP_DEDUPE_MS
+    : CONTROL_DEDUPE_MS;
+  const previous = recentControlFingerprints.get(fingerprint) ?? 0;
+  if (now - previous < ttl) return true;
+  recentControlFingerprints.set(fingerprint, now);
+  if (recentControlFingerprints.size > 1_000) {
+    for (const [key, at] of recentControlFingerprints) {
+      if (now - at > CONTROL_NOOP_DEDUPE_MS) recentControlFingerprints.delete(key);
+    }
+  }
+  return false;
+}
+
+function controlIdempotencyKey(method: string, summary: Summary, now = Date.now()): string {
+  const fingerprint = shortHash({ method, subject: summary.subject, data: summary.data, tags: summary.tags });
+  return `idacc-control:${fingerprint}:${Math.floor(now / CONTROL_DEDUPE_MS)}`;
+}
+
+function controlEventEnvelope(method: string, summary: Summary): {
+  topic: string;
+  subject: { kind: string; id: string };
+} {
+  const data = summary.data ?? {};
+  if (method.startsWith('projects:')) return { topic: 'project:updated', subject: { kind: 'project', id: s(data.id) || method } };
+  if (method.startsWith('brain:') || method.startsWith('plans:')) return { topic: 'plan:updated', subject: { kind: 'plan', id: s(data.file) || s(data.id) || method } };
+  if (method.startsWith('coordinator:') || method.startsWith('org:')) return { topic: 'control:org', subject: { kind: 'team', id: s(data.team) || 'default' } };
+  if (method.startsWith('work:') || method.startsWith('tasks:')) return { topic: 'control:work', subject: { kind: 'work', id: s(data.ref) || method } };
+  return { topic: 'control:action', subject: { kind: 'control-action', id: method } };
 }
 
 function isoWeekKey(date = new Date()): string {
@@ -715,14 +766,22 @@ const EXTRAS: Record<string, (args: unknown[], result: unknown) => void> = {
   },
 };
 
-/** Mirror a successful control action to the brain. Best-effort, never throws, never awaited. */
+/** Mirror a successful control action through Manager to Brain. Never throws or delays IPC. */
 export function recordControlAction(method: string, args: unknown[], result: unknown): void {
   try {
     const summarize = ACTIONS[method];
     let out: Summary | undefined;
     if (summarize) {
       try { out = summarize(args, result) ?? {}; } catch { out = {}; }
-      void brain.control(method, out);
+      if (isRepeatedControlAction(method, out)) return;
+      if (emitControlEvent) {
+        const envelope = controlEventEnvelope(method, out);
+        void emitControlEvent({
+          ...envelope,
+          data: { action: method, subject: out.subject ?? method, data: out.data ?? {}, tags: out.tags ?? [] },
+          idempotency_key: controlIdempotencyKey(method, out),
+        }).catch(() => {});
+      }
       void recordTrackingHooks(method, args, result, out).catch(() => {});
     }
     const extra = EXTRAS[method];

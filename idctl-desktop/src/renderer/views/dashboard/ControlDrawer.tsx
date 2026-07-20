@@ -3,6 +3,11 @@
 import { useState } from 'react';
 import type { FleetStore } from '../../store.ts';
 import { call } from '../../store.ts';
+import { ProjectDriverPanel } from './panels/ProjectDriverPanel.tsx';
+import { OrgPanel } from './panels/OrgPanel.tsx';
+import { PlansPanel } from './panels/PlansPanel.tsx';
+import { BoardPanel } from './panels/BoardPanel.tsx';
+import { ControlCenterPanel } from './panels/ControlCenterPanel.tsx';
 
 export function ControlDrawer({
   store, panel, onClose, navigate,
@@ -13,7 +18,7 @@ export function ControlDrawer({
   navigate?: (view: string) => void;
 }) {
   if (!panel) return null;
-  const title = panel === 'quick' ? 'Dashboard shortcuts' : panel;
+  const title = panel === 'quick' ? 'Dashboard shortcuts' : panel === 'project-driver' ? 'Project driver' : panel === 'org' ? 'Organization' : panel === 'plans' ? 'Plans' : panel === 'board' ? 'Board' : panel === 'control-center' ? 'Control center' : panel;
   return (
     <div className="drawer-overlay" onMouseDown={onClose}>
       <aside className="drawer" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-label={`${title} panel`}>
@@ -22,7 +27,13 @@ export function ControlDrawer({
           <button className="btn icon-danger" onClick={onClose} title="Close">✕</button>
         </header>
         <div className="drawer-body">
-          {panel === 'quick' ? <QuickControlsPanel store={store} navigate={navigate} onClose={onClose} /> : <div className="muted">Unknown panel: {panel}</div>}
+          {panel === 'quick' ? <QuickControlsPanel store={store} navigate={navigate} onClose={onClose} /> : null}
+          {panel === 'project-driver' ? <ProjectDriverPanel store={store} onOpenWork={() => { navigate?.('tasks'); onClose(); }} /> : null}
+          {panel === 'org' ? <OrgPanel store={store} onOpenHr={() => { navigate?.('teams:route'); onClose(); }} /> : null}
+          {panel === 'plans' ? <PlansPanel onOpenWork={() => { navigate?.('tasks'); onClose(); }} /> : null}
+          {panel === 'board' ? <BoardPanel onOpenWork={() => { navigate?.('tasks'); onClose(); }} /> : null}
+          {panel === 'control-center' ? <ControlCenterPanel onOpenSettings={() => { navigate?.('settings'); onClose(); }} onOpenCapabilities={() => { navigate?.('modules'); onClose(); }} /> : null}
+          {!['quick', 'project-driver', 'org', 'plans', 'board', 'control-center'].includes(panel) ? <div className="muted">Unknown panel: {panel}</div> : null}
         </div>
       </aside>
     </div>

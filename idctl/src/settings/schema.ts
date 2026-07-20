@@ -92,27 +92,27 @@ export interface IdctlConfig {
    */
   skillTags?: Record<string, string[]>;
   /**
-   * App-side Kanban lane overlay for tasks — task ref → fine-grained lane
+   * Cache mirror of Manager-owned Kanban lane state — task ref → fine-grained lane
    * (backlog/holding/needs-adjustment/under-review/rework/…). The manager only
    * knows todo/doing/done; this refines the board within those. Client-side only.
    */
   taskLanes?: Record<string, string>;
   /**
-   * App-side dependency graph for tasks — task ref → the refs it depends on
+   * Cache mirror of the Manager-owned task dependency graph — task ref → prerequisite refs.
    * (its prerequisites). The manager has no deps field, so plan decomposition
    * records the "after #N" edges here and the board surfaces "blocked by …".
    * Client-side only.
    */
   taskDeps?: Record<string, string[]>;
   /**
-   * App-side "adjustment loop" state for tasks blocked on a USER decision (a question
+   * Cache mirror of Manager-owned adjustment-loop state for tasks blocked on a USER decision (a question
    * in the Inbox): task ref → { state, at }. state is 'needs-adjustment' (decision
    * raised) | 'under-review' (user responded) | 'rework' (re-blocked after review); `at`
    * is when that state was set (drives the auto-resolve once a block passes). Drives the
    * board's Adjustment-Loop columns; cleared when the block passes. Client-side only.
    */
   taskReview?: Record<string, { state: string; at: number }>;
-  /** Local project tracker entries (the "Projects" page). Client-side only. */
+  /** Cache mirror of the Manager-owned project registry. */
   projects?: ProjectEntry[];
   /**
    * Folder whose immediate subdirectories are tracked as projects (the "Sync
@@ -189,6 +189,7 @@ export interface DraftDispatcherSettings {
 }
 
 export type ProjectStatus = 'active' | 'paused' | 'blocked' | 'done';
+export type ProjectPolicy = 'balanced' | 'review-first' | 'fast-track';
 
 /** A tracked project (local to the control center — not a manager concept). */
 export interface ProjectEntry {
@@ -198,6 +199,10 @@ export interface ProjectEntry {
   description?: string;
   /** Optional linked team name. */
   team?: string;
+  /** Accountable team lead used for decomposition, supervision, and triage. */
+  lead?: string;
+  /** Execution posture applied by Dashboard and Work dispatch flows. */
+  policy?: ProjectPolicy;
   tags?: string[];
   /** Related URLs (repo, dashboard, docs…). */
   links?: string[];

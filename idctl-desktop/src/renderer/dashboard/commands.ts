@@ -125,6 +125,9 @@ export function buildCommands(store: FleetStore): Command[] {
 
   // ── Control panels (slide-over) ──
   cmds.push({ id: 'panel.quick', label: 'Open quick controls', group: 'Control', keywords: 'drawer panel actions', hint: 'drawer', run: (c) => c.openDrawer('quick') });
+  cmds.push({ id: 'panel.plans', label: 'Manage plans', group: 'Work', keywords: 'brain plan objective status pause work', hint: 'drawer', run: (c) => c.openDrawer('plans') });
+  cmds.push({ id: 'panel.board', label: 'Manage task board', group: 'Work', keywords: 'kanban lane dependency review backlog todo doing', hint: 'drawer', run: (c) => c.openDrawer('board') });
+  cmds.push({ id: 'panel.control-center', label: 'Configure runtimes and capabilities', group: 'Control', keywords: 'provider model mcp concurrency settings', hint: 'drawer', run: (c) => c.openDrawer('control-center') });
 
   // ── Owner-page handoffs for high-impact actions ──
   // Dashboard stays observe/talk first. The owner pages hold the richer previews for
@@ -132,19 +135,27 @@ export function buildCommands(store: FleetStore): Command[] {
   // advanced direct shortcuts for operators who explicitly open it.
   cmds.push({
     id: 'projects.sync',
-    label: 'Open Projects to sync workspace',
+    label: 'Register or sync a project',
     group: 'Projects',
-    keywords: 'register import scan folder root',
-    hint: 'review',
-    run: (c) => c.navigate('projects'),
+    keywords: 'workspace import scan folder root project',
+    hint: 'drawer',
+    run: (c) => c.openDrawer('project-driver'),
   });
   cmds.push({
     id: 'org.sync',
-    label: 'Open HR Manager to preview org sync',
+    label: 'Promote or assign a team lead',
     group: 'Org',
-    keywords: 'hierarchy leads instructions rebuild brain',
-    hint: 'preview',
-    run: (c) => c.navigate('teams:route'),
+    keywords: 'coordinator hierarchy lead org instructions rebuild brain',
+    hint: 'drawer',
+    run: (c) => c.openDrawer('org'),
+  });
+  cmds.push({
+    id: 'work.dispatch',
+    label: 'Decompose and dispatch work',
+    group: 'Work',
+    keywords: 'objective plan delegate fanout task create assignment',
+    hint: 'drawer',
+    run: (c) => c.openDrawer('project-driver'),
   });
   cmds.push({
     id: 'fleet.probe',

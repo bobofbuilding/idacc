@@ -11,6 +11,7 @@ import {
   shortPublicAddress,
 } from '../activityFeed.ts';
 import { Chat } from './Chat.tsx';
+import { parseChatControlIntent, type ControlIntentProposal } from '../dashboard/chatIntents.ts';
 import type { InboxItem, NewsItem, Task } from '../../../../idctl/src/api/types.ts';
 
 /**
@@ -441,6 +442,31 @@ export function Dashboard({ store }: { store: FleetStore }) {
   const activitySyncVersion = useSyncVersion(['dashboard', 'tasks', 'work', 'inbox', 'chats']);
   const hierarchySyncVersion = useSyncVersion(['org', 'agents', 'dashboard']);
   const [hier, setHier] = useState<OrgHier>({ primary: null, secondaries: [], coordinators: {}, teams: [] });
+  const [controlIntent, setControlIntent] = useState<ControlIntentProposal | null>(null);
+  const [controlIntentBusy, setControlIntentBusy] = useState(false);
+  const [controlIntentStatus, setControlIntentStatus] = useState('');
+  const proposeControlIntent = useCallback((input: string): boolean => {
+    const proposal = parseChatControlIntent(input, store);
+    if (!proposal) return false;
+    setControlIntent(proposal);
+    setControlIntentStatus('');
+    return true;
+  }, [store]);
+  const executeControlIntent = useCallback(async () => {
+    if (!controlIntent || controlIntentBusy) return;
+    setControlIntentBusy(true);
+    setControlIntentStatus('Manager accepted the command; starting work…');
+    try {
+      const result = await controlIntent.execute();
+      setControlIntentStatus(result);
+      setControlIntent(null);
+      store.refresh();
+    } catch (error) {
+      setControlIntentStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setControlIntentBusy(false);
+    }
+  }, [controlIntent, controlIntentBusy, store]);
   const hierarchyLiveRef = useRef(true);
   useEffect(() => () => { hierarchyLiveRef.current = false; }, []);
   const loadHierarchy = useCallback(() => {
@@ -685,7 +711,20 @@ export function Dashboard({ store }: { store: FleetStore }) {
       <div style={{ display: 'flex', gap: 14, flex: 1, minHeight: 0, alignItems: 'stretch' }}>
         {/* Primary lead chat: locked to default/lead (no team or agent picker). */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          <Chat store={store} embedded teamOverride={DASHBOARD_CHAT_TEAM} lockTarget={DASHBOARD_CHAT_TARGET} key={`${DASHBOARD_CHAT_TEAM}:${DASHBOARD_CHAT_TARGET}`} />
+          {controlIntent ? (
+            <section className="control-intent-proposal" aria-live="polite">
+              <div className="control-intent-copy">
+                <strong>{controlIntent.title}</strong>
+                <span>{controlIntent.summary}</span>
+              </div>
+              <div className="row-actions">
+                <button className="btn" disabled={controlIntentBusy} onClick={() => { setControlIntent(null); setControlIntentStatus('Command declined; nothing was changed.'); }}>Cancel</button>
+                <button className="btn primary" disabled={controlIntentBusy} onClick={() => void executeControlIntent()}>{controlIntentBusy ? 'Starting…' : 'Confirm'}</button>
+              </div>
+            </section>
+          ) : null}
+          {controlIntentStatus ? <div className="control-intent-status muted small" aria-live="polite">{controlIntentStatus}</div> : null}
+          <Chat store={store} embedded teamOverride={DASHBOARD_CHAT_TEAM} lockTarget={DASHBOARD_CHAT_TARGET} onControlIntent={proposeControlIntent} key={`${DASHBOARD_CHAT_TEAM}:${DASHBOARD_CHAT_TARGET}`} />
         </div>
 
         {/* marginTop offsets the chat's control row so the tile top squares with the chat card

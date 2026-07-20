@@ -269,8 +269,8 @@ function renderOrgSummary(hier: OrgHierarchy): string {
  *  org structure as a source of truth (and the manager can inject it per-dispatch). Uses the
  *  shared BrainClient: visibility='public' (shared:true) so GET /memory/shared returns it;
  *  mem_key upserts by (agent_id, key) so no duplicates. */
-async function writeOrgToBrain(hier: OrgHierarchy): Promise<boolean> {
-  return brain.memory('team-instructions', {
+async function writeOrgToBrain(client: ManagerClient, hier: OrgHierarchy): Promise<boolean> {
+  return client.controlMemory('team-instructions', {
     content: renderOrgSummary(hier),
     key: 'org:hierarchy',
     tags: ['team-instruction', 'org-structure'],
@@ -425,7 +425,7 @@ export async function previewOrgSync(client: ManagerClient, opts: { autoRebuild?
  */
 export async function syncOrg(client: ManagerClient, opts: { autoRebuild?: boolean } = {}): Promise<OrgSyncResult> {
   const plan = await buildOrgSyncPlan(client, opts);
-  const brain = await writeOrgToBrain(plan.hierarchy);
+  const brain = await writeOrgToBrain(client, plan.hierarchy);
 
   let written = 0;
   const rebuilt: string[] = [];

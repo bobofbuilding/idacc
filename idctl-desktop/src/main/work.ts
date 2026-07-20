@@ -10,7 +10,7 @@
 
 import type { ManagerClient } from '../../../idctl/src/api/client.ts';
 import type { Agent, RemoteEnvelope, Task } from '../../../idctl/src/api/types.ts';
-import { setTaskLane, setTaskDeps, loadSettings } from '../../../idctl/src/settings/store.ts';
+import { setTaskLane, setTaskDeps, loadSettings, saveSettings } from '../../../idctl/src/settings/store.ts';
 import { optimizeAskCommand } from './contextBudget.ts';
 
 export interface SubTask { title: string; description: string; agent: string; dependsOn: number[] }
@@ -116,6 +116,46 @@ function taskBriefFlags(objective: string, st: Pick<SubTask, 'title' | 'descript
     ['--backlog-policy', backlog],
     ['--bittrees-relevance', relevance],
   ].map(([flag, value]) => `${flag} ${qArg(value)}`).join(' ');
+}
+
+async function hydrateTaskOverlays(client: ManagerClient): Promise<void> {
+  const manager = client.withTeam('default');
+  try {
+    const current = await manager.controlStateGet<{
+      taskLanes?: Record<string, string>;
+      taskDeps?: Record<string, string[]>;
+      taskReview?: Record<string, { state: string; at: number }>;
+    }>('global', 'task-overlays');
+    if (!current) {
+      const local = loadSettings();
+      await manager.controlStateSet('global', 'task-overlays', {
+        taskLanes: local.taskLanes ?? {},
+        taskDeps: local.taskDeps ?? {},
+        taskReview: local.taskReview ?? {},
+      });
+      return;
+    }
+    const local = loadSettings();
+    local.taskLanes = current.value.taskLanes ?? {};
+    local.taskDeps = current.value.taskDeps ?? {};
+    local.taskReview = current.value.taskReview ?? {};
+    saveSettings(local);
+  } catch {
+    // Older managers do not expose control state. Existing local overlays remain usable.
+  }
+}
+
+async function persistTaskOverlays(client: ManagerClient): Promise<void> {
+  const local = loadSettings();
+  try {
+    await client.withTeam('default').controlStateSet('global', 'task-overlays', {
+      taskLanes: local.taskLanes ?? {},
+      taskDeps: local.taskDeps ?? {},
+      taskReview: local.taskReview ?? {},
+    });
+  } catch {
+    // Preserve the local cache on stock/older managers; the next compatible manager rehydrates it.
+  }
 }
 
 async function openTasks(client: ManagerClient): Promise<Task[]> {
@@ -694,8 +734,9 @@ export async function createAndDispatchPlan(
   client: ManagerClient,
   objective: string,
   subtasks: SubTask[],
-  opts: { dispatch?: boolean; lane?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean; allowInactiveOwners?: boolean; ownerOpenTaskCap?: number; coordinator?: string; leadCoordination?: boolean } = {},
+  opts: { dispatch?: boolean; lane?: string; projectId?: string; planId?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean; allowInactiveOwners?: boolean; ownerOpenTaskCap?: number; coordinator?: string; leadCoordination?: boolean } = {},
 ): Promise<CreatePlanResult> {
+  await hydrateTaskOverlays(client);
   // dispatch=false → create tasks UNOWNED (status todo) into a lane and DON'T farm them
   // out (a staged queue the lead works later). Default true = assign owners + dispatch.
   const dispatch = opts.dispatch !== false;
@@ -760,7 +801,8 @@ export async function createAndDispatchPlan(
     // unowned (stays todo) and record the lead's suggested owner in the description.
     const desc = dispatch ? st.description : `${st.description}${st.description ? '\n\n' : ''}(suggested owner: ${st.agent})`.trim();
     const coordinationFlag = dispatch && opts.leadCoordination === true ? ' --lead-coordination' : '';
-    const cmd = `/task create ${qArg(st.title)}${dispatch ? ` --owner ${st.agent}` : ''}${coordinationFlag}${desc ? ` --description ${qArg(desc)}` : ''} ${taskBriefFlags(objective, st)}`;
+    const lineageFlags = `${opts.projectId ? ` --project ${qArg(opts.projectId)}` : ''}${opts.planId ? ` --plan ${qArg(opts.planId)}` : ''}`;
+    const cmd = `/task create ${qArg(st.title)}${dispatch ? ` --owner ${st.agent}` : ''}${coordinationFlag}${lineageFlags}${desc ? ` --description ${qArg(desc)}` : ''} ${taskBriefFlags(objective, st)}`;
     try {
       const env = await client.remote<{ task?: { shortId?: string; name?: string; ownerName?: string | null; status?: string | null }; warning?: string }>(cmd);
       const task = env.result?.task;
@@ -820,7 +862,7 @@ export async function createAndDispatchPlan(
   // Persist the dependency graph app-side (the manager has no deps field) so the board
   // can surface "blocked by …". Map each task's backward dep indices → the created refs.
   try {
-    for (let i = 0; i < created.length; i++) {
+  for (let i = 0; i < created.length; i++) {
       const c = created[i];
       if (!c.ok) continue;
       const refs = (planItems[i]?.dependsOn || [])
@@ -829,6 +871,7 @@ export async function createAndDispatchPlan(
       if (refs.length) setTaskDeps(c.ref, refs);
     }
   } catch { /* overlay is best-effort */ }
+  await persistTaskOverlays(client);
 
   // Queue-only: tasks created in the lane, not farmed out — the lead works them later.
   if (!dispatch) return { created, dispatched: 0, deferred: created.filter((c) => c.ok || c.deferred).length };
@@ -947,7 +990,6 @@ export async function delegateObjectiveToTeamLeads(
   if (!obj) {
     return { ok: false, targetCount: 0, subtasks: [], created, dispatched: 0, deferred: 0, errors: ['describe the objective first'] };
   }
-
   const currentTeam = opts.currentTeam || baseClient.team || 'default';
   const plannerClient = currentTeam === baseClient.team ? baseClient : baseClient.withTeam(currentTeam);
   const targets = await resolveActiveTeamLeadTargets(baseClient, currentTeam);

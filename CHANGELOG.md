@@ -8,6 +8,14 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.647] — 2026-07-20
+### What changed
+- Dashboard: add a Manager-routed command palette and control panels while retaining Work drill-downs.
+- Persist project, organization, and task-overlay control state in the compatible Manager.
+- Route Brain reads and writes through Manager with idempotency, redaction, lineage, and noise guards.
+- Add confirm-before-execute chat commands and project, plan, and task tracking.
+- Harden older-Manager fallback, atomic state conflicts, and command-surface regression coverage.
+
 ## [0.1.646] — 2026-07-17
 ### What changed
 - Dashboard: surface public wallet addresses and add expandable, copyable communications

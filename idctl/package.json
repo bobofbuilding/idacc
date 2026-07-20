@@ -1,6 +1,6 @@
 {
   "name": "idctl",
-  "version": "0.1.646",
+  "version": "0.1.647",
   "description": "ID Agents Control Center — a standalone reactive terminal app for the id-agents manager (live fleet dashboard + conversational manager chat + full lifecycle control).",
   "type": "module",
   "private": true,
@@ -18,7 +18,7 @@
     "build:app": "bash build/make-app.sh",
     "build:sums": "cd dist && shasum -a 256 idctl-* > SHASUMS256.txt",
     "build:mjs": "esbuild src/cli.tsx --bundle --platform=node --target=node20 --format=esm --outfile=dist/idctl.mjs --banner:js=\"import{createRequire as ___cr}from'module';const require=___cr(import.meta.url);\" --jsx=automatic",
-    "test": "tsx src/api/onboard.test.ts && tsx src/api/teamDesign.test.ts && tsx src/api/skillTags.test.ts && tsx src/api/managerNormalization.test.ts && tsx src/api/tasksByStatus.test.ts && tsx src/settings/providerCatalog.test.ts && tsx src/settings/localDiscovery.test.ts && tsx src/settings/runtimeCatalog.test.ts",
+    "test": "tsx src/api/onboard.test.ts && tsx src/api/teamDesign.test.ts && tsx src/api/skillTags.test.ts && tsx src/api/managerNormalization.test.ts && tsx src/api/tasksByStatus.test.ts && tsx src/api/brainTransport.test.ts && tsx src/settings/providerCatalog.test.ts && tsx src/settings/localDiscovery.test.ts && tsx src/settings/runtimeCatalog.test.ts",
     "smoke": "tsx src/__smoke__/render-smoke.tsx",
     "smoke:dispatch": "tsx src/__smoke__/dispatch-smoke.ts",
     "smoke:providers": "tsx src/__smoke__/provider-smoke.ts"

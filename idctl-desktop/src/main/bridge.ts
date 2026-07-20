@@ -8,6 +8,7 @@
 import { inspectLibraryPluginMetadata, ManagerClient } from '../../../idctl/src/api/client.ts';
 import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
+import { configureControlEventEmitter } from './controlLog.ts';
 import type { BrainAgentsReport, BrainControllerReport, BrainCoreHealthReport, BrainFleetReport, BrainGraphReport, BrainSkillIndex, BrainSkillNode } from '../../../idctl/src/api/brain.ts';
 import { runOnboarding, type OnboardPlan, type PreparedRuntime } from '../../../idctl/src/api/onboard.ts';
 import { slugName } from '../../../idctl/src/api/teamSpec.ts';
@@ -31,8 +32,6 @@ import {
   type SecondaryLead,
   upsertMcpServer,
   removeMcpServer,
-  upsertProject,
-  removeProject,
   saveSettings,
   setLocalConcurrencyPref,
   setSkillTags,
@@ -48,7 +47,7 @@ import { realpathSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { ProviderClient } from '../../../idctl/src/settings/ProviderClient.ts';
 import { discoverLocalServers, mergeLocalDiscoveryCandidates, type DiscoveredServer } from '../../../idctl/src/settings/localDiscovery.ts';
-import { type HeadroomPilotSettings, type ProviderKind, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
+import { type HeadroomPilotSettings, type IdctlConfig, type ProviderKind, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
 import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts';
 import { buildProviderModelLanes, buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider, settingsAvailableRuntimeSet, managedRuntimeHasEvidence, runtimeDisplayLabel, runtimeHasManagerHarness, type RuntimeModelLaneKind } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import { subsStatus } from './subscriptions.ts';
@@ -1105,6 +1104,8 @@ function requireCurrentComputerUseAgent(agents: Agent[], agentId: string, agentN
 // so it is a legitimate admin client (admin-gated routes: skill install, MCP attach).
 let cfg: Config = loadConfig({ team: 'default', admin: true });
 let client = new ManagerClient(cfg);
+brain.setTransport((request) => client.brainRequest(request));
+configureControlEventEmitter((event) => client.emitControlEvent(event));
 let activeKeyProvider: KeyProvider | null = null;
 const keys = new Proxy({} as KeyProvider, {
   get(_target, property) {
@@ -1120,6 +1121,135 @@ export function configureKeyProvider(provider: KeyProvider): void {
 }
 const RECENT_DONE_TASK_LIMIT = 25;
 let doneTaskLimitUnsupportedAt = 0;
+
+type OrgControlState = Pick<IdctlConfig, 'coordinators' | 'primaryCoordinator' | 'secondaryLeads' | 'orgSync'>;
+type TaskOverlayControlState = Pick<IdctlConfig, 'taskLanes' | 'taskDeps' | 'taskReview'>;
+
+let controlStateWriteTail: Promise<void> = Promise.resolve();
+
+function controlStateClient(): ManagerClient {
+  // App-wide control state must not move when the operator changes the visible
+  // team. The default team is the durable control-plane namespace.
+  return client.withTeam(PRIMARY_TEAM);
+}
+
+function serializeControlStateWrite<T>(write: () => Promise<T>): Promise<T> {
+  const next = controlStateWriteTail.then(write, write);
+  controlStateWriteTail = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+function mirrorProjects(projects: ProjectEntry[]): ProjectEntry[] {
+  const settings = loadSettings();
+  settings.projects = projects;
+  saveSettings(settings);
+  return projects;
+}
+
+async function managerProjects(): Promise<ProjectEntry[]> {
+  const local = loadSettings().projects ?? [];
+  const rows = await controlStateClient().controlStateList<ProjectEntry>('project');
+  if (rows.length > 0) {
+    return mirrorProjects(rows.map((row) => row.value).filter((project) => Boolean(project?.id && project?.name)));
+  }
+  if (local.length > 0) {
+    await Promise.all(local.map((project) => controlStateClient().controlStateSet('project', project.id, project)));
+  }
+  return local;
+}
+
+async function persistProject(project: ProjectEntry): Promise<ProjectEntry[]> {
+  await controlStateClient().controlStateSet('project', project.id, project);
+  const local = loadSettings().projects ?? [];
+  const next = [...local.filter((entry) => entry.id !== project.id), project];
+  return mirrorProjects(next);
+}
+
+async function persistAllProjects(projects: ProjectEntry[]): Promise<ProjectEntry[]> {
+  await Promise.all(projects.map((project) => controlStateClient().controlStateSet('project', project.id, project)));
+  return mirrorProjects(projects);
+}
+
+function orgControlSnapshot(settings = loadSettings()): OrgControlState {
+  return {
+    coordinators: settings.coordinators ?? {},
+    primaryCoordinator: settings.primaryCoordinator,
+    secondaryLeads: settings.secondaryLeads ?? [],
+    orgSync: settings.orgSync ?? { enabled: true, autoRebuild: true },
+  };
+}
+
+function mirrorOrgControl(value: OrgControlState): OrgControlState {
+  const settings = loadSettings();
+  settings.coordinators = value.coordinators ?? {};
+  settings.primaryCoordinator = value.primaryCoordinator;
+  settings.secondaryLeads = value.secondaryLeads ?? [];
+  settings.orgSync = value.orgSync ?? { enabled: true, autoRebuild: true };
+  saveSettings(settings);
+  return orgControlSnapshot(settings);
+}
+
+async function managerOrgControl(): Promise<OrgControlState> {
+  const manager = controlStateClient();
+  const current = await manager.controlStateGet<OrgControlState>('global', 'organization');
+  if (current) return mirrorOrgControl(current.value);
+  const local = orgControlSnapshot();
+  await manager.controlStateSet('global', 'organization', local);
+  return local;
+}
+
+async function persistOrgControl(): Promise<OrgControlState> {
+  const value = orgControlSnapshot();
+  await serializeControlStateWrite(() => controlStateClient().controlStateSet('global', 'organization', value));
+  return value;
+}
+
+function taskOverlaySnapshot(settings = loadSettings()): TaskOverlayControlState {
+  return {
+    taskLanes: settings.taskLanes ?? {},
+    taskDeps: settings.taskDeps ?? {},
+    taskReview: settings.taskReview ?? {},
+  };
+}
+
+function mirrorTaskOverlay(value: TaskOverlayControlState): TaskOverlayControlState {
+  const settings = loadSettings();
+  settings.taskLanes = value.taskLanes ?? {};
+  settings.taskDeps = value.taskDeps ?? {};
+  settings.taskReview = value.taskReview ?? {};
+  saveSettings(settings);
+  return taskOverlaySnapshot(settings);
+}
+
+async function managerTaskOverlay(): Promise<TaskOverlayControlState> {
+  const manager = controlStateClient();
+  const current = await manager.controlStateGet<TaskOverlayControlState>('global', 'task-overlays');
+  if (current) return mirrorTaskOverlay(current.value);
+  const local = taskOverlaySnapshot();
+  await manager.controlStateSet('global', 'task-overlays', local);
+  return local;
+}
+
+async function persistTaskOverlay(): Promise<TaskOverlayControlState> {
+  const value = taskOverlaySnapshot();
+  await controlStateClient().controlStateSet('global', 'task-overlays', value);
+  return value;
+}
+
+async function projectRouting(projectId?: string, fallbackTeam?: string, fallbackLead?: string): Promise<{
+  project?: ProjectEntry;
+  team?: string;
+  lead?: string;
+}> {
+  const project = projectId
+    ? (await managerProjects()).find((entry) => entry.id === projectId)
+    : undefined;
+  return {
+    project,
+    team: project?.team || fallbackTeam,
+    lead: project?.lead || fallbackLead,
+  };
+}
 
 function requireLiveKeyProvider(action: string): void {
   const capabilities = keys.capabilities();
@@ -1350,15 +1480,26 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const per = await Promise.all(names.map((name) => boardTasksForTeam(name)));
     return dedupeTasks(per.flat());
   },
-  // app-side Kanban lane overlay (task ref → fine-grained lane; never sent to the manager)
-  'tasks:lanes': () => Promise.resolve(loadSettings().taskLanes ?? {}),
-  'tasks:setLane': (ref: string, lane: string) => Promise.resolve(setTaskLane(String(ref), String(lane ?? '')).taskLanes ?? {}),
-  // app-side dependency overlay (task ref → prerequisite refs; the manager has no deps field)
-  'tasks:deps': () => Promise.resolve(loadSettings().taskDeps ?? {}),
-  'tasks:setDeps': (ref: string, deps: string[]) => Promise.resolve(setTaskDeps(String(ref), Array.isArray(deps) ? deps.map(String) : []).taskDeps ?? {}),
-  // app-side adjustment-loop overlay (task ref → needs-adjustment|under-review|rework)
-  'tasks:review': () => Promise.resolve(loadSettings().taskReview ?? {}),
-  'tasks:setReview': (ref: string, state: string) => Promise.resolve(setTaskReview(String(ref), String(state ?? '')).taskReview ?? {}),
+  // Manager-owned Kanban/dependency/review overlays. config.json is only a
+  // rehydratable cache so board semantics survive desktop reinstalls/restarts.
+  'tasks:lanes': async () => (await managerTaskOverlay()).taskLanes ?? {},
+  'tasks:setLane': (ref: string, lane: string) => serializeControlStateWrite(async () => {
+      await managerTaskOverlay();
+      setTaskLane(String(ref), String(lane ?? ''));
+      return (await persistTaskOverlay()).taskLanes ?? {};
+    }),
+  'tasks:deps': async () => (await managerTaskOverlay()).taskDeps ?? {},
+  'tasks:setDeps': (ref: string, deps: string[]) => serializeControlStateWrite(async () => {
+      await managerTaskOverlay();
+      setTaskDeps(String(ref), Array.isArray(deps) ? deps.map(String) : []);
+      return (await persistTaskOverlay()).taskDeps ?? {};
+    }),
+  'tasks:review': async () => (await managerTaskOverlay()).taskReview ?? {},
+  'tasks:setReview': (ref: string, state: string) => serializeControlStateWrite(async () => {
+      await managerTaskOverlay();
+      setTaskReview(String(ref), String(state ?? ''));
+      return (await persistTaskOverlay()).taskReview ?? {};
+    }),
 
   // dispatch / lifecycle
   dispatch: (command: string) => {
@@ -1400,8 +1541,9 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   },
 
   // auto-decompose work for the fleet: lead splits an objective into sub-tasks…
-  'work:decompose': async (objective: string, lead: string, team?: string) => {
-    const c = team ? client.withTeam(String(team)) : client;
+  'work:decompose': async (objective: string, lead: string, team?: string, projectId?: string) => {
+    const route = await projectRouting(projectId, team, lead);
+    const c = route.team ? client.withTeam(String(route.team)) : client;
     const agents = await c.agents().catch(() => []);
     const list = agents.map((a) => ({
       name: a.name,
@@ -1409,15 +1551,19 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
       status: a.status,
       skills: Array.isArray(a.metadata?.skills) ? (a.metadata!.skills as string[]) : [],
     }));
-    return decomposeWork(c, String(objective), String(lead), list);
+    const accountableLead = String(route.lead || getCoordinator(route.team || c.team || 'default') || 'lead');
+    return decomposeWork(c, String(objective), accountableLead, list);
   },
   // …then create them all + farm out the work (parallel where possible). opts.lane
   // sets the Kanban lane; opts.dispatch=false queues them unowned instead of dispatching.
   // opts.team pins the plan to a specific team (independent of the global active team).
   // opts.respectOwners keeps explicit execution owners, but coordinator/validator owners
   // are still routed to an execution assignee when one exists.
-  'work:createPlan': (objective: string, subtasks: SubTask[], opts?: { dispatch?: boolean; lane?: string; team?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean; allowInactiveOwners?: boolean; ownerOpenTaskCap?: number; coordinator?: string; leadCoordination?: boolean }) =>
-    createAndDispatchPlan(opts?.team ? client.withTeam(String(opts.team)) : client, String(objective), Array.isArray(subtasks) ? subtasks : [], opts ?? {}),
+  'work:createPlan': async (objective: string, subtasks: SubTask[], opts?: { dispatch?: boolean; lane?: string; team?: string; projectId?: string; planId?: string; respectOwners?: boolean; allowCoordinatorOwners?: boolean; allowInactiveOwners?: boolean; ownerOpenTaskCap?: number; coordinator?: string; leadCoordination?: boolean }) => {
+    const route = await projectRouting(opts?.projectId, opts?.team, opts?.coordinator);
+    const routed = { ...(opts ?? {}), team: route.team, coordinator: route.lead };
+    return createAndDispatchPlan(route.team ? client.withTeam(String(route.team)) : client, String(objective), Array.isArray(subtasks) ? subtasks : [], routed);
+  },
   // Explicit Plans/Goals delegation: resolve active team leads and create live,
   // assigned team-lead task rows. Returns failures for Inbox blocker routing.
   'work:delegateToTeamLeads': (objective: string, opts?: TeamLeadDelegationOptions) =>
@@ -1427,7 +1573,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'work:fanout': (objective: string, teams: string[]) =>
     fanOutObjective(client, String(objective), Array.isArray(teams) ? teams.map(String) : []),
   // Lead triages unassigned To-Do tasks: assign each to the best active agent + dispatch.
-  'work:triage': (lead: string, team?: string) => triageUnassigned(team ? client.withTeam(String(team)) : client, String(lead)),
+  'work:triage': async (lead: string, team?: string, projectId?: string) => {
+    const route = await projectRouting(projectId, team, lead);
+    return triageUnassigned(route.team ? client.withTeam(String(route.team)) : client, String(route.lead || 'lead'));
+  },
   'draftDispatcher:runOnce': () => processDraftProposalsOnce(client),
   'goalDriver:getConfig': async () => goalDriverConfig(),
   'goalDriver:setConfig': async (partial: Partial<GoalDriverConfig>) => {
@@ -1745,15 +1894,18 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   },
   'mcp:test': (spec: McpServerSpec) => testMcpServer(spec),
 
-  // projects (local tracker — client-side config)
-  'projects:list': async () => loadSettings().projects ?? [],
+  // Projects are Manager-owned. The settings copy is a cache used by existing
+  // local git helpers and can be rebuilt from this control-plane registry.
+  'projects:list': async () => managerProjects(),
   'projects:save': async (p: ProjectEntry) => {
-    upsertProject(p);
-    return loadSettings().projects ?? [];
+    const project = { ...p, updatedAt: Date.now() };
+    return serializeControlStateWrite(() => persistProject(project));
   },
   'projects:remove': async (id: string) => {
-    removeProject(String(id));
-    return loadSettings().projects ?? [];
+    const key = String(id);
+    await serializeControlStateWrite(() => controlStateClient().controlStateDelete('project', key));
+    const next = (loadSettings().projects ?? []).filter((project) => project.id !== key);
+    return mirrorProjects(next);
   },
   // Detect the projects root (returns null if none found).
   'projects:detectRoot': async (root?: string) => detectProjectsRoot(typeof root === 'string' ? root : loadSettings().projectsRoot),
@@ -1763,6 +1915,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // dedupes by folder path, adopts a path-less manual entry of the same name,
   // never deletes or overwrites your edits. Persists the resolved root.
   'projects:syncRoot': async (rootArg?: string) => {
+    await managerProjects();
     const root = detectProjectsRoot(typeof rootArg === 'string' && rootArg.trim() ? rootArg.trim() : loadSettings().projectsRoot);
     if (!root) return { ok: false, root: null, added: 0, adopted: 0, total: (loadSettings().projects ?? []).length, error: 'no projects folder found' };
     const scan = await scanProjectsRoot(root);
@@ -1816,6 +1969,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     cfg.projects = projects;
     cfg.projectsRoot = root;
     saveSettings(cfg);
+    await serializeControlStateWrite(() => persistAllProjects(projects));
     return { ok: true, root, added, adopted, total: projects.length };
   },
 
@@ -2001,38 +2155,65 @@ async function callRaw(method: string, args: unknown[] = []): Promise<unknown> {
     return info();
   }
   if (method === 'info') return info();
-  if (method === 'coordinator:get') return getCoordinator(String(args[0] ?? client.team ?? 'default')) ?? null;
+  if (method === 'coordinator:get') {
+    await managerOrgControl();
+    return getCoordinator(String(args[0] ?? client.team ?? 'default')) ?? null;
+  }
   if (method === 'coordinator:set') {
+    await managerOrgControl();
     const team = String(args[0]);
     const agent = String(args[1]);
     assertDefaultCoordinatorWrite(team, agent);
     setCoordinator(team, agent);
+    await persistOrgControl();
     return { ok: true };
   }
   if (method === 'coordinator:setPrimary') {
+    await managerOrgControl();
     const team = String(args[0]);
     const agent = String(args[1]);
     assertDefaultPrimaryWrite(team, agent);
     setPrimaryCoordinator(team, agent);
+    await persistOrgControl();
     return info();
   }
   if (method === 'coordinator:hierarchy') {
+    await managerOrgControl();
     return buildOrgHierarchy(client);
   }
   // ---- Org sync (reactive goals & instructions) ----
-  if (method === 'org:hierarchy') return buildOrgHierarchy(client);
-  if (method === 'org:preview') return previewOrgSync(client, (args[0] as { autoRebuild?: boolean }) ?? {});
-  if (method === 'org:sync') return syncOrg(client, (args[0] as { autoRebuild?: boolean }) ?? {});
-  if (method === 'org:getSecondaryLeads') return getSecondaryLeads();
+  if (method === 'org:hierarchy') {
+    await managerOrgControl();
+    return buildOrgHierarchy(client);
+  }
+  if (method === 'org:preview') {
+    await managerOrgControl();
+    return previewOrgSync(client, (args[0] as { autoRebuild?: boolean }) ?? {});
+  }
+  if (method === 'org:sync') {
+    await managerOrgControl();
+    return syncOrg(client, (args[0] as { autoRebuild?: boolean }) ?? {});
+  }
+  if (method === 'org:getSecondaryLeads') {
+    await managerOrgControl();
+    return getSecondaryLeads();
+  }
   if (method === 'org:setSecondaryLeads') {
+    await managerOrgControl();
     setSecondaryLeads(normalizeSecondaryLeadWrites((args[0] as SecondaryLead[]) ?? []));
+    await persistOrgControl();
     return { ok: true };
   }
-  if (method === 'org:getConfig') return loadSettings().orgSync ?? { enabled: true, autoRebuild: true };
+  if (method === 'org:getConfig') {
+    await managerOrgControl();
+    return loadSettings().orgSync ?? { enabled: true, autoRebuild: true };
+  }
   if (method === 'org:setConfig') {
+    await managerOrgControl();
     const s = loadSettings();
     s.orgSync = { ...(s.orgSync ?? {}), ...((args[0] as { enabled?: boolean; autoRebuild?: boolean }) ?? {}) };
     saveSettings(s);
+    await persistOrgControl();
     return s.orgSync;
   }
   const fn = METHODS[method];
