@@ -12,6 +12,7 @@ import {
 } from '../activityFeed.ts';
 import { Chat } from './Chat.tsx';
 import { parseChatControlIntent, type ControlIntentProposal } from '../dashboard/chatIntents.ts';
+import { isDashboardRelevantEvent } from '../../shared/dashboardEvents.ts';
 import type { InboxItem, NewsItem, Task } from '../../../../idctl/src/api/types.ts';
 
 /**
@@ -609,6 +610,7 @@ export function Dashboard({ store }: { store: FleetStore }) {
       text: n.message || previewOf(n.data ?? {}),
     })));
     for (const e of events) {
+      if (!isDashboardRelevantEvent(e)) continue;
       const at = toMs(e.timestamp ?? e.occurred_at);
       items.push({
         key: `event:${e.team ?? ''}:${e.seq}`,

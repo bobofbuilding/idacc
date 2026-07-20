@@ -63,6 +63,7 @@ import { buildOrgHierarchy, previewOrgSync, syncOrg, startOrgSyncLoop } from './
 import { syncDomainsForMethod } from '../shared/syncDomains.ts';
 import { COALESCED_READ_METHODS, ReadCallCache } from '../shared/readCallCache.ts';
 import { mapTeamAgentGroups } from '../shared/teamAgentGroups.ts';
+import { isDashboardRelevantEvent } from '../shared/dashboardEvents.ts';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -1421,7 +1422,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     // the manager's tail cursor, then fetch a recent window ending there and keep its
     // newest slice.
     const perTeam = Math.max(8, Math.ceil(lim / Math.max(1, names.length)));
-    const win = Math.max(perTeam * 4, 200);
+    const win = Math.max(perTeam * 6, 300);
     const per = await Promise.all(
       names.map(async (name) => {
         const tc = client.withTeam(name);
@@ -1431,7 +1432,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
           const r = await tc.events(since, { wait: 0, limit: win });
           const evs = (r.events ?? []).map((e) => ({ ...e, team: e.team ?? name, timestamp: e.timestamp ?? e.occurred_at }));
           // This team's NEWEST perTeam by seq (seq is monotonic within a team).
-          return evs.sort((a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0)).slice(-perTeam);
+          return evs
+            .filter(isDashboardRelevantEvent)
+            .sort((a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0))
+            .slice(-perTeam);
         } catch {
           return [];
         }
