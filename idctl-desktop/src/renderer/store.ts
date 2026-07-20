@@ -175,6 +175,7 @@ export interface FleetStore {
 
 const EVENT_BUFFER = 1000;
 const SNAPSHOT_POLL_MS = 5000;
+const SNAPSHOT_FAILURES_BEFORE_OFFLINE = 2;
 const ALL_TEAMS_PRIMARY_POLL_MS = 15000;
 const ALL_TEAMS_SECONDARY_POLL_MS = 60000;
 const ALL_TEAMS_HIDDEN_POLL_MS = 120000;
@@ -257,6 +258,10 @@ export function allTeamsAgentsPollDelay(view?: string): number {
   return typeof document !== 'undefined' && document.hidden ? Math.max(base, ALL_TEAMS_HIDDEN_POLL_MS) : base;
 }
 
+export function snapshotConnectionAfterFailure(consecutiveFailures: number): Connection {
+  return consecutiveFailures >= SNAPSHOT_FAILURES_BEFORE_OFFLINE ? 'offline' : 'connecting';
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -302,6 +307,7 @@ export function useFleet(activeView?: string): FleetStore {
   const [tick, setTick] = useState(0);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const snapshotSigRef = useRef('');
+  const snapshotFailuresRef = useRef(0);
   const allAgentsSigRef = useRef('');
   const lastEventViewRefreshRef = useRef(0);
   const [streamEpoch, setStreamEpoch] = useState(0); // bumped ONLY on team change → never resets the event cursor on a plain refresh
@@ -374,6 +380,7 @@ export function useFleet(activeView?: string): FleetStore {
           setChatUnread(typeof cu === 'number' ? cu : 0);
           setLastUpdated(Date.now());
         }
+        snapshotFailuresRef.current = 0;
         setConnection('online');
         setLastError(undefined);
         // On (re)connect — including after a manager restart — re-apply persisted
@@ -384,7 +391,8 @@ export function useFleet(activeView?: string): FleetStore {
         }
       } catch (err) {
         if (!alive) return;
-        setConnection('offline');
+        snapshotFailuresRef.current += 1;
+        setConnection(snapshotConnectionAfterFailure(snapshotFailuresRef.current));
         wasOnlineRef.current = false; // re-arm so the next reconnect re-applies settings
         setLastError(err instanceof Error ? err.message : String(err));
       } finally {

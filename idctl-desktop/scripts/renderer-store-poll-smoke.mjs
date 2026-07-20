@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { allTeamsAgentsPollDelay, eventsInvalidateViews, viewNeedsAllTeamsAgents } from '../src/renderer/store.ts';
+import { allTeamsAgentsPollDelay, eventsInvalidateViews, snapshotConnectionAfterFailure, viewNeedsAllTeamsAgents } from '../src/renderer/store.ts';
 
 const ev = (topic) => ({ topic, payload: {}, timestamp: Date.now() });
 
@@ -17,6 +17,10 @@ assert.equal(allTeamsAgentsPollDelay('dashboard'), 15000);
 assert.equal(allTeamsAgentsPollDelay('tasks'), 15000);
 assert.equal(allTeamsAgentsPollDelay('teams'), 60000);
 assert.equal(allTeamsAgentsPollDelay('modules'), 60000);
+
+assert.equal(snapshotConnectionAfterFailure(1), 'connecting');
+assert.equal(snapshotConnectionAfterFailure(2), 'offline');
+assert.equal(snapshotConnectionAfterFailure(3), 'offline');
 
 assert.equal(eventsInvalidateViews([ev('task:created')], 'tasks'), true);
 assert.equal(eventsInvalidateViews([ev('task:created')], 'dashboard'), true);

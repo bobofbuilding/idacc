@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.654] — 2026-07-20
+### What changed
+- Treat one failed fleet snapshot as a transient reconnect instead of declaring the manager offline, while preserving last-known fleet state and requiring consecutive failures before the offline transition.
+
 ## [0.1.653] — 2026-07-20
 ### What changed
 - Refresh the Settings hardware tile every 30 seconds and whenever the app regains focus so disk cleanup and model-capacity checks use current free-space data.
