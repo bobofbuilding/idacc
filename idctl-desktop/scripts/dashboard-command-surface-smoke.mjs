@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,6 +35,12 @@ try {
   assert.match(parseChatControlIntent('/project new Alpha for engineering-team', intentStore)?.summary ?? '', /Alpha.*engineering-team/);
   assert.equal(parseChatControlIntent('/promote-lead research-lead for research', intentStore)?.commandId, 'org.sync');
   assert.equal(parseChatControlIntent('/ask lead keep chatting normally', intentStore), null);
+
+  const drawerSource = await readFile(new URL('../src/renderer/views/dashboard/ControlDrawer.tsx', import.meta.url), 'utf8');
+  assert.match(drawerSource, /aria-modal="true"/, 'control drawer must expose modal semantics');
+  assert.match(drawerSource, /event\.key === 'Escape'/, 'control drawer must close with Escape');
+  assert.match(drawerSource, /returnFocusRef\.current\?\.focus\(\)/, 'control drawer must restore trigger focus');
+  assert.match(drawerSource, /event\.key !== 'Tab'/, 'control drawer must contain keyboard focus');
   console.log('[dashboard-command-surface-smoke] OK');
 } finally {
   await rm(dir, { recursive: true, force: true });

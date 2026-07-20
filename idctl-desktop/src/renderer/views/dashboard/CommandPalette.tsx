@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 /**
  * Command palette (⌘K) — fuzzy-search every control action and run it. The keyboard-first
- * front door to "drive everything from the Dashboard": navigation, quick fleet actions, and
- * (soon) every panel command, all from one box. Action commands keep the palette open to show
+ * front door to the Dashboard command surface: navigation, quick fleet actions, and panel
+ * commands from one box. Action commands keep the palette open to show
  * their result; navigation / drawer commands close it.
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
@@ -69,7 +69,7 @@ export function CommandPalette({
 
   return (
     <div className="modal-overlay" onMouseDown={onClose}>
-      <div className="cmdk" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-label="Command palette">
+      <div className="cmdk" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Command palette">
         <input
           ref={inputRef}
           className="cmdk-input"

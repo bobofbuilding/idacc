@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /** Control drawer — a right-side slide-over for Dashboard shortcuts. */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FleetStore } from '../../store.ts';
 import { call } from '../../store.ts';
 import { ProjectDriverPanel } from './panels/ProjectDriverPanel.tsx';
@@ -17,13 +17,66 @@ export function ControlDrawer({
   onClose: () => void;
   navigate?: (view: string) => void;
 }) {
+  const drawerRef = useRef<HTMLElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!panel) return;
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = requestAnimationFrame(() => {
+      const first = drawerRef.current?.querySelector<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      (first ?? drawerRef.current)?.focus();
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      returnFocusRef.current?.focus();
+    };
+  }, [panel]);
+
   if (!panel) return null;
   const title = panel === 'quick' ? 'Dashboard shortcuts' : panel === 'project-driver' ? 'Project driver' : panel === 'org' ? 'Organization' : panel === 'plans' ? 'Plans' : panel === 'board' ? 'Board' : panel === 'control-center' ? 'Control center' : panel;
+  const titleId = `dashboard-drawer-${panel}-title`;
+  const onDrawerKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(drawerRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ) ?? []).filter((element) => element.offsetParent !== null);
+    if (!focusable.length) {
+      event.preventDefault();
+      drawerRef.current?.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
   return (
     <div className="drawer-overlay" onMouseDown={onClose}>
-      <aside className="drawer" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-label={`${title} panel`}>
+      <aside
+        ref={drawerRef}
+        className="drawer"
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={onDrawerKeyDown}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+      >
         <header className="drawer-head">
-          <h3>{title}</h3>
+          <h3 id={titleId}>{title}</h3>
           <button className="btn icon-danger" onClick={onClose} title="Close">✕</button>
         </header>
         <div className="drawer-body">

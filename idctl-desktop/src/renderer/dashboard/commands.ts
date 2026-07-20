@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 /**
  * Shared command registry — the single source of truth behind the Dashboard command palette
- * (⌘K) and, later, the slide-over control panels. Each command is a small descriptor whose
+ * (⌘K) and slide-over control panels. Each command is a small descriptor whose
  * run(ctx) either navigates to a view, opens a drawer panel, or executes an IPC action.
  *
  * Because every IPC mutation flows through the brain-recording choke point in main.ts, any
@@ -111,10 +111,7 @@ const VIEWS: { id: string; label: string; kw?: string }[] = [
   { id: 'settings', label: 'Settings', kw: 'providers models inference managers update' },
 ];
 
-/**
- * Build the live command list. Static today; later this composes per-agent / per-team /
- * per-project actions from the store so the palette covers "drive anything" end to end.
- */
+/** Build the live command list used by the Dashboard palette and control drawer. */
 export function buildCommands(store: FleetStore): Command[] {
   const cmds: Command[] = [];
 
