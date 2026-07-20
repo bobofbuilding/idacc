@@ -2213,7 +2213,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     void checkBackgroundStacks();
     void loadConc();
     void loadImgServer();
-    void call<HardwareInfo>('app:hardware').then(setHardware).catch(() => {});
     const idagents = (window as { idagents?: { onOllamaPull?: (cb: (p: unknown) => void) => () => void } }).idagents;
     const off = idagents?.onOllamaPull?.((p) => {
       const o = p as { model?: string; status?: string; pct?: number; done?: boolean; error?: string };
@@ -2222,6 +2221,29 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     });
     return () => off?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const refreshHardware = () => {
+      if (document.hidden) return;
+      void call<HardwareInfo>('app:hardware')
+        .then((next) => { if (mounted) setHardware(next); })
+        .catch(() => {});
+    };
+    const onVisible = () => {
+      if (!document.hidden) refreshHardware();
+    };
+    refreshHardware();
+    const timer = window.setInterval(refreshHardware, 30_000);
+    window.addEventListener('focus', refreshHardware);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshHardware);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   useEffect(() => {

@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.653] — 2026-07-20
+### What changed
+- Refresh the Settings hardware tile every 30 seconds and whenever the app regains focus so disk cleanup and model-capacity checks use current free-space data.
+
 ## [0.1.652] — 2026-07-20
 ### What changed
 - Keep successful control and Brain audit telemetry out of Dashboard activity while preserving failures and meaningful work events.
