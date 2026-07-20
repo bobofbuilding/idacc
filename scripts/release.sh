@@ -131,6 +131,10 @@ echo "▶ releasing v$VER  (was v$CUR)"
 # Never create another version while that gap exists; it must be resumed first.
 node "$ROOT/scripts/check-release-publication.mjs"
 
+# A verified prior release has no reason to retain its unpacked Electron app.
+# Clear it before building so each release reuses one bounded scratch directory.
+node "$ROOT/scripts/cleanup-release-artifacts.mjs" --apply "$DESK"
+
 PUSHED_TAG=""
 on_exit() {
   local status=$?
@@ -257,25 +261,7 @@ PUSHED_TAG=""
 # how a tag+commit can go out with no matching GitHub release (see v0.1.637).
 node "$ROOT/scripts/check-release-published.mjs" "$VER"
 
-# Local zips are upload scratch space only; GitHub releases are the durable archive.
-node -e '
-const fs = require("fs");
-const path = require("path");
-const dir = path.join(process.env.DESK, "release");
-let count = 0;
-let bytes = 0;
-if (fs.existsSync(dir)) {
-  for (const name of fs.readdirSync(dir)) {
-    if (!/^ID-Agents-Control-Center-\d+\.\d+\.\d+(?:-mac)?-arm64\.zip$/.test(name)) continue;
-    const file = path.join(dir, name);
-    const st = fs.statSync(file);
-    if (!st.isFile()) continue;
-    count += 1;
-    bytes += st.size;
-    fs.unlinkSync(file);
-  }
-}
-const gib = (bytes / 1024 / 1024 / 1024).toFixed(2);
-console.log(count ? `✓ cleaned ${count} local release zip(s), freed ${gib} GiB` : "✓ no local release zips to clean");
-'
+# GitHub is the durable release archive. Remove the zip, unpacked app, and
+# electron-builder metadata only after publication has been independently verified.
+node "$ROOT/scripts/cleanup-release-artifacts.mjs" --apply "$DESK"
 echo "✓ released v$VER"

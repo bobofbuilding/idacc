@@ -24,6 +24,11 @@ npm run dist     # → release/mac-arm64/ID Agents Control Center.app  (.app, Bo
 npm run dmg      # → a .dmg installer (drag-to-Applications)
 ```
 
+`npm run dist` intentionally keeps its local app for manual installation. The
+repository release workflow removes this generated directory after GitHub has
+verified the uploaded release, so repeated published updates do not accumulate
+unpacked app copies.
+
 The `.app` bundles Electron + the UI, so it runs with no Node and no install —
 double-click it like any consumer Mac app. It carries the Bob brand icon
 (`build/icon.icns`, generated from `assets/icon-source.jpg`).

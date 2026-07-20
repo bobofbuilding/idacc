@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.651] — 2026-07-20
+### What changed
+- Bound release scratch storage and remove verified local build artifacts after publishing.
+
 ## [0.1.650] — 2026-07-20
 ### What changed
 - Release: authenticate the final publication check and cover token forwarding
