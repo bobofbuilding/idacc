@@ -31,9 +31,18 @@ export function normalizeTag(versionOrTag) {
 }
 
 /** @returns {Promise<{published: boolean, reason: string}>} */
-export async function checkReleasePublished(ownerRepo, tag, { fetchImpl = fetch, apiBase = 'https://api.github.com' } = {}) {
+export async function checkReleasePublished(ownerRepo, tag, {
+  fetchImpl = fetch,
+  apiBase = 'https://api.github.com',
+  token = '',
+} = {}) {
   const url = `${apiBase}/repos/${ownerRepo}/releases/tags/${encodeURIComponent(tag)}`;
-  const res = await fetchImpl(url, { headers: { accept: 'application/vnd.github+json' } });
+  const headers = {
+    accept: 'application/vnd.github+json',
+    'user-agent': 'idacc-release-published-check',
+  };
+  if (token) headers.authorization = `Bearer ${token}`;
+  const res = await fetchImpl(url, { headers });
   if (res.status === 404) {
     return { published: false, reason: `no GitHub release found for ${tag} (${ownerRepo})` };
   }
@@ -70,9 +79,10 @@ async function main() {
   }
 
   const apiBase = process.env.GITHUB_API_BASE || 'https://api.github.com';
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || process.env.IDACC_RELEASE_TOKEN || '';
   let result;
   try {
-    result = await checkReleasePublished(ownerRepo, tag, { apiBase });
+    result = await checkReleasePublished(ownerRepo, tag, { apiBase, token });
   } catch (err) {
     console.error(`release publish check failed: could not reach GitHub API (${err.message})`);
     process.exit(1);
