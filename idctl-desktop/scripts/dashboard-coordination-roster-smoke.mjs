@@ -28,3 +28,18 @@ assert.doesNotMatch(
   /<CoordinationTree[^>]+activeTeams=\{activeTeams\}/,
   'Dashboard must not filter the coordination tree down to currently active teams',
 );
+assert.match(
+  dashboard,
+  /useState<OrgHier>\(DEFAULT_ORG_HIERARCHY\)/,
+  'Live Coordination should remain visible while manager hierarchy data is loading or unavailable',
+);
+assert.doesNotMatch(
+  dashboard,
+  /if \(!primary\) return null/,
+  'Live Coordination must not disappear when the hierarchy read fails',
+);
+assert.match(
+  dashboard,
+  /controlStateWarning/,
+  'Dashboard should surface manager hierarchy compatibility warnings',
+);

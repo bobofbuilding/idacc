@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.648] — 2026-07-20
+### What changed
+- Keep Live Coordination visible across manager version drift and surface legacy hierarchy fallback instead of silently hiding the fleet.
+
 ## [0.1.647] — 2026-07-20
 ### What changed
 - Dashboard: add a Manager-routed command palette and control panels while retaining Work drill-downs.

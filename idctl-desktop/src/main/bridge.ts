@@ -5,7 +5,7 @@
  * allow-listed methods below over IPC.
  */
 
-import { inspectLibraryPluginMetadata, ManagerClient } from '../../../idctl/src/api/client.ts';
+import { inspectLibraryPluginMetadata, ManagerClient, ManagerError } from '../../../idctl/src/api/client.ts';
 import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
 import { configureControlEventEmitter } from './controlLog.ts';
@@ -1124,6 +1124,11 @@ let doneTaskLimitUnsupportedAt = 0;
 
 type OrgControlState = Pick<IdctlConfig, 'coordinators' | 'primaryCoordinator' | 'secondaryLeads' | 'orgSync'>;
 type TaskOverlayControlState = Pick<IdctlConfig, 'taskLanes' | 'taskDeps' | 'taskReview'>;
+type OrgControlRead = {
+  value: OrgControlState;
+  source: 'manager' | 'local-compat';
+  warning?: string;
+};
 
 let controlStateWriteTail: Promise<void> = Promise.resolve();
 
@@ -1189,13 +1194,24 @@ function mirrorOrgControl(value: OrgControlState): OrgControlState {
   return orgControlSnapshot(settings);
 }
 
-async function managerOrgControl(): Promise<OrgControlState> {
-  const manager = controlStateClient();
-  const current = await manager.controlStateGet<OrgControlState>('global', 'organization');
-  if (current) return mirrorOrgControl(current.value);
-  const local = orgControlSnapshot();
-  await manager.controlStateSet('global', 'organization', local);
-  return local;
+async function managerOrgControl(options: { allowLegacyRead?: boolean } = {}): Promise<OrgControlRead> {
+  try {
+    const manager = controlStateClient();
+    const current = await manager.controlStateGet<OrgControlState>('global', 'organization');
+    if (current) return { value: mirrorOrgControl(current.value), source: 'manager' };
+    const local = orgControlSnapshot();
+    await manager.controlStateSet('global', 'organization', local);
+    return { value: local, source: 'manager' };
+  } catch (error) {
+    if (options.allowLegacyRead && error instanceof ManagerError && error.status === 404) {
+      return {
+        value: orgControlSnapshot(),
+        source: 'local-compat',
+        warning: 'Using the local organization cache because this manager does not expose control state. Update id-agents to v0.1.111 or newer.',
+      };
+    }
+    throw error;
+  }
 }
 
 async function persistOrgControl(): Promise<OrgControlState> {
@@ -2156,7 +2172,7 @@ async function callRaw(method: string, args: unknown[] = []): Promise<unknown> {
   }
   if (method === 'info') return info();
   if (method === 'coordinator:get') {
-    await managerOrgControl();
+    await managerOrgControl({ allowLegacyRead: true });
     return getCoordinator(String(args[0] ?? client.team ?? 'default')) ?? null;
   }
   if (method === 'coordinator:set') {
@@ -2178,13 +2194,13 @@ async function callRaw(method: string, args: unknown[] = []): Promise<unknown> {
     return info();
   }
   if (method === 'coordinator:hierarchy') {
-    await managerOrgControl();
-    return buildOrgHierarchy(client);
+    const control = await managerOrgControl({ allowLegacyRead: true });
+    return { ...await buildOrgHierarchy(client), controlStateSource: control.source, controlStateWarning: control.warning };
   }
   // ---- Org sync (reactive goals & instructions) ----
   if (method === 'org:hierarchy') {
-    await managerOrgControl();
-    return buildOrgHierarchy(client);
+    const control = await managerOrgControl({ allowLegacyRead: true });
+    return { ...await buildOrgHierarchy(client), controlStateSource: control.source, controlStateWarning: control.warning };
   }
   if (method === 'org:preview') {
     await managerOrgControl();
@@ -2195,7 +2211,7 @@ async function callRaw(method: string, args: unknown[] = []): Promise<unknown> {
     return syncOrg(client, (args[0] as { autoRebuild?: boolean }) ?? {});
   }
   if (method === 'org:getSecondaryLeads') {
-    await managerOrgControl();
+    await managerOrgControl({ allowLegacyRead: true });
     return getSecondaryLeads();
   }
   if (method === 'org:setSecondaryLeads') {
@@ -2205,7 +2221,7 @@ async function callRaw(method: string, args: unknown[] = []): Promise<unknown> {
     return { ok: true };
   }
   if (method === 'org:getConfig') {
-    await managerOrgControl();
+    await managerOrgControl({ allowLegacyRead: true });
     return loadSettings().orgSync ?? { enabled: true, autoRebuild: true };
   }
   if (method === 'org:setConfig') {

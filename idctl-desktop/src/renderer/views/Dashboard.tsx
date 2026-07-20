@@ -264,6 +264,15 @@ type OrgHier = {
   secondaries: { agent: string; team: string; leadsTeams: string[] }[];
   coordinators: Record<string, string>;
   teams: string[];
+  controlStateSource?: 'manager' | 'local-compat';
+  controlStateWarning?: string;
+};
+
+const DEFAULT_ORG_HIERARCHY: OrgHier = {
+  primary: { team: DASHBOARD_CHAT_TEAM, agent: DASHBOARD_CHAT_TARGET },
+  secondaries: [],
+  coordinators: { [DASHBOARD_CHAT_TEAM]: DASHBOARD_CHAT_TARGET },
+  teams: [DASHBOARD_CHAT_TEAM],
 };
 type LiteTask = { ownerName?: string | null; status: string; title?: string; shortId?: string };
 type DashboardNews = NewsItem & { teamName?: string };
@@ -318,12 +327,14 @@ function CoordinationTree({
   coordinationTeams,
   hier,
   tasks,
+  hierarchyWarning,
 }: {
   store: FleetStore;
   events: TeamEvent[];
   coordinationTeams: string[];
   hier: OrgHier;
   tasks: LiteTask[];
+  hierarchyWarning?: string;
 }) {
   const [spend, setSpend] = useState<{ total: number; count: number; top?: { agent: string; total: number } } | null>(null);
   const liveRef = useRef(true);
@@ -393,8 +404,7 @@ function CoordinationTree({
     );
   };
 
-  const primary = hier.primary?.agent;
-  if (!primary) return null; // nothing to show until a primary lead is designated (HR Manager)
+  const primary = hier.primary?.agent ?? DASHBOARD_CHAT_TARGET;
   const coordinationTeamSet = new Set(coordinationTeams);
   const visibleSecondaries = hier.secondaries
     .map((s) => ({ ...s, leadsTeams: s.leadsTeams.filter((tm) => coordinationTeamSet.has(tm)) }))
@@ -416,6 +426,7 @@ function CoordinationTree({
           </span>
         ) : null}
       </h3>
+      {hierarchyWarning ? <div className="warn-text small" role="status" style={{ marginBottom: 8 }}>{hierarchyWarning}</div> : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div>
           {node(primary, 'primary lead')}
@@ -441,7 +452,8 @@ function CoordinationTree({
 export function Dashboard({ store }: { store: FleetStore }) {
   const activitySyncVersion = useSyncVersion(['dashboard', 'tasks', 'work', 'inbox', 'chats']);
   const hierarchySyncVersion = useSyncVersion(['org', 'agents', 'dashboard']);
-  const [hier, setHier] = useState<OrgHier>({ primary: null, secondaries: [], coordinators: {}, teams: [] });
+  const [hier, setHier] = useState<OrgHier>(DEFAULT_ORG_HIERARCHY);
+  const [hierarchyWarning, setHierarchyWarning] = useState('');
   const [controlIntent, setControlIntent] = useState<ControlIntentProposal | null>(null);
   const [controlIntentBusy, setControlIntentBusy] = useState(false);
   const [controlIntentStatus, setControlIntentStatus] = useState('');
@@ -470,7 +482,14 @@ export function Dashboard({ store }: { store: FleetStore }) {
   const hierarchyLiveRef = useRef(true);
   useEffect(() => () => { hierarchyLiveRef.current = false; }, []);
   const loadHierarchy = useCallback(() => {
-    void call<OrgHier>('org:hierarchy').then((h) => { if (hierarchyLiveRef.current && h) setHier(h); }).catch(() => {});
+    void call<OrgHier>('org:hierarchy').then((h) => {
+      if (!hierarchyLiveRef.current || !h) return;
+      setHier(h.primary ? h : { ...h, primary: DEFAULT_ORG_HIERARCHY.primary });
+      setHierarchyWarning(h.controlStateWarning ?? '');
+    }).catch((error) => {
+      if (!hierarchyLiveRef.current) return;
+      setHierarchyWarning(`Live hierarchy unavailable; showing the last known fleet structure. ${error instanceof Error ? error.message : String(error)}`);
+    });
   }, []);
   useEffect(() => { loadHierarchy(); }, [loadHierarchy, store.lastUpdated, hierarchySyncVersion]);
   // Teams that currently have ≥1 running agent (idle teams hidden from the picker).
@@ -705,7 +724,7 @@ export function Dashboard({ store }: { store: FleetStore }) {
         </div>
       </header>
 
-      <CoordinationTree store={store} events={events} coordinationTeams={coordinationTeams} hier={hier} tasks={tasks} />
+      <CoordinationTree store={store} events={events} coordinationTeams={coordinationTeams} hier={hier} tasks={tasks} hierarchyWarning={hierarchyWarning} />
 
       {/* Explicit flex row so the chat fills the left and the activity tile always shows on the right. */}
       <div style={{ display: 'flex', gap: 14, flex: 1, minHeight: 0, alignItems: 'stretch' }}>
