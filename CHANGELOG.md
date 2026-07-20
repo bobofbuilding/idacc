@@ -8,6 +8,11 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.649] — 2026-07-20
+### What changed
+- Dashboard: replace the stale command-surface draft with the released operating contract and harden drawer keyboard focus
+- feat: expose and copy activity communications
+
 ## [0.1.648] — 2026-07-20
 ### What changed
 - Keep Live Coordination visible across manager version drift and surface legacy hierarchy fallback instead of silently hiding the fleet.
