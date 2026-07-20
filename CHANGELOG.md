@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.650] — 2026-07-20
+### What changed
+- Release: authenticate the final publication check and cover token forwarding
+
 ## [0.1.649] — 2026-07-20
 ### What changed
 - Dashboard: replace the stale command-surface draft with the released operating contract and harden drawer keyboard focus
