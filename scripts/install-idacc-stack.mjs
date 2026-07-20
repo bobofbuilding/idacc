@@ -21,6 +21,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_MANAGER_SOURCE = 'https://github.com/bobofbuilding/id-agents.git';
 const APP_NAME = 'ID Agents Control Center.app';
 const SERVICE_LABEL = 'io.bittrees.idagents-manager';
+const UPDATE_SERVICE_LABEL = 'io.bittrees.idagents-manager-updater';
 
 function usage() {
   console.log(`Usage: node scripts/install-idacc-stack.mjs [options]
@@ -325,6 +326,64 @@ export function renderLaunchAgent({ managerDir, managerPort, logDir, home, path,
 `;
 }
 
+export function renderManagerUpdateLaunchAgent({
+  managerDir,
+  managerPort,
+  managerSource = DEFAULT_MANAGER_SOURCE,
+  branch = 'main',
+  logDir,
+  home,
+  path,
+  nodePath = process.execPath,
+}) {
+  const values = {
+    nodePath,
+    updater: join(managerDir, 'scripts', 'manager-auto-update.mjs'),
+    managerDir,
+    managerUrl: `http://127.0.0.1:${managerPort}`,
+    managerSource,
+    branch,
+    state: join(home, '.id-agents', 'manager-update.json'),
+    lock: join(home, '.id-agents', 'manager-update.lock'),
+    stdout: join(logDir, 'id-agents-manager-update.log'),
+    stderr: join(logDir, 'id-agents-manager-update-error.log'),
+    home,
+    path,
+  };
+  for (const key of Object.keys(values)) values[key] = escapeXml(values[key]);
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${UPDATE_SERVICE_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${values.nodePath}</string>
+    <string>${values.updater}</string>
+    <string>--target</string><string>${values.managerDir}</string>
+    <string>--manager-url</string><string>${values.managerUrl}</string>
+    <string>--source</string><string>${values.managerSource}</string>
+    <string>--branch</string><string>${values.branch}</string>
+    <string>--state</string><string>${values.state}</string>
+    <string>--lock</string><string>${values.lock}</string>
+  </array>
+  <key>WorkingDirectory</key><string>${values.managerDir}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>${values.home}</string>
+    <key>PATH</key><string>${values.path}</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>StandardOutPath</key><string>${values.stdout}</string>
+  <key>StandardErrorPath</key><string>${values.stderr}</string>
+</dict>
+</plist>
+`;
+}
+
 async function managerHealthy(managerUrl) {
   try {
     const response = await fetch(`${managerUrl}/health`, { signal: AbortSignal.timeout(1500) });
@@ -380,6 +439,7 @@ async function installManagerService(opts) {
 
   if (opts.dryRun) {
     console.log(`  would install per-user service: ${plist}`);
+    console.log(`  would install manager release updater: ${join(launchAgentsDir, `${UPDATE_SERVICE_LABEL}.plist`)}`);
     console.log(`  would restart: ${service}`);
     return;
   }
@@ -403,6 +463,52 @@ async function installManagerService(opts) {
   run('launchctl', ['bootstrap', domain, plist]);
   run('launchctl', ['kickstart', '-k', service]);
   await waitForManager(opts.managerUrl);
+  await installManagerUpdateService(opts, {
+    domain,
+    home,
+    launchAgentsDir,
+    nodePath: nodeProbe.stdout,
+  });
+}
+
+async function installManagerUpdateService(opts, context) {
+  const plist = join(context.launchAgentsDir, `${UPDATE_SERVICE_LABEL}.plist`);
+  const service = `${context.domain}/${UPDATE_SERVICE_LABEL}`;
+  const updaterEntry = join(opts.managerDir, 'scripts', 'manager-auto-update.mjs');
+  if (!existsSync(updaterEntry)) {
+    throw new Error(`Compatible manager is missing its updater: ${updaterEntry}`);
+  }
+  const loaded = tryRun('launchctl', ['print', service]).ok;
+  if (loaded && existsSync(plist) && !readFileSync(plist, 'utf8').includes(escapeXml(updaterEntry))) {
+    throw new Error(
+      `${UPDATE_SERVICE_LABEL} already manages a different checkout. ` +
+      `Remove ${plist} only after confirming the old stack is no longer needed.`
+    );
+  }
+  const body = renderManagerUpdateLaunchAgent({
+    managerDir: opts.managerDir,
+    managerPort: opts.managerPort,
+    managerSource: opts.managerSource,
+    branch: opts.branch,
+    logDir: opts.projectDir,
+    home: context.home,
+    path: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+    nodePath: context.nodePath,
+  });
+  if (loaded) {
+    const stopped = tryRun('launchctl', ['bootout', service]);
+    if (!stopped.ok) throw new Error(`Could not stop existing manager updater: ${stopped.stderr || stopped.stdout}`);
+  }
+  writeAtomic(plist, body);
+  const commit = run('git', ['rev-parse', 'HEAD'], { cwd: opts.managerDir, capture: true });
+  const version = JSON.parse(readFileSync(join(opts.managerDir, 'package.json'), 'utf8')).version;
+  writeAtomic(join(context.home, '.id-agents', 'manager-update.json'), `${JSON.stringify({
+    status: 'current',
+    version,
+    commit,
+    activatedAt: new Date().toISOString(),
+  }, null, 2)}\n`, 0o600);
+  run('launchctl', ['bootstrap', context.domain, plist]);
 }
 
 async function main() {

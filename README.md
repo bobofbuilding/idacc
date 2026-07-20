@@ -103,10 +103,13 @@ node scripts/install-idacc-stack.mjs
 ```
 
 The installer requires Node.js 20 or newer. It preserves existing IDACC
-settings, refuses dirty or foreign manager checkouts, performs only
+settings, refuses tracked changes or foreign manager checkouts, performs only
 fast-forward manager updates, atomically replaces the app bundle, and refuses
-to take over an unknown process on the manager port. Preview every action first
-with `node scripts/install-idacc-stack.mjs --dry-run`.
+to take over an unknown process on the manager port. It also installs a manager
+release updater that checks every 30 minutes, accepts only tagged release-schema
+commits, builds before activation, and waits for active queries to drain before
+restarting. Preview every action first with
+`node scripts/install-idacc-stack.mjs --dry-run`.
 
 After launch, open Settings and confirm the Connection, Local models &
 backends, and Inference backends cards. The app can observe a stock manager,
