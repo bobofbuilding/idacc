@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.658] — 2026-07-21
+### What changed
+- Settings: add guarded ID Agents manager check, update, build, drain-aware activation, and post-activation state sync.
+
 ## [0.1.657] — 2026-07-21
 ### What changed
 - Make fresh provider setup actionable with Claude Code and Codex installers, broader packaged-app CLI discovery, and accurate loading states.

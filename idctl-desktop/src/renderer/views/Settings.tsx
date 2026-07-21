@@ -93,6 +93,21 @@ type ManagerCapabilities = {
   features?: string[];
   routes?: { method: string; path: string; group: string }[];
 } | null;
+type ManagerUpdateStatus = {
+  configured: boolean;
+  busy?: boolean;
+  installedVersion?: string;
+  latestVersion?: string;
+  status?: string;
+  available?: boolean;
+  pendingActivation?: boolean;
+  activeQueries?: number;
+  checkout?: string;
+  source?: string;
+  lastChecked?: number;
+  detail?: string;
+  error?: string;
+};
 type CachedLoad<T> = { value: T; at: number; cached: boolean };
 
 let settingsStackInstallCache: CachedLoad<Record<string, LocalStackInstallStatus>> | null = null;
@@ -331,6 +346,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [version, setVersion] = useState('');
   const [upd, setUpd] = useState<{ autoUpgrade?: boolean; updateManifestUrl?: string; updateRepo?: string } | null>(null);
   const [updStatus, setUpdStatus] = useState<{ latest?: string; available?: boolean; staged?: boolean; checking?: boolean; error?: string; lastChecked?: number } | null>(null);
+  const [managerUpdStatus, setManagerUpdStatus] = useState<ManagerUpdateStatus | null>(null);
+  const [managerUpdBusy, setManagerUpdBusy] = useState<'check' | 'apply' | null>(null);
   const [managerCaps, setManagerCaps] = useState<ManagerCapabilities | undefined>(undefined);
   const [managerReportCopied, setManagerReportCopied] = useState(false);
   // managed subscription OAuth runtimes
@@ -407,6 +424,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     setUpd(u);
     const currentUpdateStatus = await call<typeof updStatus>('update:status').catch(() => null);
     setUpdStatus(currentUpdateStatus);
+    setManagerUpdStatus(await call<ManagerUpdateStatus>('managerUpdate:status').catch((error) => ({ configured: false, error: String(error) })));
     // The main updater already checks at launch, on focus, and on its interval.
     // Settings mount happens on every page switch, so only refresh here when the
     // cached status is stale enough to avoid making Settings feel like a network
@@ -504,6 +522,28 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   async function checkUpdate() {
     setUpdStatus({ checking: true });
     setUpdStatus(await call<typeof updStatus>('update:check').catch((e) => ({ error: String(e) })));
+  }
+  async function checkManagerRelease() {
+    setManagerUpdBusy('check');
+    try {
+      setManagerUpdStatus(await call<ManagerUpdateStatus>('managerUpdate:check'));
+    } catch (error) {
+      setManagerUpdStatus((current) => ({ ...(current ?? { configured: false }), error: String(error) }));
+    } finally {
+      setManagerUpdBusy(null);
+    }
+  }
+  async function updateManagerRelease() {
+    setManagerUpdBusy('apply');
+    try {
+      const next = await call<ManagerUpdateStatus>('managerUpdate:apply');
+      setManagerUpdStatus(next);
+      if (next.status === 'updated' || next.status === 'current') await reloadManagerCapabilities();
+    } catch (error) {
+      setManagerUpdStatus((current) => ({ ...(current ?? { configured: false }), error: String(error) }));
+    } finally {
+      setManagerUpdBusy(null);
+    }
   }
   useEffect(() => {
     reload();
@@ -2504,9 +2544,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       <section className="card">
         <h3>Self-update</h3>
         <div className="kv">
-          <span>version</span>
+          <span>IDACC version</span>
           <b className="mono">v{version || '—'}</b>
-          <span>status</span>
+          <span>IDACC status</span>
           <b className={updStatus?.available ? 'warn-text' : updStatus?.error ? 'status-error' : 'ok-text'}>
             {updStatus?.checking
               ? 'checking…'
@@ -2517,6 +2557,28 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                   : updStatus?.latest
                     ? `up to date (latest v${updStatus.latest})`
                     : 'up to date'}
+          </b>
+          <span>manager version</span>
+          <b className="mono">{managerUpdStatus?.installedVersion ? `v${managerUpdStatus.installedVersion}` : '—'}</b>
+          <span>manager status</span>
+          <b className={managerUpdStatus?.error ? 'status-error' : managerUpdStatus?.available || managerUpdStatus?.pendingActivation ? 'warn-text' : 'ok-text'}>
+            {managerUpdBusy === 'check'
+              ? 'checking…'
+              : managerUpdBusy === 'apply'
+                ? 'updating and validating…'
+                : managerUpdStatus?.busy
+                  ? 'manager update already running…'
+                : managerUpdStatus?.error
+                  ? `error: ${managerUpdStatus.error}`
+                  : managerUpdStatus?.pendingActivation
+                    ? `built v${managerUpdStatus.latestVersion || managerUpdStatus.installedVersion || '—'}; activation waiting${managerUpdStatus.activeQueries != null ? ` for ${managerUpdStatus.activeQueries} active quer${managerUpdStatus.activeQueries === 1 ? 'y' : 'ies'} to drain` : ''}`
+                    : managerUpdStatus?.available
+                      ? `update available: v${managerUpdStatus.latestVersion || '—'}`
+                      : managerUpdStatus?.status === 'updated'
+                        ? `updated and active: v${managerUpdStatus.latestVersion || managerUpdStatus.installedVersion || '—'}`
+                        : managerUpdStatus?.configured
+                          ? `up to date${managerUpdStatus.latestVersion ? ` (latest v${managerUpdStatus.latestVersion})` : ''}`
+                          : 'managed updater not configured'}
           </b>
           <span>auto-download</span>
           <b>
@@ -2530,7 +2592,18 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         </div>
         <div className="row-actions" style={{ marginTop: 10 }}>
           <span className="muted small grow">{upd?.updateRepo ? `updates from GitHub releases · ${upd.updateRepo}` : ''}</span>
-          <button className="btn" onClick={() => void checkUpdate()}>Check now</button>
+          <button className="btn" onClick={() => void checkUpdate()}>Check IDACC</button>
+        </div>
+        <div className="row-actions" style={{ marginTop: 8 }}>
+          <span className="muted small grow" title={managerUpdStatus?.checkout}>
+            {managerUpdStatus?.source ? 'fast-forward tagged bobofbuilding/id-agents releases, validate, build, then activate when work drains' : 'install the managed stack to enable manager updates'}
+          </span>
+          <button className="btn" disabled={!!managerUpdBusy || !!managerUpdStatus?.busy || !managerUpdStatus?.configured} onClick={() => void checkManagerRelease()}>
+            {managerUpdBusy === 'check' ? 'Checking…' : 'Check manager'}
+          </button>
+          <button className="btn primary" disabled={!!managerUpdBusy || !!managerUpdStatus?.busy || !managerUpdStatus?.configured} onClick={() => void updateManagerRelease()}>
+            {managerUpdBusy === 'apply' ? 'Updating…' : managerUpdStatus?.pendingActivation ? 'Retry activation' : 'Update & sync manager'}
+          </button>
         </div>
       </section>
 

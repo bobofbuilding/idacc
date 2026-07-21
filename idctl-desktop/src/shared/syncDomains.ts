@@ -40,6 +40,7 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^mcp:(add|remove)$/, ['settings', 'modules', 'brain']],
   [/^(providers:(add|remove|setDefault|setModelSelection|toggle|connect)|runtime:probe|subs:(signin|signout|install)|ollama:(pull|remove|catalogCheck))$/, ['settings', 'runtime-catalog', 'brain']],
   [/^(manager:setLocalConcurrency|headroom:setPilot|evmRpc:(save|remove|probe)|image:setServer)$/, ['settings', 'brain']],
+  [/^managerUpdate:apply$/, ['settings', 'agents', 'teams', 'dashboard', 'tasks', 'inbox', 'work']],
   [/^(chats:(save|rename|remove|markRead|patch)|chat:saveFiles|chat:savePasted)$/, ['chats', 'dashboard']],
   [/^(dispatch|dispatch:start|remote)$/, ['dashboard', 'tasks', 'inbox']],
 ];

@@ -9,6 +9,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { call as bridgeCall, configureKeyProvider, startDraftDispatcher, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
 import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
+import { applyManagerUpdate, checkManagerUpdate, getManagerUpdateStatus } from './managerUpdater.ts';
 import { cachedSubsStatus, invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubsStatusOptions, type SubProvider } from './subscriptions.ts';
 import { ollamaTags, ollamaPull, ollamaRemove, ollamaCatalogCheck, catalogModelToLocalEntry, type InstalledModelInput } from './ollama.ts';
 import { backgroundStackStatus, dockerStatus, getHardware, localStackInstallStatus, runInTerminal, startBackgroundStack, stopBackgroundStack } from './system.ts';
@@ -1367,6 +1368,12 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return loadSettings().update ?? null;
     case 'update:setSettings':
       return setUpdateSettings((args[0] as Record<string, unknown>) ?? {}).update ?? null;
+    case 'managerUpdate:status':
+      return getManagerUpdateStatus();
+    case 'managerUpdate:check':
+      return checkManagerUpdate();
+    case 'managerUpdate:apply':
+      return applyManagerUpdate();
     case 'evmRpc:list':
       return loadEvmRpcsMigratingSecrets().map(redactEvmRpc);
     case 'evmRpc:save':

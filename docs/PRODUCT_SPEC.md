@@ -497,9 +497,13 @@ Manager; this is the plumbing.)
 - **Manager/local/backend diagnostics**: manager extension compatibility,
   open-or-pinned provider routing, local runtime readiness, backend readiness, and contextual fixes
   live in the cards that own those systems instead of a separate first-run checkpoint.
-- **Self-update**: version, status, **auto-download** toggle, **Check now**. Background checks
-  can stage newer builds, but applying a staged build requires the explicit Restart & update action;
-  stale/consumed staged zips are gated during status, check, staging, and apply.
+- **Self-update**: separate installed/status rows and checks for the IDACC app and its managed
+  ID Agents manager. **Update & sync manager** uses the installer's guarded updater to accept only
+  fast-forward tagged releases from the configured source, validate and build the checkout, and
+  activate it only after active queries drain; successful activation refreshes manager-backed
+  Settings, fleet, Dashboard, and Work state without redeploying teams. App background checks can
+  stage newer builds, but applying a staged app build still requires the explicit Restart & update
+  action; stale/consumed staged zips are gated during status, check, staging, and apply.
 - **Managed subscription sign-ins**: CLI OAuth/device/browser flows (no API key) for `claude-*`,
   `codex`, `cursor-cli`, `grok`, Antigravity `agy`, `copilot`, `kiro-cli`, and legacy `q` only when installed. Rows distinguish
   status-inspectable CLIs from TUI-owned account state, auto-detect installed binaries after a
