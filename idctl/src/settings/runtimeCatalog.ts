@@ -275,14 +275,14 @@ function managedRuntimeReady(s: ManagedRuntimeForOffer): boolean {
   if (!s.runtime || s.installed === false) return false;
   if (s.statusSupported === true) return s.loggedIn === true;
   // These CLIs do not expose a safe non-interactive account status in Settings;
-  // binary presence is the strongest read-only availability signal we have.
+  // require both binary presence and non-secret linked-account evidence.
   // The manager-harness gate is applied separately before a runtime is offered
   // for assignment. Grok and Antigravity expose model probes, so they should
   // arrive here with statusSupported=true and loggedIn=true rather than using
-  // installed-only evidence. Gemini CLI is excluded from managed sign-ins; use
+  // linked evidence. Gemini CLI is excluded from managed sign-ins; use
   // Google Gemini API under Inference backends. Existing gemini assignments
   // remain current-only via keep.
-  return s.installed === true && ['copilot'].includes(s.runtime);
+  return s.runtime === 'copilot' && s.installed === true && s.linked === true;
 }
 
 /**

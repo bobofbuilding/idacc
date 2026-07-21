@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 const main = await readFile(new URL('../src/main/main.ts', import.meta.url), 'utf8');
 const subscriptions = await readFile(new URL('../src/main/subscriptions.ts', import.meta.url), 'utf8');
+const bridge = await readFile(new URL('../src/main/bridge.ts', import.meta.url), 'utf8');
 const settings = await readFile(new URL('../src/renderer/views/Settings.tsx', import.meta.url), 'utf8');
 const teams = await readFile(new URL('../src/renderer/views/Teams.tsx', import.meta.url), 'utf8');
 
@@ -55,8 +56,23 @@ assert.ok(
   'Settings should not report a sign-in state before the first provider probe',
 );
 assert.ok(
-  teams.includes("'subs:primaryAssignmentStatus'") && teams.includes("'runtime:probeLocal'") && teams.includes('Refresh runtimes'),
-  'Teams Build should refresh bounded Claude/Codex readiness and local liveness without probing unrelated backends',
+  teams.includes("'subs:assignmentStatus'") && teams.includes("'runtime:probeLocal'") && teams.includes('Refresh runtimes'),
+  'Teams Build should refresh assignable subscription readiness and local liveness without probing unrelated backends',
+);
+assert.ok(
+  subscriptions.includes("'grok', 'antigravity', 'copilot', 'kiro-cli'")
+    && subscriptions.includes('subsStatusForRuntimes'),
+  'assignment readiness should cover executable secondary subscription CLIs and support batch-scoped rechecks',
+);
+assert.ok(
+  bridge.includes('subsStatusForRuntimes(rowsIn.map((row) => row.runtime))')
+    && !bridge.includes("for (const rt of ['grok', 'antigravity'])"),
+  'runtime verification must not promote Grok or Antigravity from a curated model catalog without live CLI readiness',
+);
+assert.ok(
+  teams.includes('!runtimeCatalogChecking && Boolean(targetTeam)')
+    && teams.includes('Wait for subscription and local runtime readiness checks to finish.'),
+  'Team Builder must not dispatch while authoritative runtime readiness is still pending',
 );
 
 console.log('subscription status cache guard ok');

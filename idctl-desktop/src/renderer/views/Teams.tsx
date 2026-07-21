@@ -1002,7 +1002,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     setRuntimeCatalogChecking(true);
     try {
       const managedPromise = call<Record<string, ManagedRuntimeStatus>>(
-        'subs:primaryAssignmentStatus',
+        'subs:assignmentStatus',
         { force, maxAgeMs: force ? 0 : HR_RUNTIME_CATALOG_UI_CACHE_MS },
       ).catch(() => ({}));
       const models = await call<Record<string, string[]>>('runtime:probeLocal')
@@ -2520,7 +2520,7 @@ function TeamBuilder({
   const defaultLeadAvailableForWire = targetTeam !== PRIMARY_TEAM || existingInTeam.has(DEFAULT_LEAD) || named.some((r) => r.slug === DEFAULT_LEAD);
   const defaultLeadMissingForWire = coordinate && targetTeam === PRIMARY_TEAM && !defaultLeadAvailableForWire;
   const locked = building || aiBusy || verifying;
-  const canBuild = !locked && Boolean(targetTeam) && !isReservedName(targetTeam) && toCreate.length > 0 && reserved.length === 0 && dupes.length === 0 && !builderRelayBlocksDefault && !defaultLeadMissingForWire && !missingRuntime;
+  const canBuild = !locked && !runtimeCatalogChecking && Boolean(targetTeam) && !isReservedName(targetTeam) && toCreate.length > 0 && reserved.length === 0 && dupes.length === 0 && !builderRelayBlocksDefault && !defaultLeadMissingForWire && !missingRuntime;
   const leadershipBackbone = useMemo(() => assessLeadershipBackbone(fleetAgents, hierarchy), [fleetAgents, hierarchy]);
   const leadershipIssues = leadershipBackboneIssues(leadershipBackbone);
   const blueprintCoverages = useMemo(() => RECOMMENDED_TEAM_BLUEPRINTS.map((bp) => blueprintCoverage(fleetAgents, bp)), [fleetAgents]);
@@ -2776,6 +2776,7 @@ function TeamBuilder({
   }
 
   async function build() {
+    if (runtimeCatalogChecking) { setError('Wait for subscription and local runtime readiness checks to finish.'); return; }
     if (!targetTeam) { setError('Choose or name a team.'); return; }
     if (isReservedName(targetTeam)) { setError(`“${targetTeam}” is a reserved word — choose another team name.`); return; }
     if (reserved.length) { setError(`Reserved agent name(s): ${reserved.join(', ')} — rename.`); return; }
@@ -3101,10 +3102,10 @@ function TeamBuilder({
             <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', margin: '12px 0 6px' }}>
               <span className="muted small">
                 {runtimeCatalogChecking
-                  ? 'checking subscription sign-ins and local servers…'
+                  ? 'checking assignable subscription sign-ins and local servers…'
                   : subscriptionRuntimes.length
                     ? `subscription ready: ${subscriptionRuntimes.map(runtimeLabel).join(', ')}`
-                    : 'Claude Code and Codex are not ready for assignment'}
+                    : 'No authenticated subscription runtime is ready for assignment'}
               </span>
               <span className="row-actions">
                 {!runtimeCatalogChecking && !subscriptionRuntimes.length ? <button className="btn small" disabled={locked} onClick={onOpenSettings}>Open Settings</button> : null}

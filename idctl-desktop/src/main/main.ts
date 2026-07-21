@@ -10,7 +10,7 @@ import { call as bridgeCall, configureKeyProvider, startDraftDispatcher, startGo
 import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
 import { applyManagerUpdate, checkManagerUpdate, getManagerUpdateStatus } from './managerUpdater.ts';
-import { cachedSubsStatus, invalidateSubsStatusCache, primaryAssignmentSubsStatus, subsStatus, subsSignin, subsSignout, subsInstall, type SubsStatusOptions, type SubProvider } from './subscriptions.ts';
+import { assignmentSubsStatus, cachedSubsStatus, invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubsStatusOptions, type SubProvider } from './subscriptions.ts';
 import { ollamaTags, ollamaPull, ollamaRemove, ollamaCatalogCheck, catalogModelToLocalEntry, type InstalledModelInput } from './ollama.ts';
 import { backgroundStackStatus, dockerStatus, getHardware, localStackInstallStatus, runInTerminal, startBackgroundStack, stopBackgroundStack } from './system.ts';
 import { pickProjectFolder, openProjectFolder, projectReadme, projectGit, projectGitRun, githubMeta, cloneGithub, projectDiff, createGithubRepo, linkGithubRepo, forkGithub, commitProject, detectProjectsRoot, scanProjectsRoot } from './projects.ts';
@@ -1412,8 +1412,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
           ? args[0] as SubsStatusOptions
           : { force: Boolean(args[0]) },
       );
-    case 'subs:primaryAssignmentStatus':
-      return primaryAssignmentSubsStatus(
+    case 'subs:assignmentStatus':
+      return assignmentSubsStatus(
         args[0] && typeof args[0] === 'object'
           ? args[0] as SubsStatusOptions
           : { force: Boolean(args[0]) },

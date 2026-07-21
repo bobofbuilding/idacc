@@ -14,7 +14,7 @@ const managed = [
   { runtime: 'cursor-cli', installed: true, loggedIn: false, statusSupported: true },
   { runtime: 'grok', installed: true, loggedIn: true, statusSupported: true },
   { runtime: 'antigravity', installed: true, loggedIn: true, statusSupported: true },
-  { runtime: 'copilot', installed: true, loggedIn: false, statusSupported: false },
+  { runtime: 'copilot', installed: true, linked: true, loggedIn: false, statusSupported: false },
   { runtime: 'kiro-cli', installed: true, loggedIn: true, statusSupported: true },
   { runtime: 'gemini', installed: true, loggedIn: false, statusSupported: true },
   { runtime: 'claude-code-cli', installed: true, loggedIn: true, statusSupported: true },
@@ -180,8 +180,14 @@ assert.deepEqual(
 
 assert.deepEqual(
   offerableRuntimes([], undefined, [{ runtime: 'copilot', installed: true, loggedIn: false, statusSupported: false }]),
+  [],
+  'Copilot CLI should not become assignable from binary presence without linked-account evidence',
+);
+
+assert.deepEqual(
+  offerableRuntimes([], undefined, [{ runtime: 'copilot', installed: true, linked: true, loggedIn: false, statusSupported: false }]),
   ['copilot'],
-  'Copilot CLI should become assignable once the manager exposes the Copilot harness',
+  'Copilot CLI should become assignable when its binary and linked-account evidence are both present',
 );
 
 assert.deepEqual(

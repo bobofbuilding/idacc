@@ -71,9 +71,9 @@ export interface SubStatus {
 const SUB_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'q'];
 let subsStatusCache: { at: number; rows: Record<SubProvider, SubStatus> } | null = null;
 let subsStatusInflight: Promise<Record<SubProvider, SubStatus>> | null = null;
-let primarySubsStatusCache: { at: number; rows: Partial<Record<SubProvider, SubStatus>> } | null = null;
-let primarySubsStatusInflight: Promise<Partial<Record<SubProvider, SubStatus>>> | null = null;
-const PRIMARY_ASSIGNMENT_PROVIDERS: SubProvider[] = ['claude', 'chatgpt'];
+let assignmentSubsStatusCache: { at: number; rows: Partial<Record<SubProvider, SubStatus>> } | null = null;
+let assignmentSubsStatusInflight: Promise<Partial<Record<SubProvider, SubStatus>>> | null = null;
+const ASSIGNMENT_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli'];
 
 const SUB_META: Record<SubProvider, SubProviderMeta> = {
   claude: {
@@ -561,7 +561,7 @@ async function providerStatus(provider: SubProvider): Promise<SubStatus> {
 
 export function invalidateSubsStatusCache(): void {
   subsStatusCache = null;
-  primarySubsStatusCache = null;
+  assignmentSubsStatusCache = null;
 }
 
 export function cachedSubsStatus(): Record<SubProvider, SubStatus> | null {
@@ -585,26 +585,39 @@ export async function subsStatus(opts: SubsStatusOptions = {}): Promise<Record<S
   return subsStatusInflight;
 }
 
-/** Fast authoritative readiness for the primary subscription harnesses used by Team Builder. */
-export async function primaryAssignmentSubsStatus(
+/** Authoritative readiness for subscription harnesses that Team Builder can assign. */
+export async function assignmentSubsStatus(
   opts: SubsStatusOptions = {},
 ): Promise<Partial<Record<SubProvider, SubStatus>>> {
   const now = Date.now();
   const maxAgeMs = Number.isFinite(opts.maxAgeMs) && Number(opts.maxAgeMs) > 0
     ? Number(opts.maxAgeMs)
     : SUBS_STATUS_CACHE_TTL_MS;
-  if (!opts.force && primarySubsStatusCache && (opts.staleOk || now - primarySubsStatusCache.at < maxAgeMs)) {
-    return primarySubsStatusCache.rows;
+  if (!opts.force && assignmentSubsStatusCache && (opts.staleOk || now - assignmentSubsStatusCache.at < maxAgeMs)) {
+    return assignmentSubsStatusCache.rows;
   }
-  if (!opts.force && primarySubsStatusInflight) return primarySubsStatusInflight;
-  primarySubsStatusInflight = Promise.all(
-    PRIMARY_ASSIGNMENT_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const),
+  if (!opts.force && assignmentSubsStatusInflight) return assignmentSubsStatusInflight;
+  assignmentSubsStatusInflight = Promise.all(
+    ASSIGNMENT_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const),
   ).then((rows) => {
     const result = Object.fromEntries(rows) as Partial<Record<SubProvider, SubStatus>>;
-    primarySubsStatusCache = { at: Date.now(), rows: result };
+    assignmentSubsStatusCache = { at: Date.now(), rows: result };
     return result;
-  }).finally(() => { primarySubsStatusInflight = null; });
-  return primarySubsStatusInflight;
+  }).finally(() => { assignmentSubsStatusInflight = null; });
+  return assignmentSubsStatusInflight;
+}
+
+/** Recheck only the managed subscription runtimes present in a pending assignment batch. */
+export async function subsStatusForRuntimes(
+  runtimes: string[],
+): Promise<Partial<Record<SubProvider, SubStatus>>> {
+  const requested = new Set(runtimes.map((runtime) => String(runtime ?? '').trim()).filter(Boolean));
+  const providers = ASSIGNMENT_PROVIDERS.filter((provider) => {
+    const runtime = SUB_META[provider].runtime;
+    return requested.has(runtime) || (provider === 'claude' && requested.has('claude-code-local'));
+  });
+  const rows = await Promise.all(providers.map(async (provider) => [provider, await providerStatus(provider)] as const));
+  return Object.fromEntries(rows) as Partial<Record<SubProvider, SubStatus>>;
 }
 
 /**

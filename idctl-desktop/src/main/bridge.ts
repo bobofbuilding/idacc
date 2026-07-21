@@ -50,7 +50,7 @@ import { discoverLocalServers, mergeLocalDiscoveryCandidates, type DiscoveredSer
 import { type HeadroomPilotSettings, type IdctlConfig, type ProviderKind, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
 import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts';
 import { buildProviderModelLanes, buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider, localProviderRouteIsLive, settingsAvailableRuntimeSet, managedRuntimeHasEvidence, runtimeDisplayLabel, runtimeHasManagerHarness, type RuntimeModelLaneKind } from '../../../idctl/src/settings/runtimeCatalog.ts';
-import { subsStatus } from './subscriptions.ts';
+import { subsStatus, subsStatusForRuntimes } from './subscriptions.ts';
 import { testMcpServer } from './mcpTest.ts';
 import { headroomBackendContractAudit, headroomCoreAudit, headroomStatus } from './headroom.ts';
 import { headroomPluginPathAudit } from './headroomPlugin.ts';
@@ -709,13 +709,13 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
   }));
 
   const providers = listProvidersEnriched();
-  const managed = await subsStatus().then((rows) => Object.values(rows)).catch(() => []);
+  const managed = await subsStatusForRuntimes(rowsIn.map((row) => row.runtime))
+    .then((rows) => Object.values(rows))
+    .catch(() => []);
   const availableHarnesses = settingsAvailableRuntimeSet(providers, managed);
+  const managedByRuntime = new Map(managed.map((status) => [status.runtime, status]));
   const providerLanes = new Map(buildProviderModelLanes(providers).map((lane) => [lane.id, lane]));
   const refreshedCatalog = runtimeCatalogWithLiveCliModels();
-  for (const rt of ['grok', 'antigravity']) {
-    if ((refreshedCatalog[rt] ?? []).length > 0) availableHarnesses.add(rt);
-  }
   const rows = rowsIn.map((row): RuntimeAssignmentCheck => {
     if (!row.runtime) {
       return { name: row.name, runtime: '', label: 'None', model: row.model || undefined, ok: false, detail: 'No runtime selected.', source: 'harness', modelCount: 0 };
@@ -738,7 +738,11 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
 
     const models = refreshedCatalog[row.runtime] ?? [];
     if (!availableHarnesses.has(row.runtime)) {
-      return { name: row.name, runtime: row.runtime, label: runtimeDisplayLabel(row.runtime), model: row.model || undefined, ok: false, detail: 'Runtime is not currently available from Settings.', source: 'harness', modelCount: models.length };
+      const managedStatus = managedByRuntime.get(row.runtime) ?? (row.runtime === 'claude-code-local' ? managedByRuntime.get('claude-code-cli') : undefined);
+      const reason = managedStatus?.detail || (managedStatus?.installed === false
+        ? `${runtimeDisplayLabel(row.runtime)} CLI is not installed.`
+        : 'Runtime is not currently available from Settings.');
+      return { name: row.name, runtime: row.runtime, label: runtimeDisplayLabel(row.runtime), model: row.model || undefined, ok: false, detail: reason, source: 'harness', modelCount: models.length };
     }
     if (row.model && models.length && !models.includes(row.model)) {
       return { name: row.name, runtime: row.runtime, label: runtimeDisplayLabel(row.runtime), model: row.model, ok: false, detail: `Model "${row.model}" is not in the current ${runtimeDisplayLabel(row.runtime)} catalog.`, source: 'harness', modelCount: models.length };
@@ -1403,7 +1407,7 @@ const READ_ONLY_SYNC_METHODS = new Set([
   'runtime:freshness',
   'runtime:verifyAssignments',
   'subs:status',
-  'subs:primaryAssignmentStatus',
+  'subs:assignmentStatus',
 ]);
 
 function goalDriverConfig(): GoalDriverConfig {

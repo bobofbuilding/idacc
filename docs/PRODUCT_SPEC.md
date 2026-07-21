@@ -360,12 +360,15 @@ questions through `legal/general-counsel`.
   primary-route warning for default-team wiring) + cross-team relay → **Build** for a new team or
   **Build + merge** for an existing target (sequential `onboard:run` with duplicate names skipped,
   explicit **One new agent** reset for single-agent adds, automatic runtime/model verification that
-  refreshes Claude/Codex subscription readiness and live-probes local plus selected API provider
-  lanes before confirmation, a live checklist, then optional
+  refreshes every manager-assignable subscription CLI (including Claude Code, Codex, and Grok
+  Build) and live-probes local plus selected API provider lanes before confirmation, then rechecks
+  only the subscription runtimes in the pending batch before any spawn, a live checklist, then optional
   coordinator/default-primary + instructions + relay wiring) → per-agent **↻ retry**).
   Fresh installs never infer that an offline local server is usable from cached model metadata:
   Ollama/LM Studio lanes require a successful recent loopback probe, and rows remain unassigned with
-  an actionable Settings handoff when no manager-executable runtime is ready.
+  an actionable Settings handoff when no manager-executable runtime is ready. Team creation remains
+  disabled while readiness is unresolved; curated model names and a paid web subscription are not
+  execution evidence without the corresponding installed, authenticated CLI.
 - **Create team from template/config** (+ From template): pick source (default template / library
   template / saved config), name it, debounced **Preflight** preview, create.
 - **Structure**: live **team graph** (lead-on-top, click to select/switch), **⭑ make primary lead**,
