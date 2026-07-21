@@ -116,6 +116,13 @@ restarting. The same guarded manager check and update path is available from
 Settings → Self-update, alongside the separate IDACC app updater. Preview every action first with
 `node scripts/install-idacc-stack.mjs --dry-run`.
 
+If IDACC was installed from the downloadable `.app` without running the stack
+installer, Settings → Self-update shows **Install current manager**. That action
+uses installer scripts bundled with the app to clone, validate, build, start,
+and enroll the compatible manager fork in background updates. It preserves the
+same dirty-worktree, foreign-remote, non-fast-forward, and unknown-service guards
+as the command-line installer.
+
 By default the control center connects to `http://127.0.0.1:4100`; point it
 elsewhere with `MANAGER_URL`. After launch, open Settings and confirm the
 Connection, Local models & backends, and Inference backends cards. The app can

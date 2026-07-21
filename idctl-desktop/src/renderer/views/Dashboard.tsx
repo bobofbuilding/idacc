@@ -329,6 +329,7 @@ function CoordinationTree({
   hier,
   tasks,
   hierarchyWarning,
+  onOpenSettings,
 }: {
   store: FleetStore;
   events: TeamEvent[];
@@ -336,6 +337,7 @@ function CoordinationTree({
   hier: OrgHier;
   tasks: LiteTask[];
   hierarchyWarning?: string;
+  onOpenSettings?: () => void;
 }) {
   const [spend, setSpend] = useState<{ total: number; count: number; top?: { agent: string; total: number } } | null>(null);
   const liveRef = useRef(true);
@@ -427,7 +429,12 @@ function CoordinationTree({
           </span>
         ) : null}
       </h3>
-      {hierarchyWarning ? <div className="warn-text small" role="status" style={{ marginBottom: 8 }}>{hierarchyWarning}</div> : null}
+      {hierarchyWarning ? (
+        <div className="row-actions" role="status" style={{ marginBottom: 8, alignItems: 'center' }}>
+          <span className="warn-text small grow">{hierarchyWarning}</span>
+          {onOpenSettings ? <button className="btn small" onClick={onOpenSettings}>Open Self-update</button> : null}
+        </div>
+      ) : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div>
           {node(primary, 'primary lead')}
@@ -450,7 +457,7 @@ function CoordinationTree({
   );
 }
 
-export function Dashboard({ store }: { store: FleetStore }) {
+export function Dashboard({ store, navigate }: { store: FleetStore; navigate?: (target: string) => void }) {
   const activitySyncVersion = useSyncVersion(['dashboard', 'tasks', 'work', 'inbox', 'chats']);
   const hierarchySyncVersion = useSyncVersion(['org', 'agents', 'dashboard']);
   const [hier, setHier] = useState<OrgHier>(DEFAULT_ORG_HIERARCHY);
@@ -512,6 +519,10 @@ export function Dashboard({ store }: { store: FleetStore }) {
       ...hier.secondaries.flatMap((s) => s.leadsTeams ?? []),
     ]).filter((team) => team !== 'public'),
     [hier.teams, hier.secondaries, store.teams, store.allAgents],
+  );
+  const primaryLeadPresent = useMemo(
+    () => store.allAgents.some((agent) => agent.team === DASHBOARD_CHAT_TEAM && agent.name === DASHBOARD_CHAT_TARGET),
+    [store.allAgents],
   );
   // Holistic activity feed: recent events plus durable task/comms state across
   // EVERY team (newest first). Events alone are lossy: a task/news row can exist
@@ -726,7 +737,15 @@ export function Dashboard({ store }: { store: FleetStore }) {
         </div>
       </header>
 
-      <CoordinationTree store={store} events={events} coordinationTeams={coordinationTeams} hier={hier} tasks={tasks} hierarchyWarning={hierarchyWarning} />
+      <CoordinationTree
+        store={store}
+        events={events}
+        coordinationTeams={coordinationTeams}
+        hier={hier}
+        tasks={tasks}
+        hierarchyWarning={hierarchyWarning}
+        onOpenSettings={navigate ? () => navigate('settings') : undefined}
+      />
 
       {/* Explicit flex row so the chat fills the left and the activity tile always shows on the right. */}
       <div style={{ display: 'flex', gap: 14, flex: 1, minHeight: 0, alignItems: 'stretch' }}>
@@ -745,7 +764,17 @@ export function Dashboard({ store }: { store: FleetStore }) {
             </section>
           ) : null}
           {controlIntentStatus ? <div className="control-intent-status muted small" aria-live="polite">{controlIntentStatus}</div> : null}
-          <Chat store={store} embedded teamOverride={DASHBOARD_CHAT_TEAM} lockTarget={DASHBOARD_CHAT_TARGET} onControlIntent={proposeControlIntent} key={`${DASHBOARD_CHAT_TEAM}:${DASHBOARD_CHAT_TARGET}`} />
+          {primaryLeadPresent ? (
+            <Chat store={store} embedded teamOverride={DASHBOARD_CHAT_TEAM} lockTarget={DASHBOARD_CHAT_TARGET} onControlIntent={proposeControlIntent} key={`${DASHBOARD_CHAT_TEAM}:${DASHBOARD_CHAT_TARGET}`} />
+          ) : (
+            <section className="card" style={{ flex: 1, display: 'grid', placeItems: 'center' }}>
+              <div style={{ maxWidth: 520, textAlign: 'center' }}>
+                <h3>Default lead is not provisioned</h3>
+                <p className="muted">Complete the default team build before using Dashboard chat. Runtime checks will keep unsupported or offline assignments out of the roster.</p>
+                {navigate ? <button className="btn primary" onClick={() => navigate('teams:build')}>Open HR Manager Build</button> : null}
+              </div>
+            </section>
+          )}
         </div>
 
         {/* marginTop offsets the chat's control row so the tile top squares with the chat card

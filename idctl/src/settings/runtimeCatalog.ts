@@ -320,7 +320,7 @@ export function offerableRuntimes(
     if (!providerRouteReady(p)) continue;
     if (p.kind === 'anthropic') addRuntime(out, 'claude-agent-sdk');
     else if (p.kind === 'openai') addRuntime(out, 'codex');
-    else if (providerIsLocalRoute(p)) addRuntime(out, 'ollama');
+    else if (p.kind === 'ollama' && providerIsLocalRoute(p)) addRuntime(out, 'ollama');
   }
 
   return out;
@@ -400,9 +400,13 @@ export const RUNTIME_CURATED: Record<string, string[]> = {
 export function providerKindToRuntimes(kind: ProviderKind): string[] {
   switch (kind) {
     case 'ollama':
+      return ['ollama'];
     case 'lmstudio':
     case 'openai-compatible':
-      return ['ollama']; // local model servers feed the ollama runtime
+      // These servers implement an OpenAI-compatible API, not Ollama's API.
+      // They are assigned through their provider:<name> lane and the manager's
+      // provider-api harness so the configured base URL remains authoritative.
+      return [];
     case 'anthropic':
       return ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local'];
     case 'openai':
@@ -414,10 +418,9 @@ export function providerKindToRuntimes(kind: ProviderKind): string[] {
 
 /**
  * Is this provider a LOCAL model server (its endpoint is on this machine)? The
- * ollama runtime's harness only reaches a local server (OLLAMA_BASE_URL →
- * 127.0.0.1), so a CLOUD openai-compatible aggregator (OpenRouter, Groq, …) must
- * NOT feed the ollama model picker — otherwise an operator can pick a model the
- * harness can't load and hit a runtime "model not found" at probe/run time.
+ * generic ollama runtime is reserved for an actual Ollama provider. Other local
+ * OpenAI-compatible servers are exposed as provider lanes so their configured
+ * endpoint cannot be mistaken for Ollama's API.
  */
 export function isLocalProvider(p: ProviderProfile): boolean {
   try {
@@ -520,8 +523,7 @@ export function buildRuntimeCatalog(providers: ProviderProfile[]): Record<string
     const lane = providerModelLaneId(p);
     cat[lane] = Array.from(new Set([...(cat[lane] ?? []), ...models]));
     for (const rt of providerKindToRuntimes(p.kind)) {
-      // The ollama runtime can only serve models from a LOCAL server — never let
-      // a cloud openai-compatible provider's models into its picker.
+      // The ollama runtime can only serve models from a LOCAL Ollama server.
       if (rt === 'ollama' && !isLocalProvider(p)) continue;
       cat[rt] = Array.from(new Set([...(cat[rt] ?? []), ...models]));
     }

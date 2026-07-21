@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -8,6 +8,7 @@ const DEFAULT_SOURCE = 'https://github.com/bobofbuilding/id-agents.git';
 const OUTPUT_LIMIT = 256 * 1024;
 const CHECK_TIMEOUT_MS = 3 * 60 * 1000;
 const APPLY_TIMEOUT_MS = 15 * 60 * 1000;
+const BOOTSTRAP_TIMEOUT_MS = 20 * 60 * 1000;
 
 export type ManagerUpdaterConfig = {
   nodePath: string;
@@ -32,6 +33,7 @@ type UpdaterResult = {
 
 export type ManagerUpdateStatus = {
   configured: boolean;
+  bootstrapAvailable?: boolean;
   busy?: boolean;
   installedVersion?: string;
   latestVersion?: string;
@@ -48,6 +50,54 @@ export type ManagerUpdateStatus = {
 
 let activeUpdate: Promise<ManagerUpdateStatus> | null = null;
 let cachedCheck: ManagerUpdateStatus | null = null;
+
+function cliPath(home = homedir()): string {
+  let nvmBins: string[] = [];
+  try {
+    nvmBins = readdirSync(join(home, '.nvm', 'versions', 'node'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }))
+      .map((entry) => join(home, '.nvm', 'versions', 'node', entry.name, 'bin'));
+  } catch {
+    // nvm is optional.
+  }
+  return Array.from(new Set([
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    join(home, '.local', 'bin'),
+    join(home, '.npm-global', 'bin'),
+    join(home, '.volta', 'bin'),
+    join(home, '.asdf', 'shims'),
+    join(home, '.mise', 'shims'),
+    ...nvmBins,
+    '/usr/local/bin',
+    '/usr/local/sbin',
+    '/usr/bin',
+    '/bin',
+    ...(process.env.PATH ? process.env.PATH.split(':') : []),
+  ])).join(':');
+}
+
+export function managerBootstrapScriptCandidates(
+  resourcesPath = typeof process.resourcesPath === 'string' ? process.resourcesPath : '',
+  cwd = process.cwd(),
+): string[] {
+  return Array.from(new Set([
+    resourcesPath ? join(resourcesPath, 'scripts', 'install-idacc-stack.mjs') : '',
+    resolve(cwd, 'scripts', 'install-idacc-stack.mjs'),
+    resolve(cwd, '..', 'scripts', 'install-idacc-stack.mjs'),
+  ].filter(Boolean)));
+}
+
+function bootstrapScript(): string {
+  const path = managerBootstrapScriptCandidates().find((candidate) => existsSync(candidate));
+  if (!path) throw new Error('The manager installer is not bundled with this IDACC build. Update IDACC and retry.');
+  return path;
+}
+
+function managerBootstrapAvailable(): boolean {
+  return process.platform === 'darwin' && managerBootstrapScriptCandidates().some((candidate) => existsSync(candidate));
+}
 
 function valueAfter(args: string[], flag: string, fallback: string): string {
   const index = args.indexOf(flag);
@@ -173,10 +223,13 @@ export function getManagerUpdateStatus(): ManagerUpdateStatus {
       detail: current.pendingActivation ? current.detail : cachedCheck.detail,
     };
   } catch (error) {
+    const bootstrapAvailable = managerBootstrapAvailable();
     return {
       configured: false,
+      bootstrapAvailable,
       busy: !!activeUpdate,
-      error: error instanceof Error ? error.message : String(error),
+      detail: bootstrapAvailable ? 'Install the current compatible manager and its background updater.' : undefined,
+      error: bootstrapAvailable ? undefined : error instanceof Error ? error.message : String(error),
     };
   }
 }
@@ -259,6 +312,72 @@ function runUpdater(config: ManagerUpdaterConfig, dryRun: boolean): Promise<Mana
   });
 }
 
+function runBootstrap(): Promise<ManagerUpdateStatus> {
+  const script = bootstrapScript();
+  const home = process.env.HOME || homedir();
+  const projectDir = join(home, 'Projects', 'idacc-stack');
+  const checkedAt = Date.now();
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(process.execPath, [
+      script,
+      '--manager-only',
+      '--project-dir', projectDir,
+      '--manager-source', DEFAULT_SOURCE,
+      '--branch', 'main',
+      '--manager-port', '4100',
+      '--no-open',
+    ], {
+      cwd: home,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+        PATH: cliPath(home),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout = appendBounded(stdout, chunk); });
+    child.stderr.on('data', (chunk) => { stderr = appendBounded(stderr, chunk); });
+    const timeout = setTimeout(() => {
+      child.kill('SIGTERM');
+      rejectPromise(new Error('Manager installation timed out'));
+    }, BOOTSTRAP_TIMEOUT_MS);
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      rejectPromise(error);
+    });
+    child.once('close', (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        const detail = (stderr || stdout).trim().split(/\r?\n/).slice(-10).join('\n');
+        rejectPromise(new Error(detail || `Manager installer exited with status ${code}`));
+        return;
+      }
+      const result = parseManagerUpdaterResult(stdout);
+      if (!result || (result.status !== 'installed' && result.status !== 'current')) {
+        rejectPromise(new Error('Manager installer returned no completion record'));
+        return;
+      }
+      try {
+        const current = installedStatus(discoverConfig());
+        cachedCheck = {
+          ...current,
+          bootstrapAvailable: true,
+          status: 'updated',
+          latestVersion: result.version || current.installedVersion,
+          available: false,
+          lastChecked: checkedAt,
+          detail: 'Compatible manager installed, started, and enrolled in background updates.',
+        };
+        resolvePromise(cachedCheck);
+      } catch (error) {
+        rejectPromise(error);
+      }
+    });
+  });
+}
+
 async function runSingleFlight(dryRun: boolean): Promise<ManagerUpdateStatus> {
   if (activeUpdate) return { ...getManagerUpdateStatus(), busy: true, detail: 'Manager update is already running.' };
   const config = discoverConfig();
@@ -278,4 +397,11 @@ export function checkManagerUpdate(): Promise<ManagerUpdateStatus> {
 
 export function applyManagerUpdate(): Promise<ManagerUpdateStatus> {
   return runSingleFlight(false);
+}
+
+export function bootstrapManagerInstall(): Promise<ManagerUpdateStatus> {
+  if (activeUpdate) return Promise.resolve({ ...getManagerUpdateStatus(), busy: true, detail: 'Manager installation or update is already running.' });
+  const operation = runBootstrap().finally(() => { activeUpdate = null; });
+  activeUpdate = operation;
+  return operation;
 }

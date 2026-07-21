@@ -1,7 +1,7 @@
 {
   "name": "idagents-control-center",
   "productName": "ID Agents Control Center",
-  "version": "0.1.662",
+  "version": "0.1.663",
   "description": "Desktop control center for id-agents — live fleet dashboard, manager chat, teams, keys.",
   "private": true,
   "main": "out/main/main.cjs",
@@ -23,6 +23,7 @@
     "test:update-target-guard": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/update-target-guard-smoke.mjs",
     "test:update-repo": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/update-repo-migration-smoke.mjs",
     "test:manager-updater": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/manager-updater-smoke.mjs",
+    "test:team-provider-lanes": "node scripts/team-builder-provider-lanes-smoke.mjs",
     "test:safe-production-readiness": "node scripts/safe-production-readiness-smoke.mjs",
     "test:agent-signer-vault": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/agent-signer-vault-smoke.mjs",
     "test:safe-roles-execution": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/safe-roles-execution-smoke.mjs",
@@ -79,6 +80,14 @@
       {
         "from": "resources/idacc-context-retrieval",
         "to": "idacc-context-retrieval"
+      },
+      {
+        "from": "../scripts/install-idacc-stack.mjs",
+        "to": "scripts/install-idacc-stack.mjs"
+      },
+      {
+        "from": "../scripts/install-id-agents-manager.mjs",
+        "to": "scripts/install-id-agents-manager.mjs"
       }
     ],
     "mac": {

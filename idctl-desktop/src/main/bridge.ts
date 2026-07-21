@@ -741,7 +741,7 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
       if (row.model && models.length && !models.includes(row.model)) {
         return { name: row.name, runtime: row.runtime, label: lane.label, model: row.model, ok: false, detail: `Model "${row.model}" is not in the latest synced ${providerName} model list.`, source: 'provider', provider: providerName, modelCount: models.length };
       }
-      return { name: row.name, runtime: row.runtime, label: lane.label, model: row.model || undefined, ok: true, detail: `Verified API provider lane (${models.length} model${models.length === 1 ? '' : 's'}).`, source: 'provider', provider: providerName, modelCount: models.length };
+      return { name: row.name, runtime: row.runtime, label: lane.label, model: row.model || undefined, ok: true, detail: `Verified ${lane.kind === 'local' ? 'local' : 'API'} provider lane (${models.length} model${models.length === 1 ? '' : 's'}).`, source: 'provider', provider: providerName, modelCount: models.length };
     }
 
     const models = refreshedCatalog[row.runtime] ?? [];

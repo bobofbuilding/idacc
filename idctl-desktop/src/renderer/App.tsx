@@ -219,7 +219,7 @@ function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled }: {
 }) {
   switch (view) {
     case 'dashboard':
-      return <Dashboard store={store} />;
+      return <Dashboard store={store} navigate={navigate} />;
     case 'teams':
       return <Teams store={store} focus={teamsFocus} onFocusHandled={onTeamsFocusHandled} navigate={navigate} />;
     case 'inbox':
@@ -241,7 +241,7 @@ function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled }: {
     case 'settings':
       return <Settings store={store} navigate={navigate} />;
     default:
-      return <Dashboard store={store} />;
+      return <Dashboard store={store} navigate={navigate} />;
   }
 }
 

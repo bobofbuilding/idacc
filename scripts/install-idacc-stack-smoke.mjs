@@ -18,6 +18,10 @@ assert.equal(parsed.managerDir, '/Users/test/Stack/id-agents');
 assert.equal(parsed.managerUrl, 'http://127.0.0.1:4200');
 assert.equal(parsed.open, false);
 
+const managerOnly = parseArgs(['--project-dir', '~/Stack', '--manager-only', '--no-open'], { HOME: '/Users/test' });
+assert.equal(managerOnly.managerOnly, true);
+assert.equal(managerOnly.managerDir, '/Users/test/Stack/id-agents');
+
 const original = {
   version: 1,
   managers: [{ name: 'remote', url: 'https://manager.example' }, { name: 'local', url: 'http://old', apiKey: 'preserve-me' }],

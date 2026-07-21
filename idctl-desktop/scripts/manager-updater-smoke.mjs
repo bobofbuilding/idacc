@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseManagerUpdaterArguments, parseManagerUpdaterResult } from '../src/main/managerUpdater.ts';
+import { managerBootstrapScriptCandidates, parseManagerUpdaterArguments, parseManagerUpdaterResult } from '../src/main/managerUpdater.ts';
 
 const parsed = parseManagerUpdaterArguments([
   '/opt/homebrew/bin/node',
@@ -24,15 +24,24 @@ assert.deepEqual(
 );
 assert.equal(parseManagerUpdaterResult('Manager update already running; skipping this cycle.\n'), null);
 assert.throws(() => parseManagerUpdaterArguments(['node'], '/Users/example'), /invalid ProgramArguments/);
+assert.deepEqual(
+  managerBootstrapScriptCandidates('/Applications/IDACC.app/Contents/Resources', '/repo/idctl-desktop'),
+  [
+    '/Applications/IDACC.app/Contents/Resources/scripts/install-idacc-stack.mjs',
+    '/repo/idctl-desktop/scripts/install-idacc-stack.mjs',
+    '/repo/scripts/install-idacc-stack.mjs',
+  ],
+);
 
 const mainSource = readFileSync(new URL('../src/main/main.ts', import.meta.url), 'utf8');
 const settingsSource = readFileSync(new URL('../src/renderer/views/Settings.tsx', import.meta.url), 'utf8');
 const syncDomainsSource = readFileSync(new URL('../src/shared/syncDomains.ts', import.meta.url), 'utf8');
-for (const method of ['managerUpdate:status', 'managerUpdate:check', 'managerUpdate:apply']) {
+for (const method of ['managerUpdate:status', 'managerUpdate:check', 'managerUpdate:apply', 'managerUpdate:bootstrap']) {
   assert.match(mainSource, new RegExp(method));
   assert.match(settingsSource, new RegExp(method));
 }
 assert.match(settingsSource, /Update & sync manager/);
-assert.match(syncDomainsSource, /managerUpdate:apply/);
+assert.match(settingsSource, /Install current manager/);
+assert.match(syncDomainsSource, /managerUpdate:\(apply\|bootstrap\)/);
 
 console.log('manager updater smoke: ok');

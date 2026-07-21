@@ -95,6 +95,7 @@ type ManagerCapabilities = {
 } | null;
 type ManagerUpdateStatus = {
   configured: boolean;
+  bootstrapAvailable?: boolean;
   busy?: boolean;
   installedVersion?: string;
   latestVersion?: string;
@@ -536,7 +537,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   async function updateManagerRelease() {
     setManagerUpdBusy('apply');
     try {
-      const next = await call<ManagerUpdateStatus>('managerUpdate:apply');
+      const next = await call<ManagerUpdateStatus>(managerUpdStatus?.configured ? 'managerUpdate:apply' : 'managerUpdate:bootstrap');
       setManagerUpdStatus(next);
       if (next.status === 'updated' || next.status === 'current') await reloadManagerCapabilities();
     } catch (error) {
@@ -2564,8 +2565,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           <b className={managerUpdStatus?.error ? 'status-error' : managerUpdStatus?.available || managerUpdStatus?.pendingActivation ? 'warn-text' : 'ok-text'}>
             {managerUpdBusy === 'check'
               ? 'checking…'
-              : managerUpdBusy === 'apply'
-                ? 'updating and validating…'
+                : managerUpdBusy === 'apply'
+                ? managerUpdStatus?.configured ? 'updating and validating…' : 'installing and validating…'
                 : managerUpdStatus?.busy
                   ? 'manager update already running…'
                 : managerUpdStatus?.error
@@ -2578,7 +2579,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                         ? `updated and active: v${managerUpdStatus.latestVersion || managerUpdStatus.installedVersion || '—'}`
                         : managerUpdStatus?.configured
                           ? `up to date${managerUpdStatus.latestVersion ? ` (latest v${managerUpdStatus.latestVersion})` : ''}`
-                          : 'managed updater not configured'}
+                          : managerUpdStatus?.bootstrapAvailable
+                            ? 'compatible manager installation required'
+                            : 'managed updater not configured'}
           </b>
           <span>auto-download</span>
           <b>
@@ -2596,13 +2599,13 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         </div>
         <div className="row-actions" style={{ marginTop: 8 }}>
           <span className="muted small grow" title={managerUpdStatus?.checkout}>
-            {managerUpdStatus?.source ? 'fast-forward tagged bobofbuilding/id-agents releases, validate, build, then activate when work drains' : 'install the managed stack to enable manager updates'}
+            {managerUpdStatus?.source ? 'fast-forward tagged bobofbuilding/id-agents releases, validate, build, then activate when work drains' : 'install the compatible bobofbuilding/id-agents manager without replacing dirty or foreign checkouts'}
           </span>
           <button className="btn" disabled={!!managerUpdBusy || !!managerUpdStatus?.busy || !managerUpdStatus?.configured} onClick={() => void checkManagerRelease()}>
             {managerUpdBusy === 'check' ? 'Checking…' : 'Check manager'}
           </button>
-          <button className="btn primary" disabled={!!managerUpdBusy || !!managerUpdStatus?.busy || !managerUpdStatus?.configured} onClick={() => void updateManagerRelease()}>
-            {managerUpdBusy === 'apply' ? 'Updating…' : managerUpdStatus?.pendingActivation ? 'Retry activation' : 'Update & sync manager'}
+          <button className="btn primary" disabled={!!managerUpdBusy || !!managerUpdStatus?.busy || (!managerUpdStatus?.configured && !managerUpdStatus?.bootstrapAvailable)} onClick={() => void updateManagerRelease()}>
+            {managerUpdBusy === 'apply' ? managerUpdStatus?.configured ? 'Updating…' : 'Installing…' : !managerUpdStatus?.configured ? 'Install current manager' : managerUpdStatus?.pendingActivation ? 'Retry activation' : 'Update & sync manager'}
           </button>
         </div>
       </section>

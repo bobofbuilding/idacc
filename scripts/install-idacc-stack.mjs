@@ -36,6 +36,7 @@ Options:
   --manager-port <port>   Manager port. Default: 4100.
   --app-dir <dir>         App destination. Default: ~/Applications.
   --dry-run               Validate and print the planned work without writing.
+  --manager-only          Install/update only the compatible manager and services.
   --no-open               Do not open IDACC after installation.
   --no-service            Build/install only; do not change the manager service.
   --help                  Show this help.
@@ -50,6 +51,7 @@ export function parseArgs(argv, env = process.env) {
     managerPort: 4100,
     appDir: join(env.HOME || homedir(), 'Applications'),
     dryRun: false,
+    managerOnly: false,
     open: true,
     service: true,
   };
@@ -64,6 +66,7 @@ export function parseArgs(argv, env = process.env) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') return { ...opts, help: true };
     if (arg === '--dry-run') opts.dryRun = true;
+    else if (arg === '--manager-only') opts.managerOnly = true;
     else if (arg === '--no-open') opts.open = false;
     else if (arg === '--no-service') opts.service = false;
     else if (arg === '--project-dir') opts.projectDir = takeValue(arg, i++);
@@ -141,13 +144,15 @@ function validateRuntime(opts) {
   }
   requireCommand('git');
   requireCommand('npm');
-  if (process.platform === 'darwin') requireCommand('open');
+  if (!opts.managerOnly && process.platform === 'darwin') requireCommand('open');
   if (opts.service && process.platform !== 'darwin') {
     throw new Error('The managed background service currently requires macOS. Pass --no-service on other platforms.');
   }
   if (opts.service) requireCommand('launchctl');
-  for (const path of [join(REPO_ROOT, 'idctl', 'package-lock.json'), join(REPO_ROOT, 'idctl-desktop', 'package-lock.json')]) {
-    if (!existsSync(path)) throw new Error(`IDACC checkout is incomplete; missing ${path}`);
+  if (!opts.managerOnly) {
+    for (const path of [join(REPO_ROOT, 'idctl', 'package-lock.json'), join(REPO_ROOT, 'idctl-desktop', 'package-lock.json')]) {
+      if (!existsSync(path)) throw new Error(`IDACC checkout is incomplete; missing ${path}`);
+    }
   }
 }
 
@@ -171,6 +176,15 @@ function buildStack(opts) {
   run('npm', ['ci'], { cwd: join(REPO_ROOT, 'idctl-desktop'), dryRun: opts.dryRun });
   run('npm', ['run', 'dist'], { cwd: join(REPO_ROOT, 'idctl-desktop'), dryRun: opts.dryRun });
   run('npm', ['ci'], { cwd: opts.managerDir, dryRun: opts.dryRun });
+  run('npm', ['run', 'build'], { cwd: opts.managerDir, dryRun: opts.dryRun });
+}
+
+function buildManager(opts) {
+  console.log('\n1/3 Preparing the compatible manager');
+  installManagerCheckout(opts);
+  console.log('\n2/3 Validating and building the manager');
+  run('npm', ['ci'], { cwd: opts.managerDir, dryRun: opts.dryRun });
+  run('npm', ['run', 'verify:release-schema'], { cwd: opts.managerDir, dryRun: opts.dryRun });
   run('npm', ['run', 'build'], { cwd: opts.managerDir, dryRun: opts.dryRun });
 }
 
@@ -518,6 +532,27 @@ async function main() {
     return;
   }
   validateRuntime(opts);
+
+  if (opts.managerOnly) {
+    console.log('IDACC manager installer');
+    console.log(`  Manager: ${opts.managerDir}`);
+    console.log(`  Service: ${opts.service ? SERVICE_LABEL : 'unchanged'}`);
+    if (opts.dryRun) console.log('  Mode:    dry run');
+    buildManager(opts);
+    console.log('\n3/3 Configuring and starting the manager');
+    const configFile = process.env.IDCTL_CONFIG || join(process.env.HOME || homedir(), '.config', 'idctl', 'config.json');
+    persistManagerConfig(configFile, opts.managerUrl, { dryRun: opts.dryRun });
+    if (opts.service) await installManagerService(opts);
+    const packageJson = opts.dryRun ? {} : JSON.parse(readFileSync(join(opts.managerDir, 'package.json'), 'utf8'));
+    const result = {
+      status: opts.dryRun ? 'validated' : 'installed',
+      version: typeof packageJson.version === 'string' ? packageJson.version : undefined,
+      checkout: opts.managerDir,
+      managerUrl: opts.managerUrl,
+    };
+    console.log(JSON.stringify(result));
+    return;
+  }
 
   console.log('IDACC stack installer');
   console.log(`  IDACC:   ${REPO_ROOT}`);

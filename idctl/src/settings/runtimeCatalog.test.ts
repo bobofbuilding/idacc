@@ -62,6 +62,20 @@ assert.deepEqual(
 
 assert.deepEqual(
   offerableRuntimes([
+    { kind: 'lmstudio', baseUrl: 'http://127.0.0.1:1234/v1', enabled: true, needsKey: false, lastSync: { at: Date.now(), status: 'live', modelCount: 1, models: ['local-model'] } },
+  ], undefined, []),
+  [],
+  'LM Studio must not be translated to the incompatible generic Ollama harness',
+);
+
+const localProviderCatalog = buildRuntimeCatalog([
+  { name: 'lmstudio', kind: 'lmstudio', baseUrl: 'http://127.0.0.1:1234/v1', enabled: true, needsKey: false, lastSync: { at: Date.now(), status: 'live', modelCount: 1, models: ['local-model'] } },
+] satisfies ProviderProfile[]);
+assert.deepEqual(localProviderCatalog['provider:lmstudio'], ['local-model']);
+assert.deepEqual(localProviderCatalog.ollama, [], 'LM Studio models must stay out of the Ollama catalog');
+
+assert.deepEqual(
+  offerableRuntimes([
     { kind: 'ollama', baseUrl: 'http://127.0.0.1:11434', enabled: true, needsKey: false, lastSync: { at: Date.now(), status: 'unreachable', modelCount: 8, models: ['stale-model'] } },
   ], undefined, []),
   [],

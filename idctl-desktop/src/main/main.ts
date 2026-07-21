@@ -9,7 +9,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { call as bridgeCall, configureKeyProvider, startDraftDispatcher, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
 import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
-import { applyManagerUpdate, checkManagerUpdate, getManagerUpdateStatus } from './managerUpdater.ts';
+import { applyManagerUpdate, bootstrapManagerInstall, checkManagerUpdate, getManagerUpdateStatus } from './managerUpdater.ts';
 import { assignmentSubsStatus, cachedSubsStatus, invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubsStatusOptions, type SubProvider } from './subscriptions.ts';
 import { ollamaTags, ollamaPull, ollamaRemove, ollamaCatalogCheck, catalogModelToLocalEntry, type InstalledModelInput } from './ollama.ts';
 import { backgroundStackStatus, dockerStatus, getHardware, localStackInstallStatus, runInTerminal, startBackgroundStack, stopBackgroundStack } from './system.ts';
@@ -1375,6 +1375,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return checkManagerUpdate();
     case 'managerUpdate:apply':
       return applyManagerUpdate();
+    case 'managerUpdate:bootstrap':
+      return bootstrapManagerInstall();
     case 'evmRpc:list':
       return loadEvmRpcsMigratingSecrets().map(redactEvmRpc);
     case 'evmRpc:save':

@@ -2432,13 +2432,21 @@ function TeamBuilder({
     () => harnessRuntimes.filter((rt) => runtimePickerGroup(rt) === 'local'),
     [harnessRuntimes],
   );
-  const apiProviderLanes = useMemo(
-    () => buildProviderModelLanes(providers).filter((lane) => lane.kind === 'api' && lane.selectable),
+  const providerLanes = useMemo(
+    () => buildProviderModelLanes(providers).filter((lane) => lane.selectable),
     [providers],
   );
+  const localProviderLanes = useMemo(
+    () => providerLanes.filter((lane) => lane.kind === 'local'),
+    [providerLanes],
+  );
+  const apiProviderLanes = useMemo(
+    () => providerLanes.filter((lane) => lane.kind === 'api'),
+    [providerLanes],
+  );
   const runtimes = useMemo(
-    () => Array.from(new Set([...harnessRuntimes, ...apiProviderLanes.map((lane) => lane.id)])),
-    [harnessRuntimes, apiProviderLanes],
+    () => Array.from(new Set([...harnessRuntimes, ...providerLanes.map((lane) => lane.id)])),
+    [harnessRuntimes, providerLanes],
   );
   const initialRuntime = runtimes[0] ?? '';
   type Row = { name: string; runtime: string; model: string; role: string; description: string; skills: string[]; lead: boolean; open: boolean };
@@ -3190,6 +3198,11 @@ function TeamBuilder({
                         {localRuntimes.length ? (
                           <optgroup label="Local model runtimes">
                             {localRuntimes.map((rt) => <option key={rt} value={rt}>{runtimeLabel(rt)}</option>)}
+                          </optgroup>
+                        ) : null}
+                        {localProviderLanes.length ? (
+                          <optgroup label="Local provider lanes">
+                            {localProviderLanes.map((lane) => <option key={lane.id} value={lane.id}>{providerLaneBuildLabel(lane)}</option>)}
                           </optgroup>
                         ) : null}
                         {apiProviderLanes.length ? (

@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.663] — 2026-07-21
+### What changed
+- Fix fresh installs by bundling a guarded current-manager bootstrap in Settings and adding direct Dashboard recovery actions
+- Route LM Studio through its own local provider lane instead of the incompatible Ollama harness
+- Prevent Dashboard chat from dispatching before default/lead is provisioned
+
 ## [0.1.662] — 2026-07-21
 ### What changed
 - HR Manager: allow stopped roster agents to be assigned as team coordinators while preserving execution readiness guards

@@ -367,7 +367,7 @@ questions through `legal/general-counsel`.
   host, repeats that check at each onboarding boundary, a live checklist, then optional
   coordinator/default-primary + instructions + relay wiring) → per-agent **↻ retry**).
   Fresh installs never infer that an offline local server is usable from cached model metadata:
-  Ollama/LM Studio lanes require a successful recent loopback probe, and rows remain unassigned with
+  Ollama and LM Studio lanes require a successful recent loopback probe, and rows remain unassigned with
   an actionable Settings handoff when no manager-executable runtime is ready. Team creation remains
   disabled while readiness is unresolved; curated model names and a paid web subscription are not
   execution evidence without the corresponding installed, authenticated CLI. Managers that predate
@@ -516,7 +516,10 @@ Manager; this is the plumbing.)
   ID Agents manager. **Update & sync manager** uses the installer's guarded updater to accept only
   fast-forward tagged releases from the configured source, validate and build the checkout, and
   activate it only after active queries drain; successful activation refreshes manager-backed
-  Settings, fleet, Dashboard, and Work state without redeploying teams. App background checks can
+  Settings, fleet, Dashboard, and Work state without redeploying teams. A downloaded-app-only first
+  run instead offers **Install current manager**, using installer scripts bundled in the app to
+  create the guarded checkout, manager service, updater service, and local manager profile without
+  replacing dirty/foreign source or an unknown process. App background checks can
   stage newer builds, but applying a staged app build still requires the explicit Restart & update
   action; stale/consumed staged zips are gated during status, check, staging, and apply.
 - **Managed subscription sign-ins**: CLI OAuth/device/browser flows (no API key) for `claude-*`,
@@ -538,7 +541,9 @@ Manager; this is the plumbing.)
   a manager adapter, such as Grok Build, Antigravity, Copilot, Kiro, and legacy Q, show in Health as
   adapter-needed read-only lanes instead of selectable harnesses. Synced API/cloud provider lanes
   such as OpenRouter and NVIDIA are selectable in Health and HR Manager Build via the manager
-  `provider-api` harness; unsynced API lanes remain disabled until their model list is refreshed.
+  `provider-api` harness; synced local OpenAI-compatible lanes such as LM Studio use the same
+  provider-specific route and are never translated to the incompatible generic Ollama harness.
+  Unsynced provider lanes remain disabled until their model list is refreshed.
   Agent Model pickers are keyed to the currently
   staged harness model catalog, so switching to Kiro, Codex, Claude Code, or a local harness cannot
   carry a stale model from the previous harness forward as a valid choice. Gemini CLI
