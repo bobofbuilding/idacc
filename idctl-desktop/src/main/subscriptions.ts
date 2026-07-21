@@ -71,6 +71,9 @@ export interface SubStatus {
 const SUB_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'q'];
 let subsStatusCache: { at: number; rows: Record<SubProvider, SubStatus> } | null = null;
 let subsStatusInflight: Promise<Record<SubProvider, SubStatus>> | null = null;
+let primarySubsStatusCache: { at: number; rows: Partial<Record<SubProvider, SubStatus>> } | null = null;
+let primarySubsStatusInflight: Promise<Partial<Record<SubProvider, SubStatus>>> | null = null;
+const PRIMARY_ASSIGNMENT_PROVIDERS: SubProvider[] = ['claude', 'chatgpt'];
 
 const SUB_META: Record<SubProvider, SubProviderMeta> = {
   claude: {
@@ -558,6 +561,7 @@ async function providerStatus(provider: SubProvider): Promise<SubStatus> {
 
 export function invalidateSubsStatusCache(): void {
   subsStatusCache = null;
+  primarySubsStatusCache = null;
 }
 
 export function cachedSubsStatus(): Record<SubProvider, SubStatus> | null {
@@ -579,6 +583,28 @@ export async function subsStatus(opts: SubsStatusOptions = {}): Promise<Record<S
     })
     .finally(() => { subsStatusInflight = null; });
   return subsStatusInflight;
+}
+
+/** Fast authoritative readiness for the primary subscription harnesses used by Team Builder. */
+export async function primaryAssignmentSubsStatus(
+  opts: SubsStatusOptions = {},
+): Promise<Partial<Record<SubProvider, SubStatus>>> {
+  const now = Date.now();
+  const maxAgeMs = Number.isFinite(opts.maxAgeMs) && Number(opts.maxAgeMs) > 0
+    ? Number(opts.maxAgeMs)
+    : SUBS_STATUS_CACHE_TTL_MS;
+  if (!opts.force && primarySubsStatusCache && (opts.staleOk || now - primarySubsStatusCache.at < maxAgeMs)) {
+    return primarySubsStatusCache.rows;
+  }
+  if (!opts.force && primarySubsStatusInflight) return primarySubsStatusInflight;
+  primarySubsStatusInflight = Promise.all(
+    PRIMARY_ASSIGNMENT_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const),
+  ).then((rows) => {
+    const result = Object.fromEntries(rows) as Partial<Record<SubProvider, SubStatus>>;
+    primarySubsStatusCache = { at: Date.now(), rows: result };
+    return result;
+  }).finally(() => { primarySubsStatusInflight = null; });
+  return primarySubsStatusInflight;
 }
 
 /**

@@ -1403,6 +1403,7 @@ const READ_ONLY_SYNC_METHODS = new Set([
   'runtime:freshness',
   'runtime:verifyAssignments',
   'subs:status',
+  'subs:primaryAssignmentStatus',
 ]);
 
 function goalDriverConfig(): GoalDriverConfig {

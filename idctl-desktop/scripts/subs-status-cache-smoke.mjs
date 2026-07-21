@@ -55,8 +55,8 @@ assert.ok(
   'Settings should not report a sign-in state before the first provider probe',
 );
 assert.ok(
-  teams.includes("'subs:status'") && teams.includes("'runtime:probeLocal'") && teams.includes('Refresh runtimes'),
-  'Teams Build should refresh subscription readiness and local liveness without probing unrelated API backends',
+  teams.includes("'subs:primaryAssignmentStatus'") && teams.includes("'runtime:probeLocal'") && teams.includes('Refresh runtimes'),
+  'Teams Build should refresh bounded Claude/Codex readiness and local liveness without probing unrelated backends',
 );
 
 console.log('subscription status cache guard ok');

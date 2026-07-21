@@ -1002,7 +1002,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     setRuntimeCatalogChecking(true);
     try {
       const managedPromise = call<Record<string, ManagedRuntimeStatus>>(
-        'subs:status',
+        'subs:primaryAssignmentStatus',
         { force, maxAgeMs: force ? 0 : HR_RUNTIME_CATALOG_UI_CACHE_MS },
       ).catch(() => ({}));
       const models = await call<Record<string, string[]>>('runtime:probeLocal')
