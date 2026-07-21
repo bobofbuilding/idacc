@@ -8,6 +8,11 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.659] — 2026-07-21
+### What changed
+- HR Manager: bound Claude and Codex readiness checks
+- Outstanding changes across docs/PRODUCT_SPEC.md, idctl-desktop/scripts/subs-status-cache-smoke.mjs, idctl-desktop/src/main/bridge.ts, and 5 more files.
+
 ## [0.1.658] — 2026-07-21
 ### What changed
 - Settings: add guarded ID Agents manager check, update, build, drain-aware activation, and post-activation state sync.
