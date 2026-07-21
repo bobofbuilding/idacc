@@ -28,6 +28,11 @@ try {
   assert.equal(isDashboardRelevantEvent({ topic: 'control:brain-write:failed' }), true);
   assert.equal(isDashboardRelevantEvent({ topic: 'control:work', data: { error: 'delivery failed' } }), true);
   assert.equal(isDashboardRelevantEvent({ topic: 'control:action', data: { ok: false } }), true);
+  assert.equal(isDashboardRelevantEvent({ topic: 'config:agent-updated' }), false);
+  assert.equal(isDashboardRelevantEvent({ topic: 'config:team-updated' }), false);
+  assert.equal(isDashboardRelevantEvent({ topic: 'config:agent-update:failed' }), true);
+  assert.equal(isDashboardRelevantEvent({ topic: 'config:agent-updated', data: { ok: false } }), true);
+  assert.equal(isDashboardRelevantEvent({ topic: 'config:agent-updated', data: { error: 'write failed' } }), true);
   console.log('[dashboard-activity-filter-smoke] OK');
 } finally {
   await rm(dir, { recursive: true, force: true });
