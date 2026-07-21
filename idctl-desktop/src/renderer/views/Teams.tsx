@@ -1261,7 +1261,12 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     }
     return fresh;
   }
-  async function ensureHierarchyAgent(action: string, team: string, agent: string): Promise<Agent | null> {
+  async function ensureHierarchyAgent(
+    action: string,
+    team: string,
+    agent: string,
+    opts: { requireRunnable?: boolean } = {},
+  ): Promise<Agent | null> {
     const groups = await freshHrGroups();
     const fresh = findHrAgent(groups, team, { name: agent });
     if (!fresh) {
@@ -1269,7 +1274,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       store.refresh();
       return null;
     }
-    if (!isRunnableAgent(fresh)) {
+    if (opts.requireRunnable !== false && !isRunnableAgent(fresh)) {
       setMsg(`${action} blocked: ${team}/${agent} is not running (${fresh.status || 'unknown'}). Start or repair it in Manage > Team ops before routing work to it.`);
       store.refresh();
       return null;
@@ -1285,7 +1290,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     }
     const freshHier = await ensureHierarchyFresh('Set coordinator');
     if (!freshHier) return;
-    const freshAgent = await ensureHierarchyAgent('Set coordinator', team, agent);
+    const freshAgent = await ensureHierarchyAgent('Set coordinator', team, agent, { requireRunnable: false });
     if (!freshAgent) return;
     const before = freshHier.coordinators[team] || (freshHier.primary?.team === team ? freshHier.primary.agent : '(none)');
     const preview = [
@@ -1303,11 +1308,20 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       setMsg('Set coordinator blocked: lead hierarchy changed after review. Review the refreshed hierarchy first.');
       return;
     }
-    const afterAgent = await ensureHierarchyAgent('Set coordinator after review', team, freshAgent.name);
+    const afterAgent = await ensureHierarchyAgent('Set coordinator after review', team, freshAgent.name, { requireRunnable: false });
     if (!afterAgent) return;
-    await call('coordinator:set', team, afterAgent.name).catch(() => {});
-    await loadHier();
-    store.refresh();
+    setBusy(true);
+    setMsg(`setting ${team}/${afterAgent.name} as coordinator…`);
+    try {
+      await call('coordinator:set', team, afterAgent.name);
+      await loadHier();
+      store.refresh();
+      setMsg(`${team}/${afterAgent.name} is now the team coordinator${isRunnableAgent(afterAgent) ? '' : ' · start it before routing work'} ✓`);
+    } catch (err) {
+      setMsg(`Set coordinator failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
   }
   /** Promote a specific team's coordinator to the primary cross-team lead. */
   async function makePrimaryFor(team: string, agent: string) {
@@ -1322,7 +1336,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     }
     const freshHier = await ensureHierarchyFresh('Promote primary');
     if (!freshHier) return;
-    const freshAgent = await ensureHierarchyAgent('Promote primary', team, agent);
+    const freshAgent = await ensureHierarchyAgent('Promote primary', team, agent, { requireRunnable: false });
     if (!freshAgent) return;
     const beforeCoord = freshHier.coordinators[team] ?? '(none)';
     const preview = [
@@ -1340,11 +1354,20 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       setMsg('Promote primary blocked: lead hierarchy changed after review. Review the refreshed hierarchy first.');
       return;
     }
-    const afterAgent = await ensureHierarchyAgent('Promote primary after review', team, freshAgent.name);
+    const afterAgent = await ensureHierarchyAgent('Promote primary after review', team, freshAgent.name, { requireRunnable: false });
     if (!afterAgent) return;
-    await call('coordinator:setPrimary', team, afterAgent.name).catch(() => {});
-    await loadHier();
-    store.refresh();
+    setBusy(true);
+    setMsg(`setting ${team}/${afterAgent.name} as primary lead…`);
+    try {
+      await call('coordinator:setPrimary', team, afterAgent.name);
+      await loadHier();
+      store.refresh();
+      setMsg(`${team}/${afterAgent.name} is now the primary lead${isRunnableAgent(afterAgent) ? '' : ' · start it before routing work'} ✓`);
+    } catch (err) {
+      setMsg(`Promote primary failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   // ---- Reactive Org Sync: each agent's goals file composed from the hierarchy + brain ----
@@ -2228,19 +2251,24 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             const ags = visibleGraphGroups.find((g) => g.team === t.name)?.agents ?? [];
             const coord = hier.coordinators[t.name] || (hier.primary?.team === t.name ? hier.primary.agent : '');
             const isPrimary = !!hier.primary && hier.primary.team === t.name;
-            const runningAgents = ags.filter(isRunnableAgent);
-            const coordChoices = t.name === PRIMARY_TEAM ? runningAgents.filter((a) => isDefaultLead(t.name, a.name)) : runningAgents;
-            const staleCoord = Boolean(coord && !coordChoices.some((a) => a.name === coord));
+            const coordChoices = t.name === PRIMARY_TEAM ? ags.filter((a) => isDefaultLead(t.name, a.name)) : ags;
+            const coordAgent = coordChoices.find((a) => a.name === coord);
+            const missingCoord = Boolean(coord && !coordAgent);
+            const stoppedCoord = Boolean(coordAgent && !isRunnableAgent(coordAgent));
             const primaryIsLockedLead = isPrimary && isDefaultLead(t.name, hier.primary?.agent ?? '');
             const defaultLeadName = coordChoices[0]?.name ?? DEFAULT_LEAD;
             const canMakePrimary = t.name === PRIMARY_TEAM && coordChoices.length > 0;
             return (
               <Fragment key={t.id}>
-                <span className="b">{isPrimary ? '⭑ ' : ''}{t.name} <span className="muted small">· {ags.length}</span>{staleCoord ? <span className="warn-text small" title={`${t.name}/${coord} is not a running current coordinator`}> · coordinator not running</span> : null}</span>
+                <span className="b">
+                  {isPrimary ? '⭑ ' : ''}{t.name} <span className="muted small">· {ags.length}</span>
+                  {missingCoord ? <span className="warn-text small" title={`${t.name}/${coord} is no longer in the current roster`}> · coordinator missing</span> : null}
+                  {stoppedCoord ? <span className="warn-text small" title={`${t.name}/${coord} remains the coordinator but cannot receive work until it is running`}> · coordinator not running</span> : null}
+                </span>
                 <select className="cell-select" disabled={busy || coordChoices.length === 0} value={coordChoices.some((a) => a.name === coord) ? coord : ''}
                   onChange={(e) => void setTeamCoordinator(t.name, e.target.value)}>
-                  <option value="">{coordChoices.length ? (staleCoord ? `${coord} unavailable — choose running…` : t.name === PRIMARY_TEAM ? 'default/lead only' : 'no coordinator — choose…') : staleCoord ? `${coord} unavailable — start in Manage` : 'no running agents'}</option>
-                  {coordChoices.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+                  <option value="">{coordChoices.length ? (missingCoord ? `${coord} missing — choose roster member…` : t.name === PRIMARY_TEAM ? 'default/lead only' : 'no coordinator — choose…') : 'no agents in roster'}</option>
+                  {coordChoices.map((a) => <option key={a.id} value={a.name}>{a.name}{isRunnableAgent(a) ? '' : ` (${a.status || 'not running'})`}</option>)}
                 </select>
                 {primaryIsLockedLead ? (
                   <span className="ok-text small">⭑ primary</span>

@@ -383,6 +383,10 @@ questions through `legal/general-counsel`.
   member rows only for teams still present in the current team list, successful team deletes are
   tombstoned locally, and Structure plus Manage routing overview hide the manager-reserved empty
   `public` namespace until it contains actual public-agent registrations.
+- **Hierarchy configuration is independent from process liveness**: any current roster member can
+  be selected as a team coordinator, including a newly created or stopped agent. Non-running leads
+  remain visibly marked and cannot receive execution work until started; org sync persists their
+  role and defers their rebuild instead of preventing the organization from being configured.
 - **Health**: the former top-level Health page embedded between Structure and Build. It owns token
   throughput, all-team fleet roster, liveness probes, runtime/model draft changes, and read-only
   model-lane evidence in the same HR context as team structure and staffing.
