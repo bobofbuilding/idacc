@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.656] — 2026-07-21
+### What changed
+- Govern workflow recovery and harden desktop setup
+- Filter low-value dashboard activity without hiding failures
+- Add SECURITY.md vulnerability reporting policy
+
 ## [0.1.655] — 2026-07-20
 ### What changed
 - Keep manager installations current with guarded tagged release updates and drain-aware activation.
