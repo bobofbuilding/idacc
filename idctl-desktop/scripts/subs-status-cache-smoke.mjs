@@ -15,6 +15,18 @@ assert.ok(
   'main process should expose a cached-only subscription snapshot for render-heavy views',
 );
 assert.ok(
+  subscriptions.includes("install: 'npm install -g @anthropic-ai/claude-code'")
+    && subscriptions.includes("install: 'npm install -g @openai/codex'"),
+  'primary Claude and Codex subscription runtimes should expose reviewed installers',
+);
+for (const path of ['.nvm/versions/node', '.volta/bin', '.asdf/shims', '.mise/shims', '.local/share/pnpm']) {
+  assert.ok(subscriptions.includes(path), `packaged CLI discovery should include ${path}`);
+}
+assert.ok(
+  subscriptions.includes("localeCompare(a.name, undefined, { numeric: true })"),
+  'nvm discovery should prefer the newest Node install',
+);
+assert.ok(
   subscriptions.includes('now - subsStatusCache.at < maxAgeMs'),
   'subscription status cache should honor caller-provided maxAgeMs',
 );
@@ -33,6 +45,14 @@ assert.ok(
 assert.ok(
   settings.includes("'subs:status', true"),
   'install detection should still force provider status checks',
+);
+assert.ok(
+  settings.includes('Provider CLIs are separate vendor tools and are not bundled with IDACC.'),
+  'Settings should explain why a fresh IDACC install can show missing provider CLIs',
+);
+assert.ok(
+  settings.includes('○ checking…'),
+  'Settings should not report a sign-in state before the first provider probe',
 );
 assert.ok(
   teams.includes("'subs:cachedStatus'") && !teams.includes("'subs:status').catch(() => ({}))"),

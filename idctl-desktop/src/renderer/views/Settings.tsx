@@ -2299,6 +2299,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   }, [subNotice]);
 
   function subStatusNode(s: Sub | undefined) {
+    if (!s) return <span className="muted">○ checking…</span>;
     const account = s?.account || s?.email;
     if (s?.loggedIn) {
       return (
@@ -2536,7 +2537,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       <section className="card">
         <h3>Managed subscription sign-ins</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Local CLI sign-ins and subscription-backed runtimes are launched and tracked from IDACC. Signed in means live CLI status; account linked means safe local account evidence. API-key providers are configured under <b>Inference backends</b>. Account status auto-checks on open, focus, and every 5 minutes; model freshness updates on explicit refresh.
+          Provider CLIs are separate vendor tools and are not bundled with IDACC. Install only the subscription runtimes you intend to use, then manage their sign-in here. Signed in means live CLI status; account linked means safe local account evidence. API-key providers are configured under <b>Inference backends</b>. Account status auto-checks on open, focus, and every 5 minutes; model freshness updates on explicit refresh.
         </p>
         {visibleManagedSubRows.map(({ key, label, runtime }) => {
           const s = subs?.[key];

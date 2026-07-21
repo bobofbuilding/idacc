@@ -7,7 +7,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { shell } from 'electron';
 import { runInTerminal } from './system.ts';
@@ -80,7 +80,9 @@ const SUB_META: Record<SubProvider, SubProviderMeta> = {
     bin: 'claude',
     login: ['claude', ['auth', 'login']],
     logout: ['claude', ['auth', 'logout']],
+    install: 'npm install -g @anthropic-ai/claude-code',
     installHint: 'claude CLI not installed',
+    postInstall: 'After install, IDACC will detect Claude Code. Use Manage account to sign in with your Claude subscription.',
   },
   chatgpt: {
     provider: 'chatgpt',
@@ -89,7 +91,9 @@ const SUB_META: Record<SubProvider, SubProviderMeta> = {
     bin: 'codex',
     login: ['codex', ['login']],
     logout: ['codex', ['logout']],
+    install: 'npm install -g @openai/codex',
     installHint: 'codex CLI not installed',
+    postInstall: 'After install, IDACC will detect Codex. Use Manage account to sign in with ChatGPT.',
   },
   cursor: {
     provider: 'cursor',
@@ -167,11 +171,33 @@ const SUB_META: Record<SubProvider, SubProviderMeta> = {
 /** Candidate CLI dirs (GUI apps inherit a minimal PATH). */
 function cliDirs(): string[] {
   const home = homedir();
+  const nvmBins = (() => {
+    try {
+      return readdirSync(`${home}/.nvm/versions/node`, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }))
+        .map((entry) => `${home}/.nvm/versions/node/${entry.name}/bin`);
+    } catch {
+      return [];
+    }
+  })();
   return Array.from(new Set([
     '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
     `${home}/.local/bin`,
+    `${home}/.npm-global/bin`,
+    `${home}/.volta/bin`,
+    `${home}/.bun/bin`,
+    `${home}/.asdf/shims`,
+    `${home}/.mise/shims`,
+    `${home}/.local/share/mise/shims`,
+    `${home}/.local/share/pnpm`,
+    `${home}/Library/pnpm`,
+    `${home}/.local/share/fnm/aliases/default/bin`,
     `${home}/.grok/bin`,
+    ...nvmBins,
     '/usr/local/bin',
+    '/usr/local/sbin',
     '/usr/bin',
     '/bin',
     ...(process.env.PATH ? process.env.PATH.split(':') : []),

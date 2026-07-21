@@ -123,6 +123,12 @@ needs a manager that advertises the Control Center extension contract via
 `GET /capabilities`. Some panels need those manager routes — see
 **[Manager compatibility](#how-this-relates-to-id-agents-the-difference)** above.
 
+Provider subscription CLIs are intentionally not bundled into the IDACC app.
+Settings → Managed subscription sign-ins detects existing installations and
+offers reviewed, visible Terminal installers for supported CLIs, including
+Claude Code and OpenAI Codex. Install and sign in only to the runtimes the team
+will use; IDACC never stores their provider credentials.
+
 ### Desktop GUI
 
 ```bash
