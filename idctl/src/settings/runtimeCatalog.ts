@@ -184,8 +184,10 @@ type ProviderForRuntime = {
   enabled?: boolean;
   keySource?: string;
   needsKey?: boolean;
-  lastSync?: { status?: string; modelCount?: number; models?: string[] };
+  lastSync?: { at?: number; status?: string; modelCount?: number; models?: string[] };
 };
+
+export const LOCAL_PROVIDER_LIVE_TTL_MS = 5 * 60 * 1000;
 
 /** Minimal managed-subscription shape needed to decide runtime availability. */
 export type ManagedRuntimeForOffer = {
@@ -240,11 +242,22 @@ function providerHasModels(p: ProviderForRuntime): boolean {
 }
 
 function providerRouteReady(p: ProviderForRuntime): boolean {
+  if (providerIsLocalRoute(p)) return localProviderRouteIsLive(p);
   return p.enabled !== false && providerKeyReady(p) && (
     p.lastSync?.status === 'live' ||
     p.lastSync?.status === 'preset' ||
     providerHasModels(p)
   );
+}
+
+export function localProviderRouteIsLive(
+  p: { kind: string; baseUrl?: string; enabled?: boolean; lastSync?: { at?: number; status?: string; modelCount?: number; models?: string[] } },
+  now = Date.now(),
+): boolean {
+  const at = Number(p.lastSync?.at ?? 0);
+  const modelCount = p.lastSync?.models?.length ?? p.lastSync?.modelCount ?? 0;
+  return p.enabled !== false && providerIsLocalRoute(p) && p.lastSync?.status === 'live' &&
+    modelCount > 0 && Number.isFinite(at) && at > 0 && now - at <= LOCAL_PROVIDER_LIVE_TTL_MS;
 }
 
 function providerIsLocalRoute(p: ProviderForRuntime): boolean {

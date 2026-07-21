@@ -14,7 +14,7 @@ import { ROOT_AGENT_SAFE_ADDRESS, SCOPE_PRESETS, TTL_PRESETS, agentEnsName } fro
 import type { AgentAccount, AssetGuardReport, KeyAuthorityTarget, LegacyKeyAuthority, SessionKey } from '../../../idctl/src/keys/types.ts';
 import { defaultHeadroomPilotSettings, type HeadroomPilotSettings, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry, type WalletConnectSettings } from '../../../idctl/src/settings/schema.ts';
 import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts';
-import { buildProviderModelLanes, buildRuntimeCatalog, isLocalProvider, providerKindToRuntimes, RUNTIMES, settingsAvailableRuntimeSet } from '../../../idctl/src/settings/runtimeCatalog.ts';
+import { buildProviderModelLanes, buildRuntimeCatalog, isLocalProvider, localProviderRouteIsLive, providerKindToRuntimes, RUNTIMES, settingsAvailableRuntimeSet } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import type { LibraryPluginInspection, LibrarySkillEntry, McpServerSpec, CreateSkillInput, ProjectPluginSkillResult } from '../../../idctl/src/api/client.ts';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
@@ -167,6 +167,7 @@ function providerLaneName(runtime: string): string | null {
 
 function providerRouteReadyForAssignment(p: ProviderProfile): boolean {
   const modelCount = p.lastSync?.models?.length ?? p.lastSync?.modelCount ?? 0;
+  if (isLocalProvider(p)) return (!providerNeedsKey(p) || Boolean(p.apiKey)) && localProviderRouteIsLive(p);
   return p.enabled !== false && (!providerNeedsKey(p) || Boolean(p.apiKey)) && modelCount > 0 && (
     p.lastSync?.status === 'live' ||
     p.lastSync?.status === 'preset' ||
@@ -929,6 +930,17 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
           const outcome = await new ProviderClient(p, p.apiKey).probe();
           p.lastSync = { at: Date.now(), status: outcome.status, modelCount: outcome.models.length, models: outcome.models.slice(0, 200).map((m) => m.id), keySource: p.apiKey ? 'config' : 'none' };
         } catch { /* keep last sync */ }
+      }),
+    );
+    lsSet('idctl.providers', list);
+    return buildRuntimeCatalog(list);
+  },
+  'runtime:probeLocal': async () => {
+    const list = lsGet<ProviderProfile[]>('idctl.providers', []);
+    await Promise.all(
+      list.filter((p) => p.enabled !== false && isLocalProvider(p)).map(async (p) => {
+        const outcome = await new ProviderClient(p, p.apiKey).probe(undefined, 3000);
+        p.lastSync = { at: Date.now(), status: outcome.status, modelCount: outcome.models.length, models: outcome.models.slice(0, 200).map((m) => m.id), keySource: p.apiKey ? 'config' : 'none' };
       }),
     );
     lsSet('idctl.providers', list);

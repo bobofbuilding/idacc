@@ -55,8 +55,8 @@ assert.ok(
   'Settings should not report a sign-in state before the first provider probe',
 );
 assert.ok(
-  teams.includes("'subs:cachedStatus'") && !teams.includes("'subs:status').catch(() => ({}))"),
-  'Teams Build catalog should use cached subscription status and avoid CLI probes on tab entry',
+  teams.includes("'subs:status'") && teams.includes("'runtime:probeLocal'") && teams.includes('Refresh runtimes'),
+  'Teams Build should refresh subscription readiness and local liveness without probing unrelated API backends',
 );
 
 console.log('subscription status cache guard ok');

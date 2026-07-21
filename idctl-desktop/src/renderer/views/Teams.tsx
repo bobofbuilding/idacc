@@ -996,6 +996,33 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   const [skillCatalog, setSkillCatalog] = useState<string[]>(() => hrBuildSkillCatalogCache?.skillCatalog ?? []);
   const [providers, setProviders] = useState<ProviderRow[]>(() => cachedRuntimeCatalog?.providers ?? []);
   const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>(() => cachedRuntimeCatalog?.managedRuntimes ?? {});
+  const [runtimeCatalogChecking, setRuntimeCatalogChecking] = useState(true);
+
+  const refreshBuildRuntimeCatalog = useCallback(async (force = false) => {
+    setRuntimeCatalogChecking(true);
+    try {
+      const managedPromise = call<Record<string, ManagedRuntimeStatus>>(
+        'subs:status',
+        { force, maxAgeMs: force ? 0 : HR_RUNTIME_CATALOG_UI_CACHE_MS },
+      ).catch(() => ({}));
+      const models = await call<Record<string, string[]>>('runtime:probeLocal')
+        .catch(() => call<Record<string, string[]>>('runtime:models').catch(() => ({})));
+      const [providerRows, managed] = await Promise.all([
+        call<ProviderRow[]>('providers:list').catch(() => [] as ProviderRow[]),
+        managedPromise,
+      ]);
+      const nextCache = primeRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
+        modelCatalog: models,
+        providers: providerRows,
+        managedRuntimes: managed,
+      });
+      setModelCatalog(nextCache.modelCatalog);
+      setProviders(nextCache.providers);
+      setManagedRuntimes(nextCache.managedRuntimes);
+    } finally {
+      setRuntimeCatalogChecking(false);
+    }
+  }, [hrRuntimeCatalogVersion]);
 
   useEffect(() => {
     if (tab !== 'build') return;
@@ -1006,26 +1033,13 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       setModelCatalog(cached.modelCatalog);
       setProviders(cached.providers);
       setManagedRuntimes(cached.managedRuntimes);
-      return;
     }
     let live = true;
-    Promise.all([
-      call<Record<string, string[]>>('runtime:models').catch(() => ({})),
-      call<ProviderRow[]>('providers:list').catch(() => [] as ProviderRow[]),
-      call<Record<string, ManagedRuntimeStatus>>('subs:cachedStatus').catch(() => ({})),
-    ]).then(([models, providerRows, managed]) => {
-      if (!live) return;
-      const nextCache = primeRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
-        modelCatalog: models,
-        providers: providerRows,
-        managedRuntimes: managed,
-      });
-      setModelCatalog(nextCache.modelCatalog);
-      setProviders(nextCache.providers);
-      setManagedRuntimes(nextCache.managedRuntimes);
+    void refreshBuildRuntimeCatalog(false).catch(() => {
+      if (live) setRuntimeCatalogChecking(false);
     });
     return () => { live = false; };
-  }, [tab, hrRuntimeCatalogVersion]);
+  }, [tab, hrRuntimeCatalogVersion, refreshBuildRuntimeCatalog]);
 
   useEffect(() => {
     if (tab !== 'build') return;
@@ -2100,6 +2114,9 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             managedRuntimes={Object.values(managedRuntimes)}
             modelCatalog={modelCatalog}
             skillCatalog={skillCatalog}
+            runtimeCatalogChecking={runtimeCatalogChecking}
+            onRefreshRuntimes={() => void refreshBuildRuntimeCatalog(true)}
+            onOpenSettings={() => navigate?.('settings')}
             onRuntimeVerified={(report) => {
               setModelCatalog(report.refreshedCatalog);
               setProviders(report.providers);
@@ -2339,6 +2356,9 @@ function TeamBuilder({
   managedRuntimes,
   modelCatalog,
   skillCatalog,
+  runtimeCatalogChecking,
+  onRefreshRuntimes,
+  onOpenSettings,
   inline = false,
   onRuntimeVerified,
   onClose,
@@ -2361,6 +2381,9 @@ function TeamBuilder({
   managedRuntimes: ManagedRuntimeStatus[];
   modelCatalog: Record<string, string[]>;
   skillCatalog: string[];
+  runtimeCatalogChecking: boolean;
+  onRefreshRuntimes: () => void;
+  onOpenSettings: () => void;
   inline?: boolean;
   onRuntimeVerified?: (report: RuntimeVerificationReport) => void;
   onClose: () => void;
@@ -2368,7 +2391,11 @@ function TeamBuilder({
   onMessage: (m: string) => void;
   onDone: (createdTeam?: string) => void;
 }) {
-  const harnessRuntimes = useMemo(() => offerableRuntimes(providers, undefined, managedRuntimes), [providers, managedRuntimes]);
+  const harnessRuntimes = useMemo(
+    () => offerableRuntimes(providers, undefined, managedRuntimes)
+      .filter((runtime) => !runtimeCatalogChecking || runtimePickerGroup(runtime) !== 'local'),
+    [providers, managedRuntimes, runtimeCatalogChecking],
+  );
   const subscriptionRuntimes = useMemo(
     () => harnessRuntimes.filter((rt) => runtimePickerGroup(rt) === 'subscription'),
     [harnessRuntimes],
@@ -3072,8 +3099,16 @@ function TeamBuilder({
             {defaultLeadMissingForWire ? <p className="warn-text small">Default-team routing is locked to <span className="mono">{PRIMARY_TEAM}/{DEFAULT_LEAD}</span>; add/restore that agent or turn off Wire agentic routing.</p> : null}
 
             <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', margin: '12px 0 6px' }}>
-              <span className="muted small">roster — {targetTeam === PRIMARY_TEAM ? `${PRIMARY_TEAM}/${DEFAULT_LEAD} is the fixed primary; ` : '★ marks the lead; '}▸ for persona &amp; skills</span>
+              <span className="muted small">
+                {runtimeCatalogChecking
+                  ? 'checking subscription sign-ins and local servers…'
+                  : subscriptionRuntimes.length
+                    ? `subscription ready: ${subscriptionRuntimes.map(runtimeLabel).join(', ')}`
+                    : 'Claude Code and Codex are not ready for assignment'}
+              </span>
               <span className="row-actions">
+                {!runtimeCatalogChecking && !subscriptionRuntimes.length ? <button className="btn small" disabled={locked} onClick={onOpenSettings}>Open Settings</button> : null}
+                <button className="btn small" disabled={locked || runtimeCatalogChecking} onClick={onRefreshRuntimes}>{runtimeCatalogChecking ? 'Checking…' : 'Refresh runtimes'}</button>
                 {teamExists ? (
                   <button className="btn small" disabled={locked} title={`Clear this review batch to one blank agent row for ${targetTeam}`} onClick={startSingleAgentAdd}>
                     ＋ one new agent
@@ -3082,6 +3117,7 @@ function TeamBuilder({
                 <button className="btn small" disabled={locked} onClick={addRow}>＋ add row</button>
               </span>
             </div>
+            <div className="muted small" style={{ margin: '-2px 0 6px' }}>roster — {targetTeam === PRIMARY_TEAM ? `${PRIMARY_TEAM}/${DEFAULT_LEAD} is the fixed primary; ` : '★ marks the lead; '}▸ for persona &amp; skills</div>
             {teamExists && named.length > 0 && toCreate.length === 0 ? (
               <p className="muted small" style={{ marginTop: -2 }}>
                 This review batch only contains agents already in <span className="mono">{targetTeam}</span>. Choose <b>One new agent</b> to add a single blank row.

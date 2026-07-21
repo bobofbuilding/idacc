@@ -1331,10 +1331,11 @@ function createWindow() {
             // with a gap between — lets navigation flows be exercised headlessly.
             for (const sel of shotClick.split('|')) {
               const clickJs = `(${((s: string) => {
-                const bySel = document.querySelector(s) as HTMLElement | null;
+                let bySel: Element | null = null;
+                try { bySel = document.querySelector(s); } catch { /* treat as button text */ }
                 const el = bySel || [...document.querySelectorAll('button')]
-                  .find((b) => (b.textContent || '').toLowerCase().includes(s.toLowerCase())) as HTMLElement | undefined;
-                el?.click();
+                  .find((b) => (b.textContent || '').toLowerCase().includes(s.toLowerCase()));
+                if (el instanceof HTMLElement) el.click();
                 return !!el;
               }).toString()})(${JSON.stringify(sel)})`;
               await win!.webContents.executeJavaScript(clickJs);

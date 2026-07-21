@@ -49,7 +49,7 @@ import { ProviderClient } from '../../../idctl/src/settings/ProviderClient.ts';
 import { discoverLocalServers, mergeLocalDiscoveryCandidates, type DiscoveredServer } from '../../../idctl/src/settings/localDiscovery.ts';
 import { type HeadroomPilotSettings, type IdctlConfig, type ProviderKind, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
 import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts';
-import { buildProviderModelLanes, buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider, settingsAvailableRuntimeSet, managedRuntimeHasEvidence, runtimeDisplayLabel, runtimeHasManagerHarness, type RuntimeModelLaneKind } from '../../../idctl/src/settings/runtimeCatalog.ts';
+import { buildProviderModelLanes, buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider, localProviderRouteIsLive, settingsAvailableRuntimeSet, managedRuntimeHasEvidence, runtimeDisplayLabel, runtimeHasManagerHarness, type RuntimeModelLaneKind } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import { subsStatus } from './subscriptions.ts';
 import { testMcpServer } from './mcpTest.ts';
 import { headroomBackendContractAudit, headroomCoreAudit, headroomStatus } from './headroom.ts';
@@ -636,6 +636,26 @@ async function probeAllRuntimes(): Promise<Record<string, string[]>> {
   return runtimeCatalogWithLiveCliModels({ refreshCli: true });
 }
 
+/** Refresh loopback model servers without probing unrelated cloud/API backends. */
+async function probeLocalRuntimes(): Promise<Record<string, string[]>> {
+  const providers = loadSettings().providers;
+  await Promise.all(
+    providers
+      .filter((p) => p.enabled !== false && isLocalProvider(p))
+      .map(async (p) => {
+        const outcome = await new ProviderClient(p, resolveProviderKey(p)).probe(undefined, 3000);
+        recordProviderSync(p.name, {
+          at: Date.now(),
+          status: outcome.status,
+          modelCount: outcome.models.length,
+          models: outcome.models.slice(0, 200).map((m) => m.id),
+          keySource: keySourceOf(p),
+        });
+      }),
+  );
+  return runtimeCatalogWithLiveCliModels();
+}
+
 type RuntimeAssignment = { name?: string; runtime?: string; model?: string };
 type RuntimeAssignmentCheck = {
   name: string;
@@ -806,6 +826,7 @@ function resolveProviderLaneAssignment(runtime: string): { providerName: string;
 function providerRouteReadyForAssignment(p: ProviderProfile): boolean {
   const keyReady = !providerNeedsKey(p) || Boolean(resolveProviderKey(p));
   const modelCount = p.lastSync?.models?.length ?? p.lastSync?.modelCount ?? 0;
+  if (isLocalProvider(p)) return keyReady && localProviderRouteIsLive(p);
   return p.enabled !== false && keyReady && modelCount > 0 && (p.lastSync?.status === 'live' || p.lastSync?.status === 'preset' || modelCount > 0);
 }
 
@@ -1378,6 +1399,7 @@ const READ_ONLY_SYNC_METHODS = new Set([
   'providers:probe',
   'providers:discover',
   'runtime:models',
+  'runtime:probeLocal',
   'runtime:freshness',
   'runtime:verifyAssignments',
   'subs:status',
@@ -1801,6 +1823,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // Probe every enabled provider that backs a runtime, refresh its model list,
   // then return the rebuilt per-runtime catalog. This is "probe each runtime".
   'runtime:probe': async () => probeAllRuntimes(),
+  'runtime:probeLocal': async () => probeLocalRuntimes(),
   'runtime:verifyAssignments': async (assignments: RuntimeAssignment[]) => verifyRuntimeAssignments(assignments),
   // Per-runtime model freshness (live list + source + when last refreshed) for the
   // "models stay up to date" panel.

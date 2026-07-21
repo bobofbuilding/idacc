@@ -6,7 +6,7 @@ const providers = [
   { kind: 'anthropic', enabled: true, keySource: 'config', needsKey: true, lastSync: { status: 'live', modelCount: 3 } },
   { kind: 'openai', enabled: true, keySource: 'none', needsKey: true, lastSync: { status: 'live', modelCount: 4 } },
   { kind: 'openai-compatible', baseUrl: 'https://integrate.api.nvidia.com/v1', enabled: true, keySource: 'config', needsKey: true, lastSync: { status: 'preset', modelCount: 5 } },
-  { kind: 'ollama', baseUrl: 'http://127.0.0.1:11434', enabled: true, needsKey: false, lastSync: { status: 'live', modelCount: 2 } },
+  { kind: 'ollama', baseUrl: 'http://127.0.0.1:11434', enabled: true, needsKey: false, lastSync: { at: Date.now(), status: 'live', modelCount: 2 } },
 ];
 
 const managed = [
@@ -47,8 +47,8 @@ assert.deepEqual(
 );
 
 const localProviderLanes = buildProviderModelLanes([
-  { name: 'ollama', kind: 'ollama', baseUrl: 'http://127.0.0.1:11434', enabled: true, needsKey: false, lastSync: { at: 1, status: 'live', modelCount: 1, models: ['qwen3:1.7b'] } },
-  { name: 'lmstudio', kind: 'lmstudio', baseUrl: 'http://127.0.0.1:1234/v1', enabled: true, needsKey: false, lastSync: { at: 1, status: 'live', modelCount: 1, models: ['local-model'] } },
+  { name: 'ollama', kind: 'ollama', baseUrl: 'http://127.0.0.1:11434', enabled: true, needsKey: false, lastSync: { at: Date.now(), status: 'live', modelCount: 1, models: ['qwen3:1.7b'] } },
+  { name: 'lmstudio', kind: 'lmstudio', baseUrl: 'http://127.0.0.1:1234/v1', enabled: true, needsKey: false, lastSync: { at: Date.now(), status: 'live', modelCount: 1, models: ['local-model'] } },
 ]);
 
 assert.deepEqual(
@@ -58,6 +58,22 @@ assert.deepEqual(
     { id: 'provider:lmstudio', label: 'Local · LM Studio', kind: 'local', selectable: true, count: 1 },
   ],
   'synced local providers should become selectable concrete local model lanes',
+);
+
+assert.deepEqual(
+  offerableRuntimes([
+    { kind: 'ollama', baseUrl: 'http://127.0.0.1:11434', enabled: true, needsKey: false, lastSync: { at: Date.now(), status: 'unreachable', modelCount: 8, models: ['stale-model'] } },
+  ], undefined, []),
+  [],
+  'an offline local server must not become the default runtime from cached models',
+);
+
+assert.deepEqual(
+  offerableRuntimes([
+    { kind: 'ollama', baseUrl: 'http://127.0.0.1:11434', enabled: true, needsKey: false, lastSync: { at: 1, status: 'live', modelCount: 8, models: ['stale-model'] } },
+  ], undefined, []),
+  [],
+  'a stale local liveness result must be refreshed before assignment',
 );
 
 const providerCatalog = buildRuntimeCatalog([
