@@ -29,6 +29,9 @@ try {
   const html = readFileSync(join(root, 'src/renderer/index.html'), 'utf8');
   assert.ok(settings.indexOf('Root Safe connection') < settings.indexOf('Agent chain RPCs'));
   assert.match(settings, /routine agent transactions:[\s\S]*session keys/);
+  assert.match(settings, /type="password"/);
+  assert.match(settings, /Project ID configured/);
+  assert.match(settings, /setWalletConnectProjectId\(''\)/);
   assert.match(identity, /Root Safe Bootstrap Proposal/);
   assert.match(identity, /Routine agent transactions use the agent&apos;s target- and function-scoped session key/);
   assert.match(identity, /Provision Safe \+ authority/);

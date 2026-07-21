@@ -1339,6 +1339,18 @@ async function managerTaskRows(team: string, status: 'todo' | 'doing' | 'done', 
   return rows.map((t) => ({ ...t, teamName: t.teamName ?? team }));
 }
 
+async function managerWorkflowRequest<T>(team: string, pathname: string, body?: Record<string, unknown>): Promise<T> {
+  const url = new URL(pathname, client.managerUrl);
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', 'X-Id-Team': team, 'X-Id-Admin': '1' };
+  if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
+  const res = await fetch(url, { method: body ? 'POST' : 'GET', headers, ...(body ? { body: JSON.stringify(body) } : {}) });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`${body ? 'POST' : 'GET'} ${pathname} -> ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`);
+  }
+  return res.json() as Promise<T>;
+}
+
 async function boardTasksForTeam(team: string): Promise<Task[]> {
   const scoped = client.withTeam(team);
   const readStatus = async (status: 'todo' | 'doing' | 'done', limit?: number): Promise<Task[]> => {
@@ -1500,6 +1512,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const per = await Promise.all(names.map((name) => boardTasksForTeam(name)));
     return dedupeTasks(per.flat());
   },
+  'tasks:workflowMetrics': (team?: string) => managerWorkflowRequest(String(team || client.team || cfg.team || 'default'), '/tasks-workflow/metrics'),
+  'tasks:recover': (team: string, taskRef: string, action = 'retry') => managerWorkflowRequest(String(team), `/tasks/${encodeURIComponent(String(taskRef).replace(/^#/, ''))}/recover`, { action }),
+  'tasks:block': (team: string, taskRef: string, detail: Record<string, unknown>) => managerWorkflowRequest(String(team), `/tasks/${encodeURIComponent(String(taskRef).replace(/^#/, ''))}/block`, detail),
+  'tasks:validate': (team: string, taskRef: string, detail: Record<string, unknown>) => managerWorkflowRequest(String(team), `/tasks/${encodeURIComponent(String(taskRef).replace(/^#/, ''))}/validate`, detail),
   // Manager-owned Kanban/dependency/review overlays. config.json is only a
   // rehydratable cache so board semantics survive desktop reinstalls/restarts.
   'tasks:lanes': async () => (await managerTaskOverlay()).taskLanes ?? {},

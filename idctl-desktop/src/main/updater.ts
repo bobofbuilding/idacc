@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, copyFileSyn
 import { join, resolve } from 'node:path';
 import { loadSettings } from '../../../idctl/src/settings/store.ts';
 import type { UpdateSettings } from '../../../idctl/src/settings/schema.ts';
+import { evaluateUpdateTarget, type UpdateTargetReadiness } from '../shared/updateTarget.ts';
 
 export interface UpdateManifest {
   version: string;
@@ -55,6 +56,27 @@ function stagedMetaPath(): string {
 function appBundlePath(): string {
   // process.execPath = <App>.app/Contents/MacOS/<bin>
   return resolve(process.execPath, '..', '..', '..');
+}
+
+function updateTargetReadiness(): UpdateTargetReadiness {
+  const bundle = appBundlePath();
+  return evaluateUpdateTarget({
+    isPackaged: app.isPackaged,
+    bundlePath: bundle,
+    appAsarExists: existsSync(join(bundle, 'Contents', 'Resources', 'app.asar')),
+  });
+}
+
+function updateUnavailable(readiness: UpdateTargetReadiness): UpdateStatus {
+  status = {
+    ...status,
+    current: app.getVersion(),
+    available: false,
+    staged: false,
+    checking: false,
+    error: readiness.reason ? `Self-update unavailable: ${readiness.reason}.` : 'Self-update unavailable.',
+  };
+  return status;
 }
 
 /** Numeric semver compare: 1 if a>b, -1 if a<b, 0 if equal. Ignores pre-release. */
@@ -237,6 +259,8 @@ function cleanupStagedState(): { version: string; zip: string; notes: string } |
 }
 
 export function getStatus(): UpdateStatus {
+  const readiness = updateTargetReadiness();
+  if (!readiness.ok) return updateUnavailable(readiness);
   const staged = cleanupStagedState();
   status = {
     ...status,
@@ -251,6 +275,12 @@ export function getStatus(): UpdateStatus {
 
 /** Check upstream for a newer version; stage it when found. */
 export async function checkForUpdate(): Promise<UpdateStatus> {
+  const readiness = updateTargetReadiness();
+  if (!readiness.ok) {
+    updateUnavailable(readiness);
+    emit();
+    return status;
+  }
   const s = settings();
   status = { ...status, checking: true, error: undefined };
   emit();
@@ -303,6 +333,12 @@ export async function checkForUpdate(): Promise<UpdateStatus> {
  * relaunches it. Then quit. Returns false if nothing is staged.
  */
 export function applyStagedAndRelaunch(): boolean {
+  const readiness = updateTargetReadiness();
+  if (!readiness.ok) {
+    updateUnavailable(readiness);
+    emit();
+    return false;
+  }
   const staged = readStaged();
   if (!staged) return false;
   const bundle = appBundlePath();
@@ -370,13 +406,18 @@ echo "[apply] relaunch issued"
 /** Start periodic checks and wire the window for push notifications. */
 export function startUpdater(win: BrowserWindow): void {
   mainWindow = win;
+  const readiness = updateTargetReadiness();
+  if (!readiness.ok) {
+    updateUnavailable(readiness);
+    return;
+  }
   // If a newer build was already downloaded in a prior session, surface the
   // "Restart & update" chip immediately on launch — don't wait for (or depend
   // on) the next online re-check, which could fail offline and hide it.
   const staged = cleanupStagedState();
   status = { ...status, current: app.getVersion(), staged: !!staged, available: !!staged, latest: staged?.version ?? status.latest, notes: staged?.notes ?? status.notes };
   // Headless screenshot runs: skip background checks.
-  if (process.env.IDCTL_SHOT) return;
+  if (process.env.IDCTL_SHOT || /^(1|true|yes|on)$/i.test(String(process.env.DISABLE_AUTO_UPDATE || ''))) return;
   if (staged) emit();
   const hours = settings()?.checkIntervalHours ?? 4;
   // Initial check shortly after launch (let the window settle).

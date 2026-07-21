@@ -13,9 +13,8 @@ function usage() {
   console.log(`Usage: node scripts/install-id-agents-manager.mjs [options]
 
 Clone or fast-forward update the id-agents manager source into a project folder.
-The script is non-destructive by default: it refuses tracked changes, foreign
-remotes, non-empty non-git targets, and non-fast-forward updates. Untracked local
-files are preserved; Git still refuses an update that would overwrite one.
+The script is non-destructive by default: it refuses dirty repos, foreign remotes,
+non-empty non-git targets, and non-fast-forward updates.
 
 Options:
   --project-dir <dir>   Parent project folder. Default: current directory.
@@ -137,9 +136,9 @@ function normalizeRemote(url) {
 }
 
 function assertCleanGitWorktree(target) {
-  const status = run('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: target });
+  const status = run('git', ['status', '--porcelain'], { cwd: target });
   if (status) {
-    throw new Error(`Refusing to update tracked changes in manager checkout at ${target}. Commit/stash them first.\n${status}`);
+    throw new Error(`Refusing to update dirty manager checkout at ${target}. Commit/stash its changes first.\n${status}`);
   }
 }
 

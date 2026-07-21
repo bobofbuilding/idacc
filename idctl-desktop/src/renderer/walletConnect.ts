@@ -52,6 +52,17 @@ const OPTIONAL_METHODS = [
   'wallet_getCallsStatus',
 ];
 
+function lazyModuleError(feature: string, err: unknown): Error {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/failed to fetch dynamically imported module|module script failed|module not found/i.test(message)) {
+    return new Error(
+      `${feature} could not load because this application bundle changed while IDACC was running. ` +
+      'Quit every IDACC window and reopen /Applications/ID Agents Control Center.app, then try again.',
+    );
+  }
+  return err instanceof Error ? err : new Error(message);
+}
+
 function emit(next: Partial<WalletConnectState>): void {
   state = { ...state, ...next };
   for (const listener of listeners) listener();
@@ -77,7 +88,9 @@ async function qrDataUrl(uri: string): Promise<string> {
   // qrcode's browser bundle is CommonJS and esbuild exposes it as the default
   // export in a split chunk. Reading a named export works in Node but fails in
   // the packaged renderer, leaving the pairing modal without a QR code.
-  const { default: qr } = await import('qrcode');
+  const { default: qr } = await import('qrcode').catch((err) => {
+    throw lazyModuleError('WalletConnect QR support', err);
+  });
   return qr.toDataURL(uri, {
     width: 280,
     margin: 1,
@@ -122,7 +135,9 @@ async function initialize(settings: WalletConnectSettings): Promise<UniversalPro
   provider = null;
   providerProjectId = settings.projectId;
   emit({ phase: 'initializing', error: '', pairingUri: '', qrDataUrl: '' });
-  const { UniversalProvider: Provider } = await import('@walletconnect/universal-provider');
+  const { UniversalProvider: Provider } = await import('@walletconnect/universal-provider').catch((err) => {
+    throw lazyModuleError('WalletConnect', err);
+  });
   const current = await Provider.init({
     projectId: settings.projectId,
     logger: 'error',

@@ -257,9 +257,14 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [walletConnect, setWalletConnect] = useState<WalletConnectSettings>({ enabled: false, projectId: '' });
   const [walletConnectEnabled, setWalletConnectEnabled] = useState(false);
   const [walletConnectProjectId, setWalletConnectProjectId] = useState('');
+  const [walletConnectProjectIdEditing, setWalletConnectProjectIdEditing] = useState(true);
   const [walletConnectBusy, setWalletConnectBusy] = useState(false);
   const [walletConnectMsg, setWalletConnectMsg] = useState('');
   const walletConnectState = useSyncExternalStore(subscribeWalletConnect, walletConnectSnapshot);
+  const walletConnectProjectIdConfigured = /^[a-f0-9]{32}$/i.test(walletConnect.projectId);
+  const effectiveWalletConnectProjectId = walletConnectProjectIdEditing
+    ? walletConnectProjectId.trim()
+    : walletConnect.projectId;
   const [probe, setProbe] = useState<Record<string, ProbeOutcome>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -394,7 +399,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     const rootConnector = await call<WalletConnectSettings>('walletConnect:get').catch(() => ({ enabled: false, projectId: '' }));
     setWalletConnect(rootConnector);
     setWalletConnectEnabled(rootConnector.enabled);
-    setWalletConnectProjectId(rootConnector.projectId);
+    setWalletConnectProjectId('');
+    setWalletConnectProjectIdEditing(!/^[a-f0-9]{32}$/i.test(rootConnector.projectId));
     setVersion(await call<string>('app:version').catch(() => ''));
     setManagerCaps(await call<ManagerCapabilities>('manager:capabilities').catch(() => null));
     const u = await call<typeof upd>('update:getSettings').catch(() => null);
@@ -824,11 +830,12 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     try {
       const saved = await call<WalletConnectSettings>('walletConnect:set', {
         enabled: walletConnectEnabled,
-        projectId: walletConnectProjectId.trim(),
+        projectId: effectiveWalletConnectProjectId,
       });
       setWalletConnect(saved);
       setWalletConnectEnabled(saved.enabled);
-      setWalletConnectProjectId(saved.projectId);
+      setWalletConnectProjectId('');
+      setWalletConnectProjectIdEditing(!/^[a-f0-9]{32}$/i.test(saved.projectId));
       if (!saved.enabled) {
         await disconnectRootSafe().catch(() => {});
         setWalletConnectMsg('Root Safe connector disabled. Agent session-key execution is unchanged.');
@@ -2213,6 +2220,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     void checkBackgroundStacks();
     void loadConc();
     void loadImgServer();
+    void call<HardwareInfo>('app:hardware').then(setHardware).catch(() => {});
     const idagents = (window as { idagents?: { onOllamaPull?: (cb: (p: unknown) => void) => () => void } }).idagents;
     const off = idagents?.onOllamaPull?.((p) => {
       const o = p as { model?: string; status?: string; pct?: number; done?: boolean; error?: string };
@@ -2396,17 +2404,56 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             <input type="checkbox" checked={walletConnectEnabled} disabled={walletConnectBusy} onChange={(event) => setWalletConnectEnabled(event.target.checked)} />
             <span>Enable root Safe WalletConnect</span>
           </label>
-          <input
-            className="mono grow"
-            aria-label="Reown project ID"
-            placeholder="32-character Reown project ID"
-            value={walletConnectProjectId}
-            disabled={walletConnectBusy}
-            onChange={(event) => setWalletConnectProjectId(event.target.value)}
-          />
-          <a className="btn" href="https://dashboard.reown.com/" target="_blank" rel="noreferrer">Create project ID</a>
-          <button className="btn" type="button" disabled={walletConnectBusy} onClick={() => void saveRootSafeConnector(false)}>Save</button>
-          <button className="btn primary" type="button" disabled={walletConnectBusy || !walletConnectEnabled || !walletConnectProjectId.trim()} onClick={() => void saveRootSafeConnector(true)}>
+          {walletConnectProjectIdConfigured && !walletConnectProjectIdEditing ? (
+            <div className="walletconnect-project-id-hidden grow" role="status" aria-label="Reown project ID configured">
+              Project ID configured
+            </div>
+          ) : (
+            <input
+              className="mono grow"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              aria-label="Reown project ID"
+              placeholder="32-character Reown project ID"
+              value={walletConnectProjectId}
+              disabled={walletConnectBusy}
+              onChange={(event) => setWalletConnectProjectId(event.target.value)}
+            />
+          )}
+          {walletConnectProjectIdConfigured && !walletConnectProjectIdEditing ? (
+            <button
+              className="btn"
+              type="button"
+              disabled={walletConnectBusy || walletConnectState.phase === 'connected'}
+              title={walletConnectState.phase === 'connected' ? 'Disconnect the root Safe before replacing its project ID' : 'Replace the saved Reown project ID'}
+              onClick={() => {
+                setWalletConnectProjectId('');
+                setWalletConnectProjectIdEditing(true);
+              }}
+            >
+              Edit ID
+            </button>
+          ) : (
+            <>
+              <a className="btn" href="https://dashboard.reown.com/" target="_blank" rel="noreferrer">Create project ID</a>
+              {walletConnectProjectIdConfigured ? (
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={walletConnectBusy}
+                  onClick={() => {
+                    setWalletConnectProjectId('');
+                    setWalletConnectProjectIdEditing(false);
+                  }}
+                >
+                  Cancel
+                </button>
+              ) : null}
+            </>
+          )}
+          <button className="btn" type="button" disabled={walletConnectBusy || (walletConnectEnabled && !/^[a-f0-9]{32}$/i.test(effectiveWalletConnectProjectId))} onClick={() => void saveRootSafeConnector(false)}>Save</button>
+          <button className="btn primary" type="button" disabled={walletConnectBusy || !walletConnectEnabled || !/^[a-f0-9]{32}$/i.test(effectiveWalletConnectProjectId)} onClick={() => void saveRootSafeConnector(true)}>
             {walletConnectState.phase === 'pairing' || walletConnectState.phase === 'initializing' ? 'Connecting...' : 'Connect root Safe'}
           </button>
           {walletConnectState.phase === 'connected' ? <button className="btn" type="button" disabled={walletConnectBusy} onClick={() => void disconnectRootSafeConnector()}>Disconnect</button> : null}

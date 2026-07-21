@@ -85,6 +85,10 @@ headless platform doesn't ship a UI for:
   / OWS wallet, Safe smart account, and scoped (optionally non‑expiring) ERC‑4337
   session keys. *(Identity & Keys runs on a simulated key provider today — the
   real OWS / Safe‑4337 signing backend is the planned swap.)*
+- **Continuous-improvement workflow** — compatible managers attach complete
+  dispatch contracts, atomic assignment lineage, blocked/stalled recovery,
+  evidence-backed validation, and governed Brain promotion to tasks. Work keeps
+  its existing tabs and Kanban while showing lifecycle and outcome metrics.
 - **Self‑update** — the desktop app can check a release manifest, stage an update,
   and relaunch into the new version.
 
@@ -93,8 +97,8 @@ headless platform doesn't ship a UI for:
 ## Quick start
 
 The supported macOS install builds IDACC, installs the app in `~/Applications`,
-installs or safely updates the compatible manager fork beside this checkout,
-and keeps that manager running as a per-user service:
+installs and builds the compatible manager fork beside this checkout, and keeps
+that manager running as a per-user service:
 
 ```bash
 git clone https://github.com/bobofbuilding/idacc.git ~/Projects/idacc-stack/idacc
@@ -111,11 +115,13 @@ commits, builds before activation, and waits for active queries to drain before
 restarting. Preview every action first with
 `node scripts/install-idacc-stack.mjs --dry-run`.
 
-After launch, open Settings and confirm the Connection, Local models &
-backends, and Inference backends cards. The app can observe a stock manager,
-but the full downloadable control-center experience needs a manager that
-advertises the Control Center extension contract via `GET /capabilities`. Some
-panels need those manager routes — see **[Manager compatibility](#how-this-relates-to-id-agents-the-difference)** above.
+By default the control center connects to `http://127.0.0.1:4100`; point it
+elsewhere with `MANAGER_URL`. After launch, open Settings and confirm the
+Connection, Local models & backends, and Inference backends cards. The app can
+observe a stock manager, but the full downloadable control-center experience
+needs a manager that advertises the Control Center extension contract via
+`GET /capabilities`. Some panels need those manager routes — see
+**[Manager compatibility](#how-this-relates-to-id-agents-the-difference)** above.
 
 ### Desktop GUI
 
@@ -139,7 +145,7 @@ npm run status     # one‑shot, scriptable snapshot (no TTY needed)
 > The two packages live as **siblings** in this repo on purpose: `idctl-desktop`
 > imports the shared backend from `../idctl/src/…`. Keep them side‑by‑side.
 
-### Install or update only the manager source
+### Install or update the manager source alongside a project
 
 If you want a local manager checkout that matches the maintained IDACC-compatible
 fork, use the guarded installer:
@@ -152,7 +158,22 @@ This installs or fast-forwards `~/Projects/idacc-stack/id-agents` from
 `https://github.com/bobofbuilding/id-agents.git`. It refuses to overwrite a
 non-empty non-git folder, refuses dirty worktrees, refuses foreign remotes unless
 you pass `--allow-foreign`, and uses `git merge --ff-only` so local commits are
-not rewritten. Preview first with:
+not rewritten. This source-only command intentionally does not activate or
+restart the service; install and build the manager after a fresh clone or update:
+
+```bash
+cd ~/Projects/idacc-stack/id-agents
+npm ci
+npm run build
+node dist/start-agent-manager.js
+```
+
+Keep that process running while using IDACC. For an interactive manager terminal,
+use `npm run id-agents` instead; it builds the manager, starts the daemon when
+needed, and then opens the CLI. IDACC is a client of the manager and does not
+start the daemon itself.
+
+Preview the checkout operation first with:
 
 ```bash
 node scripts/install-id-agents-manager.mjs --project-dir ~/Projects/idacc-stack --dry-run

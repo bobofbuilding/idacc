@@ -162,6 +162,19 @@ stale updates; the desktop refreshes before retrying instead of overwriting conc
 
 These are follow-up improvements, not blockers to the released command surface.
 
+## Continuous-Improvement Workflow
+
+The compatible manager now exposes a versioned `task-workflow.v1` contract while retaining the legacy `todo`, `doing`, and `done` wire statuses. IDACC reads the richer lifecycle directly and maps `triage_required` and `validation_pending` to Under Review, `blocked`, `stalled`, and `failed` to Holding, and validated terminal states to Done.
+
+The Work task board now provides:
+
+- persisted recovery actions for blocked and stalled work;
+- visible lifecycle state and blocker/validator context on task cards;
+- workflow outcome metrics for validation, cycle time, recovery, and reusable Brain knowledge;
+- manager-authoritative assignment IDs and delegation lineage rather than app-side ownership inference.
+
+New dispatches must preserve goal, owner, expected output, acceptance, provenance, validation, scope, timing, and fallback data. Incomplete contracts enter triage instead of starting. Brain outputs remain private promotion candidates until evidence, reviewer, confidence, expiry, and validation requirements pass.
+
 ### P1 - End-to-end compatibility gate
 
 IDACC tests its client and the Manager tests its routes, but the release process does not yet

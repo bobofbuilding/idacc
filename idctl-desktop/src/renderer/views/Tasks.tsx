@@ -41,6 +41,12 @@ type WorkOrgHierarchy = {
   coordinators: Record<string, string>;
   teams: string[];
 };
+type WorkflowMetrics = {
+  sample_size?: number;
+  throughput?: { completed?: number; validated?: number; validation_pass_rate?: number | null; mean_cycle_time_ms?: number | null };
+  reliability?: { blocked?: number; recovered?: number; recovery_rate?: number | null };
+  knowledge?: { reusable?: number; reuse_rate?: number | null };
+};
 
 type Tab = 'tasks' | 'goals' | 'plans' | 'learn' | 'schedule' | 'loops' | 'dream';
 const TABS: { id: Tab; label: string }[] = [
@@ -145,6 +151,14 @@ const LANE_STATUS: Record<Lane, Col> = {
   'under-review': 'doing', holding: 'todo', todo: 'todo', doing: 'doing', done: 'done',
 };
 const DEFAULT_LANE: Record<Col, Lane> = { todo: 'todo', doing: 'doing', done: 'done' };
+function workflowLane(t: Task): Lane | null {
+  if (t.workflowState === 'triage_required' || t.workflowState === 'validation_pending') return 'under-review';
+  if (t.workflowState === 'blocked' || t.workflowState === 'stalled' || t.workflowState === 'failed') return 'holding';
+  if (t.workflowState === 'validated' || t.workflowState === 'superseded' || t.workflowState === 'retired') return 'done';
+  if (t.workflowState === 'executing') return 'doing';
+  if (t.workflowState === 'ready' || t.workflowState === 'queued') return 'todo';
+  return null;
+}
 const LANE_GROUPS: { title: string; lanes: { id: Lane; label: string }[] }[] = [
   { title: 'Waiting', lanes: [{ id: 'under-review', label: 'Under Review' }, { id: 'holding', label: 'Holding Pattern' }] },
   { title: 'Main Flow', lanes: [{ id: 'todo', label: 'To Do' }, { id: 'doing', label: 'Doing' }, { id: 'done', label: 'Done' }] },
@@ -215,6 +229,10 @@ function taskListStamp(list: Task[]): string {
     t.createdAt ?? 0,
     t.updatedAt ?? 0,
     t.completedAt ?? 0,
+    t.workflowState ?? '',
+    t.lifecycleUpdatedAt ?? 0,
+    JSON.stringify(t.blockedDetail ?? null),
+    JSON.stringify(t.validationDetail ?? null),
     delegationSnapshot(t),
   ]));
 }
@@ -255,6 +273,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const syncVersion = useSyncVersion(['tasks', 'work', 'questions', 'inbox']);
   const hierarchySyncVersion = useSyncVersion(['org', 'agents', 'work']);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [workflowMetrics, setWorkflowMetrics] = useState<WorkflowMetrics | null>(null);
   const [hier, setHier] = useState<WorkOrgHierarchy>({ primary: null, secondaries: [], coordinators: {}, teams: [] });
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
@@ -600,6 +619,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
       depsStampRef.current = depsStamp;
       setDepsOverlay(deps);
     }
+    void call<WorkflowMetrics>('tasks:workflowMetrics', activeTeam).then(setWorkflowMetrics).catch(() => setWorkflowMetrics(null));
     // Per-task token spend — fetch per displayed team (the endpoint is team-scoped) and merge.
     const now = Date.now();
     if (!opts.forceUsage && now - usageLoadedAtRef.current < TASK_USAGE_POLL_MS) return;
@@ -616,6 +636,28 @@ function TasksPanel({ store }: { store: FleetStore }) {
         setTaskUsage(merged);
       }
     } catch { /* usage is best-effort */ }
+  }
+
+  async function recoverWorkflowTask(t: Task) {
+    const current = await ensureFreshTask(t, `Recover ${ref(t)}`, ['status', 'owner', 'team']);
+    if (!current) return;
+    const team = current.teamName || activeTeam;
+    setBusy(true);
+    setNote(`recovering ${ref(current)}…`);
+    const progress = toast({ kind: 'progress', text: `Recovering ${ref(current)}…` });
+    try {
+      await call('tasks:recover', team, ref(current), 'retry');
+      setNote(`${ref(current)} queued for recovery`);
+      progress.update({ kind: 'success', text: `${ref(current)} queued for recovery` });
+      await reload();
+      store.refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNote(`recovery failed: ${message}`);
+      progress.update({ kind: 'error', text: `Recovery failed: ${message}` });
+    } finally {
+      setBusy(false);
+    }
   }
   useEffect(() => {
     reload({ forceUsage: !usageLoadedAtRef.current });
@@ -670,6 +712,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
     const out = new Map<string, Lane>();
     for (const t of tasks) {
       const r = ref(t);
+      const managedLane = workflowLane(t);
+      if (managedLane) { out.set(r, managedLane); continue; }
       if (blockedRefs.has(r)) { out.set(r, 'holding'); continue; }
       const ov = laneOverlay[r] as Lane | undefined;
       out.set(r, ov && LANE_STATUS[ov] === colOf(t.status) ? ov : DEFAULT_LANE[colOf(t.status)]);
@@ -698,6 +742,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
     return laneByRef.get(ref(t)) ?? DEFAULT_LANE[colOf(t.status)];
   }
   function laneOfWith(t: Task, list: Task[], lanes: Record<string, string>, deps: Record<string, string[]>): Lane {
+    const managedLane = workflowLane(t);
+    if (managedLane) return managedLane;
     const idx = new Map(list.map((x) => [ref(x), x] as const));
     const blocked = !isDone(t) && (deps[ref(t)] ?? []).some((r) => {
       const d = idx.get(r);
@@ -1138,6 +1184,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
     const unassignedTodo = tasks.filter((t) => !t.ownerName && (laneByRef.get(ref(t)) ?? DEFAULT_LANE[colOf(t.status)]) === 'todo' && (!store.viewAll || t.teamName === activeTeam)).length;
     // Owned "doing" tasks with no manager activity past the manager threshold → stalled.
     const stalledTasks = tasks.filter((t) => {
+      if (t.workflowState === 'stalled') return true;
       if (colOf(t.status) !== 'doing' || !t.ownerName) return false;
       if (blockedRefs.has(ref(t))) return false; // a blocked task isn't stalled — it's waiting on a prerequisite
       if (isDelegatedLeadTask(t)) return false; // lead parent already delegated child work; not jump-startable
@@ -1209,6 +1256,16 @@ function TasksPanel({ store }: { store: FleetStore }) {
         <button className="btn" disabled={busy || proposing} title="Create work: auto-plan, direct assignment, schedule, loop, or dream" onClick={() => { setShowAssign((v) => !v); setAssignNote(''); setProposal(null); }}>{showAssign ? '− Close' : '⚡ Create work'}</button>
         <button className="btn primary" disabled={busy} onClick={() => void newTask()}>+ New task</button>
       </div>
+      {workflowMetrics ? (
+        <div className="muted small" style={{ display: 'flex', flexWrap: 'wrap', gap: 14, margin: '0 0 10px', padding: '6px 0', borderBottom: '1px solid var(--border, #2a2a2a)' }}>
+          <span>workflow sample {workflowMetrics.sample_size ?? 0}</span>
+          <span>validated {workflowMetrics.throughput?.validated ?? 0}/{workflowMetrics.throughput?.completed ?? 0}</span>
+          <span>mean cycle {workflowMetrics.throughput?.mean_cycle_time_ms ? fmtDur(workflowMetrics.throughput.mean_cycle_time_ms) : '—'}</span>
+          <span>blocked {workflowMetrics.reliability?.blocked ?? 0}</span>
+          <span>recovered {workflowMetrics.reliability?.recovered ?? 0}</span>
+          <span>reusable knowledge {workflowMetrics.knowledge?.reusable ?? 0}</span>
+        </div>
+      ) : null}
 
       {showAssign ? (
         <section className="card" style={{ marginBottom: 10 }}>
@@ -1457,8 +1514,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
             const upMs = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
             const blocked = isBlocked(t);                        // waiting on a prerequisite → parked in Holding
             const delegated = owned && isDelegatedLeadTask(t);
-            const stale = owned && !blocked && !delegated && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS;
-            const needsAssignment = phase === 'todo' && !t.ownerName && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS;
+            const workflowBlocked = t.workflowState === 'blocked' || t.workflowState === 'stalled' || t.workflowState === 'failed';
+            const stale = t.workflowState === 'stalled' || (owned && !blocked && !delegated && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS);
+            const needsAssignment = !workflowBlocked && t.workflowState !== 'triage_required' && phase === 'todo' && !t.ownerName && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS;
             const working = owned && !delegated && !stale && !blocked; // recently moved to doing → plausibly active
             const cAbs = absTime(t.createdAt);
             const uAbs = absTime(t.updatedAt);
@@ -1483,6 +1541,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
             >
               <div className="task-card-title b" title={t.title}>{t.title}</div>
               <div className="muted small mono">{t.shortId ?? ref(t)}{isRoutine(t) ? ' · routine' : ''}{store.viewAll && t.teamName ? ` · ${t.teamName}` : ''}{(() => { const n = blocksCount(t); return n ? ` · blocks ${n}` : ''; })()}</div>
+              {t.workflowState ? <div className={`small ${workflowBlocked ? 'warn-text' : 'muted'}`} title={String(t.blockedDetail?.reason || t.validationDetail?.verdict || '')}>workflow · {t.workflowState.replace(/_/g, ' ')}</div> : null}
               {(() => {
                 const u = taskUsage[ref(t)];
                 if (!u || !u.tokens) return null;
@@ -1549,7 +1608,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
                   </select>
                 ) : <span className="muted small">—</span>}
                 <span className="grow" />
-                {stale ? <button className="btn small" disabled={busy} title={`Jump-start ${ref(t)} through the manager`} onClick={(e) => { e.stopPropagation(); void jumpstart(t); }}>↻</button> : null}
+                {workflowBlocked ? <button className="btn small" disabled={busy} title={`Recover ${ref(t)} using its persisted recovery path`} onClick={(e) => { e.stopPropagation(); void recoverWorkflowTask(t); }}>↻</button> : stale ? <button className="btn small" disabled={busy} title={`Jump-start ${ref(t)} through the manager`} onClick={(e) => { e.stopPropagation(); void jumpstart(t); }}>↻</button> : null}
                 {confirmDel === ref(t) ? (
                   <>
                     <button className="btn icon-danger small" disabled={busy} onClick={() => void del(t)}>Delete?</button>

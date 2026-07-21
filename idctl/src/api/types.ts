@@ -150,6 +150,14 @@ export interface Task {
   createdAt: number;
   updatedAt?: number;
   completedAt?: number | null;
+  workflowState?: 'triage_required' | 'ready' | 'queued' | 'executing' | 'blocked' | 'stalled' | 'validation_pending' | 'validated' | 'superseded' | 'retired' | 'failed' | string;
+  workflowContract?: Record<string, unknown> | null;
+  assignmentId?: string | null;
+  delegationLineage?: Record<string, unknown> | null;
+  blockedDetail?: Record<string, unknown> | null;
+  validationDetail?: Record<string, unknown> | null;
+  outcomeDetail?: Record<string, unknown> | null;
+  lifecycleUpdatedAt?: number | null;
   delegationAudit?: {
     status?: 'ok' | 'pending-delegation' | 'needs-delegation' | string;
     ownerRole?: string;
