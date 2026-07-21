@@ -362,13 +362,17 @@ questions through `legal/general-counsel`.
   explicit **One new agent** reset for single-agent adds, automatic runtime/model verification that
   refreshes every manager-assignable subscription CLI (including Claude Code, Codex, and Grok
   Build) and live-probes local plus selected API provider lanes before confirmation, then rechecks
-  only the subscription runtimes in the pending batch before any spawn, a live checklist, then optional
+  only the subscription runtimes in the pending batch before any spawn, requires the connected manager's
+  side-effect-free runtime preflight to resolve the exact runtime/model pair and verify it on the manager
+  host, repeats that check at each onboarding boundary, a live checklist, then optional
   coordinator/default-primary + instructions + relay wiring) → per-agent **↻ retry**).
   Fresh installs never infer that an offline local server is usable from cached model metadata:
   Ollama/LM Studio lanes require a successful recent loopback probe, and rows remain unassigned with
   an actionable Settings handoff when no manager-executable runtime is ready. Team creation remains
   disabled while readiness is unresolved; curated model names and a paid web subscription are not
-  execution evidence without the corresponding installed, authenticated CLI.
+  execution evidence without the corresponding installed, authenticated CLI. Managers that predate
+  this preflight contract block the build with an **Update & sync manager** handoff instead of allowing
+  a partially-created team.
 - **Create team from template/config** (+ From template): pick source (default template / library
   template / saved config), name it, debounced **Preflight** preview, create.
 - **Structure**: live **team graph** (lead-on-top, click to select/switch), **⭑ make primary lead**,

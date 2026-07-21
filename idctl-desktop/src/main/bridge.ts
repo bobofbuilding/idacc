@@ -716,6 +716,14 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
   const managedByRuntime = new Map(managed.map((status) => [status.runtime, status]));
   const providerLanes = new Map(buildProviderModelLanes(providers).map((lane) => [lane.id, lane]));
   const refreshedCatalog = runtimeCatalogWithLiveCliModels();
+  const managerPreflights = new Map<string, Awaited<ReturnType<typeof client.runtimePreflight>>>();
+  await Promise.all(Array.from(new Set(rowsIn
+    .filter((row) => row.runtime && !providerLaneName(row.runtime))
+    .map((row) => JSON.stringify([row.runtime, row.model]))))
+    .map(async (key) => {
+      const [runtime, model] = JSON.parse(key) as [string, string];
+      managerPreflights.set(key, await client.runtimePreflight(runtime, model || undefined));
+    }));
   const rows = rowsIn.map((row): RuntimeAssignmentCheck => {
     if (!row.runtime) {
       return { name: row.name, runtime: '', label: 'None', model: row.model || undefined, ok: false, detail: 'No runtime selected.', source: 'harness', modelCount: 0 };
@@ -737,6 +745,31 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
     }
 
     const models = refreshedCatalog[row.runtime] ?? [];
+    const managerPreflight = managerPreflights.get(JSON.stringify([row.runtime, row.model]));
+    if (!managerPreflight) {
+      return {
+        name: row.name,
+        runtime: row.runtime,
+        label: runtimeDisplayLabel(row.runtime),
+        model: row.model || undefined,
+        ok: false,
+        detail: 'The connected ID Agents manager is outdated and cannot verify runtime assignments. Open Settings, run Update & sync manager, then retry.',
+        source: 'harness',
+        modelCount: models.length,
+      };
+    }
+    if (!managerPreflight.ok) {
+      return {
+        name: row.name,
+        runtime: row.runtime,
+        label: runtimeDisplayLabel(row.runtime),
+        model: row.model || undefined,
+        ok: false,
+        detail: managerPreflight.detail || managerPreflight.issues.map((issue) => issue.message).join('; ') || 'Manager runtime preflight failed.',
+        source: 'harness',
+        modelCount: models.length,
+      };
+    }
     if (!availableHarnesses.has(row.runtime)) {
       const managedStatus = managedByRuntime.get(row.runtime) ?? (row.runtime === 'claude-code-local' ? managedByRuntime.get('claude-code-cli') : undefined);
       const reason = managedStatus?.detail || (managedStatus?.installed === false
@@ -747,7 +780,8 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
     if (row.model && models.length && !models.includes(row.model)) {
       return { name: row.name, runtime: row.runtime, label: runtimeDisplayLabel(row.runtime), model: row.model, ok: false, detail: `Model "${row.model}" is not in the current ${runtimeDisplayLabel(row.runtime)} catalog.`, source: 'harness', modelCount: models.length };
     }
-    return { name: row.name, runtime: row.runtime, label: runtimeDisplayLabel(row.runtime), model: row.model || undefined, ok: true, detail: `Verified assignable harness (${models.length} model${models.length === 1 ? '' : 's'}).`, source: 'harness', modelCount: models.length };
+    const resolved = managerPreflight.model ? `; manager resolved ${managerPreflight.runtime} / ${managerPreflight.model}` : `; manager resolved ${managerPreflight.runtime} with its account default`;
+    return { name: row.name, runtime: row.runtime, label: runtimeDisplayLabel(row.runtime), model: row.model || undefined, ok: true, detail: `Verified assignable harness (${models.length} model${models.length === 1 ? '' : 's'}${resolved}).`, source: 'harness', modelCount: models.length };
   });
 
   return { ok: rows.every((row) => row.ok), checkedAt: Date.now(), rows, refreshedCatalog, providers };
@@ -844,7 +878,20 @@ async function setAgentRuntimeFromSettings(agentId: string, runtime: string, tea
 async function prepareOnboardRuntime(plan: OnboardPlan): Promise<PreparedRuntime | undefined> {
   const runtime = String(plan.runtime ?? '');
   const assignment = resolveProviderLaneAssignment(runtime);
-  if (!assignment) return undefined;
+  if (!assignment) {
+    const preflight = await client.runtimePreflight(runtime || undefined, plan.model);
+    if (!preflight) {
+      throw new Error('The connected ID Agents manager is outdated and cannot verify runtime assignments. Open Settings, run Update & sync manager, then retry.');
+    }
+    if (!preflight.ok) {
+      throw new Error(preflight.detail || preflight.issues.map((issue) => issue.message).join('; ') || 'Manager runtime preflight failed.');
+    }
+    return {
+      spawnRuntime: preflight.runtime,
+      spawnModel: preflight.model || undefined,
+      label: `Verified ${runtimeDisplayLabel(preflight.runtime)}`,
+    };
+  }
   return {
     label: `Assign API lane ${assignment.providerName}`,
     rebuildLabel: 'Rebuild to apply API lane',

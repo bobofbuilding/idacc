@@ -70,6 +70,16 @@ assert.ok(
   'runtime verification must not promote Grok or Antigravity from a curated model catalog without live CLI readiness',
 );
 assert.ok(
+  bridge.includes('client.runtimePreflight(runtime, model || undefined)')
+    && bridge.includes('The connected ID Agents manager is outdated and cannot verify runtime assignments.'),
+  'Team Builder must require manager-authoritative runtime/model preflight before spawn',
+);
+assert.ok(
+  bridge.includes('spawnRuntime: preflight.runtime')
+    && bridge.includes('spawnModel: preflight.model || undefined'),
+  'onboarding must use the exact runtime/model pair resolved by manager preflight',
+);
+assert.ok(
   teams.includes('!runtimeCatalogChecking && Boolean(targetTeam)')
     && teams.includes('Wait for subscription and local runtime readiness checks to finish.'),
   'Team Builder must not dispatch while authoritative runtime readiness is still pending',

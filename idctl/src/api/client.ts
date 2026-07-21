@@ -51,6 +51,14 @@ export interface DesignedTeam {
   };
 }
 
+export interface RuntimePreflightResult {
+  ok: boolean;
+  runtime: string;
+  model: string;
+  issues: Array<{ code: string; message: string }>;
+  detail: string;
+}
+
 /**
  * Sanitize a raw, AI-produced team object into a trustworthy {@link DesignedTeam}:
  * slug names + dedupe, clamp role/description length, DROP any runtime/model/skill
@@ -785,6 +793,22 @@ export class ManagerClient {
       return await this.get('/capabilities', signal);
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Ask the manager to resolve and validate the exact pair POST /agents/spawn
+   * will use. Null means the connected manager predates this safety contract.
+   */
+  async runtimePreflight(runtime?: string, model?: string, signal?: AbortSignal): Promise<RuntimePreflightResult | null> {
+    try {
+      return await this.post<RuntimePreflightResult>('/runtime/preflight', {
+        ...(runtime?.trim() ? { runtime: runtime.trim() } : {}),
+        ...(model?.trim() ? { model: model.trim() } : {}),
+      }, signal, 15_000);
+    } catch (err) {
+      if (err instanceof ManagerError && err.status === 404) return null;
+      throw err;
     }
   }
 

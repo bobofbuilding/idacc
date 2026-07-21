@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.661] — 2026-07-21
+### What changed
+- HR Manager: require manager-authoritative runtime preflight before team creation
+
 ## [0.1.660] — 2026-07-21
 ### What changed
 - HR Manager: require live Grok readiness before spawn
