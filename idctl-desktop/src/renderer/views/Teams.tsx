@@ -2091,7 +2091,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             </button>
           </div>
           <p className="muted small" style={{ marginTop: -2 }}>
-            Live top-down organization of every configured team, including offline or empty teams. Solid paths show reporting; team headers summarize persisted relay policy. Select a team or agent to trace its green messaging path.
+            Live top-down organization of every configured team, including offline or empty teams. Blue arrows carry objectives from the fleet primary to team leads and then workers; green dashed arrows return completed work through the default validators for consolidation. Team headers summarize persisted relay policy. Select a team or agent to trace its separate green messaging path.
             The reserved empty public-agent namespace is hidden until it has agents. Click an agent or team to inspect goals, instructions, roster, and routing context.
           </p>
           <TeamGraph

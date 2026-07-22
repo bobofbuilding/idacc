@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.673] — 2026-07-22
+### What changed
+- HR Manager: align Structure routing with the fleet delegation contract
+
 ## [0.1.672] — 2026-07-22
 ### What changed
 - HR Manager: make Structure a hierarchy-driven org chart
