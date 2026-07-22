@@ -8,6 +8,7 @@ import {
 import { MCP_CATALOG, buildFromCatalog } from '../../../../idctl/src/settings/mcpCatalog.ts';
 import { runtimeSupports } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
+import { agentsForCapabilityScope, capabilityScopeUsesHierarchy, type CapabilityScope } from './capabilityScope.ts';
 
 type CapabilityTab = 'mcp' | 'skills' | 'plugins';
 
@@ -712,9 +713,9 @@ export function Modules({ store }: { store: FleetStore }) {
   // selected agents; switch teams with the team picker in the header. Default
   // (untouched) = every agent in the team; toggling switches to an explicit set.
   const activeTeam = store.team ?? 'default';
-  // Apply scope: this team / all teams / all team leads. Cross-team scopes route each apply to
-  // the agent's OWN team.
-  const [scope, setScope] = useState<'team' | 'all' | 'leads'>('team');
+  // Cross-team scopes route each apply to the agent's own team. Worker scope excludes the
+  // default team and every manager-authoritative team coordinator.
+  const [scope, setScope] = useState<CapabilityScope>('team');
   const [coords, setCoords] = useState<Record<string, string>>({});
   useEffect(() => {
     call<{ primary?: { team: string; agent: string } | null; coordinators?: Record<string, string> }>('coordinator:hierarchy')
@@ -741,8 +742,7 @@ export function Modules({ store }: { store: FleetStore }) {
       : store.agents.map((a) => ({ ...a, team: (a as TargetAgent).team ?? activeTeam })),
     [agentGroupsSnapshot, activeTeam, store.agents],
   );
-  const baseAgents: TargetAgent[] =
-    scope === 'team' ? snapshotTeamAgents : scope === 'leads' ? snapshotAllAgents.filter((a) => coords[a.team ?? ''] === a.name) : snapshotAllAgents;
+  const baseAgents = agentsForCapabilityScope(scope, snapshotAllAgents, snapshotTeamAgents, coords);
   const eligibleAgents = baseAgents;
   const advisoryAgents = baseAgents.filter((a) => capabilitySurface(tab, agentRuntime(a)).advisory);
   const targetTeamOf = (a: { team?: string }) => a.team ?? activeTeam;
@@ -1114,7 +1114,7 @@ export function Modules({ store }: { store: FleetStore }) {
     const strictCapabilities = opts.strictCapabilities !== false;
     const groups = await freshGroups();
     let latestCoords = coords;
-    if (scope === 'leads') {
+    if (capabilityScopeUsesHierarchy(scope)) {
       const hierarchy = await call<{ primary?: { team: string; agent: string } | null; coordinators?: Record<string, string> }>('coordinator:hierarchy').catch(() => null);
       if (!hierarchy) {
         setNote(`${label} blocked: could not verify the current lead hierarchy. Refresh and try again.`);
@@ -1125,17 +1125,13 @@ export function Modules({ store }: { store: FleetStore }) {
       setCoords(latestCoords);
     }
     if (!touched) {
-      const currentScopeTargets: TargetAgent[] =
-        scope === 'team'
-          ? (groups.find((g) => g.team === activeTeam)?.agents ?? []).map((a) => ({ ...a, team: activeTeam }))
-          : scope === 'leads'
-            ? groups.flatMap((g) => {
-              const lead = latestCoords[g.team];
-              return lead ? g.agents.filter((a) => a.name === lead).map((a) => ({ ...a, team: g.team })) : [];
-            })
-            : groups.flatMap((g) => g.agents.map((a) => ({ ...a, team: g.team })));
+      const latestAllAgents = groups.flatMap((g) => g.agents.map((a) => ({ ...a, team: g.team })));
+      const latestTeamAgents = (groups.find((g) => g.team === activeTeam)?.agents ?? [])
+        .map((a) => ({ ...a, team: activeTeam }));
+      const currentScopeTargets = agentsForCapabilityScope(scope, latestAllAgents, latestTeamAgents, latestCoords);
       if (capabilityTargetSetStamp(currentScopeTargets, activeTeam) !== capabilityTargetSetStamp(targetAgents, activeTeam)) {
-        setNote(`${label} blocked: the ${scope === 'team' ? 'team' : scope === 'leads' ? 'team-lead' : 'all-team'} target set changed. Refreshed; review the current targets before applying.`);
+        const scopeName = scope === 'team' ? 'team' : scope === 'leads' ? 'team-lead' : scope === 'workers' ? 'non-default worker' : 'all-team';
+        setNote(`${label} blocked: the ${scopeName} target set changed. Refreshed; review the current targets before applying.`);
         store.refresh();
         return null;
       }
@@ -1159,6 +1155,11 @@ export function Modules({ store }: { store: FleetStore }) {
         store.refresh();
         return null;
       }
+      if (scope === 'workers' && (expectedTeam.toLowerCase() === 'default' || !latestCoords[expectedTeam] || latestCoords[expectedTeam] === current.name)) {
+        setNote(`${label} blocked: ${expectedTeam}/${rendered.name} is no longer a verified non-default worker. Refreshed; review targets and try again.`);
+        store.refresh();
+        return null;
+      }
       fresh.push(current);
     }
     return fresh;
@@ -1174,7 +1175,13 @@ export function Modules({ store }: { store: FleetStore }) {
     try {
       const freshTargets = await freshCapabilityTargets(label, opts);
       if (!freshTargets) return;
-      const scopeLabel = scope === 'team' ? `team ${activeTeam}` : scope === 'leads' ? 'all team leads' : 'all teams';
+      const scopeLabel = scope === 'team'
+        ? `team ${activeTeam}`
+        : scope === 'leads'
+          ? 'all team leads'
+          : scope === 'workers'
+            ? 'all non-default workers'
+            : 'all teams';
       if (!window.confirm(`Apply "${label}" to ${freshTargets.length} current target${freshTargets.length === 1 ? '' : 's'}?\n\nScope: ${scopeLabel}\nTargets: ${describeTargets(freshTargets)}\n\nThis can change agent capabilities or rebuild running agents.`)) return;
       setNote(`rechecking ${label} targets…`);
       const latestTargets = await freshCapabilityTargets(label, opts);
@@ -1789,15 +1796,16 @@ export function Modules({ store }: { store: FleetStore }) {
         <h1>Capabilities</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <span className="muted small">scope</span>
-          <select className="cell-select" value={scope} onChange={(e) => setScope(e.target.value as 'team' | 'all' | 'leads')} title="Apply to the active team, every team, or every team's lead">
+          <select className="cell-select" value={scope} onChange={(e) => setScope(e.target.value as CapabilityScope)} title="Apply to the active team, every team, every team lead, or non-default worker agents">
             <option value="team">This team</option>
             <option value="all">All teams</option>
             <option value="leads">All team leads</option>
+            <option value="workers">All workers (non-default)</option>
           </select>
           {scope !== 'team' ? (
             <>
               <span className="muted small" title={`Runtime-neutral target scope. ${capabilitySurfaceSummary(tab, eligibleAgents)}`}>
-                available <b>{eligibleAgents.length}</b> {scope === 'leads' ? 'team lead' : 'agent'}{eligibleAgents.length === 1 ? '' : 's'} across all teams
+                available <b>{eligibleAgents.length}</b> {scope === 'leads' ? 'team lead' : scope === 'workers' ? 'worker' : 'agent'}{eligibleAgents.length === 1 ? '' : 's'} across all teams
               </span>
               <span className="muted small">
                 selected <b>{targetCount}</b>
