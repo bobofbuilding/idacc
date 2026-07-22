@@ -1212,7 +1212,42 @@ select:focus, input:focus { border-color: var(--accent); }
 .control-intent-copy { display: grid; gap: 4px; min-width: 0; }
 .control-intent-copy span { color: var(--muted); line-height: 1.35; }
 .control-intent-status { padding: 0 2px 6px; }
+
+/* HR Manager > Manage > Agents */
+.hr-agent-directory {
+  display: grid;
+  grid-template-columns: minmax(210px, 270px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.hr-agent-roster {
+  min-width: 0;
+  padding-right: 14px;
+  border-right: 1px solid var(--line);
+}
+.hr-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  margin: 0 0 5px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.hr-agent-row:hover { background: var(--bg-3); border-color: var(--line); }
+.hr-agent-row.selected { background: var(--bg-3); border-color: var(--accent); }
+.hr-agent-editor { min-width: 0; }
 @media (max-width: 720px) { .driver-fields { grid-template-columns: 1fr; } .driver-wide { grid-column: auto; } }
+
+@media (max-width: 860px) {
+  .hr-agent-directory { grid-template-columns: 1fr; }
+  .hr-agent-roster { border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 10px; }
+}
 
 @media (max-width: 900px) {
   .plans-search { flex: 1 1 100%; width: 100%; }

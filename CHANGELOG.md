@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.675] — 2026-07-22
+### What changed
+- Rework HR Manage into Overview, Agents, Team ops, and Hierarchy surfaces; move instruction and goal editing into guarded team and agent administration.
+
 ## [0.1.674] — 2026-07-22
 ### What changed
 - HR Manager: clarify Structure path direction and layering

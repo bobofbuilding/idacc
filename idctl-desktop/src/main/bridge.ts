@@ -1831,6 +1831,8 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // reassign a local agent to another team (rebuilds it there)
   'agent:move': (id: string, team: string, sourceTeam?: string, createTarget?: boolean) =>
     (sourceTeam ? client.withTeam(String(sourceTeam)) : client).moveAgent(String(id), String(team), { createTarget: Boolean(createTarget) }),
+  'agent:delete': (agent: string, team?: string) =>
+    (team ? client.withTeam(String(team)) : client).remote(`/delete ${JSON.stringify(String(agent))}`),
 
   // per-agent persistent instructions (system-prompt addendum, e.g. coordinator role).
   // Optional `team` scopes the read to a specific team (so the HR structure editor can load a

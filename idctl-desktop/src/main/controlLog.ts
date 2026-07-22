@@ -438,6 +438,7 @@ const ACTIONS: Record<string, (args: unknown[], result: unknown) => Summary> = {
   setAgentSpeed: (a) => ({ subject: `agent ${s(a[0])} speed → ${s(a[1])}`, data: { id: s(a[0]), speed: s(a[1]), team: s(a[2]) }, tags: ['agent-config'] }),
   'agent:setInstructions': (a) => ({ subject: `agent ${s(a[0])} instructions updated`, data: { id: s(a[0]), team: s(a[2]), chars: s(a[1]).length }, tags: ['agent-config'] }),
   'agent:move': (a) => ({ subject: `agent ${s(a[0])} ${s(a[2]) ? `${s(a[2])} → ` : '→ team '}${s(a[1])}`, data: { id: s(a[0]), team: s(a[1]), sourceTeam: s(a[2]), createTarget: Boolean(a[3]) }, tags: ['agent-config'] }),
+  'agent:delete': (a) => ({ subject: `agent ${s(a[1]) ? `${s(a[1])}/` : ''}${s(a[0])} deleted`, data: { agent: s(a[0]), team: s(a[1]) }, tags: ['agent-config', 'destructive'] }),
   setAgentMcp: (a) => ({ subject: `agent ${s(a[0])} mcp updated`, data: { id: s(a[0]) }, tags: ['agent-config', 'mcp'] }),
   setAgentDelegates: (a) => ({ subject: `agent ${s(a[0])} delegates set`, data: { id: s(a[0]), delegates: a[1] }, tags: ['agent-config'] }),
   setTeamDelegates: (a) => ({ subject: `team ${s(a[0])} delegates set`, data: { team: s(a[0]), delegates: a[1] }, tags: ['team-config'] }),

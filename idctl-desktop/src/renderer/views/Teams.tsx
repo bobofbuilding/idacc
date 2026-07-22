@@ -526,7 +526,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   const [tab, setTab] = useState<'structure' | 'health' | 'build' | 'route'>('structure');
   const hrRuntimeCatalogVersion = useSyncVersion(tab === 'build' ? ['runtime-catalog'] : []);
   const hrSkillCatalogVersion = useSyncVersion(tab === 'build' ? ['modules'] : []);
-  const [routePane, setRoutePane] = useState<'operations' | 'overview' | 'hierarchy'>('operations');
+  const [routePane, setRoutePane] = useState<'operations' | 'overview' | 'agents' | 'hierarchy'>('overview');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [locallyDeletedTeams, setLocallyDeletedTeams] = useState<string[]>([]);
   const activeTeam = store.team ?? 'default';
@@ -612,7 +612,8 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   const onGraphSelect = useCallback((sel: GraphSelection) => {
     setSelectedKey(sel.kind === 'agent' ? `agent:${sel.team}:${sel.agent.name}` : `team:${sel.team}`);
   }, []);
-  // The agent currently selected in the graph (for the structure-tab side panel).
+  // The selected entity is shared by Structure and Manage > Agents. Structure only
+  // visualizes it; the management pane owns all mutations.
   const selectedAgent = useMemo(() => {
     if (!selectedKey?.startsWith('agent:')) return null;
     const rest = selectedKey.slice('agent:'.length);
@@ -633,11 +634,19 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
         : '';
     if (team && !allKnownTeamSet.has(team)) setSelectedKey(null);
   }, [selectedKey, allKnownTeamSet]);
-  const selectedTeamAgents = useMemo(
-    () => selectedTeamName ? (visibleGraphGroups.find((g) => g.team === selectedTeamName)?.agents ?? []) : [],
-    [selectedTeamName, visibleGraphGroups],
-  );
   const selectedAgentLocked = selectedAgent ? isDefaultBackboneAgent(selectedAgent.team, selectedAgent.agent.name) : false;
+  const managedTeamName = selectedAgent?.team ?? selectedTeamName ?? activeTeam;
+  const managedTeamAgents = useMemo(
+    () => visibleGraphGroups.find((g) => g.team === managedTeamName)?.agents ?? [],
+    [managedTeamName, visibleGraphGroups],
+  );
+
+  function openAgentDirectory(team: string, agentName?: string) {
+    if (!team) return;
+    setSelectedKey(agentName ? `agent:${team}:${agentName}` : `team:${team}`);
+    setRoutePane('agents');
+    setTab('route');
+  }
 
   async function ensureRenderedAgentFresh(action: string, ref: { id?: string; name: string; team: string; stamp?: string }): Promise<Agent | null> {
     const groups = await freshHrGroups();
@@ -655,7 +664,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     return fresh;
   }
 
-  // ── Structure-tab agent editor — isolated from the active team. Loads/saves the SELECTED
+  // ── Manage > Agents editor — isolated from the active team. Loads/saves the SELECTED
   //    agent's persistent instructions + Work goals by name+team directly (no active-team switch). ──
   const [sgInstr, setSgInstr] = useState('');
   const [sgSaved, setSgSaved] = useState('');
@@ -1187,10 +1196,45 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       if (!window.confirm(`Move current agent "${fresh.name}" from "${fromTeam}" to "${toTeam}"?\n\nIt will be rebuilt under the new team and leave ${fromTeam}.`)) return;
       setMsg(`moving ${fresh.name} → ${toTeam}…`);
       const r = await call<{ rebuilt?: boolean; warning?: string }>('agent:move', fresh.id, toTeam, fromTeam, false);
+      setSelectedKey(`team:${toTeam}`);
       store.refresh();
       setMsg(r?.warning ? `moved ${fresh.name} → ${toTeam} (⚠ ${r.warning})` : `moved ${fresh.name} → ${toTeam} ✓`);
     } catch (err) {
       setMsg(`failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function removeManagedAgent(agent: Agent, team: string) {
+    if (isDefaultBackboneAgent(team, agent.name)) {
+      setMsg(`delete blocked: ${team}/${agent.name} is part of the locked default leadership backbone.`);
+      return;
+    }
+    setBusy(true);
+    setMsg(`checking delete ${team}/${agent.name}…`);
+    try {
+      const fresh = await ensureRenderedAgentFresh('Delete agent', {
+        id: agent.id,
+        name: agent.name,
+        team,
+        stamp: hrAgentStamp({ ...agent, team }, team),
+      });
+      if (!fresh) return;
+      if (!window.confirm(`Delete current agent "${team}/${fresh.name}"?\n\nThe manager removes the agent record and stops its process. Workspace files are retained. This cannot be undone from IDACC.`)) return;
+      const afterConfirm = await ensureRenderedAgentFresh('Delete agent', {
+        id: fresh.id,
+        name: fresh.name,
+        team,
+        stamp: hrAgentStamp({ ...fresh, team }, team),
+      });
+      if (!afterConfirm) return;
+      setMsg(`deleting ${team}/${fresh.name}…`);
+      await call('agent:delete', fresh.name, team);
+      setSelectedKey(`team:${team}`);
+      store.refresh();
+      setMsg(`deleted ${team}/${fresh.name} ✓`);
+    } catch (err) {
+      setMsg(`delete failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy(false);
     }
@@ -1950,12 +1994,11 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       sgGoalStatus !== sgGoalDetail.status ||
       sgGoalPriority !== goalPriority(sgGoalDetail.priority)
     ));
-  const selectedTeamMeta = selectedTeamName ? visibleTeams.find((t) => t.name === selectedTeamName) : undefined;
-  const selectedTeamKnownTotal = selectedTeamAgents.length || Number(selectedTeamMeta?.agentCount) || 0;
-  const selectedTeamRunning = selectedTeamAgents.filter(isRunnableAgent).length;
-  const selectedTeamLead = selectedTeamName ? (hier.coordinators[selectedTeamName] || (hier.primary?.team === selectedTeamName ? hier.primary.agent : '')) : '';
-  const selectedTeamSecondaries = selectedTeamName ? secondaries.filter((s) => s.leadsTeams.includes(selectedTeamName)) : [];
-
+  const managedTeamMeta = visibleTeams.find((t) => t.name === managedTeamName);
+  const managedTeamKnownTotal = managedTeamAgents.length || Number(managedTeamMeta?.agentCount) || 0;
+  const managedTeamRunning = managedTeamAgents.filter(isRunnableAgent).length;
+  const managedTeamLead = hier.coordinators[managedTeamName] || (hier.primary?.team === managedTeamName ? hier.primary.agent : '');
+  const managedTeamSecondaries = secondaries.filter((s) => s.leadsTeams.includes(managedTeamName));
   function RelayPolicySection() {
     return (
       <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border, #2a2a2a)' }}>
@@ -2069,6 +2112,84 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     );
   }
 
+  function ManagedAgentEditor() {
+    if (!selectedAgent) return null;
+    const isLead = hier.coordinators[selectedAgent.team] === selectedAgent.agent.name;
+    const leadLocked = selectedAgent.team === PRIMARY_TEAM && !isDefaultLead(selectedAgent.team, selectedAgent.agent.name);
+    return (
+      <div style={{ minWidth: 0 }}>
+        <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <h4 style={{ margin: 0 }}>{selectedAgent.agent.name}{' '}
+            <span className="muted small">· {selectedAgent.team} · {runtimeLabel(selectedAgent.agent.runtime ?? '')} · {selectedAgent.agent.status}</span>
+          </h4>
+          <span className="row-actions" style={{ gap: 6, flexWrap: 'wrap' }}>
+            <button className={`star${isLead ? ' on' : ''}`} disabled={busy || isLead || leadLocked}
+              title={leadLocked ? `${PRIMARY_TEAM} coordinator is locked to ${PRIMARY_TEAM}/${DEFAULT_LEAD}` : isLead ? `${selectedAgent.agent.name} is ${selectedAgent.team}'s coordinator` : `Set coordinators in Manage > Hierarchy`}
+              onClick={() => setRoutePane('hierarchy')}>{isLead ? '★ lead' : '☆ set in Hierarchy'}</button>
+            <select className="cell-select" disabled={busy || selectedAgentLocked || selectedAgent.reassignTargets.length === 0} value="" title={selectedAgentLocked ? 'Locked default leadership roles cannot be moved out of default' : 'Move this agent to another team'}
+              onChange={(e) => { const to = e.target.value; e.currentTarget.value = ''; if (to) void moveAgentToTeam(selectedAgent.agent.id, selectedAgent.agent.name, selectedAgent.team, to); }}>
+              <option value="">{selectedAgentLocked ? 'locked role' : selectedAgent.reassignTargets.length === 0 ? 'no other teams' : 'move to team…'}</option>
+              {selectedAgent.reassignTargets.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <button className="btn small" disabled={busy} title="Edit this team's outbound relay policy" onClick={() => void openRelayForTeam(selectedAgent.team)}>⇄ Routing</button>
+            <button className="btn small" disabled={busy} onClick={() => void rebuildSelectedStructureAgent(selectedAgent.agent, selectedAgent.team)}>Rebuild</button>
+            <button className="btn small danger" disabled={busy || selectedAgentLocked} title={selectedAgentLocked ? 'The default leadership backbone cannot be deleted' : `Delete ${selectedAgent.team}/${selectedAgent.agent.name}`}
+              onClick={() => void removeManagedAgent(selectedAgent.agent, selectedAgent.team)}>Delete</button>
+          </span>
+        </div>
+        <div className="muted small" style={{ margin: '10px 0 4px' }}>instruction markdown · persistent system-prompt addendum</div>
+        <div className="row-actions" style={{ gap: 8, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="btn small" disabled={sgBusy || !hrOwner} title={hrOwner ? `Ask ${hrOwner.team ?? activeTeam}/${hrOwner.name} to draft` : 'No active HR manager agent found'} onClick={() => void aiDraftSgInstr()}>✦ AI draft</button>
+          {sgInstr.trim() ? <button className="btn small" disabled={sgBusy} onClick={() => setSgInstr('')}>Clear</button> : null}
+          <span className="grow" />
+          {sgMsg ? <span className={`small ${/failed|blocked/.test(sgMsg) ? 'status-error' : 'ok-text'}`}>{sgMsg}</span> : null}
+          <button className="btn primary small" disabled={sgBusy || sgInstr === sgSaved} onClick={() => void saveSgInstr()}>{sgBusy ? '…' : 'Save & rebuild'}</button>
+        </div>
+        <textarea style={{ width: '100%', minHeight: 160, fontFamily: 'var(--mono)', fontSize: 12 }}
+          placeholder={`Instruction markdown for ${selectedAgent.agent.name}. Org Sync preserves manual text while updating its marker-fenced block.`}
+          value={sgInstr} disabled={sgBusy} onChange={(e) => setSgInstr(e.target.value)} />
+        <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border, #2a2a2a)' }}>
+          <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <div><b className="small">Agent goals</b><span className="muted small"> · shared with Work, scoped to {selectedAgent.team}/{selectedAgent.agent.name}</span></div>
+            <button className="btn small" disabled={sgGoalBusy} onClick={beginNewAgentGoal}>＋ New goal</button>
+          </div>
+          <div className="chips" style={{ marginTop: 8 }}>
+            {sgGoals.length ? sgGoals.map((g) => (
+              <button key={g.id} className={`chip${sgGoalEditing === g.id ? ' on' : ''}`} disabled={sgGoalBusy} title={`${GOAL_PRIORITY_LABEL[goalPriority(g.priority)]} · ${g.status}${g.autopilot ? ' · autopilot' : ''} · updated ${ago(g.updatedAt)}`} onClick={() => void openAgentGoal(g.id)}>
+                {GOAL_PRIORITY_LABEL[goalPriority(g.priority)]}: {clipText(g.title, 42)}
+              </button>
+            )) : <span className="muted small">No saved goals for this agent yet.</span>}
+          </div>
+          {sgGoalEditing ? (
+            <div style={{ marginTop: 10, borderTop: '1px solid var(--border, #2a2a2a)', paddingTop: 10 }}>
+              <div className="kv" style={{ gridTemplateColumns: '70px 1fr 70px 140px', gap: 8, alignItems: 'center' }}>
+                <span className="muted small">title</span>
+                <input value={sgGoalTitle} disabled={sgGoalBusy} maxLength={200} placeholder="goal title" onChange={(e) => setSgGoalTitle(e.target.value)} />
+                <span className="muted small">status</span>
+                <select className="cell-select" value={sgGoalStatus} disabled={sgGoalBusy} onChange={(e) => setSgGoalStatus(e.target.value as GoalStatus)}>
+                  <option value="draft">draft</option><option value="active">active</option><option value="done">done</option><option value="archived">archived</option>
+                </select>
+                <span className="muted small">tier</span>
+                <select className="cell-select" value={sgGoalPriority} disabled={sgGoalBusy} onChange={(e) => setSgGoalPriority(e.target.value as GoalPriority)}>
+                  {GOAL_PRIORITIES.map((p) => <option key={p} value={p}>{GOAL_PRIORITY_LABEL[p]}</option>)}
+                </select>
+              </div>
+              <textarea style={{ width: '100%', minHeight: 120, marginTop: 8, fontFamily: 'var(--mono)', fontSize: 12 }} placeholder={`Goal markdown for ${selectedAgent.agent.name}.`}
+                value={sgGoalContent} disabled={sgGoalBusy} onChange={(e) => setSgGoalContent(e.target.value)} />
+              <div className="row-actions" style={{ marginTop: 8 }}>
+                {sgGoalDetail ? <span className="muted small">updated {ago(sgGoalDetail.updatedAt)}</span> : <span className="muted small">new goal</span>}
+                <span className="grow" />
+                {sgGoalDetail ? <button className="btn small danger" disabled={sgGoalBusy} onClick={() => void removeAgentGoal()}>Remove</button> : null}
+                <button className="btn small" disabled={sgGoalBusy} onClick={() => { setSgGoalEditing(null); setSgGoalDetail(null); }}>Cancel</button>
+                <button className="btn primary small" disabled={sgGoalBusy || !sgGoalDirty || !sgGoalContent.trim()} onClick={() => void saveAgentGoal()}>{sgGoalBusy ? 'Saving…' : 'Save goal'}</button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="view modules">
       <header className="view-head">
@@ -2091,8 +2212,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             </button>
           </div>
           <p className="muted small" style={{ marginTop: -2 }}>
-            Live top-down organization of every configured team, including offline or empty teams. Blue dotted arrows carry objectives from the fleet primary to team leads and then workers; green dashed arrows return completed work through the default validators for consolidation. Team headers summarize persisted relay policy. Select a team or agent to trace its separate green messaging path.
-            The reserved empty public-agent namespace is hidden until it has agents. Click an agent or team to inspect goals, instructions, roster, and routing context.
+            Live top-down organization of every configured team, including offline or empty teams. Blue dotted arrows carry objectives from the fleet primary to team leads and then workers; green dashed arrows return completed work through the default validators for consolidation. Team headers summarize persisted relay policy. Select a team or agent to trace its messaging path; record edits live under Manage &gt; Agents.
           </p>
           <TeamGraph
             groups={structureGroups}
@@ -2102,115 +2222,15 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             selectedKey={selectedKey}
             onSelect={onGraphSelect}
           />
-          {selectedAgent ? (
-            <div className="card" style={{ marginTop: 10, background: 'var(--bg-2)' }}>
-              <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <h4 style={{ margin: 0 }}>{selectedAgent.agent.name}{' '}
-                  <span className="muted small">· {selectedAgent.team} · {runtimeLabel(selectedAgent.agent.runtime ?? '')} · {selectedAgent.agent.status}</span>
-                </h4>
-                <span className="row-actions" style={{ gap: 6 }}>
-                  {(() => {
-                    const isLead = hier.coordinators[selectedAgent.team] === selectedAgent.agent.name;
-                    const leadLocked = selectedAgent.team === PRIMARY_TEAM && !isDefaultLead(selectedAgent.team, selectedAgent.agent.name);
-                    return (
-                      <button className={`star${isLead ? ' on' : ''}`} disabled={busy || isLead || leadLocked}
-                        title={leadLocked ? `${PRIMARY_TEAM} coordinator is locked to ${PRIMARY_TEAM}/${DEFAULT_LEAD}` : isLead ? `${selectedAgent.agent.name} is ${selectedAgent.team}'s lead (coordinator)` : `Open Manage > Hierarchy to set ${selectedAgent.agent.name} as ${selectedAgent.team}'s lead`}
-                        onClick={() => { setTab('route'); setRoutePane('hierarchy'); }}>{isLead ? '★ lead' : '☆ set in Manage'}</button>
-                    );
-                  })()}
-                  <select className="cell-select" disabled={busy || selectedAgentLocked || selectedAgent.reassignTargets.length === 0} value="" title={selectedAgentLocked ? 'Locked default leadership roles cannot be moved out of default' : 'Reassign to another team'}
-                    onChange={(e) => { const to = e.target.value; e.currentTarget.value = ''; if (to) void moveAgentToTeam(selectedAgent!.agent.id, selectedAgent!.agent.name, selectedAgent!.team, to); }}>
-                    <option value="">{selectedAgentLocked ? 'locked role' : selectedAgent.reassignTargets.length === 0 ? 'no other teams' : 'reassign to…'}</option>
-                    {selectedAgent.reassignTargets.map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                  <button className="btn small" disabled={busy} title="Edit this agent's team relay in Manage > Hierarchy" onClick={() => void openRelayForTeam(selectedAgent!.team)}>⇄ Routing</button>
-                  <button className="btn small" disabled={busy} onClick={() => void rebuildSelectedStructureAgent(selectedAgent!.agent, selectedAgent!.team)}>Rebuild</button>
-                </span>
-              </div>
-              <div className="muted small" style={{ margin: '8px 0 4px' }}>instruction markdown — persistent system-prompt addendum</div>
-              <div className="row-actions" style={{ gap: 8, marginBottom: 6, alignItems: 'center' }}>
-                <button className="btn small" disabled={sgBusy || !hrOwner} title={hrOwner ? `Ask ${hrOwner.team ?? activeTeam}/${hrOwner.name} to draft` : 'No active HR manager agent found'} onClick={() => void aiDraftSgInstr()}>✦ AI draft</button>
-                {sgInstr.trim() ? <button className="btn small" disabled={sgBusy} onClick={() => setSgInstr('')}>Clear</button> : null}
-                <span className="grow" />
-                {sgMsg ? <span className={`small ${/failed/.test(sgMsg) ? 'status-error' : 'ok-text'}`}>{sgMsg}</span> : null}
-                <button className="btn primary small" disabled={sgBusy || sgInstr === sgSaved} onClick={() => void saveSgInstr()}>{sgBusy ? '…' : 'Save & rebuild'}</button>
-              </div>
-              <textarea style={{ width: '100%', minHeight: 140, fontFamily: 'var(--mono)', fontSize: 12 }}
-                placeholder={`Instruction markdown for ${selectedAgent.agent.name}. Org Sync preserves manual text while updating its own marker-fenced block.`}
-                value={sgInstr} disabled={sgBusy} onChange={(e) => setSgInstr(e.target.value)} />
-              <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border, #2a2a2a)' }}>
-                <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                  <div>
-                    <b className="small">Agent goals</b>
-                    <span className="muted small"> · shared with Work, scoped to {selectedAgent.team}/{selectedAgent.agent.name}</span>
-                  </div>
-                  <button className="btn small" disabled={sgGoalBusy} onClick={beginNewAgentGoal}>＋ New goal</button>
-                </div>
-                <div className="chips" style={{ marginTop: 8 }}>
-                  {sgGoals.length ? sgGoals.map((g) => (
-                    <button key={g.id} className={`chip${sgGoalEditing === g.id ? ' on' : ''}`} disabled={sgGoalBusy} title={`${GOAL_PRIORITY_LABEL[goalPriority(g.priority)]} · ${g.status}${g.autopilot ? ' · autopilot' : ''} · updated ${ago(g.updatedAt)}`} onClick={() => void openAgentGoal(g.id)}>
-                      {GOAL_PRIORITY_LABEL[goalPriority(g.priority)]}: {clipText(g.title, 42)}
-                    </button>
-                  )) : <span className="muted small">No saved goals for this agent yet.</span>}
-                </div>
-                {sgGoalEditing ? (
-                  <div style={{ marginTop: 10, border: '1px solid var(--border, #2a2a2a)', borderRadius: 6, padding: '8px 10px' }}>
-                    <div className="kv" style={{ gridTemplateColumns: '70px 1fr 70px 140px', gap: 8, alignItems: 'center' }}>
-                      <span className="muted small">title</span>
-                      <input value={sgGoalTitle} disabled={sgGoalBusy} maxLength={200} placeholder="goal title" onChange={(e) => setSgGoalTitle(e.target.value)} />
-                      <span className="muted small">status</span>
-                      <select className="cell-select" value={sgGoalStatus} disabled={sgGoalBusy} onChange={(e) => setSgGoalStatus(e.target.value as GoalStatus)}>
-                        <option value="draft">draft</option>
-                        <option value="active">active</option>
-                        <option value="done">done</option>
-                        <option value="archived">archived</option>
-                      </select>
-                      <span className="muted small">tier</span>
-                      <select className="cell-select" value={sgGoalPriority} disabled={sgGoalBusy} onChange={(e) => setSgGoalPriority(e.target.value as GoalPriority)}>
-                        {GOAL_PRIORITIES.map((p) => <option key={p} value={p}>{GOAL_PRIORITY_LABEL[p]}</option>)}
-                      </select>
-                    </div>
-                    <textarea style={{ width: '100%', minHeight: 120, marginTop: 8, fontFamily: 'var(--mono)', fontSize: 12 }}
-                      placeholder={`Goal markdown for ${selectedAgent.agent.name}.`}
-                      value={sgGoalContent} disabled={sgGoalBusy} onChange={(e) => setSgGoalContent(e.target.value)} />
-                    <div className="row-actions" style={{ marginTop: 8 }}>
-                      {sgGoalDetail ? <span className="muted small">updated {ago(sgGoalDetail.updatedAt)}</span> : <span className="muted small">new goal</span>}
-                      <span className="grow" />
-                      {sgGoalDetail ? <button className="btn small danger" disabled={sgGoalBusy} onClick={() => void removeAgentGoal()}>Remove</button> : null}
-                      <button className="btn small" disabled={sgGoalBusy} onClick={() => { setSgGoalEditing(null); setSgGoalDetail(null); }}>Cancel</button>
-                      <button className="btn primary small" disabled={sgGoalBusy || !sgGoalDirty || !sgGoalContent.trim()} onClick={() => void saveAgentGoal()}>{sgGoalBusy ? 'Saving…' : 'Save goal'}</button>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
+          {selectedAgent || selectedTeamName ? (
+            <div className="row-actions" style={{ marginTop: 10, alignItems: 'center', gap: 8 }}>
+              <span className="muted small grow">
+                selected: <b>{selectedAgent ? `${selectedAgent.team}/${selectedAgent.agent.name}` : selectedTeamName}</b>
+                {' '}· Structure is read-only.
+              </span>
+              <button className="btn primary small" onClick={() => openAgentDirectory(selectedAgent?.team ?? selectedTeamName ?? activeTeam, selectedAgent?.agent.name)}>Manage selection</button>
             </div>
-          ) : selectedTeamName ? (
-            <div className="card" style={{ marginTop: 10, background: 'var(--bg-2)' }}>
-              <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                <h4 style={{ margin: 0 }}>{hier.primary?.team === selectedTeamName ? '⭑ ' : ''}{selectedTeamName} <span className="muted small">· {selectedTeamRunning}/{selectedTeamKnownTotal} running</span></h4>
-                <span className="row-actions" style={{ gap: 6 }}>
-                  <button className="btn small primary" onClick={() => setTab('build')}>✦ Build / add agents</button>
-                  <button className="btn small" title="Edit this team's relay in Manage > Hierarchy" onClick={() => void openRelayForTeam(selectedTeamName)}>⇄ Routing</button>
-                  <button className="btn small" title="Start / stop this team in Manage > Team ops" onClick={() => { setTab('route'); setRoutePane('operations'); }}>⏻ Start / stop</button>
-                </span>
-              </div>
-              <div className="kv" style={{ gridTemplateColumns: '120px 1fr', gap: '4px 12px', marginTop: 8 }}>
-                <span className="muted small">coordinator</span>
-                <span className={selectedTeamLead && !selectedTeamAgents.some((a) => a.name === selectedTeamLead && isRunnableAgent(a)) ? 'warn-text small' : 'small'}>
-                  {selectedTeamLead || '—'}{selectedTeamLead && !selectedTeamAgents.some((a) => a.name === selectedTeamLead && isRunnableAgent(a)) ? ' · not running' : ''}
-                </span>
-                <span className="muted small">validator path</span>
-                <span className="small">{selectedTeamSecondaries.length ? selectedTeamSecondaries.map((s) => `${s.team}/${s.agent}`).join(', ') : selectedTeamName === PRIMARY_TEAM ? DEFAULT_VALIDATORS.map((a) => `${PRIMARY_TEAM}/${a}`).join(', ') : 'default validators by org sync'}</span>
-                <span className="muted small">roster</span>
-                <span className="small">
-                  {selectedTeamAgents.length ? selectedTeamAgents.slice().sort((a, b) => a.name.localeCompare(b.name)).map((a) => `${a.name} (${a.status || 'unknown'})`).join(', ') : 'No live roster rows yet; team config is still visible.'}
-                </span>
-              </div>
-              <p className="muted small" style={{ marginTop: 8 }}>Click an agent in the graph to edit its goal records and instruction markdown without switching the active team.</p>
-            </div>
-          ) : (
-            <p className="muted small" style={{ marginTop: 8 }}>Select an agent or team in the graph to manage it.</p>
-          )}
+          ) : <p className="muted small" style={{ marginTop: 8 }}>Select a team or agent to trace it.</p>}
         </section>
       ) : null}
 
@@ -2220,19 +2240,97 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
 
       {tab === 'route' ? (
         <div className="tabs" style={{ marginTop: -4 }}>
-          {([['operations', 'Team ops'], ['overview', 'Overview'], ['hierarchy', 'Hierarchy']] as const).map(([k, lbl]) => (
+          {([['overview', 'Overview'], ['agents', 'Agents'], ['operations', 'Team ops'], ['hierarchy', 'Hierarchy']] as const).map(([k, lbl]) => (
             <button key={k} className={`tab${routePane === k ? ' active' : ''}`} onClick={() => setRoutePane(k)}>{lbl}</button>
           ))}
         </div>
+      ) : null}
+
+      {tab === 'route' && routePane === 'agents' ? (
+      <section className="card">
+        <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div>
+            <h3 style={{ margin: 0 }}>Teams &amp; agents</h3>
+            <p className="muted small" style={{ margin: '4px 0 0' }}>Inspect a team, then edit one agent's instructions, goals, team assignment, or lifecycle.</p>
+          </div>
+          <span className="row-actions" style={{ gap: 6, flexWrap: 'wrap' }}>
+            <select className="cell-select" value={managedTeamName} disabled={busy} aria-label="Managed team"
+              onChange={(e) => setSelectedKey(`team:${e.target.value}`)}>
+              {allKnownTeamNames.map((team) => <option key={team} value={team}>{team}</option>)}
+            </select>
+            <button className="btn small" onClick={() => setTab('build')}>＋ Add agents</button>
+            <button className="btn small" onClick={() => setMaintFrom(managedTeamName === PRIMARY_TEAM ? '' : managedTeamName)}>Merge / rename</button>
+            <button className="btn small" onClick={() => setRoutePane('hierarchy')}>Hierarchy</button>
+          </span>
+        </div>
+        <div className="kv" style={{ gridTemplateColumns: '110px 1fr 90px 1fr', gap: '5px 12px', marginTop: 12, padding: '10px 0', borderTop: '1px solid var(--border, #2a2a2a)', borderBottom: '1px solid var(--border, #2a2a2a)' }}>
+          <span className="muted small">team</span><b className="small">{hier.primary?.team === managedTeamName ? '★ ' : ''}{managedTeamName}</b>
+          <span className="muted small">running</span><span className="small">{managedTeamRunning}/{managedTeamKnownTotal}</span>
+          <span className="muted small">coordinator</span><span className="small">{managedTeamLead || '—'}</span>
+          <span className="muted small">validators</span><span className="small">{managedTeamSecondaries.length ? managedTeamSecondaries.map((s) => `${s.team}/${s.agent}`).join(', ') : managedTeamName === PRIMARY_TEAM ? DEFAULT_VALIDATORS.map((a) => `${PRIMARY_TEAM}/${a}`).join(', ') : 'default validators by org sync'}</span>
+        </div>
+        <div className="hr-agent-directory" style={{ marginTop: 12 }}>
+          <div className="hr-agent-roster">
+            <div className="muted small" style={{ marginBottom: 6 }}>ROSTER · {managedTeamAgents.length}</div>
+            {managedTeamAgents.length ? agentsLeadFirst(managedTeamAgents, managedTeamLead).map((agent) => {
+              const selected = selectedAgent?.team === managedTeamName && selectedAgent.agent.name === agent.name;
+              return (
+                <button key={agent.id} className={`hr-agent-row${selected ? ' selected' : ''}`} onClick={() => setSelectedKey(`agent:${managedTeamName}:${agent.name}`)}>
+                  <span className={isRunnableAgent(agent) ? 'ok-text' : 'muted'}>●</span>
+                  <span className="grow" style={{ minWidth: 0, textAlign: 'left' }}>
+                    <b className="small">{managedTeamLead === agent.name ? '★ ' : ''}{agent.name}</b>
+                    <span className="muted small" style={{ display: 'block' }}>{runtimeLabel(agent.runtime ?? '')} · {agent.status || 'unknown'}</span>
+                  </span>
+                </button>
+              );
+            }) : <p className="muted small">No agent records in this team.</p>}
+          </div>
+          <div className="hr-agent-editor">
+            {selectedAgent ? <ManagedAgentEditor /> : (
+              <div className="muted small" style={{ padding: '14px 4px' }}>Select an agent from the roster to edit its instructions, goals, assignment, or lifecycle.</div>
+            )}
+          </div>
+        </div>
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border, #2a2a2a)' }}>
+          <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <div><b className="small">Team maintenance</b><span className="muted small"> · guarded rename or merge</span></div>
+            {maintMsg ? <span className={`small ${/failed|blocked/.test(maintMsg) ? 'status-error' : 'ok-text'}`}>{maintMsg}</span> : null}
+          </div>
+          <div className="row-actions" style={{ justifyContent: 'flex-start', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            <select className="cell-select" disabled={maintBusy} value={maintMode} onChange={(e) => { setMaintMode(e.target.value as 'rename' | 'merge'); setMaintTo(''); }}>
+              <option value="rename">Rename team</option><option value="merge">Merge into team</option>
+            </select>
+            <select className="cell-select" disabled={maintBusy} value={maintFrom} onChange={(e) => { const next = e.target.value; setMaintFrom(next); if (next && canonicalTeamName(maintTo) === next) setMaintTo(''); }}>
+              <option value="">source team…</option>
+              {allKnownTeamNames.filter((t) => t !== PRIMARY_TEAM).map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <span className="muted small">→</span>
+            {maintMode === 'rename' ? (
+              <input value={maintTo} disabled={maintBusy} placeholder="new-team-name" onChange={(e) => setMaintTo(e.target.value)} onBlur={() => setMaintTo(canonicalTeamName(maintTo))} />
+            ) : (
+              <select className="cell-select" disabled={maintBusy} value={maintTo} onChange={(e) => setMaintTo(e.target.value)}>
+                <option value="">target team…</option>
+                {allKnownTeamNames.filter((t) => t !== maintFrom).map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            )}
+            <label className="muted small" title="Remove the source after all agents move and the team is verified empty.">
+              <input type="checkbox" checked={maintDeleteSource} disabled={maintBusy} onChange={(e) => setMaintDeleteSource(e.target.checked)} /> delete empty source
+            </label>
+            <span className="grow" />
+            <button className="btn primary" disabled={maintBusy || !maintCanRun} onClick={() => void runTeamMaintenance()}>{maintBusy ? 'Working…' : maintMode === 'rename' ? 'Rename' : 'Merge'}</button>
+          </div>
+          <div className="muted small" style={{ marginTop: 8 }}>{maintSummary}{maintWarnings.length ? <span className="warn-text"> {maintWarnings.join(' · ')}</span> : null}</div>
+        </div>
+      </section>
       ) : null}
 
       {tab === 'route' && routePane === 'operations' ? (
       <section className="card">
         <div className="row-actions" style={{ alignItems: 'baseline', marginBottom: 4 }}>
           <h3 style={{ margin: 0 }}>Team management</h3>
-          <span className="muted small">· lifecycle only. Edit selected-agent instructions in Structure; set leads and org sync in Hierarchy.</span>
+          <span className="muted small">· lifecycle and guarded team maintenance only. Edit agent records in Agents; set coordinators in Hierarchy.</span>
           <span className="grow" />
-          <button className="btn small" disabled={busy} title="Open the live structure graph to select an agent and edit its instruction addendum" onClick={() => setTab('structure')}>Structure</button>
+          <button className="btn small" disabled={busy} title="Open team rosters and agent records" onClick={() => setRoutePane('agents')}>Agents</button>
           <button className="btn small" disabled={busy} title="Open hierarchy and org sync" onClick={() => setRoutePane('hierarchy')}>Hierarchy</button>
         </div>
         <div className="row-actions" style={{ gap: 6, margin: '8px 0 10px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2314,56 +2412,14 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             onMessage={setMsg}
             onDone={(createdTeam) => { if (createdTeam) void store.setTeam(createdTeam); store.refresh(); }}
           />
-          <section className="card" style={{ marginTop: 12 }}>
-            <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <h3 style={{ margin: 0 }}>Team maintenance</h3>
-              {maintMsg ? <span className={`small ${/failed|blocked/.test(maintMsg) ? 'status-error' : 'ok-text'}`}>{maintMsg}</span> : null}
-            </div>
-            <div className="row-actions" style={{ justifyContent: 'flex-start', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <select className="cell-select" disabled={maintBusy} value={maintMode} onChange={(e) => { setMaintMode(e.target.value as 'rename' | 'merge'); setMaintTo(''); }}>
-                <option value="rename">Rename team</option>
-                <option value="merge">Merge into team</option>
-              </select>
-              <select className="cell-select" disabled={maintBusy} value={maintFrom} onChange={(e) => {
-                const next = e.target.value;
-                setMaintFrom(next);
-                if (next && canonicalTeamName(maintTo) === next) setMaintTo('');
-              }}>
-                <option value="">source team…</option>
-                {allKnownTeamNames.filter((t) => t !== PRIMARY_TEAM).map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
-              <span className="muted small">→</span>
-              {maintMode === 'rename' ? (
-                <input value={maintTo} disabled={maintBusy} placeholder="new-team-name" onChange={(e) => setMaintTo(e.target.value)} onBlur={() => setMaintTo(canonicalTeamName(maintTo))} />
-              ) : (
-                <select className="cell-select" disabled={maintBusy} value={maintTo} onChange={(e) => setMaintTo(e.target.value)}>
-                  <option value="">target team…</option>
-                  {allKnownTeamNames.filter((t) => t !== maintFrom).map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
-              )}
-              <label className="muted small" title="After all agents move, remove the source team if it is empty.">
-                <input type="checkbox" checked={maintDeleteSource} disabled={maintBusy} onChange={(e) => setMaintDeleteSource(e.target.checked)} /> delete empty source
-              </label>
-              <span className="grow" />
-              <button className="btn primary" disabled={maintBusy || !maintCanRun} onClick={() => void runTeamMaintenance()}>
-                {maintBusy ? 'Working…' : maintMode === 'rename' ? 'Rename' : 'Merge'}
-              </button>
-            </div>
-            <div className="row-actions" style={{ marginTop: 8, justifyContent: 'flex-start', alignItems: 'center' }}>
-              <span className="muted small grow">
-                {maintSummary}
-                {maintWarnings.length ? <span className="warn-text"> {maintWarnings.join(' · ')}</span> : null}
-              </span>
-            </div>
-          </section>
         </>
       ) : null}
 
       {tab === 'route' && routePane === 'overview' ? (
       <section className="card">
-        <h3>Routing overview <span className="muted small">· every team's outbound relay, at a glance</span></h3>
+        <h3>Team overview <span className="muted small">· ownership, relay, and roster status at a glance</span></h3>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Who each team may delegate work to (via <span className="mono">/ask &lt;team&gt;/&lt;agent&gt;</span>). <b>Edit</b> opens Hierarchy for that team.
+          Review who each team may delegate to. <b>Manage</b> opens its roster and agent records; coordinator changes stay in Hierarchy.
         </p>
         <table className="grid">
           <thead>
@@ -2386,7 +2442,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
                     <td className={`small ${cls}`}>{describeRelay(row.delegates)}</td>
                     <td className="muted small">{ags.length}</td>
                     <td>
-                      <button className="btn small" disabled={busy} title={`Edit ${row.team}'s relay policy`} onClick={() => void openRelayForTeam(row.team)}>Edit</button>
+                      <button className="btn small" disabled={busy} title={`Manage ${row.team}'s roster and agent records`} onClick={() => openAgentDirectory(row.team)}>Manage</button>
                     </td>
                   </tr>
                 );
