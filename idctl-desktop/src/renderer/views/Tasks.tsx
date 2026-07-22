@@ -1516,6 +1516,12 @@ function TasksPanel({ store }: { store: FleetStore }) {
             const delegated = owned && isDelegatedLeadTask(t);
             const workflowBlocked = t.workflowState === 'blocked' || t.workflowState === 'stalled' || t.workflowState === 'failed';
             const stale = t.workflowState === 'stalled' || (owned && !blocked && !delegated && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS);
+            const retryAtRaw = Number(t.blockedDetail?.retry_at || 0);
+            const retryAtMs = retryAtRaw > 0 && retryAtRaw < 1e12 ? retryAtRaw * 1000 : retryAtRaw;
+            const recoveryRetryScheduled = stale
+              && t.blockedDetail?.reason === 'supervision_dispatch_failed'
+              && retryAtMs > nowMs;
+            const recoveryRetryIn = recoveryRetryScheduled ? Math.max(1, Math.ceil((retryAtMs - nowMs) / 60000)) : 0;
             const needsAssignment = !workflowBlocked && t.workflowState !== 'triage_required' && phase === 'todo' && !t.ownerName && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS;
             const working = owned && !delegated && !stale && !blocked; // recently moved to doing → plausibly active
             const cAbs = absTime(t.createdAt);
@@ -1541,7 +1547,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
             >
               <div className="task-card-title b" title={t.title}>{t.title}</div>
               <div className="muted small mono">{t.shortId ?? ref(t)}{isRoutine(t) ? ' · routine' : ''}{store.viewAll && t.teamName ? ` · ${t.teamName}` : ''}{(() => { const n = blocksCount(t); return n ? ` · blocks ${n}` : ''; })()}</div>
-              {t.workflowState ? <div className={`small ${workflowBlocked ? 'warn-text' : 'muted'}`} title={String(t.blockedDetail?.reason || t.validationDetail?.verdict || '')}>workflow · {t.workflowState.replace(/_/g, ' ')}</div> : null}
+              {t.workflowState ? <div className={`small ${workflowBlocked ? 'warn-text' : 'muted'}`} title={String(t.blockedDetail?.reason || t.validationDetail?.verdict || '')}>workflow · {t.workflowState.replace(/_/g, ' ')}{recoveryRetryScheduled ? ` · retry in ${recoveryRetryIn}m` : ''}</div> : null}
               {(() => {
                 const u = taskUsage[ref(t)];
                 if (!u || !u.tokens) return null;
@@ -1589,6 +1595,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     <span className="idctl-pulse" style={{ width: 7, height: 7, borderRadius: '50%', background: '#3ccb78', display: 'inline-block' }} />
                     {t.ownerName} · working
                   </span>
+                ) : recoveryRetryScheduled ? (
+                  <span className="small" title={`The manager could not open a recovery query for ${t.ownerName}. A bounded retry is scheduled for ${new Date(retryAtMs).toLocaleTimeString()}.`}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
+                    ⏳ {t.ownerName} · recovery retry in {recoveryRetryIn}m
+                  </span>
                 ) : stale ? (
                   <span className="small" title={`${t.ownerName} has held this in Doing for ${agoAt(t.updatedAt, nowMs)} with no status change — it may be stalled. Hit ↻ to ask the manager to jump-start it, or drag it back to To Do.`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
@@ -1626,7 +1637,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     ⇢ {activeChildren.length ? `${activeChildren.length} active / ` : ''}{childRefs.length} delegated
                   </span>
                 ) : null}
-                {stale ? <span style={{ color: '#e0a33c' }} title={uAbs ? `no status change since ${uAbs} — may be stalled` : undefined}>⏳ no update {agoAt(t.updatedAt, nowMs)}</span> : null}
+                {recoveryRetryScheduled
+                  ? <span style={{ color: '#e0a33c' }} title={`Recovery dispatch retry scheduled for ${new Date(retryAtMs).toLocaleString()}`}>⏳ retry scheduled</span>
+                  : stale ? <span style={{ color: '#e0a33c' }} title={uAbs ? `no status change since ${uAbs} — may be stalled` : undefined}>⏳ no update {agoAt(t.updatedAt, nowMs)}</span> : null}
                 {phase === 'done' && (t.completedAt || t.updatedAt) ? <span title={dAbs ? `completed ${dAbs}` : undefined}>✓ done {agoAt(t.completedAt ?? t.updatedAt, nowMs)} ago</span> : null}
                 {needsAssignment ? <span style={{ color: '#e0a33c' }} title={uAbs ? `waiting for assignment since ${uAbs}` : undefined}>◴ needs assignment {agoAt(t.updatedAt, nowMs)}</span> : null}
                 {phase === 'todo' && t.ownerName ? <span title="assigned but not started yet">◴ queued</span> : null}

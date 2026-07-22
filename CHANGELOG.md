@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.677] — 2026-07-22
+### What changed
+- Work: show bounded stalled-recovery retries and their scheduled retry time
+
 ## [0.1.676] — 2026-07-22
 ### What changed
 - Recover fresh manager installation and preserve configured fleet state.
