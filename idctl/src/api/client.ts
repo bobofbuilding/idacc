@@ -1253,7 +1253,7 @@ export class ManagerClient {
    *  still has agents (400 with a count); remove its agents first. */
   async deleteTeam(name: string, signal?: AbortSignal): Promise<{ success: boolean; name: string; message: string }> {
     return this.requireRoute('Delete a team', () =>
-      this.del(`/teams/${encodeURIComponent(name)}`, signal));
+      this.del(`/teams/${encodeURIComponent(name)}?confirm=${encodeURIComponent(name)}`, signal));
   }
 
   /**

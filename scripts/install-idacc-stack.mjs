@@ -299,7 +299,15 @@ function escapeXml(value) {
     .replaceAll("'", '&apos;');
 }
 
-export function renderLaunchAgent({ managerDir, managerPort, logDir, home, path, nodePath = process.execPath }) {
+export function renderLaunchAgent({
+  managerDir,
+  managerPort,
+  logDir,
+  home,
+  path,
+  sqlitePath = join(home, '.id-agents', 'id-agents.db'),
+  nodePath = process.execPath,
+}) {
   const values = {
     nodePath,
     entry: join(managerDir, 'dist', 'start-agent-manager.js'),
@@ -310,6 +318,7 @@ export function renderLaunchAgent({ managerDir, managerPort, logDir, home, path,
     stderr: join(logDir, 'id-agents-manager-error.log'),
     home,
     path,
+    sqlitePath,
   };
   for (const key of Object.keys(values)) values[key] = escapeXml(values[key]);
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -329,6 +338,7 @@ export function renderLaunchAgent({ managerDir, managerPort, logDir, home, path,
     <key>PATH</key><string>${values.path}</string>
     <key>AGENT_MANAGER_PORT</key><string>${values.managerPort}</string>
     <key>AGENT_MANAGER_WORKDIR</key><string>${values.workDir}</string>
+    <key>SQLITE_PATH</key><string>${values.sqlitePath}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -348,6 +358,7 @@ export function renderManagerUpdateLaunchAgent({
   logDir,
   home,
   path,
+  sqlitePath = join(home, '.id-agents', 'id-agents.db'),
   nodePath = process.execPath,
 }) {
   const values = {
@@ -363,6 +374,7 @@ export function renderManagerUpdateLaunchAgent({
     stderr: join(logDir, 'id-agents-manager-update-error.log'),
     home,
     path,
+    sqlitePath,
   };
   for (const key of Object.keys(values)) values[key] = escapeXml(values[key]);
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -386,6 +398,7 @@ export function renderManagerUpdateLaunchAgent({
   <dict>
     <key>HOME</key><string>${values.home}</string>
     <key>PATH</key><string>${values.path}</string>
+    <key>SQLITE_PATH</key><string>${values.sqlitePath}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>1800</integer>
@@ -396,6 +409,29 @@ export function renderManagerUpdateLaunchAgent({
 </dict>
 </plist>
 `;
+}
+
+function decodeXml(value) {
+  return String(value)
+    .replaceAll('&apos;', "'")
+    .replaceAll('&quot;', '"')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&amp;', '&');
+}
+
+function plistEnvironmentValue(body, key) {
+  const escaped = String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = body.match(new RegExp(`<key>\\s*${escaped}\\s*<\\/key>\\s*<string>([^<]*)<\\/string>`));
+  return match ? decodeXml(match[1].trim()) : '';
+}
+
+export function effectiveSqlitePathFromPlist(body, fallbackHome) {
+  if (plistEnvironmentValue(body, 'DATABASE_URL')) return null;
+  const configured = plistEnvironmentValue(body, 'SQLITE_PATH');
+  if (configured) return resolve(configured);
+  const serviceHome = plistEnvironmentValue(body, 'HOME') || fallbackHome;
+  return resolve(serviceHome, '.id-agents', 'id-agents.db');
 }
 
 async function managerHealthy(managerUrl) {
@@ -436,6 +472,20 @@ async function installManagerService(opts) {
   const service = `${domain}/${SERVICE_LABEL}`;
   const loaded = tryRun('launchctl', ['print', service]).ok;
   const managerEntry = join(opts.managerDir, 'dist', 'start-agent-manager.js');
+  const canonicalSqlitePath = join(home, '.id-agents', 'id-agents.db');
+  let sqlitePath = canonicalSqlitePath;
+
+  if (existsSync(plist)) {
+    const existingBody = readFileSync(plist, 'utf8');
+    const existingSqlitePath = effectiveSqlitePathFromPlist(existingBody, home);
+    if (existingSqlitePath === null) {
+      throw new Error(
+        `${SERVICE_LABEL} is configured with DATABASE_URL. Refusing to replace its state backend with SQLite. ` +
+        `Preserve that service configuration or migrate its data explicitly.`
+      );
+    }
+    sqlitePath = existingSqlitePath;
+  }
 
   if (loaded && existsSync(plist) && !readFileSync(plist, 'utf8').includes(escapeXml(managerEntry))) {
     throw new Error(
@@ -467,6 +517,7 @@ async function installManagerService(opts) {
     logDir: opts.projectDir,
     home,
     path: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+    sqlitePath,
     nodePath: nodeProbe.stdout,
   });
   if (loaded) {
@@ -482,6 +533,7 @@ async function installManagerService(opts) {
     home,
     launchAgentsDir,
     nodePath: nodeProbe.stdout,
+    sqlitePath,
   });
 }
 
@@ -508,6 +560,7 @@ async function installManagerUpdateService(opts, context) {
     home: context.home,
     path: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
     nodePath: context.nodePath,
+    sqlitePath: context.sqlitePath,
   });
   if (loaded) {
     const stopped = tryRun('launchctl', ['bootout', service]);

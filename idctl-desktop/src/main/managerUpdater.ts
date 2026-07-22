@@ -19,6 +19,8 @@ export type ManagerUpdaterConfig = {
   branch: string;
   state: string;
   lock: string;
+  sqlitePath?: string;
+  serviceConfigured: boolean;
 };
 
 type UpdaterResult = {
@@ -29,6 +31,9 @@ type UpdaterResult = {
   currentCommit?: string;
   activeQueries?: number;
   reason?: string;
+  databasePath?: string;
+  backupPath?: string;
+  missingTeams?: { name: string; agentCount: number }[];
 };
 
 function parseSemver(value: string | undefined): [number, number, number] | null {
@@ -67,6 +72,9 @@ export type ManagerUpdateStatus = {
   lastChecked?: number;
   detail?: string;
   error?: string;
+  databasePath?: string;
+  backupPath?: string;
+  missingTeams?: { name: string; agentCount: number }[];
 };
 
 let activeUpdate: Promise<ManagerUpdateStatus> | null = null;
@@ -125,7 +133,12 @@ function valueAfter(args: string[], flag: string, fallback: string): string {
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 }
 
-export function parseManagerUpdaterArguments(args: unknown, home = homedir()): ManagerUpdaterConfig {
+export function parseManagerUpdaterArguments(
+  args: unknown,
+  home = homedir(),
+  environment: Record<string, unknown> = {},
+  serviceConfigured = true,
+): ManagerUpdaterConfig {
   if (!Array.isArray(args) || args.length < 2 || args.some((value) => typeof value !== 'string')) {
     throw new Error('Manager updater service has invalid ProgramArguments');
   }
@@ -141,6 +154,10 @@ export function parseManagerUpdaterArguments(args: unknown, home = homedir()): M
     branch: valueAfter(values, '--branch', 'main'),
     state: resolve(valueAfter(values, '--state', join(home, '.id-agents', 'manager-update.json'))),
     lock: resolve(valueAfter(values, '--lock', join(home, '.id-agents', 'manager-update.lock'))),
+    sqlitePath: typeof environment.SQLITE_PATH === 'string' && environment.SQLITE_PATH.trim()
+      ? resolve(environment.SQLITE_PATH)
+      : resolve(join(home, '.id-agents', 'id-agents.db')),
+    serviceConfigured,
   };
 }
 
@@ -175,7 +192,19 @@ function discoverConfig(): ManagerUpdaterConfig {
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    return parseManagerUpdaterArguments(JSON.parse(output), home);
+    let environment: Record<string, unknown> = {};
+    try {
+      const environmentOutput = execFileSync('/usr/bin/plutil', ['-extract', 'EnvironmentVariables', 'json', '-o', '-', plist], {
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const parsed = JSON.parse(environmentOutput);
+      if (parsed && typeof parsed === 'object') environment = parsed;
+    } catch {
+      // Legacy updater plists did not declare an explicit state-store path.
+    }
+    return parseManagerUpdaterArguments(JSON.parse(output), home, environment, true);
   }
 
   const target = resolve(home, 'Projects', 'idacc-stack', 'id-agents');
@@ -191,7 +220,7 @@ function discoverConfig(): ManagerUpdaterConfig {
     '--branch', 'main',
     '--state', join(home, '.id-agents', 'manager-update.json'),
     '--lock', join(home, '.id-agents', 'manager-update.lock'),
-  ], home);
+  ], home, {}, false);
 }
 
 function validateConfig(config: ManagerUpdaterConfig): void {
@@ -214,16 +243,24 @@ function installedStatus(config: ManagerUpdaterConfig): ManagerUpdateStatus {
   const installedVersion = typeof packageJson.version === 'string' ? packageJson.version : undefined;
   const publishedVersion = typeof state.version === 'string' ? state.version : undefined;
   return {
-    configured: true,
+    configured: config.serviceConfigured,
+    bootstrapAvailable: !config.serviceConfigured ? managerBootstrapAvailable() : undefined,
     busy: !!activeUpdate,
     installedVersion,
     latestVersion: effectiveManagerLatestVersion(installedVersion, publishedVersion),
-    status,
+    status: config.serviceConfigured ? status : 'installation-required',
     pendingActivation: status === 'restart-pending',
     activeQueries: Number.isFinite(Number(state.activeQueries)) ? Number(state.activeQueries) : undefined,
     checkout: config.target,
     source: config.source,
     detail: typeof state.reason === 'string' ? state.reason : undefined,
+    databasePath: typeof state.databasePath === 'string' ? state.databasePath : config.sqlitePath,
+    backupPath: typeof state.backupPath === 'string' ? state.backupPath : undefined,
+    missingTeams: Array.isArray(state.missingTeams)
+      ? state.missingTeams.filter((team): team is { name: string; agentCount: number } => (
+        !!team && typeof team === 'object' && typeof (team as { name?: unknown }).name === 'string'
+      )).map((team) => ({ name: team.name, agentCount: Number(team.agentCount || 0) }))
+      : undefined,
   };
 }
 
@@ -276,6 +313,13 @@ function updaterArgs(config: ManagerUpdaterConfig, dryRun: boolean): string[] {
   return args;
 }
 
+export function managerUpdaterInvocation(config: ManagerUpdaterConfig, dryRun: boolean): { command: string; args: string[] } {
+  const args = updaterArgs(config, dryRun);
+  return config.nodePath === '/usr/bin/env'
+    ? { command: config.nodePath, args: ['node', ...args] }
+    : { command: config.nodePath, args };
+}
+
 function statusFromResult(config: ManagerUpdaterConfig, result: UpdaterResult, checkedAt: number): ManagerUpdateStatus {
   const current = installedStatus(config);
   const status = result.status || current.status;
@@ -296,11 +340,19 @@ function statusFromResult(config: ManagerUpdaterConfig, result: UpdaterResult, c
 
 function runUpdater(config: ManagerUpdaterConfig, dryRun: boolean): Promise<ManagerUpdateStatus> {
   validateConfig(config);
+  if (!config.serviceConfigured) {
+    return Promise.reject(new Error('The manager checkout exists, but its managed services are not installed. Install the current manager first.'));
+  }
   const checkedAt = Date.now();
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(config.nodePath, updaterArgs(config, dryRun), {
+    const invocation = managerUpdaterInvocation(config, dryRun);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: config.target,
-      env: process.env,
+      env: {
+        ...process.env,
+        PATH: cliPath(process.env.HOME || homedir()),
+        ...(config.sqlitePath ? { SQLITE_PATH: config.sqlitePath } : {}),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -319,6 +371,11 @@ function runUpdater(config: ManagerUpdaterConfig, dryRun: boolean): Promise<Mana
       clearTimeout(timeout);
       if (code !== 0) {
         const detail = (stderr || stdout).trim().split(/\r?\n/).slice(-8).join('\n');
+        const current = installedStatus(config);
+        if (current.status === 'state-mismatch') {
+          resolvePromise({ ...current, busy: false, error: detail || 'Manager state verification failed after update.' });
+          return;
+        }
         rejectPromise(new Error(detail || `Manager updater exited with status ${code}`));
         return;
       }

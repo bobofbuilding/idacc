@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.676] — 2026-07-22
+### What changed
+- Recover fresh manager installation and preserve configured fleet state.
+- Pin manager services and the updater to one database path, surface recovery backups and missing-team diagnostics, and invoke the updater through Node on restrictive fresh installs.
+- Make HR team administration safer with confirmed deletion, opt-in source-team cleanup, a larger instruction editor, and simpler default-team relay controls.
+
 ## [0.1.675] — 2026-07-22
 ### What changed
 - Rework HR Manage into Overview, Agents, Team ops, and Hierarchy surfaces; move instruction and goal editing into guarded team and agent administration.

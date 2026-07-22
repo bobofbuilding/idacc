@@ -9,6 +9,7 @@ import {
   mergeManagerConfig,
   parseArgs,
   persistManagerConfig,
+  effectiveSqlitePathFromPlist,
   renderLaunchAgent,
 } from './install-idacc-stack.mjs';
 
@@ -63,5 +64,16 @@ assert.match(plist, /io\.bittrees\.idagents-manager/);
 assert.match(plist, /ID &amp; Agents/);
 assert.match(plist, /<key>KeepAlive<\/key><true\/>/);
 assert.match(plist, /<key>AGENT_MANAGER_PORT<\/key><string>4100<\/string>/);
+assert.match(plist, /<key>SQLITE_PATH<\/key><string>\/Users\/test\/\.id-agents\/id-agents\.db<\/string>/);
+assert.equal(effectiveSqlitePathFromPlist(plist, '/unused'), '/Users/test/.id-agents/id-agents.db');
+
+const legacyPlist = plist.replace(/\s*<key>SQLITE_PATH<\/key><string>[^<]+<\/string>/, '');
+assert.equal(effectiveSqlitePathFromPlist(legacyPlist, '/unused'), '/Users/test/.id-agents/id-agents.db');
+
+const postgresPlist = plist.replace(
+  '<key>SQLITE_PATH</key>',
+  '<key>DATABASE_URL</key><string>postgres://example</string><key>SQLITE_PATH</key>',
+);
+assert.equal(effectiveSqlitePathFromPlist(postgresPlist, '/unused'), null);
 
 console.log('install-idacc-stack smoke passed');

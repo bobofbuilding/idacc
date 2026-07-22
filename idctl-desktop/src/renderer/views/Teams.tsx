@@ -1875,7 +1875,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   const [maintMode, setMaintMode] = useState<'rename' | 'merge'>('rename');
   const [maintFrom, setMaintFrom] = useState('');
   const [maintTo, setMaintTo] = useState('');
-  const [maintDeleteSource, setMaintDeleteSource] = useState(true);
+  const [maintDeleteSource, setMaintDeleteSource] = useState(false);
   const [maintBusy, setMaintBusy] = useState(false);
   const [maintMsg, setMaintMsg] = useState('');
   const maintTarget = canonicalTeamName(maintTo);
@@ -1975,7 +1975,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       await call('org:setSecondaryLeads', nextSecondaries).catch(() => {});
       if (maintDeleteSource) {
         const remaining = agentsForTeam(await freshHrGroups(), source);
-        if (!remaining.length) await call('team:delete', source).catch(() => {});
+        if (!remaining.length) await call('team:delete', source);
       }
       await Promise.all([loadHier(), loadOrg()]);
       await call('org:sync', { autoRebuild: false }).catch(() => {});
@@ -2131,7 +2131,9 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
               <option value="">{selectedAgentLocked ? 'locked role' : selectedAgent.reassignTargets.length === 0 ? 'no other teams' : 'move to team…'}</option>
               {selectedAgent.reassignTargets.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
-            <button className="btn small" disabled={busy} title="Edit this team's outbound relay policy" onClick={() => void openRelayForTeam(selectedAgent.team)}>⇄ Routing</button>
+            {selectedAgent.team !== PRIMARY_TEAM ? (
+              <button className="btn small" disabled={busy} title="Edit this team's outbound relay policy" onClick={() => void openRelayForTeam(selectedAgent.team)}>⇄ Routing</button>
+            ) : null}
             <button className="btn small" disabled={busy} onClick={() => void rebuildSelectedStructureAgent(selectedAgent.agent, selectedAgent.team)}>Rebuild</button>
             <button className="btn small danger" disabled={busy || selectedAgentLocked} title={selectedAgentLocked ? 'The default leadership backbone cannot be deleted' : `Delete ${selectedAgent.team}/${selectedAgent.agent.name}`}
               onClick={() => void removeManagedAgent(selectedAgent.agent, selectedAgent.team)}>Delete</button>
@@ -2145,7 +2147,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           {sgMsg ? <span className={`small ${/failed|blocked/.test(sgMsg) ? 'status-error' : 'ok-text'}`}>{sgMsg}</span> : null}
           <button className="btn primary small" disabled={sgBusy || sgInstr === sgSaved} onClick={() => void saveSgInstr()}>{sgBusy ? '…' : 'Save & rebuild'}</button>
         </div>
-        <textarea style={{ width: '100%', minHeight: 160, fontFamily: 'var(--mono)', fontSize: 12 }}
+        <textarea className="hr-agent-instructions"
           placeholder={`Instruction markdown for ${selectedAgent.agent.name}. Org Sync preserves manual text while updating its marker-fenced block.`}
           value={sgInstr} disabled={sgBusy} onChange={(e) => setSgInstr(e.target.value)} />
         <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border, #2a2a2a)' }}>
@@ -2524,7 +2526,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           </p>
         ) : null}
 
-        <RelayPolicySection />
+        {activeTeam !== PRIMARY_TEAM ? <RelayPolicySection /> : null}
 
         {/* Reactive Org Sync — secondary leads + auto-composed goals files */}
         <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border, #2a2a2a)' }}>

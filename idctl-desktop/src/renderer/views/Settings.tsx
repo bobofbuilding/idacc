@@ -108,6 +108,9 @@ type ManagerUpdateStatus = {
   lastChecked?: number;
   detail?: string;
   error?: string;
+  databasePath?: string;
+  backupPath?: string;
+  missingTeams?: { name: string; agentCount: number }[];
 };
 type CachedLoad<T> = { value: T; at: number; cached: boolean };
 
@@ -2583,6 +2586,17 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                             ? 'compatible manager installation required'
                             : 'managed updater not configured'}
           </b>
+          {managerUpdStatus?.databasePath ? <>
+            <span>manager data</span>
+            <b className="mono small" title={managerUpdStatus.databasePath}>{managerUpdStatus.databasePath}</b>
+          </> : null}
+          {managerUpdStatus?.missingTeams?.length ? <>
+            <span>state recovery</span>
+            <b className="status-error">
+              Missing after restart: {managerUpdStatus.missingTeams.map((team) => team.name).join(', ')}
+              {managerUpdStatus.backupPath ? ` · backup: ${managerUpdStatus.backupPath}` : ''}
+            </b>
+          </> : null}
           <span>auto-download</span>
           <b>
             <input

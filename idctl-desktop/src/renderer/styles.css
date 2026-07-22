@@ -1242,6 +1242,15 @@ select:focus, input:focus { border-color: var(--accent); }
 .hr-agent-row:hover { background: var(--bg-3); border-color: var(--line); }
 .hr-agent-row.selected { background: var(--bg-3); border-color: var(--accent); }
 .hr-agent-editor { min-width: 0; }
+.hr-agent-instructions {
+  width: 100%;
+  height: clamp(320px, 44vh, 520px);
+  min-height: 240px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.4;
+}
 @media (max-width: 720px) { .driver-fields { grid-template-columns: 1fr; } .driver-wide { grid-column: auto; } }
 
 @media (max-width: 860px) {

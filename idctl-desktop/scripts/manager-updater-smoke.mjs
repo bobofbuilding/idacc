@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   effectiveManagerLatestVersion,
+  managerUpdaterInvocation,
   managerBootstrapScriptCandidates,
   parseManagerUpdaterArguments,
   parseManagerUpdaterResult,
@@ -22,6 +23,31 @@ assert.equal(parsed.target, '/Users/example/Projects/idacc-stack/id-agents');
 assert.equal(parsed.managerUrl, 'http://127.0.0.1:4100');
 assert.equal(parsed.source, 'https://github.com/bobofbuilding/id-agents.git');
 assert.equal(parsed.branch, 'main');
+assert.equal(parsed.sqlitePath, '/Users/example/.id-agents/id-agents.db');
+assert.equal(parsed.serviceConfigured, true);
+
+const customState = parseManagerUpdaterArguments([
+  '/opt/homebrew/bin/node',
+  '/Users/example/Projects/idacc-stack/id-agents/scripts/manager-auto-update.mjs',
+], '/Users/example', { SQLITE_PATH: '/Volumes/AgentData/id-agents.db' });
+assert.equal(customState.sqlitePath, '/Volumes/AgentData/id-agents.db');
+assert.deepEqual(
+  managerUpdaterInvocation({ ...customState, nodePath: '/usr/bin/env' }, true),
+  {
+    command: '/usr/bin/env',
+    args: [
+      'node',
+      '/Users/example/Projects/idacc-stack/id-agents/scripts/manager-auto-update.mjs',
+      '--target', '/Users/example/Projects/idacc-stack/id-agents',
+      '--manager-url', 'http://127.0.0.1:4100',
+      '--source', 'https://github.com/bobofbuilding/id-agents.git',
+      '--branch', 'main',
+      '--state', '/Users/example/.id-agents/manager-update.json',
+      '--lock', '/Users/example/.id-agents/manager-update.lock',
+      '--dry-run',
+    ],
+  },
+);
 
 assert.deepEqual(
   parseManagerUpdaterResult('fetching\nbuilding\n{"status":"deferred","version":"0.1.121","activeQueries":2}\n'),
@@ -50,6 +76,7 @@ for (const method of ['managerUpdate:status', 'managerUpdate:check', 'managerUpd
 }
 assert.match(settingsSource, /Update & sync manager/);
 assert.match(settingsSource, /Install current manager/);
+assert.match(settingsSource, /Missing after restart:/);
 assert.match(syncDomainsSource, /managerUpdate:\(apply\|bootstrap\)/);
 
 console.log('manager updater smoke: ok');
