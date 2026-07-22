@@ -63,7 +63,23 @@ type TeamAgentsGroup = { team: string; agents: Agent[] };
 type TeamSnapshot = { exists: boolean; agents: Agent[]; running: number; total: number; rosterKnown: boolean };
 type OrgCfg = { enabled?: boolean; autoRebuild?: boolean };
 type SecLead = { agent: string; team: string; leadsTeams: string[] };
-type HrHierarchy = { primary: { team: string; agent: string } | null; coordinators: Record<string, string>; secondaries?: SecLead[]; teams?: string[] };
+type HrHierarchy = {
+  primary: { team: string; agent: string } | null;
+  coordinators: Record<string, string>;
+  secondaries?: SecLead[];
+  teams?: string[];
+  controlStateSource?: 'manager' | 'local-compat';
+  controlStateWarning?: string;
+};
+type ManagerRepairStatus = {
+  configured: boolean;
+  bootstrapAvailable?: boolean;
+  busy?: boolean;
+  installedVersion?: string;
+  status?: string;
+  detail?: string;
+  error?: string;
+};
 type TeamBlueprint = { id: string; team: string; label: string; description: string; spec: string };
 type BlueprintCoverage = TeamBlueprint & { present: number; total: number; missing: string[]; complete: boolean };
 type HrFocus = 'route-hierarchy' | 'health';
@@ -1244,12 +1260,15 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   }
   // Lead hierarchy (#10): the primary coordinator across teams.
   const [hier, setHier] = useState<HrHierarchy>({ primary: null, coordinators: {} });
+  const [managerRepairBusy, setManagerRepairBusy] = useState(false);
   const graphLeadOf = useCallback(
     (t: string, ag: Agent[]) => hier.coordinators[t] ?? resolveCoordinator(ag, undefined) ?? ag[0]?.name,
     [hier.coordinators],
   );
-  async function loadHier() {
-    setHier(await call<typeof hier>('org:hierarchy').catch(() => ({ primary: null, coordinators: {} })));
+  async function loadHier(): Promise<HrHierarchy> {
+    const next = await call<HrHierarchy>('org:hierarchy').catch(() => ({ primary: null, coordinators: {} }));
+    setHier(next);
+    return next;
   }
   useEffect(() => { void loadHier(); }, [activeTeam, hrStructureVersion]);
   async function ensureHierarchyFresh(action: string): Promise<HrHierarchy | null> {
@@ -1284,6 +1303,10 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   /** Set (or change) a team's coordinator — the lead the rest of the team reports to. */
   async function setTeamCoordinator(team: string, agent: string) {
     if (!agent) return;
+    if (hier.controlStateSource === 'local-compat') {
+      setMsg('Coordinator assignment needs the compatible ID Agents manager. Install and connect it from this panel, then choose the coordinator again.');
+      return;
+    }
     if (team === PRIMARY_TEAM && !isDefaultLead(team, agent)) {
       setMsg(`Set coordinator blocked: the ${PRIMARY_TEAM} coordinator is locked to ${PRIMARY_TEAM}/${DEFAULT_LEAD}. Keep ${PRIMARY_TEAM}/${DEFAULT_VALIDATORS.join(` and ${PRIMARY_TEAM}/`)} as validators.`);
       return;
@@ -1321,6 +1344,29 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       setMsg(`Set coordinator failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy(false);
+    }
+  }
+  async function repairHierarchyManager() {
+    setManagerRepairBusy(true);
+    setMsg('installing and connecting the compatible ID Agents manager…');
+    try {
+      const status = await call<ManagerRepairStatus>('managerUpdate:status');
+      if (!status.configured && !status.bootstrapAvailable) {
+        throw new Error('The manager installer is unavailable in this build. Update IDACC, then retry.');
+      }
+      const next = await call<ManagerRepairStatus>(status.configured ? 'managerUpdate:apply' : 'managerUpdate:bootstrap');
+      if (next.error) throw new Error(next.error);
+      if (!next.configured) throw new Error(next.detail || 'The compatible manager did not finish installing.');
+      const refreshed = await loadHier();
+      store.refresh();
+      if (refreshed.controlStateSource === 'local-compat') {
+        throw new Error('The manager installed, but organization control is not reachable yet. Wait a moment and retry.');
+      }
+      setMsg(`compatible manager ${next.installedVersion ? `v${next.installedVersion} ` : ''}connected; coordinator assignments are ready ✓`);
+    } catch (error) {
+      setMsg(`Manager repair failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setManagerRepairBusy(false);
     }
   }
   /** Promote a specific team's coordinator to the primary cross-team lead. */
@@ -2243,6 +2289,21 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           Each team has a <b>coordinator</b> (its lead). The fleet <b>primary</b> is locked to the <b>default</b> team;
           it delegates to each other team's coordinator, which delegates to its workers. Pick coordinators here, then sync the org.
         </p>
+        {hier.controlStateSource === 'local-compat' ? (
+          <div style={{ margin: '10px 0 12px', padding: 12, border: '1px solid var(--warning, #d79a22)', borderRadius: 6 }}>
+            <div className="row-actions" style={{ alignItems: 'center', gap: 10 }}>
+              <div className="grow">
+                <b className="warn-text">Compatible manager required</b>
+                <div className="muted small" style={{ marginTop: 3 }}>
+                  This roster came from a legacy manager. IDACC can display it, but team-lead assignments cannot be saved until the current manager control plane is installed and connected.
+                </div>
+              </div>
+              <button className="btn primary" disabled={busy || managerRepairBusy} onClick={() => void repairHierarchyManager()}>
+                {managerRepairBusy ? 'Installing manager…' : 'Install & connect manager'}
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div className="kv" style={{ gridTemplateColumns: 'minmax(120px,1fr) 220px 120px', gap: '6px 12px', alignItems: 'center' }}>
           <span className="muted small">team</span>
           <span className="muted small">coordinator</span>
@@ -2265,7 +2326,9 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
                   {missingCoord ? <span className="warn-text small" title={`${t.name}/${coord} is no longer in the current roster`}> · coordinator missing</span> : null}
                   {stoppedCoord ? <span className="warn-text small" title={`${t.name}/${coord} remains the coordinator but cannot receive work until it is running`}> · coordinator not running</span> : null}
                 </span>
-                <select className="cell-select" disabled={busy || coordChoices.length === 0} value={coordChoices.some((a) => a.name === coord) ? coord : ''}
+                <select className="cell-select" disabled={busy || managerRepairBusy || hier.controlStateSource === 'local-compat' || coordChoices.length === 0}
+                  title={hier.controlStateSource === 'local-compat' ? 'Install and connect the compatible manager before assigning team leads' : `Set the coordinator for ${t.name}`}
+                  value={coordChoices.some((a) => a.name === coord) ? coord : ''}
                   onChange={(e) => void setTeamCoordinator(t.name, e.target.value)}>
                   <option value="">{coordChoices.length ? (missingCoord ? `${coord} missing — choose roster member…` : t.name === PRIMARY_TEAM ? 'default/lead only' : 'no coordinator — choose…') : 'no agents in roster'}</option>
                   {coordChoices.map((a) => <option key={a.id} value={a.name}>{a.name}{isRunnableAgent(a) ? '' : ` (${a.status || 'not running'})`}</option>)}
