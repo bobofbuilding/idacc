@@ -920,7 +920,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   // Whole-fleet relay topology — every team's outbound delegate policy, for the Manage overview.
   const [relayMatrix, setRelayMatrix] = useState<{ team: string; delegates: string[] | null }[]>([]);
   useEffect(() => {
-    if (tab !== 'route' || routePane !== 'overview') return;
+    if (tab !== 'structure' && (tab !== 'route' || routePane !== 'overview')) return;
     void call<{ team: string; delegates: string[] | null }[]>('relay:matrix').then(setRelayMatrix).catch(() => setRelayMatrix([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, routePane, activeTeam, savedDelegates, hrStructureVersion, allKnownTeamNames]);
@@ -2091,12 +2091,13 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             </button>
           </div>
           <p className="muted small" style={{ marginTop: -2 }}>
-            Structure of every known configured team, including offline or empty teams. The reserved empty public-agent namespace is hidden until it has agents.
-            Click an agent or team to inspect goals, instruction markdown, roster, and routing context.
+            Live top-down organization of every configured team, including offline or empty teams. Solid paths show reporting; team headers summarize persisted relay policy. Select a team or agent to trace its green messaging path.
+            The reserved empty public-agent namespace is hidden until it has agents. Click an agent or team to inspect goals, instructions, roster, and routing context.
           </p>
           <TeamGraph
             groups={structureGroups}
             hier={hier}
+            relays={visibleRelayMatrix}
             leadOf={graphLeadOf}
             selectedKey={selectedKey}
             onSelect={onGraphSelect}
