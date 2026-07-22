@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.666] — 2026-07-22
+### What changed
+- Automatically refresh model lanes with bounded local and remote provider checks, cache expiry, and renderer invalidation.
+
 ## [0.1.665] — 2026-07-22
 ### What changed
 - Treat operations-team and ops-team as one manager-authoritative team across HR coverage, Build targeting, lead routing, and planner lookup

@@ -233,6 +233,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   const [runtimeCooldowns, setRuntimeCooldowns] = useState<RuntimeCooldown[]>(() => runtimeCooldownCache?.rows ?? []);
   const [showModels, setShowModels] = useState(false);
   const [runtimeDetailsRequested, setRuntimeDetailsRequested] = useState(false);
+  const [runtimeCatalogClock, setRuntimeCatalogClock] = useState(0);
   const [configDrafts, setConfigDrafts] = useState<Record<string, AgentConfigDraft>>({});
   const autoRecommendedAgentKeys = useRef(new Set<string>());
   const configDraftList = Object.values(configDrafts);
@@ -303,6 +304,21 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   }, [runtimeDetailsRequested, runtimeDetailsPinned]);
 
   useEffect(() => {
+    if (!runtimeDetailsActive) return undefined;
+    const refresh = () => setRuntimeCatalogClock((clock) => clock + 1);
+    const onFocus = () => refresh();
+    const onVisible = () => { if (!document.hidden) refresh(); };
+    const timer = window.setInterval(refresh, RUNTIME_CATALOG_UI_CACHE_MS);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [runtimeDetailsActive]);
+
+  useEffect(() => {
     if (!runtimeDetailsActive) return;
     const cached = getRuntimeCatalogSnapshot(runtimeCatalogVersion, {
       maxAgeMs: RUNTIME_CATALOG_UI_CACHE_MS,
@@ -329,7 +345,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     };
     void load();
     return () => { live = false; };
-  }, [runtimeCatalogVersion, runtimeDetailsActive]);
+  }, [runtimeCatalogVersion, runtimeDetailsActive, runtimeCatalogClock]);
 
   useEffect(() => {
     if (!runtimeCooldownActive) {
@@ -849,11 +865,11 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
               runtime cooldowns {coolingRows.length}
             </span>
           ) : null}
-          <button className="btn small" onClick={() => { requestRuntimeDetails(); setShowModels((v) => !v); }} title="Show each execution harness and configured provider model lane, where its model list comes from, and when it was last refreshed">
-            {showModels ? 'Hide model lanes' : `Model lanes${visibleFreshness.length ? ` (${visibleFreshness.length})` : ''}`}
+          <button className="btn small" onClick={() => { requestRuntimeDetails(); setShowModels((v) => !v); }} title="Show automatically refreshed execution harness and provider model lanes, their source, and last check time">
+            {showModels ? 'Hide model lanes' : `Model lanes${visibleFreshness.length ? ` (${visibleFreshness.length})` : ''} · auto`}
           </button>
           {navigate ? <button className="btn small" onClick={() => navigate('teams:route')} title="Change team coordinators and primary routing in HR Manager Manage → Hierarchy & sync">Open HR Manage</button> : null}
-          <button className="btn" disabled={!!busy} onClick={() => void probeRuntimes()} title="Re-check provider and CLI model lists. Per-agent Probe below runs the end-to-end /talk health check.">Re-check model lanes</button>
+          <button className="btn" disabled={!!busy} onClick={() => void probeRuntimes()} title="Optional immediate refresh. Model lanes already refresh in the background, on focus, and when Settings changes.">Refresh now</button>
         </div>
         {showModels ? (
           <div className="card model-lanes-panel">

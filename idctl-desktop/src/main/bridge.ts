@@ -2364,15 +2364,33 @@ export function startDraftDispatcher(): () => void {
 }
 
 /**
- * Background model-refresh — the "checker that stays up to date". Re-probes every runtime's
- * backing provider on boot (after a short settle) and every 6h, so the per-runtime model
- * lists keep current as providers add/drop models. codex models are read live from its CLI
- * cache on every catalog read, so they need no probe; this keeps the API-backed runtimes fresh.
+ * Background model refresh. Local loopback lanes are cheap to check and can appear or
+ * disappear during a session, so refresh them frequently. Cloud/API catalogs change less
+ * often and stay on a wider cadence. Every successful pass clears the read cache and notifies
+ * the shell so mounted runtime pickers update without an operator pressing Refresh.
  */
-export function startModelRefreshLoop(): () => void {
+export function startModelRefreshLoop(onRefresh: (scope: 'local' | 'all') => void = () => {}): () => void {
   let stopped = false;
-  const tick = () => { if (!stopped) void probeAllRuntimes().catch(() => {}); };
-  const t0 = setTimeout(tick, 30_000);
-  const iv = setInterval(tick, 6 * 60 * 60 * 1000);
-  return () => { stopped = true; clearTimeout(t0); clearInterval(iv); };
+  let running = false;
+  const tick = async (scope: 'local' | 'all') => {
+    if (stopped || running) return;
+    running = true;
+    try {
+      if (scope === 'local') await probeLocalRuntimes();
+      else await probeAllRuntimes();
+      readCallCache.clear();
+      onRefresh(scope);
+    } catch {
+      // Preserve the last known-good catalog. The next bounded pass retries.
+    } finally {
+      running = false;
+    }
+  };
+  const first = setTimeout(() => void tick('all'), 10_000);
+  const local = setInterval(() => void tick('local'), 2 * 60 * 1000);
+  const all = setInterval(() => void tick('all'), 30 * 60 * 1000);
+  first.unref?.();
+  local.unref?.();
+  all.unref?.();
+  return () => { stopped = true; clearTimeout(first); clearInterval(local); clearInterval(all); };
 }

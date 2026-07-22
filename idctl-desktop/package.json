@@ -1,7 +1,7 @@
 {
   "name": "idagents-control-center",
   "productName": "ID Agents Control Center",
-  "version": "0.1.665",
+  "version": "0.1.666",
   "description": "Desktop control center for id-agents — live fleet dashboard, manager chat, teams, keys.",
   "private": true,
   "main": "out/main/main.cjs",
@@ -24,6 +24,7 @@
     "test:update-repo": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/update-repo-migration-smoke.mjs",
     "test:manager-updater": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/manager-updater-smoke.mjs",
     "test:team-provider-lanes": "node scripts/team-builder-provider-lanes-smoke.mjs",
+    "test:runtime-catalog-refresh": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/runtime-catalog-refresh-smoke.mjs",
     "test:safe-production-readiness": "node scripts/safe-production-readiness-smoke.mjs",
     "test:agent-signer-vault": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/agent-signer-vault-smoke.mjs",
     "test:safe-roles-execution": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/safe-roles-execution-smoke.mjs",

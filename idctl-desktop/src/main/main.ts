@@ -1808,8 +1808,8 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     // Reactive org-sync: keep every agent's goals & instructions file composed from the lead
     // hierarchy + brain team-instructions (first pass ~15s after boot, then every 5 min).
     try { startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }
-    // Keep each runtime's model list current: re-probe backing providers on boot + every 6h.
-    try { startModelRefreshLoop(); } catch (e) { console.warn('[model-refresh] failed to start:', e); }
+    // Keep model lanes current and notify mounted pickers after each bounded refresh pass.
+    try { startModelRefreshLoop(() => publishStoreChange('runtime:probe')); } catch (e) { console.warn('[model-refresh] failed to start:', e); }
     // Disabled by default: when enabled, active+autopilot goals gap-fill fleet tasks.
     try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
     // Work > Learn queue: process newly-added materials even when the Learn tab is not mounted.

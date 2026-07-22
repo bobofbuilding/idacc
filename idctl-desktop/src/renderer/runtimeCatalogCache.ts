@@ -53,9 +53,9 @@ function snapshotMatches(
 ): candidate is RuntimeCatalogSnapshot {
   if (!candidate) return false;
   if (options.freshness && !candidate.freshness) return false;
-  if (version == null || candidate.version === version) return true;
-  const maxAgeMs = options.maxAgeMs ?? 0;
-  return maxAgeMs > 0 && Date.now() - candidate.at <= maxAgeMs;
+  if (version != null && candidate.version !== version) return false;
+  if (options.maxAgeMs != null && Date.now() - candidate.at > options.maxAgeMs) return false;
+  return true;
 }
 
 export function getRuntimeCatalogSnapshot(
