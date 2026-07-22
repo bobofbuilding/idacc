@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { call, agentsLeadFirst, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import { buildProviderModelLanes, offerableRuntimes, runtimeDisplayLabel, runtimePickerGroup, type RuntimeModelLane } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import { recommendAgentModel } from '../../../../idctl/src/settings/agentModelPolicy.ts';
 import type { ConfigEntry, DeployPreflight, DesignedTeam, LibrarySkillEntry, McpServerSpec, TeamTemplate } from '../../../../idctl/src/api/client.ts';
 import type { OnboardPlan, OnboardResult } from '../../../../idctl/src/api/onboard.ts';
 import { MCP_CATALOG, buildFromCatalog } from '../../../../idctl/src/settings/mcpCatalog.ts';
@@ -2449,22 +2450,34 @@ function TeamBuilder({
     [harnessRuntimes, providerLanes],
   );
   const initialRuntime = runtimes[0] ?? '';
-  type Row = { name: string; runtime: string; model: string; role: string; description: string; skills: string[]; lead: boolean; open: boolean };
-  const blankRow = (): Row => ({ name: '', runtime: initialRuntime, model: '', role: '', description: '', skills: [], lead: false, open: false });
+  type Row = { name: string; runtime: string; model: string; modelAuto: boolean; role: string; description: string; skills: string[]; lead: boolean; open: boolean };
+  const recommendedModel = (row: Pick<Row, 'name' | 'runtime' | 'role' | 'description' | 'lead'>): string => recommendAgentModel({
+    runtime: row.runtime,
+    models: modelCatalog[row.runtime] ?? [],
+    name: row.name,
+    role: row.role,
+    description: row.description,
+    lead: row.lead,
+  });
+  const blankRow = (): Row => {
+    const row = { name: '', runtime: initialRuntime, role: '', description: '', skills: [], lead: false, open: false };
+    return { ...row, model: recommendedModel(row), modelAuto: true };
+  };
   // Map a parsed/AI-designed agent onto a builder row, sanitizing the AI's runtime/
   // model/skill picks against what's actually available.
   const toRow = (a: { name: string; role: string; description: string; runtime?: string; model?: string; skills?: string[]; lead?: boolean }): Row => {
     const runtime = a.runtime && runtimes.includes(a.runtime) ? a.runtime : initialRuntime;
-    return {
+    const suppliedModel = a.model && (modelCatalog[runtime] ?? []).includes(a.model) ? a.model : '';
+    const row = {
       name: a.name,
       runtime,
-      model: a.model && (modelCatalog[runtime] ?? []).includes(a.model) ? a.model : '',
       role: a.role,
       description: a.description,
       skills: (a.skills ?? []).filter((s) => skillCatalog.includes(s)),
       lead: Boolean(a.lead),
       open: false,
     };
+    return { ...row, model: suppliedModel || recommendedModel(row), modelAuto: !suppliedModel };
   };
 
   // ---- target team (existing or new) ----
@@ -2511,9 +2524,10 @@ function TeamBuilder({
       if (current.length !== 1) return current;
       const [row] = current;
       if (row.runtime || row.name || row.model || row.role || row.description || row.skills.length || row.lead || row.open) return current;
-      return [{ ...row, runtime: initialRuntime }];
+      const next = { ...row, runtime: initialRuntime };
+      return [{ ...next, model: recommendedModel(next) }];
     });
-  }, [initialRuntime, rowsDirty, spec]);
+  }, [initialRuntime, modelCatalog, rowsDirty, spec]);
 
   // ---- options applied to every agent ----
   const [mcpIds, setMcpIds] = useState<string[]>([]);
@@ -2635,7 +2649,15 @@ function TeamBuilder({
     onMessage('stopped waiting for the AI design (it may still finish on the agent).');
   }
 
-  function updateRow(i: number, patch: Partial<Row>) { setRowsDirty(true); setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r))); }
+  function updateRow(i: number, patch: Partial<Row>, manualModel = false) {
+    setRowsDirty(true);
+    setRows((rs) => rs.map((r, j) => {
+      if (j !== i) return r;
+      const next = { ...r, ...patch, modelAuto: manualModel ? false : r.modelAuto };
+      const responsibilityChanged = patch.runtime !== undefined || patch.name !== undefined || patch.role !== undefined || patch.description !== undefined || patch.lead !== undefined;
+      return next.modelAuto && responsibilityChanged ? { ...next, model: recommendedModel(next) } : next;
+    }));
+  }
   function addRow() { setRowsDirty(true); setRows((rs) => [...rs, blankRow()]); }
   function startSingleAgentAdd() {
     setRowsDirty(true);
@@ -2647,7 +2669,13 @@ function TeamBuilder({
     setError('');
   }
   function removeRow(i: number) { setRowsDirty(true); setRows((rs) => (rs.length <= 1 ? rs : rs.filter((_, j) => j !== i))); }
-  function setLead(i: number) { setRowsDirty(true); setRows((rs) => rs.map((r, j) => ({ ...r, lead: j === i }))); }
+  function setLead(i: number) {
+    setRowsDirty(true);
+    setRows((rs) => rs.map((r, j) => {
+      const next = { ...r, lead: j === i };
+      return next.modelAuto ? { ...next, model: recommendedModel(next) } : next;
+    }));
+  }
   function toggleRowSkill(i: number, name: string) {
     setRowsDirty(true);
     setRows((rs) => rs.map((r, j) => (j === i ? { ...r, skills: r.skills.includes(name) ? r.skills.filter((x) => x !== name) : [...r.skills, name] } : r)));
@@ -3187,7 +3215,7 @@ function TeamBuilder({
                         disabled={locked || !runtimes.length}
                         value={r.runtime}
                         title="Settings-available subscription CLIs, local model runtimes, and synced API provider lanes are selectable for new agents."
-                        onChange={(e) => updateRow(i, { runtime: e.target.value, model: '' })}
+                        onChange={(e) => updateRow(i, { runtime: e.target.value })}
                       >
                         <option value="" disabled>{runtimes.length ? 'Choose runtime' : 'No Settings runtime available'}</option>
                         {subscriptionRuntimes.length ? (
@@ -3211,8 +3239,8 @@ function TeamBuilder({
                           </optgroup>
                         ) : null}
                       </select>
-                      <select className="cell-select" style={{ fontSize: 12 }} disabled={locked} value={r.model} onChange={(e) => updateRow(i, { model: e.target.value })}>
-                        <option value="">(default model)</option>
+                      <select className="cell-select" style={{ fontSize: 12 }} disabled={locked || !(modelCatalog[r.runtime] ?? []).length} value={r.model} onChange={(e) => updateRow(i, { model: e.target.value }, true)} title={r.modelAuto ? 'Selected automatically from this agent responsibility; choosing another model keeps your explicit choice.' : 'Explicit model selection'}>
+                        <option value="" disabled>{(modelCatalog[r.runtime] ?? []).length ? 'Choose model' : 'No models available'}</option>
                         {(modelCatalog[r.runtime] ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
                       </select>
                       <button className="uv-x" title={r.open ? 'collapse' : 'persona & skills'} disabled={locked} onClick={() => updateRow(i, { open: !r.open })}>{r.open ? '▾' : '▸'}</button>

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { call, agentsLeadFirst, useSyncVersion, type FleetStore, type TeamAgent } from '../store.ts';
 import { statusClass } from '../agentStatus.ts';
 import type { RuntimeCooldown } from '../../../../idctl/src/api/client.ts';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
 import { RUNTIMES, offerableRuntimes, effortOptions, runtimeHasEffort, speedOptions, runtimeHasSpeed, runtimeDisplayLabel, runtimePickerGroup, runtimeHasManagerHarness, managedRuntimeHasEvidence, type RuntimeModelLaneKind } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import { recommendAgentModel } from '../../../../idctl/src/settings/agentModelPolicy.ts';
 import {
   getRuntimeCatalogSnapshot,
   loadRuntimeCatalogSnapshot,
@@ -92,11 +93,6 @@ function runtimeCatalogModels(catalog: Record<string, string[]>, runtime?: strin
 function modelInRuntimeCatalog(catalog: Record<string, string[]>, runtime?: string, model?: string): boolean {
   const models = runtimeCatalogModels(catalog, runtime);
   return !model || !models.length || models.includes(model);
-}
-function syncedModelForRuntime(catalog: Record<string, string[]>, runtime?: string, model?: string): string | undefined {
-  const models = runtimeCatalogModels(catalog, runtime);
-  if (!models.length) return model;
-  return model && models.includes(model) ? model : models[0];
 }
 function short(s?: string): string {
   if (!s) return '—';
@@ -238,9 +234,11 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   const [showModels, setShowModels] = useState(false);
   const [runtimeDetailsRequested, setRuntimeDetailsRequested] = useState(false);
   const [configDrafts, setConfigDrafts] = useState<Record<string, AgentConfigDraft>>({});
+  const autoRecommendedAgentKeys = useRef(new Set<string>());
   const configDraftList = Object.values(configDrafts);
   const runtimeDetailsPinned = showModels || configDraftList.length > 0;
-  const runtimeDetailsActive = runtimeDetailsRequested || runtimeDetailsPinned;
+  const hasUnsetModels = (store.viewAll ? store.allAgents : store.agents).some((agent) => Boolean(runtimeOf(agent)) && !agent.model);
+  const runtimeDetailsActive = runtimeDetailsRequested || runtimeDetailsPinned || hasUnsetModels;
   const runtimeCooldownActive = showModels;
   const runtimeCatalogVersion = useSyncVersion(runtimeDetailsActive ? ['runtime-catalog'] : []);
   const runtimeCooldownVersion = useSyncVersion(runtimeCooldownActive ? ['agents'] : []);
@@ -362,6 +360,13 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   const isLead = (a: TeamAgent) => (coords[teamFor(a)] ?? (teamFor(a) === store.team ? store.coordinator : undefined)) === a.name;
   const isDefaultBackboneAgent = (a: TeamAgent) => teamFor(a) === 'default' && DEFAULT_BACKBONE_AGENTS.has(a.name);
   const draftKeyFor = (a: TeamAgent) => `${teamFor(a)}:${a.id}`;
+  const roleModelFor = (a: TeamAgent, runtime = runtimeOf(a)): string => recommendAgentModel({
+    runtime,
+    models: runtimeCatalogModels(catalog, runtime),
+    name: a.name,
+    description: descriptionOf(a),
+    lead: isLead(a),
+  });
   function agentStamp(a: TeamAgent): string {
     return JSON.stringify({
       id: a.id,
@@ -439,7 +444,8 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     setConfigDrafts((prev) => {
       const baseline = prev[key]?.baseline ?? configOf(a);
       const current = prev[key]?.next ?? baseline;
-      const model = syncedModelForRuntime(catalog, runtime, current.model);
+      const runtimeModels = runtimeCatalogModels(catalog, runtime);
+      const model = current.model && runtimeModels.includes(current.model) ? current.model : roleModelFor(a, runtime);
       const effort = !runtimeHasEffort(runtime)
         ? baseline.effort
         : current.effort && !effortOptions(runtime).includes(current.effort) ? '' : current.effort;
@@ -453,6 +459,27 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
       return out;
     });
   }
+
+  useEffect(() => {
+    if (!Object.keys(catalog).length) return;
+    setConfigDrafts((prev) => {
+      let changed = false;
+      const out = { ...prev };
+      for (const agent of shown) {
+        if (agent.model) continue;
+        const key = draftKeyFor(agent);
+        if (autoRecommendedAgentKeys.current.has(key)) continue;
+        const model = roleModelFor(agent);
+        if (!model) continue;
+        autoRecommendedAgentKeys.current.add(key);
+        const baseline = out[key]?.baseline ?? configOf(agent);
+        const next = { ...(out[key]?.next ?? baseline), model };
+        out[key] = { key, id: agent.id, name: agent.name, team: teamFor(agent), status: agent.status, baseline, next };
+        changed = true;
+      }
+      return changed ? out : prev;
+    });
+  }, [catalog, coords, shown]);
   async function applyConfigDrafts() {
     const drafts = Object.values(configDrafts);
     if (!drafts.length) return;
@@ -870,7 +897,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         {configDraftList.length ? (
           <div className="agent-config-draft">
             <b>{configDraftList.length} staged config change{configDraftList.length === 1 ? '' : 's'}</b>
-            <span className="muted small">Apply reviews the full diff, blocks stale rows, and rebuilds each touched agent once.</span>
+            <span className="muted small">Empty models are staged with a role-fit recommendation. Apply reviews the full diff, blocks stale rows, and rebuilds each touched agent once.</span>
             <span className="grow" />
             <button className="btn small" disabled={!!busy} onClick={() => setConfigDrafts({})}>Discard</button>
             <button className="btn primary small" disabled={!!busy} onClick={() => void applyConfigDrafts()}>Apply changes</button>
