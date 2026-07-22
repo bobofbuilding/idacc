@@ -31,6 +31,27 @@ type UpdaterResult = {
   reason?: string;
 };
 
+function parseSemver(value: string | undefined): [number, number, number] | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(value ?? '').trim());
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+}
+
+export function effectiveManagerLatestVersion(
+  installedVersion: string | undefined,
+  publishedVersion: string | undefined,
+): string | undefined {
+  if (!installedVersion) return publishedVersion;
+  if (!publishedVersion) return installedVersion;
+  const installed = parseSemver(installedVersion);
+  const published = parseSemver(publishedVersion);
+  if (!installed || !published) return publishedVersion;
+  for (let index = 0; index < installed.length; index += 1) {
+    if (installed[index] > published[index]) return installedVersion;
+    if (installed[index] < published[index]) return publishedVersion;
+  }
+  return publishedVersion;
+}
+
 export type ManagerUpdateStatus = {
   configured: boolean;
   bootstrapAvailable?: boolean;
@@ -190,11 +211,13 @@ function installedStatus(config: ManagerUpdaterConfig): ManagerUpdateStatus {
   const packageJson = readJson(join(config.target, 'package.json'));
   const state = readJson(config.state);
   const status = typeof state.status === 'string' ? state.status : 'unknown';
+  const installedVersion = typeof packageJson.version === 'string' ? packageJson.version : undefined;
+  const publishedVersion = typeof state.version === 'string' ? state.version : undefined;
   return {
     configured: true,
     busy: !!activeUpdate,
-    installedVersion: typeof packageJson.version === 'string' ? packageJson.version : undefined,
-    latestVersion: typeof state.version === 'string' ? state.version : undefined,
+    installedVersion,
+    latestVersion: effectiveManagerLatestVersion(installedVersion, publishedVersion),
     status,
     pendingActivation: status === 'restart-pending',
     activeQueries: Number.isFinite(Number(state.activeQueries)) ? Number(state.activeQueries) : undefined,
@@ -257,10 +280,11 @@ function statusFromResult(config: ManagerUpdaterConfig, result: UpdaterResult, c
   const current = installedStatus(config);
   const status = result.status || current.status;
   const pendingActivation = status === 'restart-pending' || status === 'deferred';
+  const publishedVersion = result.version || current.latestVersion;
   return {
     ...current,
     busy: false,
-    latestVersion: result.version || current.latestVersion || current.installedVersion,
+    latestVersion: effectiveManagerLatestVersion(current.installedVersion, publishedVersion),
     status,
     available: status === 'available' || status === 'build-required',
     pendingActivation,

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { managerBootstrapScriptCandidates, parseManagerUpdaterArguments, parseManagerUpdaterResult } from '../src/main/managerUpdater.ts';
+import {
+  effectiveManagerLatestVersion,
+  managerBootstrapScriptCandidates,
+  parseManagerUpdaterArguments,
+  parseManagerUpdaterResult,
+} from '../src/main/managerUpdater.ts';
 
 const parsed = parseManagerUpdaterArguments([
   '/opt/homebrew/bin/node',
@@ -23,6 +28,9 @@ assert.deepEqual(
   { status: 'deferred', version: '0.1.121', activeQueries: 2 },
 );
 assert.equal(parseManagerUpdaterResult('Manager update already running; skipping this cycle.\n'), null);
+assert.equal(effectiveManagerLatestVersion('0.1.122', '0.1.121'), '0.1.122');
+assert.equal(effectiveManagerLatestVersion('0.1.122', '0.1.123'), '0.1.123');
+assert.equal(effectiveManagerLatestVersion('0.1.123', undefined), '0.1.123');
 assert.throws(() => parseManagerUpdaterArguments(['node'], '/Users/example'), /invalid ProgramArguments/);
 assert.deepEqual(
   managerBootstrapScriptCandidates('/Applications/IDACC.app/Contents/Resources', '/repo/idctl-desktop'),

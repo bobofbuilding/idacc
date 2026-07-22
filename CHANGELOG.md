@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.668] — 2026-07-22
+### What changed
+- Keep manager update status monotonic when an installed manager is newer than published release metadata.
+
 ## [0.1.667] — 2026-07-22
 ### What changed
 - Add an authoritative all-workers capability scope that excludes the default team and every team lead.
