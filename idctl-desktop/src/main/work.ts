@@ -11,6 +11,7 @@
 import type { ManagerClient } from '../../../idctl/src/api/client.ts';
 import type { Agent, RemoteEnvelope, Task } from '../../../idctl/src/api/types.ts';
 import { setTaskLane, setTaskDeps, loadSettings, saveSettings } from '../../../idctl/src/settings/store.ts';
+import { matchingExistingTeamName } from '../../../idctl/src/settings/teamNames.ts';
 import { optimizeAskCommand } from './contextBudget.ts';
 
 export interface SubTask { title: string; description: string; agent: string; dependsOn: number[] }
@@ -289,7 +290,9 @@ async function resolveDecompositionPlanner(client: ManagerClient, fallbackLead: 
   if (!WORK_USE_TASK_MANAGER_PLANNER && fallbackLead) {
     return { client, agent: fallbackLead, kind: 'lead' };
   }
-  const candidateTeams = [...new Set([client.team ?? 'default', WORK_PLANNER_TEAM].filter(Boolean))];
+  const managerTeams = await client.teams().catch(() => []);
+  const plannerTeam = matchingExistingTeamName(WORK_PLANNER_TEAM, managerTeams.map((team) => team.name)) ?? WORK_PLANNER_TEAM;
+  const candidateTeams = [...new Set([client.team ?? 'default', plannerTeam].filter(Boolean))];
   for (const team of candidateTeams) {
     const scoped = team === client.team ? client : client.withTeam(team);
     const roster = await scoped.agents().catch(() => [] as Agent[]);

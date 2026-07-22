@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { call, agentsLeadFirst, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import { buildProviderModelLanes, offerableRuntimes, runtimeDisplayLabel, runtimePickerGroup, type RuntimeModelLane } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 import { recommendAgentModel } from '../../../../idctl/src/settings/agentModelPolicy.ts';
+import { canonicalTeamName, matchingExistingTeamName, sameLogicalTeam } from '../../../../idctl/src/settings/teamNames.ts';
 import type { ConfigEntry, DeployPreflight, DesignedTeam, LibrarySkillEntry, McpServerSpec, TeamTemplate } from '../../../../idctl/src/api/client.ts';
 import type { OnboardPlan, OnboardResult } from '../../../../idctl/src/api/onboard.ts';
 import { MCP_CATALOG, buildFromCatalog } from '../../../../idctl/src/settings/mcpCatalog.ts';
@@ -117,12 +118,6 @@ function isDefaultBackboneAgent(team: string, agent: string): boolean {
 function isDefaultLead(team: string, agent: string): boolean {
   return team === PRIMARY_TEAM && slugName(agent) === DEFAULT_LEAD;
 }
-const STANDARD_TEAM_ALIASES: Record<string, string> = {
-  operations: 'ops-team',
-  engineering: 'engineering-team',
-  onchain: 'onchain-execution',
-  security: 'technology-security',
-};
 const RECOMMENDED_TEAM_BLUEPRINTS: TeamBlueprint[] = [
   {
     id: 'default-leadership',
@@ -240,7 +235,7 @@ function blueprintAgentNames(bp: TeamBlueprint): string[] {
 }
 
 function blueprintCoverage(agents: HrAgentCandidate[], bp: TeamBlueprint): BlueprintCoverage {
-  const existing = new Set(agents.filter((a) => (a.team ?? PRIMARY_TEAM) === bp.team).map((a) => slugName(a.name)));
+  const existing = new Set(agents.filter((a) => sameLogicalTeam(a.team ?? PRIMARY_TEAM, bp.team)).map((a) => slugName(a.name)));
   const expected = blueprintAgentNames(bp);
   const missing = expected.filter((name) => !existing.has(name));
   return { ...bp, total: expected.length, present: expected.length - missing.length, missing, complete: expected.length > 0 && missing.length === 0 };
@@ -455,7 +450,10 @@ ${VALIDATION_RETURN_PATH}
 
 ${COORDINATION_TAIL}`;
 
-const DEFAULT_PRIMARY_PRESET = `## Default primary lead coordination
+function defaultPrimaryPreset(existingTeams: string[]): string {
+  const operationsTeam = matchingExistingTeamName('ops-team', existingTeams) ?? 'ops-team';
+  const leadTargets = FIRST_RUN_LEAD_TARGETS.map((target) => target === 'ops-team/ops-lead' ? `${operationsTeam}/ops-lead` : target);
+  return `## Default primary lead coordination
 
 You are the PRIMARY LEAD for the whole fleet. The operator talks to you first; your job is to compress intent into an objective, compare it to the active primary goal first and secondary goals second, then route scoped execution work to the correct team lead.
 
@@ -464,7 +462,7 @@ Default-team **coder** and **researcher** are your validation pair — NOT execu
 For any NON-TRIVIAL request:
 
 1. **Compress** — restate the objective, success criteria, and hard constraints in 1-2 lines.
-2. **Route objectives** — choose an existing corresponding team lead. First-run starter leads are ${FIRST_RUN_LEAD_TARGETS.map((target) => `**${target}**`).join(', ')}. Optional leads such as ${OPTIONAL_LEAD_TARGETS.map((target) => `**${target}**`).join(', ')} are valid only after those teams exist and are current in HR Manager. Hand each lead a scoped objective with \`/ask <team>/<lead> "<objective>"\`.
+2. **Route objectives** — choose an existing corresponding team lead. First-run starter leads are ${leadTargets.map((target) => `**${target}**`).join(', ')}. Optional leads such as ${OPTIONAL_LEAD_TARGETS.map((target) => `**${target}**`).join(', ')} are valid only after those teams exist and are current in HR Manager. Hand each lead a scoped objective with \`/ask <team>/<lead> "<objective>"\`.
 3. **Decompose at the edge** — each team lead owns breaking its objective into member-owned tasks, delegating independent work in parallel, collecting member summaries, and refining the result.
 4. **Validate on return** — when completed work comes back, send the completed-work packet to both default-team validators and wait for their findings before treating it as final.
 5. **Bounce or close** — if either validator rejects the work, return the concrete feedback to the responsible team lead for another refinement cycle. If both validate it, consolidate the findings for the operator.
@@ -472,12 +470,13 @@ For any NON-TRIVIAL request:
 ${VALIDATION_RETURN_PATH}
 
 ${COORDINATION_TAIL}`;
+}
 
 /** Roster-aware coordinator directive — names the ACTUAL teammates created in the
  *  batch so the lead delegates to agents that exist (falls back to the generic
  *  coder/researcher preset when there are no teammates). */
-function coordinatorPresetFor(team: string, teammates: { name: string; role: string }[]): string {
-  if (team === PRIMARY_TEAM) return DEFAULT_PRIMARY_PRESET;
+function coordinatorPresetFor(team: string, teammates: { name: string; role: string }[], existingTeams: string[]): string {
+  if (team === PRIMARY_TEAM) return defaultPrimaryPreset(existingTeams);
   if (!teammates.length) return COORDINATOR_PRESET;
   const inline = teammates.map((t) => `**${t.name}**${t.role ? ` (${t.role})` : ''}`).join(', ');
   const bullets = teammates.map((t) => `   - **${t.name}**${t.role ? ` — ${t.role}` : ''}`).join('\n');
@@ -2489,8 +2488,9 @@ function TeamBuilder({
       .filter(Boolean)
       .sort((a, b) => Number(active.has(b)) - Number(active.has(a)) || a.localeCompare(b));
   }, [activeTeams, existingTeams]);
-  const [teamSel, setTeamSel] = useState<string>(team && existingTeams.includes(team) ? team : '__new__');
-  const [newTeam, setNewTeam] = useState(team && !existingTeams.includes(team) ? canonicalTeamName(team) : '');
+  const initialExistingTeam = team ? matchingExistingTeamName(team, existingTeams) : undefined;
+  const [teamSel, setTeamSel] = useState<string>(initialExistingTeam ?? '__new__');
+  const [newTeam, setNewTeam] = useState(team && !initialExistingTeam ? canonicalTeamName(team) : '');
   const [teamTouched, setTeamTouched] = useState(false);
   const usingNewTeam = teamSel === '__new__';
   const targetTeam = usingNewTeam ? canonicalTeamName(newTeam) : teamSel;
@@ -2603,7 +2603,13 @@ function TeamBuilder({
     // hijack an "add agents to <existing team>" session.
     if (parsed.team && !teamTouched && teamSel === '__new__') {
       const parsedTeam = canonicalTeamName(parsed.team);
-      setNewTeam((p) => p || parsedTeam || '');
+      const existingTeam = matchingExistingTeamName(parsedTeam, existingTeams);
+      if (existingTeam) {
+        setTeamSel(existingTeam);
+        setNewTeam('');
+      } else {
+        setNewTeam((p) => p || parsedTeam || '');
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec]);
@@ -2632,7 +2638,13 @@ function TeamBuilder({
       }
       if (r?.team && !teamTouched && teamSel === '__new__') {
         const designedTeam = canonicalTeamName(r.team);
-        setNewTeam((p) => p || designedTeam || '');
+        const existingTeam = matchingExistingTeamName(designedTeam, existingTeams);
+        if (existingTeam) {
+          setTeamSel(existingTeam);
+          setNewTeam('');
+        } else {
+          setNewTeam((p) => p || designedTeam || '');
+        }
       }
       setAiSuggestions(r?.suggestions);
       const suggestionCount = (r?.suggestions?.agents?.length ?? 0) + (r?.suggestions?.skills?.length ?? 0);
@@ -2712,8 +2724,9 @@ function TeamBuilder({
     setError('');
     setSpec(nextSpec);
     if (!teamTouched && targetHint) {
-      if (existingTeams.includes(targetHint)) {
-        setTeamSel(targetHint);
+      const existingTarget = matchingExistingTeamName(targetHint, existingTeams);
+      if (existingTarget) {
+        setTeamSel(existingTarget);
         setNewTeam('');
       } else {
         setTeamSel('__new__');
@@ -2908,7 +2921,7 @@ function TeamBuilder({
     if (anyOk && coordinate && leadName) {
       // Tell the lead to delegate to ALL its teammates in the roster (existing + newly added).
       const teammates = named.filter((r) => r.slug !== leadName).map((r) => ({ name: r.slug, role: r.role.trim() }));
-      const preset = coordinatorPresetFor(targetTeam, teammates);
+      const preset = coordinatorPresetFor(targetTeam, teammates, existingTeams);
       setPost((p) => ({ ...p, coord: 'running', leadName }));
       try {
         const [hierNow, groupsNow] = await Promise.all([
@@ -3354,15 +3367,6 @@ function TeamBuilder({
       </div>
     </div>
   );
-}
-
-function cleanTeamName(name: string): string {
-  return name.trim().toLowerCase().replace(/\s+/g, '-');
-}
-
-function canonicalTeamName(name: string): string {
-  const cleaned = cleanTeamName(name);
-  return STANDARD_TEAM_ALIASES[cleaned] ?? cleaned;
 }
 
 function countAgents(agents?: number | unknown[]): number | undefined {
