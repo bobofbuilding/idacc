@@ -80,6 +80,12 @@ function topCenter(node: Placed): Point {
 function bottomCenter(node: Placed): Point {
   return { x: node.x + NODE_W / 2, y: node.y + NODE_H };
 }
+function hubTop(hub: Point): Point {
+  return { x: hub.x, y: hub.y - 13 };
+}
+function hubBottom(hub: Point): Point {
+  return { x: hub.x, y: hub.y + 13 };
+}
 function nodeKey(team: string, agent: string): string {
   return `agent:${team}:${agent}`;
 }
@@ -365,19 +371,19 @@ export const TeamGraph = memo(function TeamGraph({
         .filter((secondary) => secondary.leadsTeams.includes(group.team))
         .map((secondary) => nodeByKey.get(nodeKey(secondary.team, secondary.agent)))
         .filter((node): node is Placed => Boolean(node));
-      if (validators.length) edges.push({ from: topCenter(teamLead), to: validationHub, kind: 'validation' });
+      if (validators.length) edges.push({ from: topCenter(teamLead), to: hubBottom(validationHub), kind: 'validation' });
       validators.forEach((validator) => {
         validatorsByKey.set(validator.key, validator);
       });
     }
     if (primaryNode && routedTeamLeads.length) {
-      edges.push({ from: bottomCenter(primaryNode), to: delegationHub, kind: 'hierarchy' });
+      edges.push({ from: bottomCenter(primaryNode), to: hubTop(delegationHub), kind: 'hierarchy' });
       routedTeamLeads.forEach((teamLead) => {
-        edges.push({ from: delegationHub, to: topCenter(teamLead), kind: 'hierarchy' });
+        edges.push({ from: hubBottom(delegationHub), to: topCenter(teamLead), kind: 'hierarchy' });
       });
     }
     validatorsByKey.forEach((validator) => {
-      edges.push({ from: validationHub, to: bottomCenter(validator), kind: 'validation' });
+      edges.push({ from: hubTop(validationHub), to: bottomCenter(validator), kind: 'validation' });
       if (primaryNode) edges.push({ from: topCenter(validator), to: bottomCenter(primaryNode), kind: 'validation' });
     });
 
@@ -392,7 +398,7 @@ export const TeamGraph = memo(function TeamGraph({
       const source = leadByTeam.get(policy.team);
       if (!source || Array.isArray(policy.delegates) && policy.delegates.length === 0) continue;
       if (policy.delegates === null || policy.delegates.includes('*')) {
-        edges.push({ from: topCenter(source), to: relayHub, kind: 'relay-mesh' });
+        edges.push({ from: topCenter(source), to: hubBottom(relayHub), kind: 'relay-mesh' });
         continue;
       }
       for (const targetTeam of policy.delegates) {
@@ -439,10 +445,28 @@ export const TeamGraph = memo(function TeamGraph({
 
         {layout.boxes.map((box) => {
           const selected = selectedKey === `team:${box.team}`;
+          return <rect key={`box-bg:${box.team}`} x={box.x} y={box.y} width={box.width} height={box.height} rx={6}
+            fill={box.primary ? 'var(--bg-2)' : 'transparent'} stroke={selected ? 'var(--accent)' : 'var(--line)'} strokeWidth={selected ? 2 : 1} opacity={box.primary ? 0.72 : 1} />;
+        })}
+
+        {layout.edges.filter((edge) => edge.kind === 'hierarchy' || edge.kind === 'validation' || edge.kind === 'member').map((edge, index) => {
+          const validation = edge.kind === 'validation';
+          return <path key={`org:${index}`} d={edgePath(edge)} fill="none"
+            stroke={validation ? 'var(--ok)' : 'var(--accent)'}
+            strokeWidth={edge.kind === 'member' ? 1.2 : 1.5}
+            strokeDasharray={validation ? '4 3' : '2 5'}
+            markerEnd={validation ? 'url(#team-graph-relay-arrow)' : 'url(#team-graph-report-arrow)'}
+            opacity={edge.kind === 'member' ? 0.75 : 0.62} />;
+        })}
+
+        {layout.edges.filter((edge) => edge.kind === 'relay' || edge.kind === 'relay-mesh').map((edge, index) => (
+          <path key={`relay:${index}`} d={edgePath(edge)} fill="none" stroke="var(--ok)" strokeWidth={1.15}
+            strokeDasharray={edge.kind === 'relay-mesh' ? '2 5' : '5 4'} markerEnd="url(#team-graph-relay-arrow)" opacity={0.48} />
+        ))}
+        {layout.boxes.map((box) => {
+          const selected = selectedKey === `team:${box.team}`;
           return (
-            <g key={`box:${box.team}`}>
-              <rect x={box.x} y={box.y} width={box.width} height={box.height} rx={6}
-                fill={box.primary ? 'var(--bg-2)' : 'transparent'} stroke={selected ? 'var(--accent)' : 'var(--line)'} strokeWidth={selected ? 2 : 1} opacity={box.primary ? 0.72 : 1} />
+            <g key={`box-label:${box.team}`}>
               <text x={box.x + 12} y={box.y + 19} style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700, fill: selected ? 'var(--accent)' : 'var(--muted)' }}
                 onClick={() => onSelect({ kind: 'team', team: box.team })}>
                 {box.primary ? '★ ' : ''}{box.team} · {box.running}/{box.total}
@@ -453,21 +477,6 @@ export const TeamGraph = memo(function TeamGraph({
             </g>
           );
         })}
-
-        {layout.edges.filter((edge) => edge.kind === 'hierarchy' || edge.kind === 'validation' || edge.kind === 'member').map((edge, index) => {
-          const validation = edge.kind === 'validation';
-          return <path key={`org:${index}`} d={edgePath(edge)} fill="none"
-            stroke={validation ? 'var(--ok)' : 'var(--accent)'}
-            strokeWidth={edge.kind === 'member' ? 1.2 : 1.5}
-            strokeDasharray={validation ? '4 3' : undefined}
-            markerEnd={validation ? 'url(#team-graph-relay-arrow)' : 'url(#team-graph-report-arrow)'}
-            opacity={edge.kind === 'member' ? 0.75 : 0.62} />;
-        })}
-
-        {layout.edges.filter((edge) => edge.kind === 'relay' || edge.kind === 'relay-mesh').map((edge, index) => (
-          <path key={`relay:${index}`} d={edgePath(edge)} fill="none" stroke="var(--ok)" strokeWidth={1.15}
-            strokeDasharray={edge.kind === 'relay-mesh' ? '2 5' : '5 4'} markerEnd="url(#team-graph-relay-arrow)" opacity={0.48} />
-        ))}
         {layout.relayHub ? (
           <g>
             <rect x={layout.relayHub.x - 52} y={layout.relayHub.y - 13} width={104} height={26} rx={6} fill="var(--bg-2)" stroke="var(--ok)" opacity={0.94} />
@@ -511,7 +520,7 @@ export const TeamGraph = memo(function TeamGraph({
         })}
 
         <g transform={`translate(${PAD}, ${layout.height - 12})`}>
-          <text x={0} y={0} style={{ fontSize: 10, fill: 'var(--accent)' }}>blue arrow · objective delegation</text>
+          <text x={0} y={0} style={{ fontSize: 10, fill: 'var(--accent)' }}>blue dotted arrow · objective delegation</text>
           <text x={180} y={0} style={{ fontSize: 10, fill: 'var(--ok)' }}>green dashed arrow · completed work / validated return</text>
           <text x={480} y={0} style={{ fontSize: 10, fill: 'var(--ok)' }}>green dotted · selected relay policy</text>
         </g>

@@ -13,11 +13,14 @@ assert.ok(
 assert.ok(
   graph.includes('configuredCoordinator(hier, group.team)')
     && graph.includes('secondary.leadsTeams.includes(group.team)')
-    && graph.includes("edges.push({ from: bottomCenter(primaryNode), to: delegationHub, kind: 'hierarchy' })")
-    && graph.includes("edges.push({ from: delegationHub, to: topCenter(teamLead), kind: 'hierarchy' })")
-    && graph.includes("edges.push({ from: topCenter(teamLead), to: validationHub, kind: 'validation' })")
-    && graph.includes("edges.push({ from: validationHub, to: bottomCenter(validator), kind: 'validation' })")
+    && graph.includes("edges.push({ from: bottomCenter(primaryNode), to: hubTop(delegationHub), kind: 'hierarchy' })")
+    && graph.includes("edges.push({ from: hubBottom(delegationHub), to: topCenter(teamLead), kind: 'hierarchy' })")
+    && graph.includes("edges.push({ from: topCenter(teamLead), to: hubBottom(validationHub), kind: 'validation' })")
+    && graph.includes("edges.push({ from: hubTop(validationHub), to: bottomCenter(validator), kind: 'validation' })")
     && graph.includes("edges.push({ from: topCenter(validator), to: bottomCenter(primaryNode), kind: 'validation' })")
+    && graph.includes("strokeDasharray={validation ? '4 3' : '2 5'}")
+    && graph.indexOf('box-bg:') < graph.indexOf('org:')
+    && graph.indexOf('org:') < graph.indexOf('box-label:')
     && graph.includes("markerEnd={validation ? 'url(#team-graph-relay-arrow)' : 'url(#team-graph-report-arrow)'}")
     && graph.includes("validation ? 'url(#team-graph-relay-arrow)'"),
   'Structure should show primary-to-lead delegation and completed work returning through validators to the primary',
