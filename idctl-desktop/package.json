@@ -1,7 +1,7 @@
 {
   "name": "idagents-control-center",
   "productName": "ID Agents Control Center",
-  "version": "0.1.668",
+  "version": "0.1.669",
   "description": "Desktop control center for id-agents — live fleet dashboard, manager chat, teams, keys.",
   "private": true,
   "main": "out/main/main.cjs",
@@ -21,6 +21,7 @@
     "test:agent-wallet-lifecycle": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/agent-wallet-lifecycle-smoke.mjs",
     "test:walletconnect-bootstrap": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/walletconnect-bootstrap-smoke.mjs",
     "test:update-target-guard": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/update-target-guard-smoke.mjs",
+    "test:manager-installer": "node ../scripts/install-id-agents-manager-smoke.mjs",
     "test:update-repo": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/update-repo-migration-smoke.mjs",
     "test:manager-updater": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/manager-updater-smoke.mjs",
     "test:team-provider-lanes": "node scripts/team-builder-provider-lanes-smoke.mjs",

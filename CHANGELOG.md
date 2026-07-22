@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.669] — 2026-07-22
+### What changed
+- Add guarded manager installer regression coverage for fresh clones, fast-forward updates, and dirty-worktree refusal
+
 ## [0.1.668] — 2026-07-22
 ### What changed
 - Keep manager update status monotonic when an installed manager is newer than published release metadata.
