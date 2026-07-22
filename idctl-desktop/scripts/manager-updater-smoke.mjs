@@ -4,6 +4,7 @@ import {
   effectiveManagerLatestVersion,
   managerUpdaterInvocation,
   managerBootstrapScriptCandidates,
+  managerUpdaterEnvironment,
   parseManagerUpdaterArguments,
   parseManagerUpdaterResult,
 } from '../src/main/managerUpdater.ts';
@@ -58,6 +59,19 @@ assert.equal(effectiveManagerLatestVersion('0.1.122', '0.1.121'), '0.1.122');
 assert.equal(effectiveManagerLatestVersion('0.1.122', '0.1.123'), '0.1.123');
 assert.equal(effectiveManagerLatestVersion('0.1.123', undefined), '0.1.123');
 assert.throws(() => parseManagerUpdaterArguments(['node'], '/Users/example'), /invalid ProgramArguments/);
+const packagedEnvironment = managerUpdaterEnvironment('/Users/example', {
+  HOME: '/Users/example',
+  PATH: '/usr/bin:/bin',
+});
+assert.equal(packagedEnvironment.HOME, '/Users/example');
+assert.equal(packagedEnvironment.npm_config_update_notifier, 'false');
+assert.deepEqual(packagedEnvironment.PATH?.split(':').slice(0, 4), [
+  '/opt/homebrew/bin',
+  '/opt/homebrew/sbin',
+  '/Users/example/.local/bin',
+  '/Users/example/.npm-global/bin',
+]);
+assert.match(packagedEnvironment.PATH || '', /\/usr\/bin:\/bin$/);
 assert.deepEqual(
   managerBootstrapScriptCandidates('/Applications/IDACC.app/Contents/Resources', '/repo/idctl-desktop'),
   [

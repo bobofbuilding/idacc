@@ -80,7 +80,7 @@ export type ManagerUpdateStatus = {
 let activeUpdate: Promise<ManagerUpdateStatus> | null = null;
 let cachedCheck: ManagerUpdateStatus | null = null;
 
-function cliPath(home = homedir()): string {
+function cliPath(home = homedir(), existingPath = process.env.PATH): string {
   let nvmBins: string[] = [];
   try {
     nvmBins = readdirSync(join(home, '.nvm', 'versions', 'node'), { withFileTypes: true })
@@ -103,8 +103,20 @@ function cliPath(home = homedir()): string {
     '/usr/local/sbin',
     '/usr/bin',
     '/bin',
-    ...(process.env.PATH ? process.env.PATH.split(':') : []),
+    ...(existingPath ? existingPath.split(':') : []),
   ])).join(':');
+}
+
+export function managerUpdaterEnvironment(
+  home = process.env.HOME || homedir(),
+  environment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return {
+    ...environment,
+    HOME: environment.HOME || home,
+    PATH: cliPath(home, environment.PATH),
+    npm_config_update_notifier: 'false',
+  };
 }
 
 export function managerBootstrapScriptCandidates(
@@ -349,8 +361,7 @@ function runUpdater(config: ManagerUpdaterConfig, dryRun: boolean): Promise<Mana
     const child = spawn(invocation.command, invocation.args, {
       cwd: config.target,
       env: {
-        ...process.env,
-        PATH: cliPath(process.env.HOME || homedir()),
+        ...managerUpdaterEnvironment(),
         ...(config.sqlitePath ? { SQLITE_PATH: config.sqlitePath } : {}),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
