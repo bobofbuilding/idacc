@@ -61,6 +61,7 @@ type TeamSource =
   | { kind: 'config'; name: string };
 type TeamAgentsGroup = { team: string; agents: Agent[] };
 type TeamSnapshot = { exists: boolean; agents: Agent[]; running: number; total: number; rosterKnown: boolean };
+type TeamLifecycleOp = 'start' | 'stop' | 'probe' | 'rebuild';
 type OrgCfg = { enabled?: boolean; autoRebuild?: boolean };
 type SecLead = { agent: string; team: string; leadsTeams: string[] };
 type HrHierarchy = {
@@ -1666,7 +1667,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       rosterKnown,
     };
   }
-  async function runTeamOp(team: string, op: 'start' | 'stop' | 'probe' | 'rebuild') {
+  async function runTeamOp(team: string, op: TeamLifecycleOp) {
     setTeamOpBusy(true); setTeamOpMsg(`checking ${team}…`);
     try {
       const snap = await currentTeamSnapshot(team);
@@ -1718,6 +1719,111 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     } catch (e) {
       setTeamOpMsg(`${op} failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally { setTeamOpBusy(false); }
+  }
+  async function currentFleetSnapshots(teamNames: string[]): Promise<Map<string, TeamSnapshot>> {
+    const [teams, groups] = await Promise.all([
+      call<Array<{ name: string; agentCount?: number }>>('teams').catch(() => []),
+      call<TeamAgentsGroup[]>('agents:allTeams', { force: true }).catch(() => null),
+    ]);
+    return new Map(teamNames.map((team) => {
+      const row = teams.find((entry) => entry.name === team);
+      const group = groups?.find((entry) => entry.team === team);
+      const agents = group?.agents ?? [];
+      const rowCount = Number(row?.agentCount) || 0;
+      const rosterKnown = Boolean(group) || (groups !== null && rowCount === 0);
+      return [team, {
+        exists: Boolean(row),
+        agents,
+        running: agents.filter(isRunnableAgent).length,
+        total: rosterKnown ? agents.length : rowCount,
+        rosterKnown,
+      } satisfies TeamSnapshot];
+    }));
+  }
+  async function runFleetOp(op: TeamLifecycleOp) {
+    const teamNames = visibleTeams.map((team) => team.name);
+    setTeamOpBusy(true);
+    setTeamOpMsg(`checking all teams for ${op}…`);
+    try {
+      const snapshots = await currentFleetSnapshots(teamNames);
+      const unverifiable = teamNames.filter((team) => {
+        const snapshot = snapshots.get(team);
+        return !snapshot?.exists || !snapshot.rosterKnown;
+      });
+      if (unverifiable.length) {
+        setTeamOpMsg(`${op} all blocked: could not verify ${unverifiable.join(', ')}. Refresh and retry.`);
+        store.refresh();
+        return;
+      }
+      const targets = teamNames.filter((team) => {
+        const snapshot = snapshots.get(team)!;
+        if (snapshot.total === 0) return false;
+        if (op === 'start') return snapshot.running < snapshot.total;
+        if (op === 'stop') return snapshot.running > 0;
+        return true;
+      });
+      if (!targets.length) {
+        setTeamOpMsg(op === 'start'
+          ? 'start all: every current agent is already running'
+          : op === 'stop'
+            ? 'stop all: no current agents are running'
+            : `${op} all: no current agents to target`);
+        return;
+      }
+      const total = targets.reduce((sum, team) => sum + snapshots.get(team)!.total, 0);
+      const running = targets.reduce((sum, team) => sum + snapshots.get(team)!.running, 0);
+      const verb = op === 'start' ? 'Start' : op === 'stop' ? 'Stop' : op === 'probe' ? 'Probe' : 'Rebuild';
+      const protectedAgents = targets.flatMap((team) => snapshots.get(team)!.agents
+        .filter((agent) => isDefaultBackboneAgent(team, agent.name))
+        .map((agent) => `${team}/${agent.name}`));
+      const guard = protectedAgents.length && (op === 'stop' || op === 'rebuild')
+        ? `\n\nGuardrail: this includes locked leadership roles (${protectedAgents.join(', ')}). Their roles remain locked, but their running state will change.`
+        : '';
+      if (!window.confirm(`${verb} agents across ${targets.length} team${targets.length === 1 ? '' : 's'}?\n\nCurrent state: ${running}/${total} running.\nTeams: ${targets.join(', ')}\n\nTeams are processed sequentially to protect manager capacity.${guard}`)) return;
+      const refreshed = await currentFleetSnapshots(targets);
+      const changed = targets.filter((team) => {
+        const before = snapshots.get(team)!;
+        const after = refreshed.get(team);
+        return !after?.exists || !after.rosterKnown || teamSnapshotStamp(after) !== teamSnapshotStamp(before);
+      });
+      if (changed.length) {
+        setTeamOpMsg(`${op} all blocked: roster changed for ${changed.join(', ')} after confirmation. Review and retry.`);
+        store.refresh();
+        return;
+      }
+
+      let attempted = 0;
+      let succeeded = 0;
+      const failures: string[] = [];
+      for (let index = 0; index < targets.length; index += 1) {
+        const team = targets[index];
+        setTeamOpMsg(`${op} all: ${team} (${index + 1}/${targets.length})…`);
+        try {
+          if (op === 'probe') {
+            const result = await call<{ probed: number; passed: number; failed: number }>('team:probe', team);
+            attempted += result.probed;
+            succeeded += result.passed;
+            if (result.failed) failures.push(`${team}: ${result.failed} unhealthy`);
+          } else {
+            const result = await call<{ total: number; done: string[]; failed: { name: string; error: string }[] }>('team:lifecycle', team, op);
+            attempted += result.total;
+            succeeded += result.done.length;
+            failures.push(...result.failed.map((failure) => `${team}/${failure.name}`));
+          }
+        } catch (error) {
+          attempted += refreshed.get(team)?.total ?? 0;
+          failures.push(`${team}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      setTeamOpMsg(failures.length
+        ? `${op} all: ${succeeded}/${attempted} succeeded · ${failures.length} failed (${failures.join(', ')})`
+        : `${op} all: ${succeeded}/${attempted} agents across ${targets.length} teams ✓`);
+      store.refresh();
+    } catch (error) {
+      setTeamOpMsg(`${op} all failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setTeamOpBusy(false);
+    }
   }
 
   // Guarded team rename/merge built from the manager primitives IDACC already has:
@@ -2127,7 +2233,14 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           <span className="grow" />
           <button className="btn small" disabled={busy} title="Open the live structure graph to select an agent and edit its instruction addendum" onClick={() => setTab('structure')}>Structure</button>
           <button className="btn small" disabled={busy} title="Open hierarchy and org sync" onClick={() => setRoutePane('hierarchy')}>Hierarchy</button>
-          {teamOpBusy ? <span className="muted small">working…</span> : teamOpMsg ? <span className={`small ${/fail/.test(teamOpMsg) ? 'status-error' : 'ok-text'}`}>{teamOpMsg}</span> : null}
+        </div>
+        <div className="row-actions" style={{ gap: 6, margin: '8px 0 10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="btn small" disabled={teamOpBusy || visibleTeams.length === 0} title="Start every stopped agent across all current teams" onClick={() => void runFleetOp('start')}>▶ Start all</button>
+          <button className="btn small danger" disabled={teamOpBusy || visibleTeams.length === 0} title="Stop every running agent across all current teams" onClick={() => void runFleetOp('stop')}>■ Stop all</button>
+          <button className="btn small" disabled={teamOpBusy || visibleTeams.length === 0} title="Probe every agent across all current teams" onClick={() => void runFleetOp('probe')}>◇ Probe all</button>
+          <button className="btn small" disabled={teamOpBusy || visibleTeams.length === 0} title="Rebuild every agent across all current teams" onClick={() => void runFleetOp('rebuild')}>↻ Rebuild all</button>
+          <span className="grow" />
+          {teamOpBusy ? <span className="muted small">working…</span> : teamOpMsg ? <span className={`small ${/fail|blocked/.test(teamOpMsg) ? 'status-error' : 'ok-text'}`}>{teamOpMsg}</span> : null}
         </div>
         <table className="grid">
           <thead>
