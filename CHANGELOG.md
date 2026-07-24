@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.679] — 2026-07-24
+### What changed
+- Make Work > Reconcile run the manager's deterministic Holding recovery across exhausted validation, stalled owners, and unassigned tasks.
+- Count and report the full Holding Pattern rather than treating only stale Doing tasks as recoverable.
+- Keep compatibility with older managers while making clear that current managers run the same bounded recovery automatically.
+
 ## [0.1.678] — 2026-07-24
 ### What changed
 - Fix manager updates from packaged macOS app

@@ -21,6 +21,12 @@ type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'defer
 type TriageResult = { considered: number; assigned: { ref: string; agent: string }[]; skipped: number; dispatched: number; error?: string };
 type StalledTriageItem = { team?: string; owner?: string; blockers?: string[]; triage?: { status?: string; taskRef?: string; actor?: string; actorTeam?: string } | null };
 type StalledTriageReport = { triagedOwners?: number; items?: StalledTriageItem[] };
+type ReconcileReport = {
+  version?: string;
+  validation?: { recovered?: number; routed?: number; skipped?: number };
+  stalled?: StalledTriageReport;
+  unowned?: { assignedCount?: number; skippedCount?: number };
+};
 type JumpstartResult = { ok: boolean; status?: string; taskRef?: string; actor?: string; message: string };
 type AssignScope = 'team' | 'selected-teams' | 'team-leads' | 'all-agents';
 type TaskSnapshot = { status: string; owner?: string; team?: string; lane: Lane; delegation?: string };
@@ -870,20 +876,39 @@ function TasksPanel({ store }: { store: FleetStore }) {
     } finally { setTriaging(false); }
   }
 
-  // Phase 2 of the CC refactor: the GUI no longer autonomously orchestrates. Stalled tasks are
-  // supervised by the MANAGER (auto check-ins + the stalled-task sweeper) — one supervisor, not
-  // three — so the board's old auto-pilot (which re-dispatched on every poll and was a major
-  // source of redundant token spend) is gone. Triage / jump-start / surface-blockers now run
-  // ONLY when you click "Reconcile" (you initiate); the per-card ↻ stays for one-off jump-start.
+  // The manager owns automatic recovery. Reconcile is the immediate/manual pass and remains
+  // backward-compatible with older managers that only expose the separate commands.
   async function reconcileNow() {
     if (autoRef.current) return;
-    if (!window.confirm(`Reconcile work now?\n\nThis can assign unowned tasks, jump-start ${stalledTasks.length} stalled task${stalledTasks.length === 1 ? '' : 's'}, and create blocker questions in Inbox.`)) return;
     autoRef.current = true;
+    const progress = toast({ kind: 'progress', text: `Reconciling ${holdingTasks.length} holding and ${unassignedTodo} unassigned task${holdingTasks.length + unassignedTodo === 1 ? '' : 's'}…` });
     try {
-      await triage(false);
-      if (stalledTasks.length) await jumpstartAll(false, false);
+      try {
+        const report = await call<ReconcileReport>('remote', '/task reconcile --all --limit 50 --force');
+        const recovered = report.validation?.recovered ?? 0;
+        const routed = report.validation?.routed ?? 0;
+        const triaged = report.stalled?.triagedOwners
+          ?? (report.stalled?.items ?? []).filter(triageDelivered).length;
+        const assigned = report.unowned?.assignedCount ?? 0;
+        const summary = `reconciled: ${recovered} validation recovered (${routed} routed), ${triaged} stalled owner${triaged === 1 ? '' : 's'} triaged, ${assigned} task${assigned === 1 ? '' : 's'} assigned`;
+        setNote(summary);
+        progress.update({ kind: 'success', text: summary });
+        await reload();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!/(?:unknown|unsupported).*(?:command|subcommand).*reconcile|usage:.*\/task/i.test(message)) throw err;
+        await triage(false);
+        if (stalledTasks.length) await jumpstartAll(false, false);
+        progress.update({ kind: 'info', text: 'reconciled with compatibility manager commands' });
+      }
       await surfaceBlockers(false);
-    } finally { autoRef.current = false; }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNote(`reconcile failed: ${message}`);
+      progress.update({ kind: 'error', text: `reconcile failed: ${message}` });
+    } finally {
+      autoRef.current = false;
+    }
   }
 
   function triageDelivered(item: StalledTriageItem): boolean {
@@ -1191,6 +1216,10 @@ function TasksPanel({ store }: { store: FleetStore }) {
       const up = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
       return up > 0 && nowMs - up > MANAGER_STALL_THRESHOLD_MS;
     });
+    const holdingTasks = tasks.filter((t) =>
+      !isRoutine(t)
+      && (laneByRef.get(ref(t)) ?? DEFAULT_LANE[colOf(t.status)]) === 'holding',
+    );
     // The Done lane shows RECENT completions (the most-recent N) so the board reads as a live
     // flow instead of looking empty when everything's finished. Older done tasks auto-archive
     // (hidden) until "show archived" is toggled. updatedAt/completedAt share a scale, so raw sort.
@@ -1214,6 +1243,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
       doneCount,
       unassignedTodo,
       stalledTasks,
+      holdingTasks,
       archivedCount: tasks.filter((t) => isDone(t) && !recentDoneRefs.has(ref(t)) && (!hideRoutine || !isRoutine(t))).length,
       filteredCount: filtered.length,
       visibleOpenCount,
@@ -1230,6 +1260,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
     doneCount,
     unassignedTodo,
     stalledTasks,
+    holdingTasks,
     archivedCount,
     filteredCount,
     visibleOpenCount,
@@ -1247,12 +1278,12 @@ function TasksPanel({ store }: { store: FleetStore }) {
         <span className="muted small" title={`Visible board: ${visibleOpenCount} open, ${visibleDoneCount} done. Total live task pool: ${openCount} open, ${doneCount} done.`}>
           {visibleOpenCount} visible open{hiddenOpenCount ? ` · ${hiddenOpenCount} hidden open` : ''} · {visibleDoneCount} visible done{hiddenDoneCount ? ` · ${doneCount} done total` : ''}
         </span>
-        {/* The MANAGER supervises stalled work now (auto check-ins + sweeper) — the board just shows it. */}
-        <span className="muted small" title="The manager supervises stalled tasks (auto check-ins + the stalled-task sweeper). Use Reconcile to triage unassigned work, jump-start stalled tasks, and surface blocker decisions on demand.">
-          · ⛭ manager-supervised{triaging ? ' · triaging…' : unassignedTodo ? ` · ${unassignedTodo} unassigned` : ''}{stalledTasks.length ? ` · ${stalledTasks.length} stalled` : ''}
+        {/* The manager sweeper runs the same recovery automatically; Reconcile forces it now. */}
+        <span className="muted small" title="The manager automatically recovers exhausted validation, triages stalled owners, and assigns unowned work. Reconcile runs that deterministic pass immediately and surfaces genuine user decisions.">
+          · ⛭ manager-supervised{triaging ? ' · triaging…' : unassignedTodo ? ` · ${unassignedTodo} unassigned` : ''}{holdingTasks.length ? ` · ${holdingTasks.length} holding` : ''}{stalledTasks.length ? ` · ${stalledTasks.length} stalled` : ''}
         </span>
         <span className="grow" />
-        <button className="btn" disabled={busy || triaging} title="Triage unassigned work, jump-start stalled tasks, and surface blocker decisions — on demand (no longer automatic)" onClick={() => void reconcileNow()}>⟳ Reconcile</button>
+        <button className="btn" disabled={busy || triaging} title="Run the manager recovery pass now; the same recovery also runs automatically in the manager sweeper" onClick={() => void reconcileNow()}>⟳ Reconcile</button>
         <button className="btn" disabled={busy || proposing} title="Create work: auto-plan, direct assignment, schedule, loop, or dream" onClick={() => { setShowAssign((v) => !v); setAssignNote(''); setProposal(null); }}>{showAssign ? '− Close' : '⚡ Create work'}</button>
         <button className="btn primary" disabled={busy} onClick={() => void newTask()}>+ New task</button>
       </div>
