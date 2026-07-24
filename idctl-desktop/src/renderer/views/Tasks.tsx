@@ -23,7 +23,14 @@ type StalledTriageItem = { team?: string; owner?: string; blockers?: string[]; t
 type StalledTriageReport = { triagedOwners?: number; items?: StalledTriageItem[] };
 type ReconcileReport = {
   version?: string;
-  validation?: { recovered?: number; routed?: number; skipped?: number };
+  validation?: {
+    recovered?: number;
+    routed?: number;
+    skipped?: number;
+    pendingReviewed?: number;
+    pendingRouted?: number;
+    pendingFailed?: number;
+  };
   stalled?: StalledTriageReport;
   unowned?: { assignedCount?: number; skippedCount?: number };
 };
@@ -159,7 +166,8 @@ const LANE_STATUS: Record<Lane, Col> = {
 const DEFAULT_LANE: Record<Col, Lane> = { todo: 'todo', doing: 'doing', done: 'done' };
 function workflowLane(t: Task): Lane | null {
   if (t.workflowState === 'triage_required' || t.workflowState === 'validation_pending') return 'under-review';
-  if (t.workflowState === 'blocked' || t.workflowState === 'stalled' || t.workflowState === 'failed') return 'holding';
+  if (t.workflowState === 'failed') return colOf(t.status) === 'done' ? 'done' : 'holding';
+  if (t.workflowState === 'blocked' || t.workflowState === 'stalled') return 'holding';
   if (t.workflowState === 'validated' || t.workflowState === 'superseded' || t.workflowState === 'retired') return 'done';
   if (t.workflowState === 'executing') return 'doing';
   if (t.workflowState === 'ready' || t.workflowState === 'queued') return 'todo';
@@ -886,11 +894,12 @@ function TasksPanel({ store }: { store: FleetStore }) {
       try {
         const report = await call<ReconcileReport>('remote', '/task reconcile --all --limit 20 --force');
         const recovered = report.validation?.recovered ?? 0;
-        const routed = report.validation?.routed ?? 0;
+        const routed = (report.validation?.routed ?? 0) + (report.validation?.pendingRouted ?? 0);
+        const retired = report.validation?.pendingFailed ?? 0;
         const triaged = report.stalled?.triagedOwners
           ?? (report.stalled?.items ?? []).filter(triageDelivered).length;
         const assigned = report.unowned?.assignedCount ?? 0;
-        const summary = `reconciled: ${recovered} validation recovered (${routed} routed), ${triaged} stalled owner${triaged === 1 ? '' : 's'} triaged, ${assigned} task${assigned === 1 ? '' : 's'} assigned`;
+        const summary = `reconciled: ${recovered} validation recovered (${routed} routed, ${retired} expired), ${triaged} stalled owner${triaged === 1 ? '' : 's'} triaged, ${assigned} task${assigned === 1 ? '' : 's'} assigned`;
         setNote(summary);
         progress.update({ kind: 'success', text: summary });
         await reload();

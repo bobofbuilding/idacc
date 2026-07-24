@@ -18,6 +18,11 @@ assert.match(
 );
 assert.match(
   source,
+  /workflowState === 'failed'\) return colOf\(t\.status\) === 'done' \? 'done' : 'holding'/,
+  'Terminal failed outcomes must remain auditable in Done instead of appearing as actionable Holding work',
+);
+assert.match(
+  source,
   /automatically recovers exhausted validation, triages stalled owners, and assigns unowned work/,
   'The Work page must explain that manager reconciliation is automatic',
 );
