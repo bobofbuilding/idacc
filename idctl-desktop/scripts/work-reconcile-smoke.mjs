@@ -23,8 +23,18 @@ assert.match(
 );
 assert.match(
   source,
-  /automatically recovers exhausted validation, triages stalled owners, and assigns unowned work/,
-  'The Work page must explain that manager reconciliation is automatic',
+  /automatically routes Under Review and Holding Pattern tasks through bounded team-lead triage/,
+  'The Work page must explain that both waiting lanes are automatically triaged',
+);
+assert.match(
+  source,
+  /const waitingRouted = report\.waiting\?\.routed \?\? 0/,
+  'Reconcile must report how many waiting tasks were routed',
+);
+assert.match(
+  source,
+  /Reconciling \$\{waitingCount\} waiting/,
+  'Reconcile progress must include both waiting columns',
 );
 assert.match(
   source,

@@ -23,6 +23,12 @@ type StalledTriageItem = { team?: string; owner?: string; blockers?: string[]; t
 type StalledTriageReport = { triagedOwners?: number; items?: StalledTriageItem[] };
 type ReconcileReport = {
   version?: string;
+  waiting?: {
+    scanned?: number;
+    considered?: number;
+    routed?: number;
+    skipped?: number;
+  };
   validation?: {
     recovered?: number;
     routed?: number;
@@ -889,7 +895,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
   async function reconcileNow() {
     if (autoRef.current) return;
     autoRef.current = true;
-    const progress = toast({ kind: 'progress', text: `Reconciling ${holdingTasks.length} holding and ${unassignedTodo} unassigned task${holdingTasks.length + unassignedTodo === 1 ? '' : 's'}…` });
+    const waitingCount = underReviewTasks.length + holdingTasks.length;
+    const progress = toast({ kind: 'progress', text: `Reconciling ${waitingCount} waiting and ${unassignedTodo} unassigned task${waitingCount + unassignedTodo === 1 ? '' : 's'}…` });
     try {
       try {
         const report = await call<ReconcileReport>('remote', '/task reconcile --all --limit 20 --force');
@@ -898,8 +905,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
         const retired = report.validation?.pendingFailed ?? 0;
         const triaged = report.stalled?.triagedOwners
           ?? (report.stalled?.items ?? []).filter(triageDelivered).length;
+        const waitingRouted = report.waiting?.routed ?? 0;
         const assigned = report.unowned?.assignedCount ?? 0;
-        const summary = `reconciled: ${recovered} validation recovered (${routed} routed, ${retired} expired), ${triaged} stalled owner${triaged === 1 ? '' : 's'} triaged, ${assigned} task${assigned === 1 ? '' : 's'} assigned`;
+        const summary = `reconciled: ${waitingRouted} waiting task${waitingRouted === 1 ? '' : 's'} routed, ${recovered} validation recovered (${routed} routed, ${retired} expired), ${triaged} stalled owner${triaged === 1 ? '' : 's'} triaged, ${assigned} task${assigned === 1 ? '' : 's'} assigned`;
         setNote(summary);
         progress.update({ kind: 'success', text: summary });
         await reload();
@@ -1229,6 +1237,10 @@ function TasksPanel({ store }: { store: FleetStore }) {
       !isRoutine(t)
       && (laneByRef.get(ref(t)) ?? DEFAULT_LANE[colOf(t.status)]) === 'holding',
     );
+    const underReviewTasks = tasks.filter((t) =>
+      !isRoutine(t)
+      && (laneByRef.get(ref(t)) ?? DEFAULT_LANE[colOf(t.status)]) === 'under-review',
+    );
     // The Done lane shows RECENT completions (the most-recent N) so the board reads as a live
     // flow instead of looking empty when everything's finished. Older done tasks auto-archive
     // (hidden) until "show archived" is toggled. updatedAt/completedAt share a scale, so raw sort.
@@ -1253,6 +1265,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
       unassignedTodo,
       stalledTasks,
       holdingTasks,
+      underReviewTasks,
       archivedCount: tasks.filter((t) => isDone(t) && !recentDoneRefs.has(ref(t)) && (!hideRoutine || !isRoutine(t))).length,
       filteredCount: filtered.length,
       visibleOpenCount,
@@ -1270,6 +1283,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
     unassignedTodo,
     stalledTasks,
     holdingTasks,
+    underReviewTasks,
     archivedCount,
     filteredCount,
     visibleOpenCount,
@@ -1288,8 +1302,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
           {visibleOpenCount} visible open{hiddenOpenCount ? ` · ${hiddenOpenCount} hidden open` : ''} · {visibleDoneCount} visible done{hiddenDoneCount ? ` · ${doneCount} done total` : ''}
         </span>
         {/* The manager sweeper runs the same recovery automatically; Reconcile forces it now. */}
-        <span className="muted small" title="The manager automatically recovers exhausted validation, triages stalled owners, and assigns unowned work. Reconcile runs that deterministic pass immediately and surfaces genuine user decisions.">
-          · ⛭ manager-supervised{triaging ? ' · triaging…' : unassignedTodo ? ` · ${unassignedTodo} unassigned` : ''}{holdingTasks.length ? ` · ${holdingTasks.length} holding` : ''}{stalledTasks.length ? ` · ${stalledTasks.length} stalled` : ''}
+        <span className="muted small" title="The manager automatically routes Under Review and Holding Pattern tasks through bounded team-lead triage, recovers exhausted validation, triages stalled owners, and assigns unowned work. Reconcile runs that deterministic pass immediately and surfaces only genuine user decisions.">
+          · ⛭ manager-supervised{triaging ? ' · triaging…' : unassignedTodo ? ` · ${unassignedTodo} unassigned` : ''}{underReviewTasks.length ? ` · ${underReviewTasks.length} under review` : ''}{holdingTasks.length ? ` · ${holdingTasks.length} holding` : ''}{stalledTasks.length ? ` · ${stalledTasks.length} stalled` : ''}
         </span>
         <span className="grow" />
         <button className="btn" disabled={busy || triaging} title="Run the manager recovery pass now; the same recovery also runs automatically in the manager sweeper" onClick={() => void reconcileNow()}>⟳ Reconcile</button>
