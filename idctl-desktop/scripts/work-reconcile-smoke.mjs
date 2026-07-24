@@ -8,7 +8,7 @@ const source = fs.readFileSync(path.join(here, '../src/renderer/views/Tasks.tsx'
 
 assert.match(
   source,
-  /call<ReconcileReport>\('remote', '\/task reconcile --all --limit 50 --force'\)/,
+  /call<ReconcileReport>\('remote', '\/task reconcile --all --limit 20 --force'\)/,
   'Reconcile must use the manager-owned deterministic recovery command',
 );
 assert.match(

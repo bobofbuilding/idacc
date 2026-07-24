@@ -884,7 +884,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
     const progress = toast({ kind: 'progress', text: `Reconciling ${holdingTasks.length} holding and ${unassignedTodo} unassigned task${holdingTasks.length + unassignedTodo === 1 ? '' : 's'}…` });
     try {
       try {
-        const report = await call<ReconcileReport>('remote', '/task reconcile --all --limit 50 --force');
+        const report = await call<ReconcileReport>('remote', '/task reconcile --all --limit 20 --force');
         const recovered = report.validation?.recovered ?? 0;
         const routed = report.validation?.routed ?? 0;
         const triaged = report.stalled?.triagedOwners

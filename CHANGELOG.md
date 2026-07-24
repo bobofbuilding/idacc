@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.680] — 2026-07-24
+### What changed
+- Bound each manual all-team reconciliation to 20 tasks so immediate recovery cannot create a validator surge.
+
 ## [0.1.679] — 2026-07-24
 ### What changed
 - Make Work > Reconcile run the manager's deterministic Holding recovery across exhausted validation, stalled owners, and unassigned tasks.
