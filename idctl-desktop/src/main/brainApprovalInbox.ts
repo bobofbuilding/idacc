@@ -1,5 +1,9 @@
 import { addQuestion, listQuestions, removeQuestion, type BlockerQuestion } from './questionstore.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
+import {
+  brainApprovalAutomationState,
+  shouldDeferBrainApprovalToAgents,
+} from './brainApprovalAutomation.ts';
 
 type BrainApproval = {
   id: number | string;
@@ -382,6 +386,15 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
   const subject = clip(approval.subject || '(no subject)', 200);
   const risk = clip(approval.risk_level || approval.governance?.risk?.level || 'medium', 80);
   const reason = clip(approval.governance?.human_attention?.reason || approval.payload?.['recommendation'] || '', 240);
+  const automation = brainApprovalAutomationState(approval.id);
+  const automationDetail = automation?.status === 'escalated'
+    ? [
+        '',
+        'Agent review escalation:',
+        `IDACC first asked independent fleet reviewers to resolve this without operator input. ${clip(automation.reason || 'They could not reach a safe decision.', 500)}`,
+        'The operator is seeing this only because the bounded automatic review path could not safely finish.',
+      ]
+    : [];
   const detail = [
     `Brain approval #${id}`,
     '',
@@ -393,6 +406,7 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
     `Resolution path: ${resolutionPath(kind)}.`,
     'What happens after approval: IDACC marks this approval as approved and Brain may place it into its guarded apply queue. The actual apply step remains separate and auditable.',
     'What happens after rejection: IDACC marks this approval as rejected and Brain keeps the current state.',
+    ...automationDetail,
   ].join('\n');
 
   const options = kind === 'entity.alias.fuzzy_merge'
@@ -422,7 +436,9 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
       requestedBy: approval.requested_by ?? 'brain',
       status: approval.status ?? 'pending',
       sourceUrl: `${brainBaseUrl()}/dashboard/health`,
-      detailVersion: 4,
+      detailVersion: 5,
+      agentReviewStatus: automation?.status,
+      agentReviewReason: automation?.reason,
     },
   };
 }
@@ -430,7 +446,8 @@ function questionForApproval(approval: BrainApproval): BlockerQuestion {
 async function doSync(limit = 100): Promise<BrainApprovalSyncResult> {
   const response = await brainJson<BrainApprovalListResponse>(`/approvals?status=pending&limit=${Math.max(1, Math.min(200, limit))}`);
   const approvals = response.approvals ?? response.data?.approvals ?? [];
-  const pendingKeys = new Set(approvals.map((approval) => `brain-approval:${approval.id}`));
+  const operatorApprovals = approvals.filter((approval) => !shouldDeferBrainApprovalToAgents(approval));
+  const pendingKeys = new Set(operatorApprovals.map((approval) => `brain-approval:${approval.id}`));
   const existing = listQuestions().filter((q) => q.dedupeKey?.startsWith('brain-approval:') || q.taskRef?.startsWith('brain-approval:'));
   const existingByKey = new Map(existing.map((q) => [q.dedupeKey || q.taskRef || q.id, q]));
 
@@ -444,7 +461,7 @@ async function doSync(limit = 100): Promise<BrainApprovalSyncResult> {
   }
 
   let synced = 0;
-  for (const approval of approvals) {
+  for (const approval of operatorApprovals) {
     const key = `brain-approval:${approval.id}`;
     const next = questionForApproval(approval);
     const current = existingByKey.get(key);

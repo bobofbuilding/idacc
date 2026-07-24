@@ -28,6 +28,7 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^questions:(add|remove)$/, ['questions', 'inbox', 'tasks', 'work', 'brain']],
   [/^brainApprovals:syncInbox$/, ['questions', 'inbox', 'brain']],
   [/^brainApproval:resolve$/, ['questions', 'inbox', 'brain']],
+  [/^brainApproval:autoReview$/, ['questions', 'inbox', 'tasks', 'brain']],
   [/^inbox:(respond|dismiss)$/, ['inbox', 'tasks', 'dashboard', 'brain']],
   [/^tasks:set(Lane|Deps|Review)$/, ['tasks', 'work', 'brain']],
   [/^work:(createPlan|delegateToTeamLeads|fanout|triage)$/, ['tasks', 'work', 'dashboard', 'brain']],

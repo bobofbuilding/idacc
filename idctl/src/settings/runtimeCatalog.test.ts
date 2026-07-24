@@ -204,6 +204,18 @@ assert.deepEqual(
   'Copilot CLI should become assignable when its binary and linked-account evidence are both present',
 );
 
+assert.equal(
+  managedRuntimeHasEvidence({ runtime: 'kimi-cli', installed: true, linked: true, loggedIn: false, statusSupported: false }),
+  true,
+  'Kimi OAuth evidence should surface the linked runtime in Settings and freshness views',
+);
+
+assert.deepEqual(
+  offerableRuntimes([], undefined, [{ runtime: 'kimi-cli', installed: true, linked: true, loggedIn: false, statusSupported: false }]),
+  ['kimi-cli'],
+  'Kimi should become assignable when its reviewed manager harness and OAuth credential evidence are both present',
+);
+
 assert.deepEqual(
   offerableRuntimes([], 'grok', [{ runtime: 'grok', installed: true, loggedIn: false, statusSupported: false }]),
   ['grok'],

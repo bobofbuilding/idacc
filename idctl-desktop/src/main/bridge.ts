@@ -57,7 +57,8 @@ import { headroomPluginPathAudit } from './headroomPlugin.ts';
 import { contextBudgetDryRun, contextBudgetReport, loadRecentContextBudgetRecords, optimizeAskCommand, readContextBudgetRecord } from './contextBudget.ts';
 import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayOptions } from './contextReplay.ts';
 import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
-import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, type GoalDriverConfig } from './goaldriver.ts';
+import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, syncGoalDriverConfig, type GoalDriverConfig } from './goaldriver.ts';
+import { discoverClaudeCliModels } from './claudeModels.ts';
 import { processDraftProposalsOnce, startDraftDispatcherLoop } from './draftDispatcher.ts';
 import { buildOrgHierarchy, previewOrgSync, syncOrg, startOrgSyncLoop } from './orgSync.ts';
 import { syncDomainsForMethod } from '../shared/syncDomains.ts';
@@ -378,7 +379,7 @@ async function previewProjectsSync(rootArg?: string): Promise<{
   return { ok: true, root, found: scan.found.length, added, adopted, existing, total: projects.length + added, addNames, adoptNames };
 }
 
-type CliModelRuntime = 'grok' | 'antigravity';
+type CliModelRuntime = 'claude' | 'grok' | 'antigravity';
 type CliModelCacheEntry = { at: number; models: string[] };
 const LIVE_CLI_MODEL_TIMEOUT_MS = 15_000;
 const cliModelCache = new Map<CliModelRuntime, CliModelCacheEntry>();
@@ -511,12 +512,16 @@ function antigravityModelsFromCli(refresh = false): string[] {
 }
 
 /** Catalog with subscription CLI live model lists merged into curated/runtime providers. */
-function runtimeCatalogWithLiveCliModels(options: { refreshCli?: boolean } = {}): Record<string, string[]> {
+function runtimeCatalogWithLiveCliModels(options: { refreshCli?: boolean; refreshClaude?: boolean } = {}): Record<string, string[]> {
   const cat = buildRuntimeCatalog(loadSettings().providers);
+  const refreshCli = Boolean(options.refreshCli);
+  const claude = cachedCliModels('claude', refreshCli || Boolean(options.refreshClaude), () => discoverClaudeCliModels().models);
+  for (const runtime of ['claude-code-cli', 'claude-code-local']) {
+    if (claude.length) cat[runtime] = Array.from(new Set([...claude, ...(cat[runtime] ?? [])]));
+  }
   const codex = codexModelsFromCache();
   if (codex.length) cat.codex = Array.from(new Set([...codex, ...(cat.codex ?? [])]));
   cat.codex = filterCodexModelsForInstalledCli(cat.codex ?? [], codex);
-  const refreshCli = Boolean(options.refreshCli);
   const grok = grokModelsFromCli(refreshCli);
   if (grok.length) cat.grok = Array.from(new Set([...grok, ...(cat.grok ?? [])]));
   const antigravity = antigravityModelsFromCli(refreshCli);
@@ -528,8 +533,8 @@ function runtimeCatalogWithLiveCliModels(options: { refreshCli?: boolean } = {})
  * Per-runtime model freshness: the live list + where it came from + when it was last
  * refreshed. Feeds the UI so the operator can see each runtime's models really are current
  * (and which ones are curated fallbacks with no live source). codex reads its own CLI cache
- * (mtime = freshness); the claude and ollama runtimes read their backing provider's last sync;
- * cursor-cli is curated-only (no public model API).
+ * (mtime = freshness); Claude Code reads its CLI policy/account cache; provider-backed
+ * runtimes read their backing provider's last sync; cursor-cli is curated-only.
  */
 type RuntimeFreshness = {
   runtime: string;
@@ -537,7 +542,7 @@ type RuntimeFreshness = {
   kind?: 'harness' | RuntimeModelLaneKind;
   models: string[];
   count: number;
-  source: 'codex-cache' | 'grok-cli' | 'antigravity-cli' | 'provider' | 'curated' | 'none';
+  source: 'claude-cli' | 'codex-cache' | 'grok-cli' | 'antigravity-cli' | 'provider' | 'curated' | 'none';
   provider?: string;
   lastCheckedMs: number | null;
   selectable?: boolean;
@@ -547,6 +552,7 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
   const providers = loadSettings().providers;
   const enrichedProviders = listProvidersEnriched();
   const cat = runtimeCatalogWithLiveCliModels();
+  const claudeInfo = cliModelInfo('claude');
   const grokInfo = cliModelInfo('grok');
   const antigravityInfo = cliModelInfo('antigravity');
   const managed = await subsStatus().then((rows) => Object.values(rows)).catch(() => []);
@@ -592,6 +598,20 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
       try { mt = statSync(join(homedir(), '.codex', 'models_cache.json')).mtimeMs; } catch { mt = null; }
       const live = codexModelsFromCache().length > 0;
       return { runtime: rt, kind: 'harness', models, count: models.length, source: live ? 'codex-cache' : 'curated', lastCheckedMs: live ? mt : null, selectable, detail: unavailableDetail };
+    }
+    if (rt === 'claude-code-cli' || rt === 'claude-code-local') {
+      const discovery = discoverClaudeCliModels();
+      const live = (claudeInfo?.models.length ?? 0) > 0;
+      return {
+        runtime: rt,
+        kind: 'harness',
+        models,
+        count: models.length,
+        source: live ? 'claude-cli' : 'curated',
+        lastCheckedMs: live ? (discovery.lastCheckedMs ?? claudeInfo?.at ?? null) : null,
+        selectable,
+        detail: unavailableDetail ?? discovery.detail,
+      };
     }
     if (rt === 'grok') {
       const live = (grokInfo?.models.length ?? 0) > 0;
@@ -639,18 +659,26 @@ async function probeAllRuntimes(): Promise<Record<string, string[]>> {
 /** Refresh loopback model servers without probing unrelated cloud/API backends. */
 async function probeLocalRuntimes(): Promise<Record<string, string[]>> {
   const providers = loadSettings().providers;
+  // Refresh cheap subscription-CLI metadata independently so an offline local
+  // model server cannot keep Claude account/config choices stale.
+  runtimeCatalogWithLiveCliModels({ refreshClaude: true });
   await Promise.all(
     providers
       .filter((p) => p.enabled !== false && isLocalProvider(p))
       .map(async (p) => {
-        const outcome = await new ProviderClient(p, resolveProviderKey(p)).probe(undefined, 3000);
-        recordProviderSync(p.name, {
-          at: Date.now(),
-          status: outcome.status,
-          modelCount: outcome.models.length,
-          models: outcome.models.slice(0, 200).map((m) => m.id),
-          keySource: keySourceOf(p),
-        });
+        try {
+          const outcome = await new ProviderClient(p, resolveProviderKey(p)).probe(undefined, 3000);
+          recordProviderSync(p.name, {
+            at: Date.now(),
+            status: outcome.status,
+            modelCount: outcome.models.length,
+            models: outcome.models.slice(0, 200).map((m) => m.id),
+            keySource: keySourceOf(p),
+          });
+        } catch {
+          // Preserve the last known-good provider catalog; other runtime lanes
+          // still refresh during this pass.
+        }
       }),
   );
   return runtimeCatalogWithLiveCliModels();
@@ -1690,8 +1718,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'draftDispatcher:runOnce': () => processDraftProposalsOnce(client),
   'goalDriver:getConfig': async () => goalDriverConfig(),
   'goalDriver:setConfig': async (partial: Partial<GoalDriverConfig>) => {
-    setGoalDriver(normalizeGoalDriverConfig({ ...goalDriverConfig(), ...(partial ?? {}) }));
-    return goalDriverConfig();
+    const next = normalizeGoalDriverConfig({ ...goalDriverConfig(), ...(partial ?? {}) });
+    setGoalDriver(next);
+    await syncGoalDriverConfig(client, next);
+    return next;
   },
   'goalDriver:runOnce': async () => runGoalDriverOnce(() => client, goalDriverConfig()),
   'goals:syncInstructions': async () => {
@@ -2355,7 +2385,7 @@ export function startOrgSync(): () => void {
   return startOrgSyncLoop(() => client);
 }
 
-/** Start the disabled-by-default goal driver loop against the live manager client. */
+/** Keep the manager-owned goal cadence configuration synchronized with IDACC settings. */
 export function startGoalDriver(): () => void {
   return startGoalDriverLoop(() => client, goalDriverConfig);
 }

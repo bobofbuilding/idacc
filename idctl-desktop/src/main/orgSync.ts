@@ -21,6 +21,7 @@ import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { slugName } from '../../../idctl/src/api/teamSpec.ts';
 import { loadSettings, type SecondaryLead } from '../../../idctl/src/settings/store.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
+import { dedupeGoalInstructionMemories } from './goaldriver.ts';
 import { isActiveStatus } from './work.ts';
 
 const ORG_BEGIN = '<!-- BEGIN id-agents org -->';
@@ -244,8 +245,8 @@ function composeOrgBlock(
 /** Pull the brain's current team-instruction memories for a team (best-effort, short timeout). */
 async function brainInstructions(team: string): Promise<string[]> {
   const memories = await brain.sharedMemory({ tag: 'team-instruction', project: team, limit: 8 });
-  return memories
-    .filter((m) => m.agent_id === 'team-instructions' && m.content && m.mem_key !== 'org:hierarchy')
+  return dedupeGoalInstructionMemories(memories
+    .filter((m) => m.agent_id === 'team-instructions' && m.content && m.mem_key !== 'org:hierarchy'))
     .map((m) => `${String(m.content).trim()}${m.id ? ` [memory:${m.id}]` : ''}`);
 }
 

@@ -21,7 +21,7 @@ export type RuntimeFreshnessRow = {
   kind?: 'harness' | RuntimeModelLaneKind;
   models?: string[];
   count: number;
-  source: 'codex-cache' | 'grok-cli' | 'antigravity-cli' | 'provider' | 'curated' | 'none';
+  source: 'claude-cli' | 'codex-cache' | 'grok-cli' | 'antigravity-cli' | 'provider' | 'curated' | 'none';
   provider?: string;
   lastCheckedMs: number | null;
   selectable?: boolean;

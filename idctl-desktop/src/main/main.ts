@@ -23,6 +23,12 @@ import { listGoals, getGoal, saveGoal, removeGoal, type Goal } from './goalstore
 import { listDreams, getDream, saveDream, removeDream, type Dream } from './dreamstore.ts';
 import { listQuestions, addQuestion, removeQuestion, type BlockerQuestion } from './questionstore.ts';
 import { resolveBrainApprovalFromInbox, syncBrainApprovalInbox } from './brainApprovalInbox.ts';
+import {
+  configureBrainApprovalAutomation,
+  runBrainApprovalAutomationOnce,
+  startBrainApprovalAutomationLoop,
+  type BrainApprovalReviewer,
+} from './brainApprovalAutomation.ts';
 import { autoCreatePendingLearnTasks, getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, recoverStaleMaterials, removeMaterial, routePendingLearnMaterials, saveMaterial, subscribeMaterialChanges, syncUnsyncedMaterialsToBrain, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
 import { generateImage, readImage, imageModels, getImageServer, detectImageServer, probeImageServer } from './images.ts';
 import { listLocalModelCatalog, loadSettings, mergeLocalModelCatalog, removeEvmRpc, saveSettings, setUpdateSettings, setImageServer, setWalletConnectSettings, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
@@ -60,6 +66,7 @@ let stopMaterialChangeBridge: (() => void) | null = null;
 let kickLearnQueueRunner: ((delayMs?: number) => void) | null = null;
 let kickLearnBrainBackfillRunner: ((delayMs?: number) => void) | null = null;
 let stopDraftDispatcher: (() => void) | null = null;
+let stopBrainApprovalAutomation: (() => void) | null = null;
 let rendererSafeMode = false;
 let rendererRecoveryFirstAt = 0;
 let rendererRecoveryAttempts = 0;
@@ -84,6 +91,12 @@ type TeamLeadDelegationResult = {
   dispatched: number;
   deferred: number;
   errors?: string[];
+};
+
+type FleetAgentGroup = {
+  team?: string;
+  name?: string;
+  agents?: Array<{ name?: string; status?: string; role?: string; metadata?: Record<string, unknown> }>;
 };
 
 type RendererCrashState = {
@@ -612,6 +625,45 @@ function startLearnQueueRunner(): () => void {
     kickLearnQueueRunner = null;
     if (timer) clearTimeout(timer);
   };
+}
+
+function approvalReviewerSpecialty(team: string, agent: string): BrainApprovalReviewer['specialty'] {
+  if (team === 'skillmesh-ops' || /skill/i.test(agent)) return 'skill-domain';
+  if (/research|fact-check/i.test(agent)) return 'evidence';
+  if (/coder|architect|engineer|qa/i.test(agent)) return 'implementation';
+  return 'coordination';
+}
+
+async function availableBrainApprovalReviewers(): Promise<BrainApprovalReviewer[]> {
+  const groups = await bridgeCall('agents:allTeams', []) as FleetAgentGroup[];
+  const reviewers: BrainApprovalReviewer[] = [];
+  for (const group of groups ?? []) {
+    const team = String(group.team || group.name || '').trim();
+    if (!team) continue;
+    for (const row of group.agents ?? []) {
+      const agent = String(row.name || '').trim();
+      const status = String(row.status || '').toLowerCase();
+      if (!agent || !['running', 'active', 'working', 'idle'].includes(status)) continue;
+      const candidate = (team === 'default' && ['coder', 'researcher', 'lead'].includes(agent))
+        || (team === 'skillmesh-ops' && /lead|discover|guardian|marketplace/i.test(agent))
+        || /(?:research|skillmesh|engineering)-lead$/i.test(agent);
+      if (!candidate) continue;
+      reviewers.push({ team, agent, specialty: approvalReviewerSpecialty(team, agent) });
+    }
+  }
+  return reviewers;
+}
+
+function configureAutomaticBrainApprovalReview(): void {
+  configureBrainApprovalAutomation({
+    reviewers: availableBrainApprovalReviewers,
+    start: async (reviewer, prompt, sessionId) => bridgeCall('dispatch:start', [
+      `/ask ${reviewer.agent} ${JSON.stringify(prompt)}`,
+      sessionId,
+      reviewer.team,
+    ]) as Promise<{ queryId?: string; inline?: string }>,
+    poll: async (reviewer, queryId) => bridgeCall('query:poll', [queryId, 0, reviewer.team]) as Promise<{ status?: string; text?: string; error?: string }>,
+  });
 }
 
 async function learnProcessContext(): Promise<ProcessMaterialContext> {
@@ -1812,6 +1864,19 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     try { startModelRefreshLoop(() => publishStoreChange('runtime:probe')); } catch (e) { console.warn('[model-refresh] failed to start:', e); }
     // Disabled by default: when enabled, active+autopilot goals gap-fill fleet tasks.
     try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
+    // Medium-risk, non-authority Brain skill proposals are reviewed by two
+    // independent fleet agents. Only genuine disagreement or privileged/sensitive
+    // scope is allowed to reach the operator Inbox; unavailable reviewers wait.
+    try {
+      configureAutomaticBrainApprovalReview();
+      stopBrainApprovalAutomation = startBrainApprovalAutomationLoop((result) => {
+        void syncBrainApprovalInbox({ force: true }).finally(() => {
+          publishStoreChange('brainApproval:autoReview');
+          recordControlAction('brainApproval:autoReview', ['background'], result);
+        });
+      });
+      void runBrainApprovalAutomationOnce();
+    } catch (e) { console.warn('[brain-approval-review] failed to start:', e); }
     // Work > Learn queue: process newly-added materials even when the Learn tab is not mounted.
     try {
       stopMaterialChangeBridge = subscribeMaterialChanges((reason, material) => {
@@ -1858,6 +1923,7 @@ app.on('will-quit', () => { try { stopGoalDriver?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopLearnQueueRunner?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopLearnBrainBackfillRunner?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopMaterialChangeBridge?.(); } catch { /* */ } });
+app.on('will-quit', () => { try { stopBrainApprovalAutomation?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopDraftDispatcher?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* */ } });
 app.on('child-process-gone', (_event, details) => {

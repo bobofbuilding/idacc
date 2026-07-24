@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { brain, type BrainEntity } from '../../idctl/src/api/brain.ts';
 import { getMaterial, listMaterials, processNextMaterial, saveMaterial } from '../src/main/materialstore.ts';
 
-const LEARN_BRAIN_SYNC_SCHEMA_VERSION = 3;
+const LEARN_BRAIN_SYNC_SCHEMA_VERSION = 4;
 const tempRoot = mkdtempSync(join(tmpdir(), 'idacc-learn-queue-'));
 const previousConfig = process.env.IDCTL_CONFIG;
 process.env.IDCTL_CONFIG = join(tempRoot, 'idctl', 'config.json');
@@ -142,4 +142,35 @@ async function main(): Promise<void> {
     (pdfMaterial.extractionWarnings ?? []).some((warning) => /blocked it from goal matching and Brain sync|little readable text/i.test(warning)),
     'raw PDF internals should be quarantined with an extraction warning',
   );
+
+  saveMaterial({
+    id: 'legacyretry',
+    title: 'Legacy unbounded retry fixture',
+    kind: 'site',
+    source: 'https://example.com/legacy-retry',
+    status: 'ready',
+    stage: 'recommendations',
+    activeGoalMatches: [{
+      id: 'goal-legacy',
+      title: 'Bound recursive learning',
+      team: 'default',
+      priority: 'primary',
+      score: 10,
+      reason: 'fixture',
+    }],
+    recommendations: [{
+      id: 'rec_legacy',
+      type: 'task',
+      title: 'Legacy failed task automation',
+      body: 'This record predates bounded retry metadata.',
+      autoTaskStatus: 'failed',
+      autoTaskError: 'previous transient failure',
+      reviewState: 'draft',
+      createdAt: Date.now(),
+    }],
+  });
+  const legacyRetry = getMaterial('legacyretry');
+  assert.equal(legacyRetry?.recommendations?.[0]?.autoTaskStatus, 'parked');
+  assert.equal(legacyRetry?.recommendations?.[0]?.autoTaskAttempts, 3);
+  assert.match(legacyRetry?.recommendations?.[0]?.autoTaskError ?? '', /Previous unbounded retry cycle parked/);
 }

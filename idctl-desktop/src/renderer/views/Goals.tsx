@@ -183,7 +183,12 @@ export function Goals({ store }: { store: FleetStore }) {
       id: newId(), title: (title.trim() || clip(content, 60)), idea: idea.trim(), agent: genAgent, team,
       origin: 'goals', status: 'draft', priority, autopilot: false, content, createdAt: now, updatedAt: now,
     };
-    await call('goals:save', goal);
+    try {
+      await call('goals:save', goal);
+    } catch (err) {
+      if (aliveRef.current) setMsg(`goal not saved: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
     if (!aliveRef.current) return;
     const saved = await call<Goal | null>('goals:get', goal.id).catch(() => goal);
     setIdea(''); setDraft(''); setTitle(''); setPriority('general'); setShowNew(false); setMsg('goal saved ✓');
@@ -228,7 +233,13 @@ export function Goals({ store }: { store: FleetStore }) {
     const cur = await ensureGoalFresh(detail, `Update goal ${detail.title}`, ['updatedAt']);
     if (!cur) return;
     const next = { ...cur, ...p, updatedAt: Date.now() };
-    await call('goals:save', next).catch(() => {});
+    try {
+      await call('goals:save', next);
+    } catch (err) {
+      setDetail(cur);
+      setMsg(`goal not updated: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
     const saved = await call<Goal | null>('goals:get', next.id).catch(() => next);
     setDetail(saved ?? next);
     if ((saved ?? next).status === 'active' && (saved ?? next).autopilot) {

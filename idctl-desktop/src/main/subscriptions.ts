@@ -15,7 +15,7 @@ import { runInTerminal } from './system.ts';
 const execFileP = promisify(execFile);
 const SUBS_STATUS_CACHE_TTL_MS = 60_000;
 
-export type SubProvider = 'claude' | 'chatgpt' | 'cursor' | 'grok' | 'antigravity' | 'copilot' | 'kiro-cli' | 'q';
+export type SubProvider = 'claude' | 'chatgpt' | 'cursor' | 'grok' | 'antigravity' | 'copilot' | 'kiro-cli' | 'kimi' | 'q';
 export interface SubsStatusOptions { force?: boolean; maxAgeMs?: number; staleOk?: boolean }
 
 type LoginMode = 'spawn' | 'terminal';
@@ -68,12 +68,12 @@ export interface SubStatus {
   installOpensApp?: boolean;
 }
 
-const SUB_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'q'];
+const SUB_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'kimi', 'q'];
 let subsStatusCache: { at: number; rows: Record<SubProvider, SubStatus> } | null = null;
 let subsStatusInflight: Promise<Record<SubProvider, SubStatus>> | null = null;
 let assignmentSubsStatusCache: { at: number; rows: Partial<Record<SubProvider, SubStatus>> } | null = null;
 let assignmentSubsStatusInflight: Promise<Partial<Record<SubProvider, SubStatus>>> | null = null;
-const ASSIGNMENT_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli'];
+const ASSIGNMENT_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'kimi'];
 
 const SUB_META: Record<SubProvider, SubProviderMeta> = {
   claude: {
@@ -157,6 +157,18 @@ const SUB_META: Record<SubProvider, SubProviderMeta> = {
     installHint: 'kiro-cli not installed',
     installOpensApp: true,
     postInstall: 'The official macOS installer may open Kiro once to finish CLI setup. IDACC will re-check for kiro-cli after install; sign-in is still a separate action.',
+  },
+  kimi: {
+    provider: 'kimi',
+    runtime: 'kimi-cli',
+    label: 'Kimi Code',
+    bin: 'kimi',
+    login: ['kimi', ['login']],
+    loginMode: 'terminal',
+    install: 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash',
+    installHint: 'Kimi Code CLI not installed',
+    postInstall: 'After install, use Manage account to authorize your Kimi membership through the official browser device-code flow.',
+    statusNote: 'Installed. IDACC detects Kimi OAuth by credential-file presence without reading or returning credential contents.',
   },
   q: {
     provider: 'q',
@@ -545,6 +557,32 @@ async function cliPresenceStatus(provider: 'copilot'): Promise<SubStatus> {
   });
 }
 
+function kimiCredentialEvidence(): string | undefined {
+  const roots = Array.from(new Set([
+    process.env.KIMI_CODE_HOME,
+    join(homedir(), '.kimi-code'),
+    join(homedir(), '.kimi'),
+  ].filter((value): value is string => Boolean(value))));
+  return roots
+    .map((root) => join(expandHome(root), 'credentials', 'kimi-code.json'))
+    .find((file) => existsSync(file));
+}
+
+async function kimiStatus(): Promise<SubStatus> {
+  if (!cliPath(SUB_META.kimi.bin)) return notInstalled('kimi');
+  const credentialFile = kimiCredentialEvidence();
+  return baseStatus('kimi', {
+    installed: true,
+    statusSupported: false,
+    linked: Boolean(credentialFile),
+    account: credentialFile ? 'Kimi membership' : undefined,
+    accountSource: credentialFile ? 'Kimi OAuth credential file presence' : undefined,
+    detail: credentialFile
+      ? 'Kimi OAuth is linked. IDACC verified only the credential file location; credential contents were not read.'
+      : SUB_META.kimi.statusNote,
+  });
+}
+
 async function providerStatus(provider: SubProvider): Promise<SubStatus> {
   switch (provider) {
     case 'claude': return claudeStatus();
@@ -553,6 +591,7 @@ async function providerStatus(provider: SubProvider): Promise<SubStatus> {
     case 'grok': return grokStatus();
     case 'antigravity': return antigravityStatus();
     case 'kiro-cli': return whoamiStatus('kiro-cli', ['kiro-cli', ['whoami']]);
+    case 'kimi': return kimiStatus();
     case 'q': return whoamiStatus('q', ['q', ['whoami']]);
     case 'copilot':
       return cliPresenceStatus(provider);

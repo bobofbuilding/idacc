@@ -43,7 +43,7 @@ interface AgentConfigDraft {
 }
 const DEFAULT_BACKBONE_AGENTS = new Set(['lead', 'coder', 'researcher']);
 const SOURCE_LABEL: Record<RuntimeFreshness['source'], string> = {
-  'codex-cache': 'codex CLI cache', 'grok-cli': 'grok CLI models', 'antigravity-cli': 'Antigravity CLI models', provider: 'live provider sync', curated: 'built-in defaults', none: 'no models',
+  'claude-cli': 'Claude CLI config/cache', 'codex-cache': 'codex CLI cache', 'grok-cli': 'grok CLI models', 'antigravity-cli': 'Antigravity CLI models', provider: 'live provider sync', curated: 'built-in defaults', none: 'no models',
 };
 const KIND_LABEL: Record<RuntimeModelLaneKind | 'harness', string> = {
   harness: 'harness',
@@ -874,7 +874,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         {showModels ? (
           <div className="card model-lanes-panel">
             <div className="muted small" style={{ marginBottom: 4 }}>
-              Subscription CLIs, local provider lanes, and API provider lanes. Re-check refreshes model lists; rows marked built-in defaults have no live model-list API.
+              Subscription CLIs, local provider lanes, and API provider lanes. Re-check refreshes live lists and CLI account/config caches; built-in defaults are used only when no runtime signal exists.
             </div>
             {visibleFreshness.length ? (
               <div className="model-lanes-grid">

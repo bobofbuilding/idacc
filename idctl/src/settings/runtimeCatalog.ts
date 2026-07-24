@@ -32,6 +32,7 @@ export const RUNTIMES = [
   'gemini',
   'copilot',
   'kiro-cli',
+  'kimi-cli',
   'q',
   'ollama',
 ];
@@ -52,6 +53,7 @@ export const MANAGER_EXECUTION_RUNTIMES = [
   'antigravity',
   'copilot',
   'kiro-cli',
+  'kimi-cli',
   'ollama',
 ];
 
@@ -84,6 +86,7 @@ const RUNTIME_LABELS: Record<string, string> = {
   gemini: 'Gemini CLI',
   copilot: 'GitHub Copilot',
   'kiro-cli': 'Kiro',
+  'kimi-cli': 'Kimi Code',
   q: 'Amazon Q',
   ollama: 'Ollama',
 };
@@ -152,9 +155,9 @@ export type RuntimeCapability = 'mcp' | 'plugins' | 'portablePlugins' | 'skills'
  */
 const RUNTIME_CAPABILITIES: Record<RuntimeCapability, string[]> = {
   mcp: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'grok', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
-  skills: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
+  skills: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'kimi-cli', 'q', 'ollama'],
   plugins: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local'],
-  portablePlugins: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
+  portablePlugins: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'kimi-cli', 'q', 'ollama'],
 };
 
 /** Short, user-facing reason a runtime can't use a capability (for tooltips). */
@@ -282,7 +285,7 @@ function managedRuntimeReady(s: ManagedRuntimeForOffer): boolean {
   // linked evidence. Gemini CLI is excluded from managed sign-ins; use
   // Google Gemini API under Inference backends. Existing gemini assignments
   // remain current-only via keep.
-  return s.runtime === 'copilot' && s.installed === true && s.linked === true;
+  return (s.runtime === 'copilot' || s.runtime === 'kimi-cli') && s.installed === true && s.linked === true;
 }
 
 /**
@@ -392,6 +395,7 @@ export const RUNTIME_CURATED: Record<string, string[]> = {
   gemini: ['default'],
   copilot: ['default'],
   'kiro-cli': ['auto', 'claude-sonnet-4.5', 'claude-sonnet-4', 'claude-haiku-4.5', 'deepseek-3.2', 'minimax-m2.5', 'minimax-m2.1', 'glm-5', 'qwen3-coder-next'],
+  'kimi-cli': ['kimi-code/kimi-for-coding', 'kimi-code/kimi-for-coding-highspeed'],
   q: ['default'],
   ollama: [],
 };

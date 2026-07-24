@@ -70,6 +70,16 @@ type BrainCoreHealthReport = {
   nodes?: number;
   edges?: number;
   memories?: number;
+  memoryTiers?: {
+    total?: number;
+    active?: number;
+    shared?: number;
+    by_tier?: Partial<Record<'core' | 'long_term' | 'medium_term' | 'short_term', {
+      total?: number;
+      active?: number;
+      shared?: number;
+    }>>;
+  } | null;
   entities?: number;
   timelineEvents?: number;
   facts?: number;
@@ -278,10 +288,15 @@ function brainCoreStatusLabel(report: BrainCoreHealthReport): string {
 
 function brainCoreStatusTitle(report: BrainCoreHealthReport): string {
   if (!report) return 'Brain /health unavailable. This safe core check does not open Brain Health or Learning dashboards.';
+  const tiers = report.memoryTiers?.by_tier;
+  const tierSummary = tiers
+    ? `Memory horizons: core ${tiers.core?.active ?? 0} / long-term ${tiers.long_term?.active ?? 0} / medium-term ${tiers.medium_term?.active ?? 0} / short-term ${tiers.short_term?.active ?? 0} active`
+    : 'Memory horizons: unavailable; update Brain to enable tier-aware retrieval';
   return [
     `Safe route: GET /health`,
     `Generated: ${report.generatedAt ?? 'unknown'}`,
     `Counts: ${report.nodes ?? 0} nodes / ${report.edges ?? 0} edges / ${report.memories ?? 0} memories / ${report.facts ?? 0} facts`,
+    tierSummary,
     `Route inventory: ${report.routeInventory?.skew ? 'missing critical routes' : 'current'} (${report.routeInventory?.count ?? report.routeInventory?.routes?.length ?? '?'} routes)`,
     report.routeInventory?.missing?.length ? `Missing: ${report.routeInventory.missing.join(', ')}` : '',
     `sqlite-vec: ${report.sqliteVec?.available ? 'available' : 'fallback'}${report.sqliteVec?.dimensions ? `, dim ${report.sqliteVec.dimensions}` : ''}`,

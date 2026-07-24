@@ -44,6 +44,39 @@ const LOCAL_PROVIDER_STACK_IDS: Record<string, string> = {
   gpt4all: 'gpt4all',
 };
 
+type SubKey = 'claude' | 'chatgpt' | 'cursor' | 'grok' | 'antigravity' | 'copilot' | 'kiro-cli' | 'kimi' | 'q';
+type ManagedSubRow = { key: SubKey; label: string; runtime: string };
+
+const MANAGED_SUB_SELECTION_KEY = 'idacc.settings.managed-subscriptions.v1';
+const MANAGED_SUB_ROWS: ManagedSubRow[] = [
+  { key: 'claude', label: 'Claude (Anthropic)', runtime: 'claude-code-cli' },
+  { key: 'chatgpt', label: 'OpenAI (ChatGPT)', runtime: 'codex' },
+  { key: 'cursor', label: 'Cursor', runtime: 'cursor-cli' },
+  { key: 'grok', label: 'xAI Grok Build', runtime: 'grok' },
+  { key: 'antigravity', label: 'Google Antigravity CLI', runtime: 'antigravity' },
+  { key: 'copilot', label: 'GitHub Copilot CLI', runtime: 'copilot' },
+  { key: 'kiro-cli', label: 'Kiro CLI', runtime: 'kiro-cli' },
+  { key: 'kimi', label: 'Kimi Code', runtime: 'kimi-cli' },
+  { key: 'q', label: 'Amazon Q CLI (legacy)', runtime: 'q' },
+];
+const MANAGED_SUB_KEYS = new Set<SubKey>(MANAGED_SUB_ROWS.map(({ key }) => key));
+
+function loadManagedSubSelection(): SubKey[] | null {
+  try {
+    const raw = window.localStorage.getItem(MANAGED_SUB_SELECTION_KEY);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((value): value is SubKey => typeof value === 'string' && MANAGED_SUB_KEYS.has(value as SubKey));
+  } catch {
+    return [];
+  }
+}
+
+function saveManagedSubSelection(selection: SubKey[]): void {
+  try { window.localStorage.setItem(MANAGED_SUB_SELECTION_KEY, JSON.stringify(selection)); } catch { /* best effort */ }
+}
+
 /** Hardware of the machine the control center commands (the manager host; localhost here). */
 type HardwareInfo = { platform: string; arch: string; appleSilicon: boolean; cpu: string; cpuCores: number; gpu?: string; gpuCores?: number; totalRamGB: number; freeDiskGB: number | null; totalDiskGB: number | null };
 
@@ -376,23 +409,39 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     postInstall?: string;
     installOpensApp?: boolean;
   };
-  type SubKey = 'claude' | 'chatgpt' | 'cursor' | 'grok' | 'antigravity' | 'copilot' | 'kiro-cli' | 'q';
-  const managedSubRows: { key: SubKey; label: string; runtime: string }[] = [
-    { key: 'claude', label: 'Claude (Anthropic)', runtime: 'claude-code-cli' },
-    { key: 'chatgpt', label: 'OpenAI (ChatGPT)', runtime: 'codex' },
-    { key: 'cursor', label: 'Cursor', runtime: 'cursor-cli' },
-    { key: 'grok', label: 'xAI Grok Build', runtime: 'grok' },
-    { key: 'antigravity', label: 'Google Antigravity CLI', runtime: 'antigravity' },
-    { key: 'copilot', label: 'GitHub Copilot CLI', runtime: 'copilot' },
-    { key: 'kiro-cli', label: 'Kiro CLI', runtime: 'kiro-cli' },
-    { key: 'q', label: 'Amazon Q CLI (legacy)', runtime: 'q' },
-  ];
   const [subs, setSubs] = useState<Record<SubKey, Sub> | null>(null);
   const [subsBusy, setSubsBusy] = useState(false);
   const [subBusy, setSubBusy] = useState<string | null>(null);
   const [subNotice, setSubNotice] = useState('');
   const [subsCheckedAt, setSubsCheckedAt] = useState<number | null>(null);
-  const visibleManagedSubRows = managedSubRows.filter(({ key }) => key !== 'q' || subs?.q?.installed === true);
+  const [managedSubSelection, setManagedSubSelection] = useState<SubKey[] | null>(() => loadManagedSubSelection());
+  const [managedSubChoice, setManagedSubChoice] = useState<SubKey | ''>('');
+  const visibleManagedSubRows = MANAGED_SUB_ROWS.filter(({ key }) => managedSubSelection?.includes(key));
+  const availableManagedSubRows = MANAGED_SUB_ROWS.filter(({ key }) =>
+    !managedSubSelection?.includes(key) && (key !== 'q' || subs?.q?.installed === true));
+
+  function updateManagedSubSelection(next: SubKey[]): void {
+    setManagedSubSelection(next);
+    saveManagedSubSelection(next);
+  }
+
+  function addManagedSubscription(): void {
+    if (!managedSubChoice) return;
+    updateManagedSubSelection(Array.from(new Set([...(managedSubSelection ?? []), managedSubChoice])));
+    setManagedSubChoice('');
+  }
+
+  function removeManagedSubscription(provider: SubKey): void {
+    updateManagedSubSelection((managedSubSelection ?? []).filter((key) => key !== provider));
+  }
+
+  useEffect(() => {
+    if (!subs || managedSubSelection !== null) return;
+    const detected = MANAGED_SUB_ROWS
+      .filter(({ key }) => key !== 'q' && (subs[key]?.installed || subs[key]?.loggedIn || subs[key]?.linked))
+      .map(({ key }) => key);
+    updateManagedSubSelection(detected);
+  }, [subs, managedSubSelection]);
 
   async function refreshManagedSubscriptions(options: { busy?: boolean; notice?: boolean; force?: boolean } = {}) {
     if (options.busy) setSubsBusy(true);
@@ -458,7 +507,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         }
         return;
       }
-      const label = managedSubRows.find((row) => row.key === provider)?.label ?? provider;
+      const label = MANAGED_SUB_ROWS.find((row) => row.key === provider)?.label ?? provider;
       const note = provider === 'antigravity'
           ? `${label} opened from IDACC. Finish the Antigravity login flow, then Re-check if the row does not update automatically. Assignment is available once the CLI model probe is live.`
           : `${label} account flow started from IDACC. Finish the vendor prompt/browser flow, then Re-check if the row does not update automatically.`;
@@ -473,7 +522,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     try {
       const r = await call<{ ok: boolean; ran: boolean; command?: string; error?: string; postInstall?: string; installOpensApp?: boolean }>('subs:install', provider);
       if (r.ran) {
-        const label = managedSubRows.find((row) => row.key === provider)?.label ?? provider;
+        const label = MANAGED_SUB_ROWS.find((row) => row.key === provider)?.label ?? provider;
         const note = r.installOpensApp
           ? `${label} installer opened in Terminal. Its vendor installer may open the app once; IDACC will re-check for the CLI automatically.`
           : `${label} installer opened in Terminal. IDACC will re-check for the CLI automatically.`;
@@ -508,7 +557,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     });
   }
   async function signoutSub(provider: SubKey) {
-    const label = managedSubRows.find((row) => row.key === provider)?.label ?? provider;
+    const label = MANAGED_SUB_ROWS.find((row) => row.key === provider)?.label ?? provider;
     if (!window.confirm(`Sign out of ${label}? Agents on that runtime will lose subscription access until you sign back in.`)) return;
     setSubBusy(provider);
     try {
@@ -2625,10 +2674,25 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       </section>
 
       <section className="card">
-        <h3>Managed subscription sign-ins</h3>
+        <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>
+          <h3 style={{ margin: 0 }}>Managed subscription sign-ins</h3>
+          <span className="grow" />
+          <select
+            value={managedSubChoice}
+            onChange={(event) => setManagedSubChoice(event.target.value as SubKey | '')}
+            aria-label="Choose a subscription provider"
+          >
+            <option value="">Add subscription…</option>
+            {availableManagedSubRows.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+          </select>
+          <button className="btn" disabled={!managedSubChoice} onClick={addManagedSubscription}>Add</button>
+        </div>
         <p className="muted small" style={{ marginTop: -4 }}>
           Provider CLIs are separate vendor tools and are not bundled with IDACC. Install only the subscription runtimes you intend to use, then manage their sign-in here. Signed in means live CLI status; account linked means safe local account evidence. API-key providers are configured under <b>Inference backends</b>. Account status auto-checks on open, focus, and every 5 minutes; model freshness updates on explicit refresh.
         </p>
+        {!visibleManagedSubRows.length ? (
+          <p className="muted small">No subscription providers added. Choose one above to install, connect, or inspect it.</p>
+        ) : null}
         {visibleManagedSubRows.map(({ key, label, runtime }) => {
           const s = subs?.[key];
           const canInstall = s?.installed === false && s.installSupported;
@@ -2665,8 +2729,28 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                         Sign out
                       </button>
                     ) : null}
+                    {key === 'kimi' ? (
+                      <a
+                        className="btn"
+                        href="https://www.kimi.com/membership/pricing"
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ textDecoration: 'none' }}
+                      >
+                        Plans
+                      </a>
+                    ) : null}
                   </span>
                 ) : null}
+                <button
+                  className="btn"
+                  style={{ marginLeft: 8 }}
+                  onClick={() => removeManagedSubscription(key)}
+                  title={`Remove ${label} from this list without uninstalling it or signing out`}
+                  aria-label={`Remove ${label} from managed subscriptions`}
+                >
+                  ×
+                </button>
               </b>
             </div>
           );

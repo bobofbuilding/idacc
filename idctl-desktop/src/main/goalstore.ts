@@ -45,6 +45,24 @@ export interface Goal {
 export interface GoalSummary { id: string; title: string; status: GoalStatus; priority: GoalPriority; agent?: string; team: string; origin: GoalOrigin; updatedAt: number; autopilot?: boolean }
 export interface ListGoalsOptions { includePlanObjectives?: boolean }
 
+function canonicalGoalText(input: unknown): string {
+  return String(input ?? '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[`*_#>\[\](){}]/g, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function canonicalGoalFingerprint(goal: Pick<Goal, 'team' | 'title' | 'content' | 'idea'> & { origin?: unknown }): string {
+  const team = canonicalGoalText(goal.team || 'default') || 'default';
+  const origin = normalizeGoalOrigin(goal.origin);
+  const title = canonicalGoalText(goal.title);
+  const substance = canonicalGoalText(goal.content || goal.idea);
+  return [team, origin, title, substance].join('\u001f');
+}
+
 export function normalizeGoalPriority(input: unknown): GoalPriority {
   const value = String(input ?? '').trim().toLowerCase();
   return value === 'primary' || value === 'secondary' || value === 'general' ? value : 'general';
@@ -84,6 +102,28 @@ function fileFor(id: string): string {
   return join(goalsDir(), `${safe}.json`);
 }
 
+export function findDuplicateGoal(goal: Goal): Goal | null {
+  if (goal.status === 'done' || goal.status === 'archived') return null;
+  const incoming = normalizeGoal(goal);
+  const incomingTitle = canonicalGoalText(incoming.title);
+  const incomingContent = canonicalGoalText(incoming.content || incoming.idea);
+  const incomingFingerprint = canonicalGoalFingerprint(incoming);
+  const dir = goalsDir();
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const existing = normalizeGoal(JSON.parse(readFileSync(join(dir, file), 'utf8')) as Goal);
+      if (existing.id === incoming.id || existing.status === 'done' || existing.status === 'archived') continue;
+      if (existing.team !== incoming.team || normalizeGoalOrigin(existing.origin) !== normalizeGoalOrigin(incoming.origin)) continue;
+      const sameFingerprint = canonicalGoalFingerprint(existing) === incomingFingerprint;
+      const sameTitle = incomingTitle.length >= 8 && canonicalGoalText(existing.title) === incomingTitle;
+      const sameContent = incomingContent.length >= 24 && canonicalGoalText(existing.content || existing.idea) === incomingContent;
+      if (sameFingerprint || sameTitle || sameContent) return existing;
+    } catch { /* skip corrupt */ }
+  }
+  return null;
+}
+
 export function listGoals(team?: string, options: ListGoalsOptions = {}): GoalSummary[] {
   const dir = goalsDir();
   const out: GoalSummary[] = [];
@@ -120,6 +160,10 @@ export function getGoal(id: string): Goal | null {
 
 export function saveGoal(goal: Goal): { ok: boolean; id: string } {
   if (!goal?.id) throw new Error('goal id required');
+  const duplicate = findDuplicateGoal(goal);
+  if (duplicate) {
+    throw new Error(`duplicate goal: "${duplicate.title}" already exists as ${duplicate.id}`);
+  }
   const f = fileFor(goal.id);
   const now = Date.now();
   const payload: Goal = {
