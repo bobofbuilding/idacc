@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.682] — 2026-07-24
+### What changed
+- Outstanding changes in idctl-desktop/scripts/work-reconcile-smoke.mjs and idctl-desktop/src/renderer/views/Tasks.tsx.
+
 ## [0.1.681] — 2026-07-24
 ### What changed
 - Work: keep completed failures out of Holding and report all reconciled validation routes
