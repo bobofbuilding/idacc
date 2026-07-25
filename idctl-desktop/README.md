@@ -29,9 +29,16 @@ repository release workflow removes this generated directory after GitHub has
 verified the uploaded release, so repeated published updates do not accumulate
 unpacked app copies.
 
-The `.app` bundles Electron + the UI, so it runs with no Node and no install —
-double-click it like any consumer Mac app. It carries the Bob brand icon
-(`build/icon.icns`, generated from `assets/icon-source.jpg`).
+The `.app` bundles Electron, the UI, the compatible ID Agents manager, and the
+Brain runtime. On first launch it creates an isolated local profile, initializes
+fresh manager and Brain databases, and supervises both services — no separate
+Node, repository checkout, or daemon install is required. Personal goals,
+memory, credentials, chats, and projects are stored only in the user's
+Application Support profile and are never included in an update.
+
+Release builds stage the manager and Brain from their source checkouts before
+packaging. Set `IDACC_MANAGER_SOURCE` and `IDACC_BRAIN_SOURCE` when those
+checkouts are not next to the IDACC repository.
 
 > Ad-hoc/local build. For public distribution, sign with an Apple Developer ID
 > and notarize (set the `CSC_*` env vars and remove `CSC_IDENTITY_AUTO_DISCOVERY=false`).
@@ -39,10 +46,10 @@ double-click it like any consumer Mac app. It carries the Bob brand icon
 ## Architecture
 
 ```
- React renderer (DOM, mouse+keyboard)         Electron main (Node)            manager :4100
+ React renderer (DOM, mouse+keyboard)         Electron main (Node)       bundled local stack
  ┌───────────────────────────┐  IPC          ┌──────────────────────┐  HTTP  ┌──────────────┐
  │ App shell · sidebar nav    │──call(...)──▶ │ bridge.ts            │──────▶ │ /agents      │
- │ Dashboard · Chat · Teams   │               │  reuses idctl        │        │ /events      │
+ │ Dashboard · Chat · Teams   │               │  profile + supervisor│        │ manager+Brain│
  │ Capabilities · Settings …  │ ◀──result──── │  ManagerClient       │ ◀───── │ /remote …    │
  └───────────────────────────┘               └──────────────────────┘        └──────────────┘
 ```

@@ -1,7 +1,7 @@
 {
   "name": "idagents-control-center",
   "productName": "ID Agents Control Center",
-  "version": "0.1.683",
+  "version": "0.1.684",
   "description": "Desktop control center for id-agents — live fleet dashboard, manager chat, teams, keys.",
   "private": true,
   "main": "out/main/main.cjs",
@@ -9,12 +9,16 @@
     "build": "node scripts/build.mjs",
     "start": "npm run build && electron .",
     "dev": "node scripts/build.mjs && electron .",
+    "stage:runtimes": "node scripts/stage-unified-runtime.mjs",
+    "predist": "npm run stage:runtimes",
     "dist": "npm run build && electron-builder --dir",
+    "predmg": "npm run stage:runtimes",
     "dmg": "npm run build && electron-builder",
     "typecheck": "tsc --noEmit",
     "test:chat-failure": "node scripts/chat-terminal-failure-smoke.mjs",
     "test:background-policy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/background-policy-smoke.mjs",
     "test:release-payload": "node ../scripts/release-payload-smoke.mjs",
+    "test:unified-stack": "node ../scripts/unified-stack-release-smoke.mjs \"release/mac-arm64/ID Agents Control Center.app\"",
     "test:release-cleanup": "node ../scripts/release-artifact-cleanup-smoke.mjs",
     "test:release-published": "node ../scripts/release-published-smoke.mjs",
     "test:signing-guardrails": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/signing-guardrails-smoke.mjs",
@@ -92,6 +96,10 @@
         "to": "idacc-context-retrieval"
       },
       {
+        "from": "resources/idacc-runtime",
+        "to": "idacc-runtime"
+      },
+      {
         "from": "../scripts/install-idacc-stack.mjs",
         "to": "scripts/install-idacc-stack.mjs"
       },
@@ -114,8 +122,8 @@
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "electron": "^33.2.0",
-    "electron-builder": "^25.1.8",
+    "electron": "^37.10.3",
+    "electron-builder": "^26.15.3",
     "esbuild": "^0.28.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

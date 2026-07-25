@@ -6,7 +6,7 @@
 import { app, BrowserWindow, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage, clipboard } from 'electron';
 import { join } from 'node:path';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { call as bridgeCall, configureKeyProvider, startDraftDispatcher, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
+import { call as bridgeCall, configureKeyProvider, configureManagedManager, startDraftDispatcher, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
 import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
 import { applyManagerUpdate, bootstrapManagerInstall, checkManagerUpdate, getManagerUpdateStatus } from './managerUpdater.ts';
@@ -43,6 +43,8 @@ import { startBroker, armBroker, disarmBroker, setWatching, brokerStatus, auditT
 import { getPermissions, openPermissionSettings, relaunchApp, type CuPermissionPane } from './computeruse/permissions.ts';
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
+import { initializeAppProfile } from './appProfile.ts';
+import { startUnifiedStack, stopUnifiedStack, unifiedStackStatus } from './unifiedStack.ts';
 import { buildLearnProcessContext } from '../shared/learnContext.ts';
 import { LEARN_BRAIN_BACKFILL_RUNNER_DELAYS, LEARN_QUEUE_RUNNER_DELAYS } from '../shared/backgroundPolicy.ts';
 import { buildPrimaryLeadPlanWork } from '../shared/planWork.ts';
@@ -490,7 +492,7 @@ function normalizeBrainDashboardTab(value: unknown): BrainDashboardTab {
 async function openBrainDashboard(value: unknown): Promise<{ ok: true; tab: BrainDashboardTab; url: string }> {
   const tab = normalizeBrainDashboardTab(value);
   const cfg = BRAIN_DASHBOARD_TABS[tab];
-  const url = `http://127.0.0.1:4200${cfg.path}`;
+  const url = `${process.env.BRAIN_URL || 'http://127.0.0.1:4210'}${cfg.path}`;
   if (!brainDashboardWin || brainDashboardWin.isDestroyed()) {
     brainDashboardWin = new BrowserWindow({
       width: 1100,
@@ -1513,6 +1515,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return stopBackgroundStack(args[0]);
     case 'stack:dockerStatus':
       return dockerStatus();
+    case 'unifiedStack:status':
+      return unifiedStackStatus();
     case 'brain:openDashboard':
       return openBrainDashboard(args[0]);
     case 'brain:openGraph':
@@ -1833,6 +1837,7 @@ if (cuSelftest) {
 // input addon loads + the current mouse position, then quit. No synthetic input.
 const driverProbe = process.env.IDCTL_CU_DRIVERPROBE;
 const selftest = process.env.IDCTL_UPDATE_SELFTEST;
+const stackSelftest = process.env.IDACC_STACK_SELFTEST;
 if (cuSelftest) { /* handled above */ } else if (driverProbe) {
   app.whenReady().then(() => {
     console.log('CU_DRIVER ' + JSON.stringify({ cap: driverCapability(), mouse: getMousePos() }));
@@ -1849,14 +1854,33 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
       app.quit();
     }
   });
+} else if (stackSelftest) {
+  app.whenReady().then(async () => {
+    const profile = initializeAppProfile();
+    configureManagedManager(process.env.MANAGER_URL || 'http://127.0.0.1:4110');
+    await startUnifiedStack(profile);
+    const deadline = Date.now() + 25_000;
+    let status = await unifiedStackStatus();
+    while (!status.ready && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      status = await unifiedStackStatus();
+    }
+    console.log('IDACC_STACK_SELFTEST ' + JSON.stringify(status));
+    await stopUnifiedStack();
+    app.exit(status.ready ? 0 : 1);
+  });
 } else {
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    const profile = initializeAppProfile();
+    configureManagedManager(process.env.MANAGER_URL || 'http://127.0.0.1:4110');
+    await startUnifiedStack(profile);
     configureLiveKeyProvider();
     createWindow();
     if (win) startUpdater(win);
     // Persist window geometry on EVERY quit path (Cmd-Q, menu, and the self-update relaunch,
     // which calls app.quit()) before the window is destroyed — registered once, app-wide.
     app.on('before-quit', () => { if (win && !win.isDestroyed()) saveWinState(win); });
+    app.on('before-quit', () => { void stopUnifiedStack(); });
     // Reactive org-sync: keep every agent's goals & instructions file composed from the lead
     // hierarchy + brain team-instructions (first pass ~15s after boot, then every 5 min).
     try { startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }

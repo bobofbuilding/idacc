@@ -8,6 +8,7 @@ dist/
 out/
 release/
 dist-tauri/
+idctl-desktop/resources/idacc-runtime/
 
 # Rust / Tauri build output (the src-tauri scaffold source IS tracked)
 src-tauri/target/

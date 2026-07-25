@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.684] — 2026-07-25
+### What changed
+- Bundle and supervise the ID Agents manager and Brain inside IDACC, isolate and migrate user state into app-owned profiles, add guided first-run readiness, and enforce clean-profile release verification.
+
 ## [0.1.683] — 2026-07-24
 ### What changed
 - Automate evidence-based Brain proposal review through manager agents while preserving human review for unresolved or high-risk changes.\nHarden Learn processing and recursive goal comparison with idempotent task creation, source-level perspective tracking, and bounded retries.\nUnify goal cadence state between IDACC and the manager, deduplicate active-goal instructions, and expose clear cadence and fan-out controls.\nDiscover Claude CLI models from live local configuration and caches, preserve exact canonical model choices, and improve subscription and runtime catalog refresh behavior.

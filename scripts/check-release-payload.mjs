@@ -92,7 +92,16 @@ function checkAsar(appPath, hits) {
 const hits = [];
 for (const input of inputs) {
   walk(input, hits);
-  if (basename(input).endsWith('.app')) checkAsar(input, hits);
+  if (basename(input).endsWith('.app')) {
+    checkAsar(input, hits);
+    for (const required of [
+      'Contents/Resources/idacc-runtime/manifest.json',
+      'Contents/Resources/idacc-runtime/manager/dist/start-agent-manager.js',
+      'Contents/Resources/idacc-runtime/brain/brain.mjs',
+    ]) {
+      if (!existsSync(join(input, required))) hits.push(`Missing unified runtime: ${required}`);
+    }
+  }
 }
 
 if (hits.length) {

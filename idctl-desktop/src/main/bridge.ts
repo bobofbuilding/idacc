@@ -1220,6 +1220,14 @@ const keys = new Proxy({} as KeyProvider, {
 export function configureKeyProvider(provider: KeyProvider): void {
   activeKeyProvider = provider;
 }
+
+/** Point the desktop bridge at the app-owned manager after profile bootstrap. */
+export function configureManagedManager(url: string): void {
+  cfg = { ...cfg, managerUrl: url };
+  client = new ManagerClient(cfg);
+  brain.setTransport((request) => client.brainRequest(request));
+  configureControlEventEmitter((event) => client.emitControlEvent(event));
+}
 const RECENT_DONE_TASK_LIMIT = 25;
 let doneTaskLimitUnsupportedAt = 0;
 

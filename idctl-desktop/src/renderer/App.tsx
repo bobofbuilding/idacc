@@ -72,6 +72,12 @@ interface UpdateStatus {
   error?: string;
 }
 
+interface UnifiedStackStatus {
+  ready: boolean;
+  profileRoot?: string;
+  services: Array<{ name: 'manager' | 'brain'; bundled: boolean; running: boolean; healthy: boolean; error?: string }>;
+}
+
 export function App() {
   const [initialTarget] = useState<string | null>(() => {
     const v = new URLSearchParams(window.location.search).get('view');
@@ -92,6 +98,10 @@ export function App() {
   const [applying, setApplying] = useState(false);
   const [dismissed, setDismissed] = useState<string>(''); // latest version the user said "Later" to
   const [questionCount, setQuestionCount] = useState(0);
+  const [stack, setStack] = useState<UnifiedStackStatus | null>(null);
+  const [welcome, setWelcome] = useState(() => {
+    try { return localStorage.getItem('idacc.consumer-welcome.v1') !== 'done'; } catch { return true; }
+  });
   const inboxSyncVersion = useSyncVersion(['questions', 'inbox']);
   const nav = DEFAULT_NAV;
   // ⌘K command palette + right-side control drawer — the "drive everything" surface.
@@ -121,6 +131,22 @@ export function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  useEffect(() => {
+    let live = true;
+    const refresh = () => call<UnifiedStackStatus>('unifiedStack:status')
+      .then((status) => { if (live) setStack(status); })
+      .catch(() => { if (live) setStack(null); });
+    void refresh();
+    const timer = window.setInterval(refresh, 2000);
+    return () => { live = false; window.clearInterval(timer); };
+  }, []);
+
+  function finishWelcome(target?: ViewId) {
+    try { localStorage.setItem('idacc.consumer-welcome.v1', 'done'); } catch { /* best effort */ }
+    setWelcome(false);
+    if (target) setView(target);
+  }
 
   useEffect(() => {
     call<string>('app:version').then(setVersion).catch(() => {});
@@ -204,6 +230,33 @@ export function App() {
       />
       <ControlDrawer store={store} panel={drawerPanel} onClose={() => setDrawerPanel(null)} navigate={navigateTo} />
       <WalletConnectPrompt />
+      {stack && (!stack.ready || welcome) ? (
+        <div className="modal-overlay">
+          <div className="modal onboard-modal unified-stack-welcome">
+            <div className="modal-title">{stack.ready ? 'Welcome to IDACC' : 'Preparing your private agent workspace'}</div>
+            <p className="muted">
+              IDACC now includes its manager and Brain. Goals, memory, projects, credentials, and agent work remain in your private local profile and are never part of an app update.
+            </p>
+            <div className="unified-stack-services">
+              {stack.services.map((service) => (
+                <div className="unified-stack-service" key={service.name}>
+                  <span className={service.healthy ? 'dot live' : service.bundled ? 'dot busy' : 'dot dead'} />
+                  <strong>{service.name === 'brain' ? 'Brain' : 'Agent manager'}</strong>
+                  <span className="muted">{service.healthy ? 'ready' : service.bundled ? 'starting…' : service.error || 'not included'}</span>
+                </div>
+              ))}
+            </div>
+            {stack.ready ? (
+              <div className="row end gap">
+                <button className="btn" onClick={() => finishWelcome('settings')}>Configure models</button>
+                <button className="btn primary" onClick={() => finishWelcome('dashboard')}>Enter IDACC</button>
+              </div>
+            ) : (
+              <p className="muted small">The app will continue automatically when both local services are healthy.</p>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
     </PromptProvider>
     </ToastProvider>
