@@ -13,10 +13,56 @@ import { CONTEXT_BUDGET_RETENTION } from './contextBudgetRetention.ts';
 import { copyFilePrivateSync } from './privateFileCopy.ts';
 
 const WINDOWS_PROFILE_ACL_OK = 'IDACC_WINDOWS_PROFILE_ACL_OK';
+const WINDOWS_PROFILE_ACL_FAILED = 'IDACC_WINDOWS_PROFILE_ACL_FAILED';
 const WINDOWS_PROFILE_NEWER = 'IDACC_WINDOWS_PROFILE_NEWER';
 const WINDOWS_PROFILE_TOO_LARGE = 'IDACC_WINDOWS_PROFILE_TOO_LARGE';
 const WINDOWS_PROFILE_ACL_TIMEOUT_MS = 2 * 60_000;
 const WINDOWS_PROFILE_STREAMING_TIMEOUT_MS = 5 * 60_000;
+const WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASES = [
+  'validate-root',
+  'validate-volume',
+  'compile-native',
+  'configure-policy',
+  'single-object-type',
+  'single-ancestors',
+  'single-parent-acl',
+  'single-create',
+  'single-object',
+  'single-lock',
+  'single-check',
+  'single-apply',
+  'single-verify',
+  'single-identity',
+  'ancestor-reparse',
+  'ancestor-type',
+  'parent-inspect',
+  'parent-owner-untrusted',
+  'parent-delete-child',
+  'parent-delete-object',
+  'parent-change-permissions',
+  'parent-take-ownership',
+  'parent-create-child',
+  'parent-chain-incomplete',
+  'profile-ancestors',
+  'profile-compatibility',
+  'profile-parent-acl',
+  'profile-attestation-check',
+  'profile-create',
+  'profile-boundary',
+  'profile-stream',
+  'profile-enumerate',
+  'profile-apply',
+  'profile-reenumerate',
+  'profile-verify',
+  'profile-attestation-write',
+  'profile-attestation-verify',
+] as const;
+const WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASE_SET = new Set<string>(
+  WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASES,
+);
+
+export type WindowsProfileAclDiagnosticPhase =
+  typeof WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASES[number];
 
 type WindowsProfileAclMode =
   | 'normal'
@@ -50,12 +96,56 @@ export interface SecureWindowsPrivatePathOptions {
   runner?: WindowsProfileAclRunner;
 }
 
-function profilePrivacyError(subject = 'profile'): NodeJS.ErrnoException {
+function profilePrivacyError(
+  subject = 'profile',
+  diagnosticPhase?: WindowsProfileAclDiagnosticPhase,
+): NodeJS.ErrnoException {
   const error = new Error(
     `IDACC could not establish and verify private Windows access for this ${subject}.`,
   ) as NodeJS.ErrnoException;
   error.code = 'EPERM';
+  if (diagnosticPhase) {
+    Object.defineProperty(error, 'diagnosticPhase', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: diagnosticPhase,
+    });
+  }
   return error;
+}
+
+/**
+ * Return only the helper's closed, non-sensitive failure phase. Raw helper
+ * output, paths, ACLs, SIDs, and operating-system exception text never cross
+ * this boundary.
+ */
+export function windowsProfilePrivacyDiagnosticPhase(
+  error: unknown,
+): WindowsProfileAclDiagnosticPhase | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const value = (error as { diagnosticPhase?: unknown }).diagnosticPhase;
+  return typeof value === 'string'
+    && WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASE_SET.has(value)
+    ? value as WindowsProfileAclDiagnosticPhase
+    : undefined;
+}
+
+function windowsProfileAclResultDiagnosticPhase(
+  result: WindowsProfileAclRunResult,
+): WindowsProfileAclDiagnosticPhase | undefined {
+  for (const line of String(result.stdout || '').split(/\r?\n/)) {
+    const match = new RegExp(`^${WINDOWS_PROFILE_ACL_FAILED}:([a-z-]+)$`).exec(
+      line.trim(),
+    );
+    if (
+      match
+      && WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASE_SET.has(match[1])
+    ) {
+      return match[1] as WindowsProfileAclDiagnosticPhase;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -229,6 +319,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
+$script:diagnosticPhase = 'validate-root'
 try {
   $rootInput = [string]$env:IDACC_PROFILE_ACL_ROOT
   if ([string]::IsNullOrWhiteSpace($rootInput)) {
@@ -247,6 +338,7 @@ try {
     throw 'alternate data streams are not supported'
   }
 
+  $diagnosticPhase = 'validate-volume'
   $drive = [System.IO.DriveInfo]::new($volumeRoot)
   if (-not $drive.IsReady) {
     throw 'volume is unavailable'
@@ -631,8 +723,10 @@ public static class IdaccProfileFileProbe {
   }
 }
 '@
+  $diagnosticPhase = 'compile-native'
   Add-Type -TypeDefinition $nativeSource -Language CSharp
 
+  $diagnosticPhase = 'configure-policy'
   $reparseFlag = [System.IO.FileAttributes]::ReparsePoint
   $directoryFlag = [System.IO.FileAttributes]::Directory
   $workspaceRoot = [System.IO.Path]::Combine($root, 'workspace')
@@ -700,15 +794,18 @@ public static class IdaccProfileFileProbe {
     $probe = $path
     while (-not [System.IO.Directory]::Exists($probe)) {
       if ([System.IO.File]::Exists($probe)) {
+        $script:diagnosticPhase = 'ancestor-type'
         throw 'profile root is not a directory'
       }
       $parent = [System.IO.Directory]::GetParent($probe)
       if ($null -eq $parent) {
+        $script:diagnosticPhase = 'parent-chain-incomplete'
         throw 'profile parent is unavailable'
       }
       $probe = $parent.FullName
     }
     while ($true) {
+      $script:diagnosticPhase = 'ancestor-reparse'
       Assert-NotReparse $probe
       if ([string]::Equals(
         [System.IO.Path]::GetFullPath($probe).TrimEnd('\'),
@@ -719,6 +816,7 @@ public static class IdaccProfileFileProbe {
       }
       $parent = [System.IO.Directory]::GetParent($probe)
       if ($null -eq $parent) {
+        $script:diagnosticPhase = 'parent-chain-incomplete'
         throw 'profile ancestor is unavailable'
       }
       $probe = $parent.FullName
@@ -726,12 +824,16 @@ public static class IdaccProfileFileProbe {
   }
 
   function Assert-SafeParentAclChain([string]$profileRoot) {
-    $replaceRights = (
-      [int][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-      [int][System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-      [int][System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    $deleteChildRight = (
+      [int][System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles
     )
     $deleteRight = [int][System.Security.AccessControl.FileSystemRights]::Delete
+    $changePermissionsRight = (
+      [int][System.Security.AccessControl.FileSystemRights]::ChangePermissions
+    )
+    $takeOwnershipRight = (
+      [int][System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    )
     $createDirectoryRight = (
       [int][System.Security.AccessControl.FileSystemRights]::CreateDirectories
     )
@@ -745,24 +847,33 @@ public static class IdaccProfileFileProbe {
     )
     $profileParent = [System.IO.Directory]::GetParent($profileRoot)
     if ($null -eq $profileParent) {
+      $script:diagnosticPhase = 'parent-chain-incomplete'
       throw 'profile parent is unavailable'
     }
     $parent = $profileParent
     while ($null -ne $parent -and -not [System.IO.Directory]::Exists($parent.FullName)) {
       if ([System.IO.File]::Exists($parent.FullName)) {
+        $script:diagnosticPhase = 'ancestor-type'
         throw 'profile parent is not a directory'
       }
       $parent = $parent.Parent
+    }
+    if ($null -eq $parent) {
+      $script:diagnosticPhase = 'parent-chain-incomplete'
+      throw 'profile parent chain is incomplete'
     }
     # This is the parent on which CreateDirectory will create the first missing
     # segment. InheritOnly ACEs elsewhere in the chain do not necessarily reach
     # this path because an intervening directory can protect its DACL.
     $creationBoundary = $parent
     while ($null -ne $parent) {
+      $script:diagnosticPhase = 'ancestor-reparse'
       Assert-NotReparse $parent.FullName
+      $script:diagnosticPhase = 'parent-inspect'
       $security = [System.IO.Directory]::GetAccessControl($parent.FullName, $sections)
       $owner = $security.GetOwner([System.Security.Principal.SecurityIdentifier])
       if ($trustedAncestorSids -notcontains $owner.Value) {
+        $script:diagnosticPhase = 'parent-owner-untrusted'
         throw 'profile parent owner is not trusted'
       }
       $rules = @($security.GetAccessRules(
@@ -786,19 +897,26 @@ public static class IdaccProfileFileProbe {
         # When any segment is missing, an untrusted principal that can create a
         # child at the boundary can win the path race and retain an open handle
         # even after the new tree is hardened.
-        $dangerous = (
-          (($rights -band $replaceRights) -ne 0) -or
-          (
-            -not $isVolumeRoot -and
-            (($rights -band $deleteRight) -ne 0)
-          ) -or
-          (
-            $profileRootWasMissing -and
-            $isCreationBoundary -and
-            (($rights -band $createDirectoryRight) -ne 0)
-          )
-        )
-        if (-not $dangerous) {
+        $dangerousPhase = $null
+        if (($rights -band $deleteChildRight) -ne 0) {
+          $dangerousPhase = 'parent-delete-child'
+        } elseif (
+          -not $isVolumeRoot -and
+          (($rights -band $deleteRight) -ne 0)
+        ) {
+          $dangerousPhase = 'parent-delete-object'
+        } elseif (($rights -band $changePermissionsRight) -ne 0) {
+          $dangerousPhase = 'parent-change-permissions'
+        } elseif (($rights -band $takeOwnershipRight) -ne 0) {
+          $dangerousPhase = 'parent-take-ownership'
+        } elseif (
+          $profileRootWasMissing -and
+          $isCreationBoundary -and
+          (($rights -band $createDirectoryRight) -ne 0)
+        ) {
+          $dangerousPhase = 'parent-create-child'
+        }
+        if ($null -eq $dangerousPhase) {
           continue
         }
         $inheritOnly = (
@@ -821,6 +939,7 @@ public static class IdaccProfileFileProbe {
           -not $inheritOnly -or
           ($isCreationBoundary -and $appliesToChildDirectory)
         ) {
+          $script:diagnosticPhase = $dangerousPhase
           throw 'profile parent can be replaced by another principal'
         }
       }
@@ -834,6 +953,7 @@ public static class IdaccProfileFileProbe {
       $parent = $parent.Parent
     }
     if ($null -eq $parent) {
+      $script:diagnosticPhase = 'parent-chain-incomplete'
       throw 'profile parent chain is incomplete'
     }
   }
@@ -1350,16 +1470,22 @@ public static class IdaccProfileFileProbe {
   }
 
   if ($aclMode -eq 'single-file' -or $aclMode -eq 'single-directory') {
+    $diagnosticPhase = 'single-object-type'
     $singleIsDirectory = $aclMode -eq 'single-directory'
     if ($singleIsDirectory) {
       if ([System.IO.File]::Exists($root)) {
         throw 'private directory is not a directory'
       }
+      $diagnosticPhase = 'single-ancestors'
       Assert-SafeAncestors $root
+      $diagnosticPhase = 'single-parent-acl'
       Assert-SafeParentAclChain $root
       if (-not [System.IO.Directory]::Exists($root)) {
+        $diagnosticPhase = 'single-create'
         [void][System.IO.Directory]::CreateDirectory($root)
+        $diagnosticPhase = 'single-ancestors'
         Assert-SafeAncestors $root
+        $diagnosticPhase = 'single-parent-acl'
         Assert-SafeParentAclChain $root
       }
     } else {
@@ -1370,10 +1496,14 @@ public static class IdaccProfileFileProbe {
       if ($null -eq $singleParent) {
         throw 'private file parent is unavailable'
       }
+      $diagnosticPhase = 'single-ancestors'
       Assert-SafeAncestors $singleParent.FullName
+      $diagnosticPhase = 'single-parent-acl'
       Assert-SafeParentAclChain $root
     }
+    $diagnosticPhase = 'single-object'
     Assert-NotReparse $root
+    $diagnosticPhase = 'single-lock'
     $singleLock = [IdaccProfileFileProbe]::OpenLockedObject(
       $root,
       $singleIsDirectory
@@ -1385,10 +1515,14 @@ public static class IdaccProfileFileProbe {
         Identity = $singleLock.Identity
         Lock = $singleLock
       }
+      $diagnosticPhase = 'single-check'
       if (-not (Test-PrivateAcl $singleItem)) {
+        $diagnosticPhase = 'single-apply'
         Set-PrivateAcl $singleItem
       }
+      $diagnosticPhase = 'single-verify'
       Assert-PrivateAcl $singleItem
+      $diagnosticPhase = 'single-identity'
       [IdaccProfileFileProbe]::AssertLockedPath($singleLock, $root)
     } finally {
       $singleLock.Dispose()
@@ -1397,21 +1531,29 @@ public static class IdaccProfileFileProbe {
     exit 0
   }
 
+  $diagnosticPhase = 'profile-ancestors'
   Assert-SafeAncestors $root
+  $diagnosticPhase = 'profile-compatibility'
   Assert-CompatibleProfileMarker
+  $diagnosticPhase = 'profile-parent-acl'
   Assert-SafeParentAclChain $root
   if ([System.IO.File]::Exists($root)) {
     throw 'profile root is not a directory'
   }
+  $diagnosticPhase = 'profile-attestation-check'
   if ($aclMode -eq 'normal' -and (Test-AclAttestation)) {
     [Console]::Out.WriteLine('${WINDOWS_PROFILE_ACL_OK}:0')
     exit 0
   }
+  $diagnosticPhase = 'profile-create'
   [void][System.IO.Directory]::CreateDirectory($root)
+  $diagnosticPhase = 'profile-ancestors'
   Assert-SafeAncestors $root
+  $diagnosticPhase = 'profile-parent-acl'
   Assert-SafeParentAclChain $root
 
   if ($aclMode -eq 'cache-boundary') {
+    $diagnosticPhase = 'profile-boundary'
     $boundaryCount = Secure-CacheBoundary
     [Console]::Out.WriteLine(
       '${WINDOWS_PROFILE_ACL_OK}:{0}',
@@ -1421,13 +1563,16 @@ public static class IdaccProfileFileProbe {
   }
 
   if ($aclMode -eq 'streaming-upgrade') {
+    $diagnosticPhase = 'profile-stream'
     $firstStreamingCount = Convert-ProfileObjectsStreaming $root
     $secondStreamingCount = Convert-ProfileObjectsStreaming $root
     if ($firstStreamingCount -ne $secondStreamingCount) {
       throw 'profile tree changed during streaming ACL conversion'
     }
     if ([System.IO.File]::Exists($profileMarkerPath)) {
+      $diagnosticPhase = 'profile-attestation-write'
       Write-AclAttestation
+      $diagnosticPhase = 'profile-attestation-verify'
       if (-not (Test-AclAttestation)) {
         throw 'profile ACL attestation verification failed'
       }
@@ -1445,9 +1590,11 @@ public static class IdaccProfileFileProbe {
   $verifiedObjects = @()
   $verifiedCount = 0
   try {
+    $diagnosticPhase = 'profile-enumerate'
     $objects = @(Get-ProfileObjects $root)
     foreach ($item in $objects) {
       if (-not (Test-PrivateAcl $item)) {
+        $diagnosticPhase = 'profile-apply'
         Set-PrivateAcl $item
       }
     }
@@ -1455,9 +1602,13 @@ public static class IdaccProfileFileProbe {
     # Re-enumeration catches replacements or new reparse points introduced while
     # the original tree was being hardened. Both object generations stay locked
     # until exact ACL and stable 128-bit identity verification completes.
+    $diagnosticPhase = 'profile-ancestors'
     Assert-SafeAncestors $root
+    $diagnosticPhase = 'profile-parent-acl'
     Assert-SafeParentAclChain $root
+    $diagnosticPhase = 'profile-reenumerate'
     $verifiedObjects = @(Get-ProfileObjects $root)
+    $diagnosticPhase = 'profile-verify'
     foreach ($item in $verifiedObjects) {
       Assert-PrivateAcl $item
     }
@@ -1471,7 +1622,9 @@ public static class IdaccProfileFileProbe {
   # bootstrap remains a valid explicit data-directory selection. Once profile
   # metadata exists, the next launch records the versioned steady-state proof.
   if ([System.IO.File]::Exists($profileMarkerPath)) {
+    $diagnosticPhase = 'profile-attestation-write'
     Write-AclAttestation
+    $diagnosticPhase = 'profile-attestation-verify'
     if (-not (Test-AclAttestation)) {
       throw 'profile ACL attestation verification failed'
     }
@@ -1482,7 +1635,10 @@ public static class IdaccProfileFileProbe {
   [Console]::Out.WriteLine('${WINDOWS_PROFILE_ACL_OK}:{0}', $verifiedCount)
   exit 0
 } catch {
-  [Console]::Out.WriteLine('IDACC_WINDOWS_PROFILE_ACL_FAILED')
+  [Console]::Out.WriteLine(
+    '${WINDOWS_PROFILE_ACL_FAILED}:{0}',
+    $script:diagnosticPhase
+  )
   exit 1
 }
 `;
@@ -1586,13 +1742,18 @@ export function secureWindowsPrivatePath(
   const verified = String(result.stdout || '').split(/\r?\n/).some((line) => (
     line.trim() === `${WINDOWS_PROFILE_ACL_OK}:1`
   ));
+  const diagnosticPhase = windowsProfileAclResultDiagnosticPhase(result);
   if (
     result.status !== 0
     || result.error
     || result.signal
+    || diagnosticPhase
     || !verified
   ) {
-    throw profilePrivacyError('application-state path');
+    throw profilePrivacyError(
+      'application-state path',
+      diagnosticPhase,
+    );
   }
   return normalized;
 }
@@ -1650,15 +1811,20 @@ export function secureWindowsProfileRoot(
   );
   const assertSuccess = (result: WindowsProfileAclRunResult): void => {
     assertNotNewer(result);
+    const diagnosticPhase = windowsProfileAclResultDiagnosticPhase(result);
     if (
       result.status !== 0
       || result.error
       || result.signal
+      || diagnosticPhase
       || !String(result.stdout || '').split(/\r?\n/).some((line) => (
         new RegExp(`^${WINDOWS_PROFILE_ACL_OK}:\\d+$`).test(line.trim())
       ))
     ) {
-      throw profilePrivacyError();
+      throw profilePrivacyError(
+        'profile',
+        diagnosticPhase,
+      );
     }
   };
 
@@ -1720,7 +1886,10 @@ export function secureWindowsProfileRoot(
     ) {
       throw error;
     }
-    throw profilePrivacyError();
+    throw profilePrivacyError(
+      'profile',
+      windowsProfilePrivacyDiagnosticPhase(error),
+    );
   }
   return normalized;
 }

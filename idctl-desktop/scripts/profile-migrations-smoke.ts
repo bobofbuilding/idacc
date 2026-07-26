@@ -32,6 +32,7 @@ import {
   normalizeWindowsProfileRoot,
   secureWindowsPrivatePath,
   secureWindowsProfileRoot,
+  windowsProfilePrivacyDiagnosticPhase,
   WINDOWS_PROFILE_ACL_SCRIPT,
 } from '../src/main/profilePrivacy.ts';
 import {
@@ -617,7 +618,15 @@ try {
     // children, in which case production correctly refuses to secure even an
     // existing scratch root. Establish and verify the same exact app-owned
     // boundary the desktop applies before creating profiles beneath it.
-    secureWindowsPrivatePath(temp, 'directory');
+    try {
+      secureWindowsPrivatePath(temp, 'directory');
+    } catch (error) {
+      assert.fail(
+        `the Windows migration fixture boundary failed at phase: ${
+          windowsProfilePrivacyDiagnosticPhase(error) || 'unavailable'
+        }`,
+      );
+    }
     assert.match(
       windowsPowerShellForTest(WINDOWS_ASSERT_PRIVATE_DIRECTORY_ACL, temp),
       /IDACC_TEST_PRIVATE_DIRECTORY_OK/,
@@ -707,6 +716,99 @@ try {
       /could not establish and verify private Windows access/i,
     );
   }
+  let allowlistedDiagnosticError: unknown;
+  try {
+    secureWindowsPrivatePath('C:\\Profiles\\Consumer', 'directory', {
+      platform: 'win32',
+      runner: () => ({
+        status: 1,
+        stdout: [
+          'IDACC_WINDOWS_PROFILE_ACL_FAILED:parent-delete-child',
+          'untrusted detail C:\\Users\\Consumer\\private-profile',
+        ].join('\n'),
+      }),
+    });
+  } catch (error) {
+    allowlistedDiagnosticError = error;
+  }
+  assert.ok(allowlistedDiagnosticError instanceof Error);
+  assert.equal(
+    allowlistedDiagnosticError.message,
+    'IDACC could not establish and verify private Windows access for this application-state path.',
+  );
+  assert.equal(
+    (allowlistedDiagnosticError as NodeJS.ErrnoException).code,
+    'EPERM',
+    'bounded diagnostics must not change the public operating-system code',
+  );
+  assert.equal(
+    windowsProfilePrivacyDiagnosticPhase(allowlistedDiagnosticError),
+    'parent-delete-child',
+    'only the closed helper phase may cross the privacy boundary',
+  );
+  assert.equal(
+    Object.prototype.propertyIsEnumerable.call(
+      allowlistedDiagnosticError,
+      'diagnosticPhase',
+    ),
+    false,
+    'the bounded helper phase must not enter serialized error records',
+  );
+  assert.doesNotMatch(
+    JSON.stringify(allowlistedDiagnosticError),
+    /Consumer|private-profile|parent-delete-child/,
+    'raw helper output and even the bounded phase must not leak through serialization',
+  );
+
+  let untrustedDiagnosticError: unknown;
+  try {
+    secureWindowsPrivatePath('C:\\Profiles\\Consumer', 'directory', {
+      platform: 'win32',
+      runner: () => ({
+        status: 1,
+        stdout: [
+          'IDACC_WINDOWS_PROFILE_ACL_FAILED:C:\\Users\\Consumer\\secret',
+          'IDACC_WINDOWS_PROFILE_ACL_FAILED:not-an-allowlisted-phase',
+          'IDACC_WINDOWS_PROFILE_ACL_FAILED:parent-owner-untrusted:C:\\secret',
+          'IDACC_WINDOWS_PROFILE_ACL_FAILED:PARENT-DELETE-OBJECT',
+        ].join('\n'),
+      }),
+    });
+  } catch (error) {
+    untrustedDiagnosticError = error;
+  }
+  assert.ok(untrustedDiagnosticError instanceof Error);
+  assert.equal(
+    windowsProfilePrivacyDiagnosticPhase(untrustedDiagnosticError),
+    undefined,
+    'arbitrary helper output must never become a diagnostic phase',
+  );
+  assert.doesNotMatch(
+    `${untrustedDiagnosticError.message}\n${JSON.stringify(untrustedDiagnosticError)}`,
+    /Consumer|secret|not-an-allowlisted-phase|PARENT-DELETE-OBJECT/,
+    'untrusted helper output must not cross the generic public error boundary',
+  );
+  assert.equal(
+    windowsProfilePrivacyDiagnosticPhase({
+      diagnosticPhase: 'parent-delete-object:C:\\secret',
+    }),
+    undefined,
+    'a phase property with appended detail must not pass the closed allowlist',
+  );
+  assert.throws(
+    () => secureWindowsPrivatePath('C:\\Profiles\\Consumer', 'directory', {
+      platform: 'win32',
+      runner: () => ({
+        status: 0,
+        stdout: [
+          'IDACC_WINDOWS_PROFILE_ACL_OK:1',
+          'IDACC_WINDOWS_PROFILE_ACL_FAILED:single-verify',
+        ].join('\n'),
+      }),
+    }),
+    /could not establish and verify private Windows access/i,
+    'a failure phase must prevent success even beside a forged success marker',
+  );
   const privacySource = readFileSync(
     join(process.cwd(), 'src', 'main', 'profilePrivacy.ts'),
     'utf8',
