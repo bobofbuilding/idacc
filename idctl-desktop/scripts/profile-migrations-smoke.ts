@@ -11,13 +11,14 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, win32 } from 'node:path';
+import { dirname, join, win32 } from 'node:path';
 import {
   normalizeAppProfileName,
   selectAppProfile,
@@ -32,6 +33,12 @@ import {
   secureWindowsProfileRoot,
   WINDOWS_PROFILE_ACL_SCRIPT,
 } from '../src/main/profilePrivacy.ts';
+import {
+  assertPrivateFileMode,
+  isTrustedPrivatePathOwner,
+} from '../src/main/posixFilePrivacy.ts';
+import { macAclListingHasExtendedAcl } from '../src/main/macFilePrivacy.ts';
+import { copyFilePrivateSync } from '../src/main/privateFileCopy.ts';
 
 function paths(root: string): ProfileMigrationPaths {
   return {
@@ -44,6 +51,11 @@ function paths(root: string): ProfileMigrationPaths {
     cache: join(root, 'cache'),
   };
 }
+
+assert.equal(isTrustedPrivatePathOwner(0, 1001), true);
+assert.equal(isTrustedPrivatePathOwner(1001, 1001), true);
+assert.equal(isTrustedPrivatePathOwner(1002, 1001), false);
+assert.equal(isTrustedPrivatePathOwner(1002, undefined), false);
 
 function windowsPowerShellForTest(script: string, profileRoot: string): string {
   const systemRoot = String(process.env.SystemRoot || process.env.WINDIR || '');
@@ -367,6 +379,111 @@ $security = [System.IO.File]::GetAccessControl($file, $sections)
 [Console]::Out.WriteLine($security.GetSecurityDescriptorSddlForm($sections))
 `;
 
+const WINDOWS_ADD_LEGACY_CONFIG_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$file = [System.IO.Path]::Combine($root, 'config.json')
+$everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$security = [System.IO.File]::GetAccessControl($file)
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $everyone,
+  [System.Security.AccessControl.FileSystemRights]::Read,
+  [System.Security.AccessControl.InheritanceFlags]::None,
+  [System.Security.AccessControl.PropagationFlags]::None,
+  [System.Security.AccessControl.AccessControlType]::Allow
+)
+[void]$security.AddAccessRule($rule)
+[System.IO.File]::SetAccessControl($file, $security)
+$stored = @(
+  ([System.IO.File]::GetAccessControl($file)).GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ) | Where-Object {
+    $_.IdentityReference.Value -eq $everyone.Value
+  }
+)
+if ($stored.Count -lt 1) {
+  throw 'failed to construct permissive legacy config fixture'
+}
+[Console]::Out.WriteLine('IDACC_TEST_LEGACY_CONFIG_PERMISSIVE_OK')
+`;
+
+const WINDOWS_ADD_PROFILE_CONFIG_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$file = [System.IO.Path]::Combine($root, 'config', 'config.json')
+$everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$security = [System.IO.File]::GetAccessControl($file)
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $everyone,
+  [System.Security.AccessControl.FileSystemRights]::FullControl,
+  [System.Security.AccessControl.InheritanceFlags]::None,
+  [System.Security.AccessControl.PropagationFlags]::None,
+  [System.Security.AccessControl.AccessControlType]::Allow
+)
+[void]$security.AddAccessRule($rule)
+[System.IO.File]::SetAccessControl($file, $security)
+$stored = @(
+  ([System.IO.File]::GetAccessControl($file)).GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ) | Where-Object {
+    $_.IdentityReference.Value -eq $everyone.Value
+  }
+)
+if ($stored.Count -lt 1) {
+  throw 'failed to construct permissive profile config fixture'
+}
+[Console]::Out.WriteLine('IDACC_TEST_PROFILE_CONFIG_PERMISSIVE_OK')
+`;
+
+const WINDOWS_ASSERT_PRIVATE_PROFILE_CONFIG_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$file = [System.IO.Path]::Combine($root, 'config', 'config.json')
+$userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$systemSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$security = [System.IO.File]::GetAccessControl($file)
+if (
+  $security.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne
+  $userSid.Value
+) {
+  throw 'migrated config has an unexpected owner'
+}
+$rules = @($security.GetAccessRules(
+  $true,
+  $true,
+  [System.Security.Principal.SecurityIdentifier]
+))
+if ($rules.Count -ne 2) {
+  throw 'migrated config has an unexpected rule count'
+}
+foreach ($sid in @($userSid, $systemSid)) {
+  $matching = @($rules | Where-Object {
+    $_.IdentityReference.Value -eq $sid.Value
+  })
+  if (
+    $matching.Count -ne 1 -or
+    $matching[0].AccessControlType -ne
+      [System.Security.AccessControl.AccessControlType]::Allow -or
+    [int]$matching[0].FileSystemRights -ne
+      [int][System.Security.AccessControl.FileSystemRights]::FullControl -or
+    $matching[0].InheritanceFlags -ne
+      [System.Security.AccessControl.InheritanceFlags]::None -or
+    $matching[0].PropagationFlags -ne
+      [System.Security.AccessControl.PropagationFlags]::None
+  ) {
+    throw 'migrated config ACL is not effectively private'
+  }
+}
+[Console]::Out.WriteLine('IDACC_TEST_MIGRATED_CONFIG_PRIVATE_OK')
+`;
+
 const WINDOWS_ASSERT_PRIVATE_DIRECTORY_ACL = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -472,9 +589,15 @@ try {
   // before the privileged OS runner, while non-Windows behavior is a no-op.
   let fakeRunnerCalls = 0;
   let fakeMaximumSchemaVersion: number | undefined;
-  const fakeRunner = (root: string, maximumSchemaVersion?: number) => {
+  let fakeAclMode: string | undefined;
+  const fakeRunner = (
+    root: string,
+    maximumSchemaVersion?: number,
+    mode?: string,
+  ) => {
     fakeRunnerCalls += 1;
     fakeMaximumSchemaVersion = maximumSchemaVersion;
+    fakeAclMode = mode;
     assert.equal(root, 'C:\\Profiles\\Consumer');
     return { status: 0, stdout: 'IDACC_WINDOWS_PROFILE_ACL_OK:3\n' };
   };
@@ -501,6 +624,7 @@ try {
   );
   assert.equal(fakeRunnerCalls, 1);
   assert.equal(fakeMaximumSchemaVersion, PROFILE_SCHEMA_VERSION);
+  assert.equal(fakeAclMode, 'normal');
   for (const unsafeWindowsRoot of [
     'relative\\profile',
     'C:\\',
@@ -587,14 +711,30 @@ try {
   assert.match(privacySource, /GetSecurityInfo/);
   assert.match(privacySource, /Close-ProfileObjects \$verifiedObjects/);
   assert.match(privacySource, /\$maximumProfileObjects = 4096/);
-  assert.match(privacySource, /if \(Test-SamePath \$current \$workspaceRoot\) \{\s*continue/);
+  assert.equal(
+    [
+      ...privacySource.matchAll(
+        /\(Test-SamePath \$current \$workspaceRoot\) -or\s*\(Test-IsCacheQuarantine \$current\)/g,
+      ),
+    ].length,
+    2,
+    'both transactional and streaming traversals must preserve opaque boundaries',
+  );
   assert.match(privacySource, /New-PrivateDirectorySecurity \$true/);
   assert.doesNotMatch(privacySource, /New-PrivateDirectorySecurity \$false/);
-  assert.match(privacySource, /\.idacc-windows-acl-v2\.json/);
-  assert.match(privacySource, /if \(Test-AclAttestation\) \{/);
+  assert.match(privacySource, /\.idacc-windows-acl-v3\.json/);
+  assert.match(
+    privacySource,
+    /if \(\$aclMode -eq 'normal' -and \(Test-AclAttestation\)\) \{/,
+  );
   assert.match(privacySource, /Assert-CompatibleProfileMarker/);
   assert.match(privacySource, /IDACC_WINDOWS_PROFILE_NEWER/);
   assert.match(privacySource, /WINDOWS_PROFILE_ACL_TIMEOUT_MS = 2 \* 60_000/);
+  assert.match(privacySource, /WINDOWS_PROFILE_STREAMING_TIMEOUT_MS = 5 \* 60_000/);
+  assert.match(privacySource, /IDACC_WINDOWS_PROFILE_TOO_LARGE/);
+  assert.match(privacySource, /cache-boundary/);
+  assert.match(privacySource, /streaming-upgrade/);
+  assert.match(privacySource, /maximumStreamingProfileObjects = 100000/);
   const migrationSource = readFileSync(
     join(process.cwd(), 'src', 'main', 'profileMigrations.ts'),
     'utf8',
@@ -604,6 +744,44 @@ try {
     /assertCompatibleProfileBeforeMutation\(paths\.root\);[\s\S]*secureWindowsProfileRoot\(paths\.root, \{[\s\S]*maximumSchemaVersion: PROFILE_SCHEMA_VERSION,[\s\S]*const marker = join\(paths\.root, 'profile\.json'\);/,
     'only the bounded compatibility marker preflight may precede Windows ACL enforcement',
   );
+  assert.match(migrationSource, /copyFilePrivateSync\(source, destination,/);
+  const privateCopySource = readFileSync(
+    join(process.cwd(), 'src', 'main', 'privateFileCopy.ts'),
+    'utf8',
+  );
+  assert.match(privateCopySource, /O_CREAT \| constants\.O_EXCL/);
+  assert.match(privateCopySource, /linkSync\(temporary, destination\)/);
+  assert.match(privateCopySource, /writeSync\(/);
+  assert.doesNotMatch(privateCopySource, /copyFileSync/);
+  const posixPrivacySource = readFileSync(
+    join(process.cwd(), 'src', 'main', 'posixFilePrivacy.ts'),
+    'utf8',
+  );
+  assert.match(posixPrivacySource, /current\.uid === uid/);
+  assert.match(migrationSource, /assertSafePosixProfileAncestors\(paths\.root\)/);
+  assert.match(migrationSource, /isTrustedPrivatePathOwner\(entry\.uid\)/);
+  assert.match(
+    migrationSource,
+    /writableByAnotherPrincipal && sticky[\s\S]*isTrustedPrivatePathOwner\(childEntry\.uid\)/,
+    'sticky shared parents must authenticate the traversed child owner',
+  );
+  for (const profileCopyConsumer of [
+    'brainplans.ts',
+    'materialstore.ts',
+    'unifiedStackPolicy.ts',
+    join('computeruse', 'broker.ts'),
+  ]) {
+    const source = readFileSync(
+      join(process.cwd(), 'src', 'main', profileCopyConsumer),
+      'utf8',
+    );
+    assert.match(source, /copyFilePrivateSync\(/);
+    assert.doesNotMatch(
+      source,
+      /copyFileSync/,
+      `${profileCopyConsumer} must not preserve an external Windows DACL`,
+    );
+  }
 
   const userData = join(temp, 'user-data');
   assert.equal(normalizeAppProfileName(), 'default');
@@ -644,6 +822,111 @@ try {
     profileName: 'portable',
     explicitDataDir: true,
   });
+  if (process.platform !== 'win32') {
+    const chmodNoOpProbe = join(temp, 'chmod-no-op-probe');
+    writeFileSync(chmodNoOpProbe, 'private\n', { mode: 0o644 });
+    assert.throws(
+      () => assertPrivateFileMode(chmodNoOpProbe),
+      /privacy could not be verified/i,
+      'a filesystem that leaves permissive mode bits must fail closed',
+    );
+    chmodSync(chmodNoOpProbe, 0o600);
+    assert.doesNotThrow(() => assertPrivateFileMode(chmodNoOpProbe));
+
+    const privateCopySourcePath = join(temp, 'private-copy-source');
+    const privateCopyDestination = join(temp, 'private-copy-destination');
+    const privateCopyExistingDestination = join(
+      temp,
+      'private-copy-existing-destination',
+    );
+    writeFileSync(privateCopySourcePath, 'new private contents\n', { mode: 0o644 });
+    writeFileSync(privateCopyExistingDestination, 'preserve me\n', { mode: 0o600 });
+    assert.throws(
+      () => copyFilePrivateSync(
+        privateCopySourcePath,
+        privateCopyExistingDestination,
+      ),
+      /already exists or is unsafe/i,
+    );
+    assert.equal(
+      readFileSync(privateCopyExistingDestination, 'utf8'),
+      'preserve me\n',
+    );
+    copyFilePrivateSync(privateCopySourcePath, privateCopyDestination);
+    assert.equal(
+      readFileSync(privateCopyDestination, 'utf8'),
+      'new private contents\n',
+    );
+    assertPrivateFileMode(privateCopyDestination);
+
+    const outsideAncestorTarget = join(temp, 'outside-ancestor-target');
+    const outsideExistingProfile = join(outsideAncestorTarget, 'profile');
+    const linkedAncestor = join(temp, 'linked-profile-ancestor');
+    mkdirSync(outsideExistingProfile, { recursive: true, mode: 0o755 });
+    chmodSync(outsideExistingProfile, 0o755);
+    symlinkSync(outsideAncestorTarget, linkedAncestor, 'dir');
+    const outsideModeBefore = statSync(outsideExistingProfile).mode & 0o777;
+    assert.throws(
+      () => migrateAppProfile(paths(join(linkedAncestor, 'profile')), {
+        profileName: 'linked-ancestor',
+        legacyConfigDir: join(temp, 'missing-linked-ancestor-legacy'),
+        allowLegacyImport: false,
+      }),
+      /ancestor is not a regular directory/i,
+    );
+    assert.equal(
+      statSync(outsideExistingProfile).mode & 0o777,
+      outsideModeBefore,
+      'an ancestor symlink must be rejected before changing its outside target',
+    );
+    assert.equal(existsSync(join(outsideExistingProfile, 'profile.json')), false);
+
+    for (const [name, mode] of [
+      ['replaceable-parent', 0o777],
+      ['replaceable-sticky-parent', 0o1777],
+    ] as const) {
+      const parent = join(temp, name);
+      const target = paths(join(parent, 'new-profile'));
+      mkdirSync(parent, { mode });
+      chmodSync(parent, mode);
+      assert.throws(
+        () => migrateAppProfile(target, {
+          profileName: 'unsafe-parent',
+          legacyConfigDir: join(temp, 'missing-unsafe-parent-legacy'),
+          allowLegacyImport: false,
+        }),
+        /parent can be replaced/i,
+      );
+      assert.equal(
+        existsSync(target.root),
+        false,
+        'an unsafe parent must be rejected before profile creation',
+      );
+    }
+
+    if (process.platform === 'darwin') {
+      const aclParent = join(temp, 'replaceable-acl-parent');
+      const aclTarget = paths(join(aclParent, 'new-profile'));
+      mkdirSync(aclParent, { mode: 0o700 });
+      assert.equal(
+        spawnSync('/bin/chmod', [
+          '+a',
+          'everyone allow add_file,delete_child',
+          aclParent,
+        ]).status,
+        0,
+      );
+      assert.throws(
+        () => migrateAppProfile(aclTarget, {
+          profileName: 'unsafe-acl-parent',
+          legacyConfigDir: join(temp, 'missing-unsafe-acl-parent-legacy'),
+          allowLegacyImport: false,
+        }),
+        /replaceable macOS ACL/i,
+      );
+      assert.equal(existsSync(aclTarget.root), false);
+    }
+  }
 
   const legacy = join(temp, 'legacy');
   const legacyDesktopSigner = join(temp, 'old-user-data', 'keys', 'agent-signers.json');
@@ -742,6 +1025,96 @@ try {
   assert.equal(existsSync(join(resumed.root, 'config', 'context-budget', 'cb_resume.json')), true);
   assert.equal(existsSync(join(resumed.root, 'config', 'agent-signers.json')), true);
 
+  // First-run cache import must stay below both the product retention contract
+  // and the Windows transactional ACL verification bound. The full legacy
+  // cache remains untouched as a rollback source.
+  const largeLegacy = join(temp, 'large-legacy');
+  const largeLegacyContext = join(largeLegacy, 'context-budget');
+  const boundedCacheProfile = paths(join(temp, 'bounded-cache-profile'));
+  mkdirSync(largeLegacyContext, { recursive: true });
+  for (let index = 0; index < 4_105; index += 1) {
+    writeFileSync(
+      join(largeLegacyContext, `cb_${String(index).padStart(5, '0')}.json`),
+      '{}\n',
+    );
+  }
+  migrateAppProfile(boundedCacheProfile, {
+    profileName: 'default',
+    legacyConfigDir: largeLegacy,
+  });
+  assert.equal(
+    readdirSync(join(boundedCacheProfile.cache, 'context-budget'))
+      .filter((name) => /^cb_.*\.json$/.test(name))
+      .length,
+    2_000,
+  );
+  assert.equal(readdirSync(largeLegacyContext).length, 4_105);
+  const boundedCacheSecondLaunch = migrateAppProfile(boundedCacheProfile, {
+    profileName: 'default',
+    legacyConfigDir: largeLegacy,
+  });
+  assert.equal(boundedCacheSecondLaunch.schemaVersion, PROFILE_SCHEMA_VERSION);
+  if (process.platform === 'win32') {
+    assert.equal(
+      existsSync(join(boundedCacheProfile.root, '.idacc-windows-acl-v3.json')),
+      true,
+      'a second Windows launch must verify and attest a retained large cache',
+    );
+    rmSync(join(boundedCacheProfile.root, '.idacc-windows-acl-v3.json'));
+    writeFileSync(join(boundedCacheProfile.root, 'profile.json'), JSON.stringify({
+      schemaVersion: 2,
+      profile: 'default',
+      createdAt: '2026-07-25T00:00:00.000Z',
+      updatedAt: '2026-07-25T00:00:00.000Z',
+      migratedFrom: largeLegacy,
+      appliedMigrations: [
+        {
+          version: 1,
+          id: 'import-legacy-idctl-profile',
+          appliedAt: '2026-07-25T00:00:00.000Z',
+        },
+        {
+          version: 2,
+          id: 'relocate-context-budget-to-cache',
+          appliedAt: '2026-07-25T00:00:00.000Z',
+        },
+      ],
+    }) + '\n');
+    for (let index = 4_105; index < 6_210; index += 1) {
+      writeFileSync(
+        join(
+          boundedCacheProfile.cache,
+          'context-budget',
+          `cb_${String(index).padStart(5, '0')}.json`,
+        ),
+        '{}\n',
+      );
+    }
+    const upgradedLargeExisting = migrateAppProfile(boundedCacheProfile, {
+      profileName: 'default',
+      legacyConfigDir: largeLegacy,
+    });
+    assert.equal(upgradedLargeExisting.schemaVersion, PROFILE_SCHEMA_VERSION);
+    assert.equal(
+      readdirSync(join(boundedCacheProfile.cache, 'context-budget'))
+        .filter((name) => /^cb_.*\.json$/.test(name))
+        .length,
+      2_000,
+      'an oversized un-attested cache must be retained within policy',
+    );
+    assert.equal(
+      readdirSync(boundedCacheProfile.root)
+        .some((name) => name.startsWith('.idacc-cache-quarantine-')),
+      false,
+      'successful cache conversion must remove its private quarantine',
+    );
+    assert.equal(
+      existsSync(join(boundedCacheProfile.root, '.idacc-windows-acl-v3.json')),
+      true,
+      'the converted existing profile must be attested before use',
+    );
+  }
+
   // A future-version profile is compatibility-inspected without changing even
   // its root mode, timestamps, entries, or existing data.
   const newerProfile = paths(join(temp, 'newer-profile'));
@@ -826,6 +1199,104 @@ try {
   assert.equal(readFileSync(join(corrupt.root, 'profile.json'), 'utf8'), '{not-json');
 
   if (process.platform !== 'win32') {
+    if (process.platform === 'darwin') {
+      const macAclProfile = paths(join(temp, 'mac-acl-profile'));
+      const macAclSecret = join(macAclProfile.root, 'config', 'secret.json');
+      const macWorkspaceFile = join(
+        macAclProfile.workspace,
+        'repo',
+        'user-managed.txt',
+      );
+      mkdirSync(dirname(macAclSecret), { recursive: true });
+      mkdirSync(dirname(macWorkspaceFile), { recursive: true });
+      writeFileSync(macAclSecret, '{"secret":true}\n', { mode: 0o600 });
+      writeFileSync(macWorkspaceFile, 'workspace\n', { mode: 0o600 });
+      writeFileSync(join(macAclProfile.root, 'profile.json'), JSON.stringify({
+        schemaVersion: PROFILE_SCHEMA_VERSION,
+        profile: 'mac-acl',
+        createdAt: '2026-07-25T00:00:00.000Z',
+        updatedAt: '2026-07-25T00:00:00.000Z',
+        migratedFrom: null,
+        appliedMigrations: [],
+      }) + '\n');
+      assert.equal(
+        spawnSync('/usr/bin/xattr', [
+          '-w',
+          'com.idacc.acl-regression',
+          'present',
+          macAclSecret,
+        ]).status,
+        0,
+      );
+      for (const path of [
+        macAclProfile.root,
+        macAclSecret,
+        macWorkspaceFile,
+      ]) {
+        assert.equal(
+          spawnSync('/bin/chmod', ['+a', 'everyone allow read', path]).status,
+          0,
+          `macOS ACL fixture could not be created for ${path}`,
+        );
+      }
+      const aclListing = (path: string): string => {
+        const result = spawnSync('/bin/ls', ['-ldeb', path], {
+          encoding: 'utf8',
+        });
+        assert.equal(result.status, 0);
+        return String(result.stdout || '');
+      };
+      assert.match(aclListing(macAclSecret), /^\S+@/);
+      assert.equal(
+        macAclListingHasExtendedAcl(aclListing(macAclSecret)),
+        true,
+        'ACL entry lines must still be detected when an xattr changes + to @',
+      );
+      migrateAppProfile(macAclProfile, {
+        profileName: 'mac-acl',
+        legacyConfigDir: join(temp, 'missing-mac-legacy'),
+        allowLegacyImport: false,
+      });
+      assert.equal(macAclListingHasExtendedAcl(aclListing(macAclProfile.root)), false);
+      assert.equal(macAclListingHasExtendedAcl(aclListing(macAclSecret)), false);
+      assert.equal(
+        macAclListingHasExtendedAcl(aclListing(macWorkspaceFile)),
+        true,
+        'workspace descendant ACLs remain user-managed',
+      );
+    }
+
+    const hardlinkedStateProfile = paths(join(temp, 'hardlinked-state-profile'));
+    const hardlinkedStateOutside = join(temp, 'hardlinked-state-outside.json');
+    mkdirSync(join(hardlinkedStateProfile.root, 'config'), { recursive: true });
+    writeFileSync(hardlinkedStateOutside, '{"outside":true}\n', { mode: 0o644 });
+    linkSync(
+      hardlinkedStateOutside,
+      join(hardlinkedStateProfile.root, 'config', 'shared.json'),
+    );
+    writeFileSync(join(hardlinkedStateProfile.root, 'profile.json'), JSON.stringify({
+      schemaVersion: PROFILE_SCHEMA_VERSION,
+      profile: 'hardlinked-state',
+      createdAt: '2026-07-25T00:00:00.000Z',
+      updatedAt: '2026-07-25T00:00:00.000Z',
+      migratedFrom: null,
+      appliedMigrations: [],
+    }) + '\n');
+    const outsideModeBefore = statSync(hardlinkedStateOutside).mode & 0o777;
+    assert.throws(
+      () => migrateAppProfile(hardlinkedStateProfile, {
+        profileName: 'hardlinked-state',
+        legacyConfigDir: join(temp, 'missing-hardlinked-state'),
+        allowLegacyImport: false,
+      }),
+      /unsupported file type/i,
+    );
+    assert.equal(
+      statSync(hardlinkedStateOutside).mode & 0o777,
+      outsideModeBefore,
+      'a nested profile hard link must be rejected before chmod reaches its outside inode',
+    );
+
     const outside = join(temp, 'outside.json');
     writeFileSync(outside, '{"outside":true}\n');
 
@@ -872,6 +1343,112 @@ try {
       ).trim(),
       newerAclBefore,
       'native Windows compatibility rejection must not change any tree ACL',
+    );
+
+    // A valid steady-state attestation must not make a later migration copy a
+    // permissive source DACL. Profile copies create new private files from
+    // content instead of asking Windows CopyFile to preserve source security.
+    const permissiveLegacy = join(temp, 'permissive-legacy');
+    const copiedAclProfile = paths(join(temp, 'copied-acl-profile'));
+    mkdirSync(permissiveLegacy);
+    writeFileSync(
+      join(permissiveLegacy, 'config.json'),
+      '{"version":1,"defaultTeam":"default"}\n',
+    );
+    assert.match(
+      windowsPowerShellForTest(
+        WINDOWS_ADD_LEGACY_CONFIG_ACL,
+        permissiveLegacy,
+      ),
+      /IDACC_TEST_LEGACY_CONFIG_PERMISSIVE_OK/,
+    );
+    mkdirSync(copiedAclProfile.root);
+    writeFileSync(join(copiedAclProfile.root, 'profile.json'), JSON.stringify({
+      schemaVersion: 0,
+      profile: 'default',
+      createdAt: '2026-07-25T00:00:00.000Z',
+      updatedAt: '2026-07-25T00:00:00.000Z',
+      migratedFrom: null,
+      appliedMigrations: [],
+    }) + '\n');
+    secureWindowsProfileRoot(copiedAclProfile.root, {
+      maximumSchemaVersion: PROFILE_SCHEMA_VERSION,
+    });
+    assert.equal(
+      existsSync(join(copiedAclProfile.root, '.idacc-windows-acl-v3.json')),
+      true,
+      'the fixture must begin with a valid bounded attestation',
+    );
+    migrateAppProfile(copiedAclProfile, {
+      profileName: 'default',
+      legacyConfigDir: permissiveLegacy,
+    });
+    assert.match(
+      windowsPowerShellForTest(
+        WINDOWS_ASSERT_PRIVATE_PROFILE_CONFIG_ACL,
+        copiedAclProfile.root,
+      ),
+      /IDACC_TEST_MIGRATED_CONFIG_PRIVATE_OK/,
+      'migration must not copy a permissive legacy DACL into the profile',
+    );
+    assert.equal(
+      existsSync(join(copiedAclProfile.root, '.idacc-windows-acl-v3.json')),
+      true,
+      'safe inherited copies must preserve the valid bounded attestation',
+    );
+
+    // Invalidate the v2 policy proof issued by the first hardening wave. That
+    // proof predates private content-copy semantics, so a v3 launch must scan
+    // and repair every existing app-owned child before accepting steady state.
+    const oldProofProfile = paths(join(temp, 'old-v2-proof-profile'));
+    mkdirSync(join(oldProofProfile.root, 'config'), { recursive: true });
+    writeFileSync(join(oldProofProfile.root, 'profile.json'), JSON.stringify({
+      schemaVersion: PROFILE_SCHEMA_VERSION,
+      profile: 'default',
+      createdAt: '2026-07-25T00:00:00.000Z',
+      updatedAt: '2026-07-25T00:00:00.000Z',
+      migratedFrom: null,
+      appliedMigrations: [],
+    }) + '\n');
+    writeFileSync(
+      oldProofProfile.config,
+      '{"version":1,"defaultTeam":"default"}\n',
+    );
+    secureWindowsProfileRoot(oldProofProfile.root, {
+      maximumSchemaVersion: PROFILE_SCHEMA_VERSION,
+    });
+    const currentProof = join(
+      oldProofProfile.root,
+      '.idacc-windows-acl-v3.json',
+    );
+    const oldProof = join(
+      oldProofProfile.root,
+      '.idacc-windows-acl-v2.json',
+    );
+    renameSync(currentProof, oldProof);
+    writeFileSync(oldProof, JSON.stringify({
+      version: 2,
+      userSid: 'fixture-value-is-ignored-by-v3',
+      workspacePolicy: 'root-only',
+    }) + '\n');
+    assert.match(
+      windowsPowerShellForTest(
+        WINDOWS_ADD_PROFILE_CONFIG_ACL,
+        oldProofProfile.root,
+      ),
+      /IDACC_TEST_PROFILE_CONFIG_PERMISSIVE_OK/,
+    );
+    secureWindowsProfileRoot(oldProofProfile.root, {
+      maximumSchemaVersion: PROFILE_SCHEMA_VERSION,
+    });
+    assert.equal(existsSync(currentProof), true);
+    assert.match(
+      windowsPowerShellForTest(
+        WINDOWS_ASSERT_PRIVATE_PROFILE_CONFIG_ACL,
+        oldProofProfile.root,
+      ),
+      /IDACC_TEST_MIGRATED_CONFIG_PRIVATE_OK/,
+      'a v2 proof must not bypass v3 recursive child hardening',
     );
 
     // This branch runs in the real Windows CI job. Begin with an explicit
@@ -941,6 +1518,14 @@ try {
     mkdirSync(overLimitNested, { recursive: true });
     mkdirSync(overLimitBulk);
     writeFileSync(join(overLimitNested, 'secret.txt'), 'private\n');
+    writeFileSync(join(overLimitProfile, 'profile.json'), JSON.stringify({
+      schemaVersion: PROFILE_SCHEMA_VERSION,
+      profile: 'large-non-cache',
+      createdAt: '2026-07-25T00:00:00.000Z',
+      updatedAt: '2026-07-25T00:00:00.000Z',
+      migratedFrom: null,
+      appliedMigrations: [],
+    }) + '\n');
     for (let index = 0; index < 4093; index += 1) {
       writeFileSync(join(overLimitBulk, `${index}.txt`), 'x');
     }
@@ -953,7 +1538,9 @@ try {
       overLimitProfile,
     ).trim();
     assert.throws(
-      () => secureWindowsProfileRoot(overLimitProfile),
+      () => secureWindowsProfileRoot(overLimitProfile, {
+        allowLargeProfileUpgrade: false,
+      }),
       /could not establish and verify private Windows access/i,
     );
     assert.equal(
@@ -963,6 +1550,25 @@ try {
       ).trim(),
       overLimitAclBefore,
       'the object bound must fail before every ACL mutation',
+    );
+    secureWindowsProfileRoot(overLimitProfile);
+    assert.match(
+      windowsPowerShellForTest(WINDOWS_ASSERT_PRIVATE_ACL, overLimitProfile),
+      /IDACC_TEST_PRIVATE_OK/,
+      'the production large-profile upgrade must harden non-cache state',
+    );
+    const largeProfileAttestation = join(
+      overLimitProfile,
+      '.idacc-windows-acl-v3.json',
+    );
+    const largeProfileAttestationMtime = statSync(
+      largeProfileAttestation,
+    ).mtimeMs;
+    secureWindowsProfileRoot(overLimitProfile);
+    assert.equal(
+      statSync(largeProfileAttestation).mtimeMs,
+      largeProfileAttestationMtime,
+      'the second large-profile launch must use its verified attestation',
     );
 
     // Hardening the profile itself is insufficient if an untrusted principal
@@ -1110,7 +1716,7 @@ try {
     );
     const opaqueAttestation = join(
       opaqueWorkspaceProfile,
-      '.idacc-windows-acl-v2.json',
+      '.idacc-windows-acl-v3.json',
     );
     const attestationMtime = statSync(opaqueAttestation).mtimeMs;
     secureWindowsProfileRoot(opaqueWorkspaceProfile);
@@ -1132,7 +1738,7 @@ try {
     secureWindowsProfileRoot(freshDefaultProfile);
     assert.equal(existsSync(freshDefaultProfile), true);
     assert.equal(
-      existsSync(join(freshDefaultProfile, '.idacc-windows-acl-v2.json')),
+      existsSync(join(freshDefaultProfile, '.idacc-windows-acl-v3.json')),
       false,
       'an interrupted bootstrap must leave an otherwise empty selectable root',
     );
@@ -1150,7 +1756,7 @@ try {
     });
     secureWindowsProfileRoot(freshDefaultProfile);
     assert.equal(
-      existsSync(join(freshDefaultProfile, '.idacc-windows-acl-v2.json')),
+      existsSync(join(freshDefaultProfile, '.idacc-windows-acl-v3.json')),
       true,
       'the completed migrated profile must gain its steady-state attestation',
     );

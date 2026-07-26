@@ -178,7 +178,10 @@ app.whenReady().then(async () => {
 
   const env = { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' };
   delete env.ELECTRON_RUN_AS_NODE;
-  const child = spawn(electronPath, [main], {
+  const electronArgs = process.platform === 'linux' && process.env.CI
+    ? ['--disable-setuid-sandbox', main]
+    : [main];
+  const child = spawn(electronPath, electronArgs, {
     cwd: temp,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],

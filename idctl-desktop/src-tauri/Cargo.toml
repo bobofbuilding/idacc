@@ -1,7 +1,7 @@
 [package]
-name = "idagents-control"
-version = "0.1.0"
-description = "ID Agents Control Center"
+name = "idacc-interface-simulation"
+version = "0.0.0"
+description = "Developer-only interface simulation; not the unified IDACC application"
 edition = "2021"
 
 [build-dependencies]

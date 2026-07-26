@@ -13,14 +13,20 @@
  */
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync, chmodSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { app } from 'electron';
 import { captureDisplay, displayInfos, selectedDisplayInfo, type Frame } from './capture.ts';
 import { accessibilityGranted } from './permissions.ts';
 import * as driver from './driver.mac.ts';
-import { audit, recentAudit, type AuditEntry } from './audit.ts';
+import {
+  audit,
+  recentAudit,
+  resetComputerUseAuditProfileState,
+  type AuditEntry,
+} from './audit.ts';
+import { copyFilePrivateSync } from '../privateFileCopy.ts';
 import {
   mapComputerUsePoint,
   validateComputerUseFrame,
@@ -205,7 +211,9 @@ function stageServerFile(): void {
     const src = app.isPackaged
       ? join(process.resourcesPath, 'computeruse-mcp', 'server.mjs')
       : join(__dirname, '../../resources/computeruse-mcp/server.mjs');
-    if (existsSync(src)) copyFileSync(src, brokerServerPath());
+    if (existsSync(src)) {
+      copyFilePrivateSync(src, brokerServerPath(), { overwrite: true });
+    }
   } catch { /* the view surfaces 'server unavailable' if attach later fails */ }
 }
 
@@ -221,6 +229,9 @@ function writeSession(): void {
 const agentTokens = new Map<string, string>(); // token → scoped agent authority
 function agentTokensFile(): string { return join(cuDir(), 'agent-tokens.json'); }
 function loadAgentTokens(): void {
+  // The active profile is authoritative. Startup recovery can retry in this
+  // process, so never merge another profile's persisted bearer map.
+  agentTokens.clear();
   try {
     const j = JSON.parse(readFileSync(agentTokensFile(), 'utf8'));
     if (j && typeof j === 'object') for (const [tok, a] of Object.entries(j)) {
@@ -569,6 +580,18 @@ export function stopBroker(): void {
   disarmBroker();
   try { S.server?.close(); } catch { /* */ }
   S.server = null;
+  S.port = 0;
+  S.token = '';
+  S.onFrame = null;
+  S.onPending = null;
+  S.lastAgent = '';
+  S.team = '';
+  S.actions = 0;
+  S.displayId = null;
+  S.lastSig = 0;
+  S.lastShot = null;
+  agentTokens.clear();
+  resetComputerUseAuditProfileState();
 }
 
 /** Current display geometry for the pane's coordinate overlay. */

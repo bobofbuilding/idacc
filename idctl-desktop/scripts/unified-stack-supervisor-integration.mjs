@@ -456,6 +456,7 @@ let attempts = 0;
 try { attempts = Number(readFileSync(attemptsPath, 'utf8')) || 0; } catch {}
 attempts += 1;
 writeFileSync(attemptsPath, String(attempts), { mode: 0o600 });
+writeFileSync(join(root, 'brain-listener-brain-token.txt'), process.env.BRAIN_TOKEN || '', { mode: 0o600 });
 writeFileSync(join(root, 'brain-listener-admin-token.txt'), process.env.IDACC_ADMIN_TOKEN || '', { mode: 0o600 });
 const cursorPath = process.env.BRAIN_LISTENER_CURSOR_FILE;
 const statusPath = process.env.BRAIN_LISTENER_STATUS_FILE;
@@ -546,6 +547,7 @@ state.environment = {
   sqliteExtension: process.env.BRAIN_SQLITE_VEC_EXTENSION || '',
 };
 writeFileSync(statePath, JSON.stringify(state), { mode: 0o600 });
+writeFileSync(join(root, 'brain-cycle-brain-token.txt'), process.env.BRAIN_TOKEN || '', { mode: 0o600 });
 writeFileSync(join(root, 'brain-cycle-admin-token.txt'), process.env.IDACC_ADMIN_TOKEN || '', { mode: 0o600 });
 setTimeout(() => {
   state = JSON.parse(readFileSync(statePath, 'utf8'));
@@ -649,6 +651,9 @@ function canBind(port) {
 }
 
 try {
+  const electronArgs = process.platform === 'linux' && process.env.CI
+    ? ['--disable-setuid-sandbox', '.']
+    : ['.'];
   const env = {
     ...process.env,
     IDACC_STACK_SELFTEST: '1',
@@ -682,7 +687,7 @@ try {
     BRAIN_SYNC_ONCHAIN_SCRIPT: join(runtime, 'brain', 'sync-onchain.mjs'),
   };
   delete env.ELECTRON_RUN_AS_NODE;
-  const result = spawnSync(electron, ['.'], {
+  const result = spawnSync(electron, electronArgs, {
     cwd: desktop,
     env,
     encoding: 'utf8',
@@ -814,6 +819,11 @@ try {
   assert.equal(existsSync(join(profile, 'manager-mcp-error.txt')), false);
 
   assert.equal(readFileSync(join(profile, 'brain-listener-attempts.txt'), 'utf8'), '2');
+  assert.equal(
+    readFileSync(join(profile, 'brain-listener-brain-token.txt'), 'utf8'),
+    brainToken,
+    'Brain listener did not receive the managed Brain bearer',
+  );
   assert.equal(readFileSync(join(profile, 'brain-listener-admin-token.txt'), 'utf8'), '');
   const cursorFile = join(profile, 'brain', 'brain-listener-cursor.json');
   const listenerCursor = JSON.parse(readFileSync(cursorFile, 'utf8'));
@@ -857,6 +867,11 @@ try {
   });
   assert.equal(cycleObservation.environment.plansDir.startsWith(runtime), false);
   assert.equal(cycleObservation.environment.repoPathsJson.includes(runtime), false);
+  assert.equal(
+    readFileSync(join(profile, 'brain-cycle-brain-token.txt'), 'utf8'),
+    brainToken,
+    'Brain cycle did not receive the managed Brain bearer',
+  );
   assert.equal(readFileSync(join(profile, 'brain-cycle-admin-token.txt'), 'utf8'), '');
   const cycleStateFile = join(profile, 'brain', 'brain-cycle-state.json');
   const cycleState = JSON.parse(readFileSync(cycleStateFile, 'utf8'));
@@ -906,7 +921,7 @@ try {
         cycleCadenceHours: 24,
       },
     }, null, 2), { mode: 0o600 });
-    const negative = spawnSync(electron, ['.'], {
+    const negative = spawnSync(electron, electronArgs, {
       cwd: desktop,
       env: {
         ...env,

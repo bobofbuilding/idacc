@@ -763,14 +763,18 @@ same production gates with a retained draft, and
 `scripts/release.sh --resume X.Y.Z --publish=true` to continue safely without
 duplicate publication. Lightweight or unsigned tags and local direct publishing
 are rejected. The audited legacy cutover preserves the exact lightweight
-`v0.1.620` through `v0.1.647` refs as immutable history after the `v0.1.619`
-changelog baseline. Its schema-v2 record also binds the live historical
-GitHub state: 25 exact published, non-Latest release identities and 3 absent
-releases (`v0.1.622`, `v0.1.624`, and `v0.1.625`). It fails closed if any tag
-target or recorded release identity/state changes, or if another incomplete
-tag appears. While the cutover is active, `v0.1.619` remains the changelog
-baseline. The first canonical signed release must be greater than `v0.1.647`.
-The app self-updates from the verified GitHub release feed.
+and annotated `v0.1.620` through `v0.1.684` refs as immutable history. Its
+schema-v3 record binds 63 exact lightweight refs, two exact unsigned annotated
+tag objects, 62 exact published release identities, and 3 absent releases
+(`v0.1.622`, `v0.1.624`, and `v0.1.625`). It fails closed if any tag object,
+peeled target, signature state, or recorded release identity/state changes, or
+if another incomplete tag appears. While the cutover is active, the current
+published frontier `v0.1.684` is the changelog baseline. The first canonical
+signed release must be greater than `v0.1.684`.
+The app self-updates from the verified GitHub release feed. The retained Tauri
+frontend is labeled and gated as a developer-only interface simulation; its
+production package commands fail because it does not bundle or supervise
+Manager and Brain.
 
 ---
 

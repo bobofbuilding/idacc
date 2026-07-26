@@ -4,6 +4,7 @@ import type { HeadroomPilotSettings } from '../../../idctl/src/settings/schema.t
 import { contextBudgetReport, type ContextBudgetReport } from './contextBudget.ts';
 import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayReport } from './contextReplay.ts';
 import type { HeadroomPluginPathAudit } from './headroomPlugin.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
 
 export interface HeadroomStatus {
   cli: {
@@ -62,7 +63,10 @@ function cliPath(): string {
 
 function headroomVersion(timeoutMs = 3000): Promise<HeadroomStatus['cli']> {
   return new Promise((resolve) => {
-    const child = execFile('headroom', ['--version'], { env: { ...process.env, PATH: cliPath() }, timeout: timeoutMs }, (err, stdout, stderr) => {
+    const child = execFile('headroom', ['--version'], {
+      env: externalChildEnvironment(process.env, { PATH: cliPath() }),
+      timeout: timeoutMs,
+    }, (err, stdout, stderr) => {
       if (err) {
         const msg = (stderr || err.message || '').trim();
         resolve({ found: false, error: msg || 'headroom CLI not found' });

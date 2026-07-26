@@ -17,6 +17,7 @@ import {
   executableCandidatePaths,
   executableRequiresShell,
 } from '../shared/subscriptionPortability.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
 
 export interface McpTestResult {
   ok: boolean;
@@ -92,7 +93,7 @@ export function resolveMcpStdioLaunch(
   const platform = options.platform ?? process.platform;
   const home = options.home ?? homedir();
   const pathDelimiter = options.pathDelimiter ?? delimiter;
-  const env = { ...(options.env ?? process.env), ...specEnv };
+  const env = externalChildEnvironment(options.env ?? process.env, specEnv);
   const directories = mcpCliDirectories(env, platform, home, pathDelimiter);
   env.PATH = directories.join(pathDelimiter);
   const executable = resolveMcpExecutable(command, env, platform, directories);

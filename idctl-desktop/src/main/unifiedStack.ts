@@ -31,6 +31,7 @@ import {
 } from '../../../idctl/src/api/controlCenterContract.ts';
 import type { AppProfilePaths } from './appProfile.ts';
 import { brainPlansDir } from './brainplans.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
 import {
   prepareManagerRuntimeProfile,
   type ManagerRuntimeProfile,
@@ -618,7 +619,7 @@ function companionEnvironment(companion: ManagedCompanion): NodeJS.ProcessEnv {
     }))].slice(0, 12);
   const plansDir = brainPlansDir(settings.projectsRoot);
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...externalChildEnvironment(),
     ELECTRON_RUN_AS_NODE: '1',
     IDACC_MANAGED_SERVICE: '1',
     IDACC_SERVICE_NAME: name,
@@ -1276,7 +1277,9 @@ async function launchService(service: ManagedService): Promise<void> {
   });
 
   const childEnv: NodeJS.ProcessEnv = {
-    ...(service.spec.name === 'manager' ? subscriptionRuntimeEnvironment() : process.env),
+    ...(service.spec.name === 'manager'
+      ? subscriptionRuntimeEnvironment()
+      : externalChildEnvironment()),
     ...service.spec.env,
     ELECTRON_RUN_AS_NODE: '1',
     IDACC_MANAGED_SERVICE: '1',
@@ -1384,7 +1387,6 @@ async function startUnifiedStackInternal(paths: AppProfilePaths): Promise<Unifie
   managerCompatibilityLastCheckedAt = 0;
   stackBrainToken = randomBytes(32).toString('base64url');
   stackAdminToken = randomBytes(32).toString('base64url');
-  process.env.BRAIN_TOKEN = stackBrainToken;
   const root = runtimeRoot();
   let manifestResult = readRuntimeManifest(root);
   let managerRuntimeProfile: ManagerRuntimeProfile | undefined;
@@ -1459,6 +1461,25 @@ export function startUnifiedStack(paths: AppProfilePaths): Promise<UnifiedStackS
 export function unifiedStackAdminToken(): string {
   if (!stackAdminToken) throw new Error('unified Manager admin credential is not available');
   return stackAdminToken;
+}
+
+/** Check serialized main-process output without revealing either runtime bearer. */
+export function unifiedStackPayloadContainsCredential(serialized: string): boolean {
+  const payload = String(serialized);
+  return [stackBrainToken, stackAdminToken].some(
+    (credential) => Boolean(credential && credential.length >= 8 && payload.includes(credential)),
+  );
+}
+
+/**
+ * Positive control for stack self-tests: prove the leak detector recognizes
+ * both live credentials while keeping their values inside this module.
+ */
+export function unifiedStackCredentialGuardSelftest(): boolean {
+  const credentials = [stackBrainToken, stackAdminToken]
+    .filter((credential): credential is string => Boolean(credential && credential.length >= 8));
+  return credentials.length === 2
+    && credentials.every((credential) => unifiedStackPayloadContainsCredential(`sentinel:${credential}`));
 }
 
 export async function configureUnifiedBrainAutomation(
@@ -1546,7 +1567,6 @@ export async function stopUnifiedStack(): Promise<void> {
     service.child = undefined;
     service.phase = 'stopped';
   }
-  if (stackBrainToken && process.env.BRAIN_TOKEN === stackBrainToken) delete process.env.BRAIN_TOKEN;
   stackBrainToken = null;
   stackAdminToken = null;
   companionStartPromise = null;

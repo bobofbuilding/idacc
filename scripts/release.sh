@@ -115,7 +115,7 @@ summarize_placeholder_commit() {
     [ -n "$file" ] || continue
     files+=("$file")
     case "$file" in
-      CHANGELOG.md|idctl/package.json|idctl/package-lock.json|idctl-desktop/package.json|idctl-desktop/package-lock.json)
+      CHANGELOG.md|idctl/package.json|idctl/package-lock.json|idctl/src/version.ts|idctl-desktop/package.json|idctl-desktop/package-lock.json)
         ;;
       *)
         meaningful+=("$file")
@@ -163,29 +163,27 @@ CUR="$(node -p "require('$DESK/package.json').version")"
 if ! [[ "$CUR" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   release_fail "current application version is not plain semver: $CUR"
 fi
-VER="${VER_ARG:-$(node -e "const [a,b,c]=process.argv[1].split('.'); console.log(\`\${a}.\${b}.\${Number(c)+1}\`)" "$CUR")}"
+VER="${VER_ARG:-$(
+  node --input-type=module -e '
+    import { incrementSemverPatch } from "./scripts/lib/release-publication.mjs";
+    process.stdout.write(incrementSemverPatch(process.argv[1]));
+  ' "$CUR"
+)}"
 if ! [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   release_fail "release version must be plain semver X.Y.Z; got $VER"
 fi
-node -e '
-const current = process.argv[1].split(".").map(Number);
-const next = process.argv[2].split(".").map(Number);
-for (let index = 0; index < 3; index += 1) {
-  if (next[index] > current[index]) process.exit(0);
-  if (next[index] < current[index]) process.exit(1);
+semver_tag_greater() {
+  node --input-type=module -e '
+    import { isSemverTagGreater } from "./scripts/lib/release-publication.mjs";
+    process.exit(isSemverTagGreater(process.argv[1], process.argv[2]) ? 0 : 1);
+  ' "$1" "$2"
 }
-process.exit(1);
-' "$CUR" "$VER" || release_fail "release version $VER must be greater than current version $CUR"
-node -e '
-const candidate = process.argv[1].slice(1).split(".").map(Number);
-const floor = process.argv[2].slice(1).split(".").map(Number);
-for (let index = 0; index < 3; index += 1) {
-  if (candidate[index] > floor[index]) process.exit(0);
-  if (candidate[index] < floor[index]) process.exit(1);
-}
-process.exit(1);
-' "v$VER" "$CUTOVER_VERSION_FLOOR" \
+semver_tag_greater "v$VER" "v$CUR" \
+  || release_fail "release version $VER must be greater than current version $CUR"
+semver_tag_greater "v$VER" "$CUTOVER_VERSION_FLOOR" \
   || release_fail "release version v$VER must be greater than audited legacy cutoff $CUTOVER_VERSION_FLOOR"
+semver_tag_greater "v$VER" "$CHANGELOG_BASELINE" \
+  || release_fail "release version v$VER must be greater than current public release $CHANGELOG_BASELINE"
 
 printf '▶ preparing v%s from v%s (publish=%s)\n' "$VER" "$CUR" "$PUBLISH"
 
@@ -242,6 +240,8 @@ for (const directory of [process.env.DESK, process.env.TUI]) {
   updateLock(path.join(directory, "package-lock.json"));
 }
 ' "$VER"
+
+node "$TUI/build/gen-version.mjs"
 
 node -e '
 const fs = require("fs");

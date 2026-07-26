@@ -6,6 +6,7 @@ import type { ControlCenterRoute } from '../../../idctl/src/api/controlCenterCon
 import { MCP_CATALOG } from '../../../idctl/src/settings/mcpCatalog.ts';
 import { RUNTIMES, runtimeSupports } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import type { HeadroomStatus } from './headroom.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
 
 export interface HeadroomPluginPathAuditInput {
   managerCapabilities?: {
@@ -187,7 +188,10 @@ function toolLooksMcpCapable(dir: string | null): boolean {
 function smokePluginTool(dir: string | null): Promise<{ ok: boolean; error?: string }> {
   if (!dir || !toolLooksExecutable(dir)) return Promise.resolve({ ok: false, error: 'contract tool missing' });
   return new Promise((resolveSmoke) => {
-    execFile(process.execPath, [join(dir, 'tools', 'contract.mjs'), 'smoke'], { timeout: 5000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [join(dir, 'tools', 'contract.mjs'), 'smoke'], {
+      env: externalChildEnvironment(),
+      timeout: 5000,
+    }, (err, stdout, stderr) => {
       if (err) {
         resolveSmoke({ ok: false, error: (stderr || err.message || '').trim() || 'smoke failed' });
         return;

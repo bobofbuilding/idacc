@@ -16,6 +16,7 @@ import {
   executableRequiresShell,
   installCommandSupported,
 } from '../shared/subscriptionPortability.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
 
 const execFileP = promisify(execFile);
 const SUBS_STATUS_CACHE_TTL_MS = 60_000;
@@ -241,7 +242,9 @@ function cliDirs(): string[] {
 
 /** GUI apps inherit a minimal PATH; add the usual CLI locations. */
 function cliEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, PATH: cliDirs().join(delimiter) };
+  return externalChildEnvironment(process.env, {
+    PATH: cliDirs().join(delimiter),
+  });
 }
 
 /** Is a CLI binary installed (resolvable on the augmented PATH)? */

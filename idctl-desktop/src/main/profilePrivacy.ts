@@ -1,9 +1,29 @@
 import { spawnSync } from 'node:child_process';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { win32 } from 'node:path';
+import { CONTEXT_BUDGET_RETENTION } from './contextBudgetRetention.ts';
+import { copyFilePrivateSync } from './privateFileCopy.ts';
 
 const WINDOWS_PROFILE_ACL_OK = 'IDACC_WINDOWS_PROFILE_ACL_OK';
 const WINDOWS_PROFILE_NEWER = 'IDACC_WINDOWS_PROFILE_NEWER';
+const WINDOWS_PROFILE_TOO_LARGE = 'IDACC_WINDOWS_PROFILE_TOO_LARGE';
 const WINDOWS_PROFILE_ACL_TIMEOUT_MS = 2 * 60_000;
+const WINDOWS_PROFILE_STREAMING_TIMEOUT_MS = 5 * 60_000;
+
+type WindowsProfileAclMode =
+  | 'normal'
+  | 'cache-boundary'
+  | 'streaming-upgrade'
+  | 'single-file'
+  | 'single-directory';
 
 export interface WindowsProfileAclRunResult {
   status: number | null;
@@ -15,17 +35,24 @@ export interface WindowsProfileAclRunResult {
 export type WindowsProfileAclRunner = (
   root: string,
   maximumSchemaVersion?: number,
+  mode?: WindowsProfileAclMode,
 ) => WindowsProfileAclRunResult;
 
 export interface SecureWindowsProfileRootOptions {
   platform?: NodeJS.Platform;
   runner?: WindowsProfileAclRunner;
   maximumSchemaVersion?: number;
+  allowLargeProfileUpgrade?: boolean;
 }
 
-function profilePrivacyError(): NodeJS.ErrnoException {
+export interface SecureWindowsPrivatePathOptions {
+  platform?: NodeJS.Platform;
+  runner?: WindowsProfileAclRunner;
+}
+
+function profilePrivacyError(subject = 'profile'): NodeJS.ErrnoException {
   const error = new Error(
-    'IDACC could not establish and verify private Windows access for this profile.',
+    `IDACC could not establish and verify private Windows access for this ${subject}.`,
   ) as NodeJS.ErrnoException;
   error.code = 'EPERM';
   return error;
@@ -49,6 +76,136 @@ export function normalizeWindowsProfileRoot(root: string): string {
   // Alternate data streams are never valid profile roots.
   if (normalized.slice(parsed.root.length).includes(':')) throw profilePrivacyError();
   return normalized;
+}
+
+const WINDOWS_CACHE_QUARANTINE_PREFIX = '.idacc-cache-quarantine-';
+
+function copyRetainedContextBudgetCache(
+  sourceCache: string,
+  destinationCache: string,
+): void {
+  const source = win32.join(sourceCache, 'context-budget');
+  let sourceEntry;
+  try {
+    sourceEntry = lstatSync(source);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (sourceEntry.isSymbolicLink() || !sourceEntry.isDirectory()) return;
+
+  const destination = win32.join(destinationCache, 'context-budget');
+  mkdirSync(destination, { recursive: true, mode: 0o700 });
+  const statsSource = win32.join(source, 'stats.json');
+  try {
+    const entry = lstatSync(statsSource);
+    if (!entry.isSymbolicLink() && entry.isFile()) {
+      copyFilePrivateSync(statsSource, win32.join(destination, 'stats.json'));
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+
+  const cutoff = Date.now()
+    - CONTEXT_BUDGET_RETENTION.auditDays * 24 * 60 * 60 * 1_000;
+  const records = readdirSync(source)
+    .filter((name) => /^cb_.*\.json$/.test(name))
+    .map((name) => {
+      const path = win32.join(source, name);
+      try {
+        const entry = lstatSync(path);
+        if (entry.isSymbolicLink() || !entry.isFile()) return null;
+        return { name, path, mtime: entry.mtimeMs, bytes: entry.size };
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is {
+      name: string;
+      path: string;
+      mtime: number;
+      bytes: number;
+    } => Boolean(entry))
+    .sort((left, right) => right.mtime - left.mtime);
+
+  let kept = 0;
+  let bytes = 0;
+  for (const record of records) {
+    const withinBounds = record.mtime >= cutoff
+      && kept < CONTEXT_BUDGET_RETENTION.maxAuditRecords
+      && bytes + record.bytes <= CONTEXT_BUDGET_RETENTION.maxAuditBytes;
+    if (!withinBounds) continue;
+    copyFilePrivateSync(record.path, win32.join(destination, record.name));
+    kept += 1;
+    bytes += record.bytes;
+  }
+}
+
+interface WindowsCacheUpgrade {
+  cache: string;
+  quarantine: string;
+}
+
+function hasWindowsCacheQuarantine(root: string): boolean {
+  try {
+    return readdirSync(root).some((name) => (
+      name.startsWith(WINDOWS_CACHE_QUARANTINE_PREFIX)
+    ));
+  } catch {
+    return false;
+  }
+}
+
+function prepareOversizedWindowsCache(root: string): WindowsCacheUpgrade | null {
+  const cache = win32.join(root, 'cache');
+  const staleQuarantines = readdirSync(root)
+    .filter((name) => name.startsWith(WINDOWS_CACHE_QUARANTINE_PREFIX));
+  if (staleQuarantines.length > 1) throw profilePrivacyError();
+  if (staleQuarantines.length === 1) {
+    const stale = win32.join(root, staleQuarantines[0]);
+    const staleEntry = lstatSync(stale);
+    if (staleEntry.isSymbolicLink() || !staleEntry.isDirectory()) {
+      throw profilePrivacyError();
+    }
+    if (existsSync(cache)) rmSync(cache, { recursive: true, force: true });
+    renameSync(stale, cache);
+  }
+
+  if (!existsSync(cache)) return null;
+  const cacheEntry = lstatSync(cache);
+  if (cacheEntry.isSymbolicLink() || !cacheEntry.isDirectory()) {
+    throw profilePrivacyError();
+  }
+  const quarantine = win32.join(
+    root,
+    `${WINDOWS_CACHE_QUARANTINE_PREFIX}${randomBytes(16).toString('hex')}`,
+  );
+  renameSync(cache, quarantine);
+  mkdirSync(cache, { recursive: false, mode: 0o700 });
+  try {
+    copyRetainedContextBudgetCache(quarantine, cache);
+  } catch (error) {
+    try {
+      rmSync(cache, { recursive: true, force: true });
+      renameSync(quarantine, cache);
+    } catch {
+      // The private, randomly named quarantine remains the rollback source and
+      // is restored before the next conversion attempt.
+    }
+    throw error;
+  }
+  return { cache, quarantine };
+}
+
+function rollbackOversizedWindowsCache(
+  root: string,
+  upgrade: WindowsCacheUpgrade,
+): void {
+  try { rmSync(win32.join(root, '.idacc-windows-acl-v3.json'), { force: true }); } catch { /* best effort */ }
+  try { rmSync(upgrade.cache, { recursive: true, force: true }); } catch { /* best effort */ }
+  if (!existsSync(upgrade.cache) && existsSync(upgrade.quarantine)) {
+    renameSync(upgrade.quarantine, upgrade.cache);
+  }
 }
 
 /*
@@ -479,12 +636,27 @@ public static class IdaccProfileFileProbe {
   $reparseFlag = [System.IO.FileAttributes]::ReparsePoint
   $directoryFlag = [System.IO.FileAttributes]::Directory
   $workspaceRoot = [System.IO.Path]::Combine($root, 'workspace')
+  $cacheRoot = [System.IO.Path]::Combine($root, 'cache')
   $profileMarkerPath = [System.IO.Path]::Combine($root, 'profile.json')
   $attestationPath = [System.IO.Path]::Combine(
     $root,
-    '.idacc-windows-acl-v2.json'
+    '.idacc-windows-acl-v3.json'
   )
+  $aclMode = [string]$env:IDACC_PROFILE_ACL_MODE
+  if ([string]::IsNullOrWhiteSpace($aclMode)) {
+    $aclMode = 'normal'
+  }
+  if (
+    $aclMode -ne 'normal' -and
+    $aclMode -ne 'cache-boundary' -and
+    $aclMode -ne 'streaming-upgrade' -and
+    $aclMode -ne 'single-file' -and
+    $aclMode -ne 'single-directory'
+  ) {
+    throw 'invalid profile ACL mode'
+  }
   $maximumProfileObjects = 4096
+  $maximumStreamingProfileObjects = 100000
   $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
   $systemSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
   $administratorsSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
@@ -563,7 +735,10 @@ public static class IdaccProfileFileProbe {
     $createDirectoryRight = (
       [int][System.Security.AccessControl.FileSystemRights]::CreateDirectories
     )
-    $profileRootWasMissing = -not [System.IO.Directory]::Exists($profileRoot)
+    $profileRootWasMissing = (
+      -not [System.IO.Directory]::Exists($profileRoot) -and
+      -not [System.IO.File]::Exists($profileRoot)
+    )
     $sections = (
       [System.Security.AccessControl.AccessControlSections]::Access -bor
       [System.Security.AccessControl.AccessControlSections]::Owner
@@ -679,14 +854,18 @@ public static class IdaccProfileFileProbe {
           Lock = $locked
         })
         if ($objects.Count -gt $maximumProfileObjects) {
-          throw 'profile ACL traversal exceeded its bounded object limit'
+          [Console]::Out.WriteLine('${WINDOWS_PROFILE_TOO_LARGE}')
+          exit 43
         }
         # Existing user repositories are deliberately opaque. Secure only the
         # workspace root; its inheritable ACEs protect future direct children,
         # while SetFileSecurityW below does not rewrite existing descendants.
         # Existing descendant ACLs remain user-managed and continue to govern
         # direct access to known child paths.
-        if (Test-SamePath $current $workspaceRoot) {
+        if (
+          (Test-SamePath $current $workspaceRoot) -or
+          (Test-IsCacheQuarantine $current)
+        ) {
           continue
         }
         foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($current)) {
@@ -705,7 +884,8 @@ public static class IdaccProfileFileProbe {
               Lock = $locked
             })
             if ($objects.Count -gt $maximumProfileObjects) {
-              throw 'profile ACL traversal exceeded its bounded object limit'
+              [Console]::Out.WriteLine('${WINDOWS_PROFILE_TOO_LARGE}')
+              exit 43
             }
           }
         }
@@ -1041,7 +1221,7 @@ public static class IdaccProfileFileProbe {
         [System.IO.File]::ReadAllText($attestationPath) | ConvertFrom-Json
       )
       return (
-        [int]$attestation.version -eq 2 -and
+        [int]$attestation.version -eq 3 -and
         [string]$attestation.userSid -eq $userSid.Value -and
         [string]$attestation.workspacePolicy -eq 'root-only'
       )
@@ -1052,7 +1232,7 @@ public static class IdaccProfileFileProbe {
 
   function Write-AclAttestation {
     $attestation = [ordered]@{
-      version = 2
+      version = 3
       userSid = $userSid.Value
       workspacePolicy = 'root-only'
     }
@@ -1068,19 +1248,198 @@ public static class IdaccProfileFileProbe {
     Assert-PrivateAcl $item
   }
 
+  function Test-IsCacheQuarantine([string]$path) {
+    $parent = [System.IO.Path]::GetDirectoryName(
+      [System.IO.Path]::GetFullPath($path)
+    )
+    $name = [System.IO.Path]::GetFileName($path)
+    return (
+      (Test-SamePath $parent $root) -and
+      $name.StartsWith(
+        '${WINDOWS_CACHE_QUARANTINE_PREFIX}',
+        [System.StringComparison]::OrdinalIgnoreCase
+      )
+    )
+  }
+
+  function Secure-CacheBoundary {
+    $count = 0
+    foreach ($path in @($root, $cacheRoot)) {
+      if (-not [System.IO.Directory]::Exists($path)) {
+        if ([System.IO.File]::Exists($path)) {
+          throw 'cache privacy boundary is not a directory'
+        }
+        continue
+      }
+      Assert-NotReparse $path
+      $item = [pscustomobject]@{ Path = $path; IsDirectory = $true }
+      if (-not (Test-PrivateAcl $item)) {
+        Set-PrivateAcl $item
+      }
+      Assert-PrivateAcl $item
+      $count += 1
+    }
+    foreach ($path in [System.IO.Directory]::EnumerateFileSystemEntries($root)) {
+      if (-not (Test-IsCacheQuarantine $path)) {
+        continue
+      }
+      if (-not [System.IO.Directory]::Exists($path)) {
+        throw 'cache quarantine boundary is not a directory'
+      }
+      Assert-NotReparse $path
+      $item = [pscustomobject]@{ Path = $path; IsDirectory = $true }
+      if (-not (Test-PrivateAcl $item)) {
+        Set-PrivateAcl $item
+      }
+      Assert-PrivateAcl $item
+      $count += 1
+    }
+    return $count
+  }
+
+  function Convert-ProfileObjectsStreaming([string]$profileRoot) {
+    # OpenLockedObject requests share-read only. Windows sharing is symmetric:
+    # any pre-existing write/delete-capable handle makes the conversion fail,
+    # and securing each parent before enumerating its children prevents new
+    # dangerous handles after that parent lock closes.
+    $count = 0
+    $pending = [System.Collections.Generic.Stack[string]]::new()
+    $pending.Push($profileRoot)
+    while ($pending.Count -gt 0) {
+      $current = $pending.Pop()
+      Assert-NotReparse $current
+      $directory = [pscustomobject]@{
+        Path = $current
+        IsDirectory = $true
+      }
+      if (-not (Test-PrivateAcl $directory)) {
+        Set-PrivateAcl $directory
+      }
+      Assert-PrivateAcl $directory
+      $count += 1
+      if ($count -gt $maximumStreamingProfileObjects) {
+        throw 'streaming profile ACL conversion exceeded its object limit'
+      }
+      if (
+        (Test-SamePath $current $workspaceRoot) -or
+        (Test-IsCacheQuarantine $current)
+      ) {
+        continue
+      }
+      foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($current)) {
+        $attributes = [System.IO.File]::GetAttributes($child)
+        if (($attributes -band $reparseFlag) -ne 0) {
+          throw 'reparse points are not allowed'
+        }
+        if (($attributes -band $directoryFlag) -ne 0) {
+          $pending.Push($child)
+          continue
+        }
+        $file = [pscustomobject]@{ Path = $child; IsDirectory = $false }
+        if (-not (Test-PrivateAcl $file)) {
+          Set-PrivateAcl $file
+        }
+        Assert-PrivateAcl $file
+        $count += 1
+        if ($count -gt $maximumStreamingProfileObjects) {
+          throw 'streaming profile ACL conversion exceeded its object limit'
+        }
+      }
+    }
+    return $count
+  }
+
+  if ($aclMode -eq 'single-file' -or $aclMode -eq 'single-directory') {
+    $singleIsDirectory = $aclMode -eq 'single-directory'
+    if ($singleIsDirectory) {
+      if ([System.IO.File]::Exists($root)) {
+        throw 'private directory is not a directory'
+      }
+      Assert-SafeAncestors $root
+      Assert-SafeParentAclChain $root
+      if (-not [System.IO.Directory]::Exists($root)) {
+        [void][System.IO.Directory]::CreateDirectory($root)
+        Assert-SafeAncestors $root
+        Assert-SafeParentAclChain $root
+      }
+    } else {
+      if (-not [System.IO.File]::Exists($root)) {
+        throw 'private file is unavailable'
+      }
+      $singleParent = [System.IO.Directory]::GetParent($root)
+      if ($null -eq $singleParent) {
+        throw 'private file parent is unavailable'
+      }
+      Assert-SafeAncestors $singleParent.FullName
+      Assert-SafeParentAclChain $root
+    }
+    Assert-NotReparse $root
+    $singleLock = [IdaccProfileFileProbe]::OpenLockedObject(
+      $root,
+      $singleIsDirectory
+    )
+    try {
+      $singleItem = [pscustomobject]@{
+        Path = $root
+        IsDirectory = $singleIsDirectory
+        Identity = $singleLock.Identity
+        Lock = $singleLock
+      }
+      if (-not (Test-PrivateAcl $singleItem)) {
+        Set-PrivateAcl $singleItem
+      }
+      Assert-PrivateAcl $singleItem
+      [IdaccProfileFileProbe]::AssertLockedPath($singleLock, $root)
+    } finally {
+      $singleLock.Dispose()
+    }
+    [Console]::Out.WriteLine('${WINDOWS_PROFILE_ACL_OK}:1')
+    exit 0
+  }
+
   Assert-SafeAncestors $root
   Assert-CompatibleProfileMarker
   Assert-SafeParentAclChain $root
   if ([System.IO.File]::Exists($root)) {
     throw 'profile root is not a directory'
   }
-  if (Test-AclAttestation) {
+  if ($aclMode -eq 'normal' -and (Test-AclAttestation)) {
     [Console]::Out.WriteLine('${WINDOWS_PROFILE_ACL_OK}:0')
     exit 0
   }
   [void][System.IO.Directory]::CreateDirectory($root)
   Assert-SafeAncestors $root
   Assert-SafeParentAclChain $root
+
+  if ($aclMode -eq 'cache-boundary') {
+    $boundaryCount = Secure-CacheBoundary
+    [Console]::Out.WriteLine(
+      '${WINDOWS_PROFILE_ACL_OK}:{0}',
+      $boundaryCount
+    )
+    exit 0
+  }
+
+  if ($aclMode -eq 'streaming-upgrade') {
+    $firstStreamingCount = Convert-ProfileObjectsStreaming $root
+    $secondStreamingCount = Convert-ProfileObjectsStreaming $root
+    if ($firstStreamingCount -ne $secondStreamingCount) {
+      throw 'profile tree changed during streaming ACL conversion'
+    }
+    if ([System.IO.File]::Exists($profileMarkerPath)) {
+      Write-AclAttestation
+      if (-not (Test-AclAttestation)) {
+        throw 'profile ACL attestation verification failed'
+      }
+    } elseif ([System.IO.Directory]::Exists($profileMarkerPath)) {
+      throw 'profile marker is not a regular file'
+    }
+    [Console]::Out.WriteLine(
+      '${WINDOWS_PROFILE_ACL_OK}:{0}',
+      $secondStreamingCount
+    )
+    exit 0
+  }
 
   $objects = @()
   $verifiedObjects = @()
@@ -1145,6 +1504,7 @@ function windowsPowerShellPath(): string {
 function defaultWindowsProfileAclRunner(
   root: string,
   maximumSchemaVersion?: number,
+  mode: WindowsProfileAclMode = 'normal',
 ): WindowsProfileAclRunResult {
   let executable: string;
   try {
@@ -1156,6 +1516,7 @@ function defaultWindowsProfileAclRunner(
     SystemRoot: process.env.SystemRoot || process.env.WINDIR,
     WINDIR: process.env.WINDIR || process.env.SystemRoot,
     IDACC_PROFILE_ACL_ROOT: root,
+    IDACC_PROFILE_ACL_MODE: mode,
     ...(Number.isInteger(maximumSchemaVersion) && Number(maximumSchemaVersion) >= 0
       ? { IDACC_PROFILE_MAX_SCHEMA_VERSION: String(maximumSchemaVersion) }
       : {}),
@@ -1179,7 +1540,9 @@ function defaultWindowsProfileAclRunner(
     // CreateProcess command-line limit and must never be placed in argv.
     input: WINDOWS_PROFILE_ACL_SCRIPT,
     maxBuffer: 1024 * 1024,
-    timeout: WINDOWS_PROFILE_ACL_TIMEOUT_MS,
+    timeout: mode === 'streaming-upgrade'
+      ? WINDOWS_PROFILE_STREAMING_TIMEOUT_MS
+      : WINDOWS_PROFILE_ACL_TIMEOUT_MS,
     windowsHide: true,
   });
   return {
@@ -1188,6 +1551,50 @@ function defaultWindowsProfileAclRunner(
     error: result.error,
     signal: result.signal,
   };
+}
+
+/**
+ * Establish and verify an exact protected DACL for one app-owned object.
+ *
+ * This is the bounded counterpart to the recursive profile hardener. It is
+ * used for global application state that lives beside Chromium-managed data,
+ * where recursively walking the entire Electron userData tree for every state
+ * update would be both unnecessary and unbounded. Directories receive
+ * inheritable full-control ACEs for only the current user and Local System;
+ * files receive the same two exact, non-inheriting ACEs. The native helper
+ * keeps a share-read-only identity lock across replacement and verification.
+ */
+export function secureWindowsPrivatePath(
+  path: string,
+  kind: 'file' | 'directory',
+  options: SecureWindowsPrivatePathOptions = {},
+): string {
+  const platform = options.platform || process.platform;
+  if (platform !== 'win32') return path;
+  const normalized = normalizeWindowsProfileRoot(path);
+  const runner = options.runner || defaultWindowsProfileAclRunner;
+  let result: WindowsProfileAclRunResult;
+  try {
+    result = runner(
+      normalized,
+      undefined,
+      kind === 'directory' ? 'single-directory' : 'single-file',
+    );
+  } catch {
+    throw profilePrivacyError('application-state path');
+  }
+  const verified = String(result.stdout || '').split(/\r?\n/).some((line) => (
+    line.trim() === `${WINDOWS_PROFILE_ACL_OK}:1`
+  ));
+  if (
+    result.status !== 0
+    || result.error
+    || result.signal
+    || !verified
+  ) {
+    throw profilePrivacyError('application-state path');
+  }
+  return normalized;
 }
 
 /**
@@ -1213,30 +1620,106 @@ export function secureWindowsProfileRoot(
   ) {
     throw profilePrivacyError();
   }
-  const normalized = normalizeWindowsProfileRoot(root);
-  const runner = options.runner || defaultWindowsProfileAclRunner;
-  let result: WindowsProfileAclRunResult;
-  try {
-    result = runner(normalized, options.maximumSchemaVersion);
-  } catch {
+  if (
+    options.allowLargeProfileUpgrade !== undefined
+    && typeof options.allowLargeProfileUpgrade !== 'boolean'
+  ) {
     throw profilePrivacyError();
   }
-  if (
-    result.status === 42
-    && String(result.stdout || '').split(/\r?\n/).some((line) => (
-      line.trim() === WINDOWS_PROFILE_NEWER
+  const normalized = normalizeWindowsProfileRoot(root);
+  const runner = options.runner || defaultWindowsProfileAclRunner;
+  const runMode = (mode: WindowsProfileAclMode): WindowsProfileAclRunResult => {
+    try {
+      return runner(normalized, options.maximumSchemaVersion, mode);
+    } catch {
+      throw profilePrivacyError();
+    }
+  };
+  const hasLine = (result: WindowsProfileAclRunResult, expected: string): boolean => (
+    String(result.stdout || '').split(/\r?\n/).some((line) => (
+      line.trim() === expected
     ))
-  ) {
-    throw new Error('This IDACC profile was created by a newer application version.');
+  );
+  const assertNotNewer = (result: WindowsProfileAclRunResult): void => {
+    if (result.status === 42 && hasLine(result, WINDOWS_PROFILE_NEWER)) {
+      throw new Error('This IDACC profile was created by a newer application version.');
+    }
+  };
+  const isTooLarge = (result: WindowsProfileAclRunResult): boolean => (
+    result.status === 43 && hasLine(result, WINDOWS_PROFILE_TOO_LARGE)
+  );
+  const assertSuccess = (result: WindowsProfileAclRunResult): void => {
+    assertNotNewer(result);
+    if (
+      result.status !== 0
+      || result.error
+      || result.signal
+      || !String(result.stdout || '').split(/\r?\n/).some((line) => (
+        new RegExp(`^${WINDOWS_PROFILE_ACL_OK}:\\d+$`).test(line.trim())
+      ))
+    ) {
+      throw profilePrivacyError();
+    }
+  };
+
+  let cacheUpgrade: WindowsCacheUpgrade | null = null;
+  const canRunNativeUpgrade = (
+    !options.runner
+    && platform === process.platform
+    && options.allowLargeProfileUpgrade !== false
+  );
+  let result: WindowsProfileAclRunResult;
+  if (canRunNativeUpgrade && hasWindowsCacheQuarantine(normalized)) {
+    const boundaryResult = runMode('cache-boundary');
+    assertSuccess(boundaryResult);
+    try {
+      cacheUpgrade = prepareOversizedWindowsCache(normalized);
+    } catch {
+      throw profilePrivacyError();
+    }
+    result = runMode('normal');
+  } else {
+    result = runMode('normal');
   }
-  if (
-    result.status !== 0
-    || result.error
-    || result.signal
-    || !String(result.stdout || '').split(/\r?\n/).some((line) => (
-      new RegExp(`^${WINDOWS_PROFILE_ACL_OK}:\\d+$`).test(line.trim())
-    ))
-  ) {
+  assertNotNewer(result);
+  if (isTooLarge(result)) {
+    if (!canRunNativeUpgrade) {
+      throw profilePrivacyError();
+    }
+    if (!cacheUpgrade) {
+      const boundaryResult = runMode('cache-boundary');
+      assertSuccess(boundaryResult);
+      try {
+        cacheUpgrade = prepareOversizedWindowsCache(normalized);
+      } catch {
+        throw profilePrivacyError();
+      }
+      result = runMode('normal');
+      assertNotNewer(result);
+    }
+    if (isTooLarge(result)) {
+      result = runMode('streaming-upgrade');
+    }
+  }
+  try {
+    assertSuccess(result);
+    if (cacheUpgrade) {
+      rmSync(cacheUpgrade.quarantine, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (cacheUpgrade) {
+      try {
+        rollbackOversizedWindowsCache(normalized, cacheUpgrade);
+      } catch {
+        throw profilePrivacyError();
+      }
+    }
+    if (
+      error instanceof Error
+      && /created by a newer application version/i.test(error.message)
+    ) {
+      throw error;
+    }
     throw profilePrivacyError();
   }
   return normalized;

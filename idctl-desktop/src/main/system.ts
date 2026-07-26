@@ -10,12 +10,18 @@
  */
 
 import { totalmem, cpus, platform as osPlatform, arch as osArch, homedir } from 'node:os';
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
+import { closeSync, existsSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { delimiter, join } from 'node:path';
 import { terminalAutomationSupported } from '../shared/subscriptionPortability.ts';
+import {
+  appendPrivateAppTextFile,
+  ensurePrivateAppDirectory,
+  openPrivateAppAppendFile,
+} from './appStatePrivacy.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
 
 const execFileP = promisify(execFile);
 const GB = 1024 ** 3;
@@ -36,7 +42,9 @@ const localStackInstallStatusCache = new Map<string, { at: number; rows: Record<
 function cliEnv(): NodeJS.ProcessEnv {
   const home = homedir();
   const dirs = ['/opt/homebrew/bin', `${home}/.local/bin`, '/usr/local/bin', '/usr/bin', '/bin', ...(process.env.PATH ? process.env.PATH.split(delimiter) : [])];
-  return { ...process.env, PATH: Array.from(new Set(dirs)).join(delimiter) };
+  return externalChildEnvironment(process.env, {
+    PATH: Array.from(new Set(dirs)).join(delimiter),
+  });
 }
 
 export interface HardwareInfo {
@@ -98,7 +106,10 @@ async function detectGpu(): Promise<{ gpu?: string; gpuCores?: number }> {
   let out: { gpu?: string; gpuCores?: number } = {};
   if (osPlatform() === 'darwin') {
     try {
-      const { stdout } = await execFileP('system_profiler', ['SPDisplaysDataType'], { timeout: 6000 });
+      const { stdout } = await execFileP('system_profiler', ['SPDisplaysDataType'], {
+        env: externalChildEnvironment(),
+        timeout: 6000,
+      });
       const gpu = stdout.match(/Chipset Model:\s*(.+)/)?.[1]?.trim();
       const cores = stdout.match(/Total Number of Cores:\s*(\d+)/)?.[1];
       out = { gpu, gpuCores: cores ? Number(cores) : undefined };
@@ -320,7 +331,10 @@ export async function runInTerminal(command: string): Promise<{ ok: boolean; ran
   }
   try {
     const osa = `tell application "Terminal"\n  activate\n  do script "${cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"\nend tell`;
-    await execFileP('osascript', ['-e', osa], { timeout: 8000 });
+    await execFileP('osascript', ['-e', osa], {
+      env: externalChildEnvironment(),
+      timeout: 8000,
+    });
     return { ok: true, ran: true, command: cmd };
   } catch (e) {
     return { ok: false, ran: false, command: cmd, error: e instanceof Error ? e.message : String(e) };
@@ -329,8 +343,7 @@ export async function runInTerminal(command: string): Promise<{ ok: boolean; ran
 
 function stackLogDir(userDataPath?: string): string {
   const dir = join(userDataPath || join(homedir(), '.config', 'idctl'), 'local-stack-logs');
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return dir;
+  return ensurePrivateAppDirectory(dir);
 }
 
 function statusFromProcess(id: string, detail?: string): BackgroundStackStatus {
@@ -377,21 +390,33 @@ export async function startBackgroundStack(idValue: unknown, commandValue?: unkn
   if (existing && !existing.child.killed && existing.child.exitCode == null) return statusFromProcess(id, 'already running');
 
   const logPath = join(stackLogDir(userDataPath), `${id}.log`);
-  appendFileSync(logPath, `\n\n[${new Date().toISOString()}] starting ${known.name}\n$ ${command}\n`, { mode: 0o600 });
-  const outFd = openSync(logPath, 'a', 0o600);
-  const errFd = openSync(logPath, 'a', 0o600);
-  const child = spawn('/bin/zsh', ['-lc', command], {
-    cwd: homedir(),
-    env: cliEnv(),
-    detached: true,
-    stdio: ['ignore', outFd, errFd],
-  });
-  closeSync(outFd);
-  closeSync(errFd);
+  appendPrivateAppTextFile(
+    logPath,
+    `\n\n[${new Date().toISOString()}] starting ${known.name}\n$ ${command}\n`,
+  );
+  const logFd = openPrivateAppAppendFile(logPath);
+  let child: ChildProcess;
+  try {
+    child = spawn('/bin/zsh', ['-lc', command], {
+      cwd: homedir(),
+      env: cliEnv(),
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+    });
+  } finally {
+    closeSync(logFd);
+  }
   const row = { child, command, startedAt: Date.now(), logPath, name: known.name, port: known.port };
   backgroundProcs.set(id, row);
   child.on('exit', (code, signal) => {
-    appendFileSync(logPath, `\n[${new Date().toISOString()}] exited code=${code ?? ''} signal=${signal ?? ''}\n`, { mode: 0o600 });
+    try {
+      appendPrivateAppTextFile(
+        logPath,
+        `\n[${new Date().toISOString()}] exited code=${code ?? ''} signal=${signal ?? ''}\n`,
+      );
+    } catch (error) {
+      console.warn('[local-stack] could not append the private process-exit log:', error);
+    }
     const current = backgroundProcs.get(id);
     if (current?.child === child) backgroundProcs.delete(id);
   });

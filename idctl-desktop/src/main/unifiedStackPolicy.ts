@@ -1,7 +1,6 @@
 import {
   chmodSync,
   closeSync,
-  copyFileSync,
   existsSync,
   fstatSync,
   lstatSync,
@@ -26,6 +25,7 @@ import {
   resolve,
   sep,
 } from 'node:path';
+import { copyFilePrivateSync } from './privateFileCopy.ts';
 
 export type UnifiedServiceName = 'manager' | 'brain';
 
@@ -931,8 +931,7 @@ export function rotateServiceLog(
 
   const firstArchive = `${logPath}.1`;
   removeIfPresent(firstArchive);
-  copyFileSync(logPath, firstArchive);
-  try { chmodSync(firstArchive, 0o600); } catch { /* best-effort hardening */ }
+  copyFilePrivateSync(logPath, firstArchive);
   truncateSync(logPath, 0);
   try { chmodSync(logPath, 0o600); } catch { /* best-effort hardening */ }
   return { rotated: true, removed };

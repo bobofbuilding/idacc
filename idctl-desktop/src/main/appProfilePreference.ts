@@ -1,15 +1,18 @@
 import {
-  chmodSync,
   lstatSync,
-  mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
-  renameSync,
-  writeFileSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { normalizeAppProfileName } from './appProfileSelection.ts';
+import {
+  ensurePrivateAppDirectory,
+  hardenPrivateAppDirectory,
+  hardenPrivateAppFile,
+  readPrivateAppTextFile,
+  writePrivateAppTextFileAtomic,
+} from './appStatePrivacy.ts';
 
 export type AppProfilePreference =
   | { profile: string; dataDir?: never }
@@ -27,6 +30,19 @@ const PROFILE_MARKER_LIMIT_BYTES = 1024 * 1024;
 
 function preferencePath(userDataRoot: string): string {
   return join(userDataRoot, PREFERENCE_FILE);
+}
+
+function hardenPreferenceRoot(userDataRoot: string, create = false): void {
+  try {
+    if (create) {
+      ensurePrivateAppDirectory(userDataRoot);
+      return;
+    }
+    hardenPrivateAppDirectory(userDataRoot);
+  } catch (error) {
+    if (!create && (error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw preferenceReadError(error);
+  }
 }
 
 function normalizedPreference(value: unknown): AppProfilePreference | null {
@@ -64,14 +80,15 @@ function preferenceReadError(cause?: unknown): Error {
  * different profile and making the user's data appear to have disappeared.
  */
 export function readAppProfilePreference(userDataRoot: string): AppProfilePreference | null {
+  hardenPreferenceRoot(userDataRoot);
   const path = preferencePath(userDataRoot);
-  let entry;
+  let entry: ReturnType<typeof lstatSync> | null;
   try {
-    entry = lstatSync(path);
+    entry = hardenPrivateAppFile(path);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw preferenceReadError(error);
   }
+  if (!entry) return null;
   if (
     !entry.isFile()
     || entry.isSymbolicLink()
@@ -82,7 +99,7 @@ export function readAppProfilePreference(userDataRoot: string): AppProfilePrefer
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, 'utf8'));
+    parsed = JSON.parse(readPrivateAppTextFile(path, PREFERENCE_LIMIT_BYTES));
   } catch (error) {
     throw preferenceReadError(error);
   }
@@ -256,26 +273,11 @@ export function writeAppProfilePreference(
 ): AppProfilePreference {
   const normalized = normalizedPreference(preference);
   if (!normalized) throw new Error('The selected IDACC profile preference is invalid.');
-  mkdirSync(userDataRoot, { recursive: true, mode: 0o700 });
+  hardenPreferenceRoot(userDataRoot, true);
   const path = preferencePath(userDataRoot);
-  try {
-    const existing = lstatSync(path);
-    if (
-      existing.isSymbolicLink()
-      || !existing.isFile()
-      || existing.nlink !== 1
-    ) {
-      throw new Error('The IDACC profile preference path is unsafe.');
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(temporary, JSON.stringify({
+  writePrivateAppTextFileAtomic(path, JSON.stringify({
     version: 1,
     ...normalized,
-  }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
-  renameSync(temporary, path);
-  chmodSync(path, 0o600);
+  }, null, 2) + '\n');
   return normalized;
 }

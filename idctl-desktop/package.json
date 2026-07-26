@@ -114,9 +114,11 @@
     "test:renderer-store": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/renderer-store-poll-smoke.mjs",
     "test:subs-cache": "node scripts/subs-status-cache-smoke.mjs",
     "test:subscription-portability": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/subscription-portability-smoke.ts",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "node scripts/build-tauri.mjs && tauri build"
+    "test:credential-isolation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/credential-environment-smoke.ts",
+    "dev:tauri-simulation": "node scripts/run-tauri-simulation.mjs",
+    "tauri": "node scripts/retired-tauri-production.mjs",
+    "tauri:dev": "node scripts/retired-tauri-production.mjs",
+    "tauri:build": "node scripts/retired-tauri-production.mjs"
   },
   "build": {
     "appId": "world.idchain.idagents-control",
@@ -235,7 +237,9 @@
   },
   "devDependencies": {
     "@electron/rebuild": "4.2.0",
+    "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/cli": "^2.11.2",
+    "@tauri-apps/plugin-http": "^2.5.9",
     "@types/node": "^22.19.21",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.12",
@@ -253,8 +257,6 @@
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
     "@nut-tree-fork/libnut-darwin": "^2.7.5",
-    "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-http": "^2.5.9",
     "@walletconnect/universal-provider": "^2.23.10",
     "cross-spawn": "7.0.6",
     "electron-updater": "6.8.9",

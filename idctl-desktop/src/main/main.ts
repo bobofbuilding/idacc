@@ -6,7 +6,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage, clipboard } from 'electron';
 import { dirname, isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import {
   call as bridgeCall,
   configureKeyProvider,
@@ -70,10 +70,19 @@ import {
   type StartupRecoveryDecision,
 } from './startupRecovery.ts';
 import {
+  appendPrivateAppTextFile,
+  ensurePrivateAppDirectory,
+  readPrivateAppTextFile,
+  writePrivateAppTextFileAtomic,
+  writePrivateAppTextFileInPlace,
+} from './appStatePrivacy.ts';
+import {
   configureUnifiedBrainAutomation,
   startUnifiedStack,
   stopUnifiedStack,
   unifiedStackAdminToken,
+  unifiedStackCredentialGuardSelftest,
+  unifiedStackPayloadContainsCredential,
   unifiedStackStatus,
 } from './unifiedStack.ts';
 import {
@@ -194,22 +203,27 @@ function envFlagEnabled(value: string | undefined): boolean {
   return /^(1|true|yes|on)$/i.test(String(value || '').trim());
 }
 
+function privateUserDataDirectory(): string {
+  return ensurePrivateAppDirectory(app.getPath('userData'));
+}
+
 function rendererCrashStatePath(): string {
-  return join(app.getPath('userData'), 'renderer-crash-state.json');
+  return join(privateUserDataDirectory(), 'renderer-crash-state.json');
 }
 
 function readRendererCrashState(): RendererCrashState | null {
   try {
-    return JSON.parse(readFileSync(rendererCrashStatePath(), 'utf8')) as RendererCrashState;
+    return JSON.parse(
+      readPrivateAppTextFile(rendererCrashStatePath()),
+    ) as RendererCrashState;
   } catch {
     return null;
   }
 }
 
 function writeRendererCrashState(state: RendererCrashState): void {
-  const dir = app.getPath('userData');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(rendererCrashStatePath(), JSON.stringify(state, null, 2), 'utf8');
+  const path = rendererCrashStatePath();
+  writePrivateAppTextFileAtomic(path, JSON.stringify(state, null, 2));
 }
 
 function recentRendererCrash(state: RendererCrashState | null): boolean {
@@ -371,9 +385,8 @@ function configureChromiumStability(): void {
 
 function logProcessExit(kind: string, detail: Record<string, unknown>): void {
   try {
-    const dir = app.getPath('userData');
-    mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, 'process-exits.jsonl'), JSON.stringify({
+    const path = join(privateUserDataDirectory(), 'process-exits.jsonl');
+    appendPrivateAppTextFile(path, JSON.stringify({
       ts: new Date().toISOString(),
       kind,
       rendererSafeMode,
@@ -564,7 +577,11 @@ function recoveryFolderToOpen(): string {
   return app.getPath('userData');
 }
 
-async function rememberRecoveryProfile(preference: AppProfilePreference): Promise<void> {
+async function restartWithRecoveryProfile(
+  preference: AppProfilePreference,
+): Promise<boolean> {
+  const previousDataDir = process.env.IDACC_DATA_DIR;
+  const previousProfile = process.env.IDACC_PROFILE;
   if (preference.dataDir) {
     process.env.IDACC_DATA_DIR = preference.dataDir;
     delete process.env.IDACC_PROFILE;
@@ -574,19 +591,26 @@ async function rememberRecoveryProfile(preference: AppProfilePreference): Promis
   }
   try {
     writeAppProfilePreference(app.getPath('userData'), preference);
+    app.relaunch();
+    return true;
   } catch (error) {
+    if (previousDataDir === undefined) delete process.env.IDACC_DATA_DIR;
+    else process.env.IDACC_DATA_DIR = previousDataDir;
+    if (previousProfile === undefined) delete process.env.IDACC_PROFILE;
+    else process.env.IDACC_PROFILE = previousProfile;
     const report = startupFailureReport(error);
     logStartupRecoveryFailure('startup-profile-preference', report);
     await dialog.showMessageBox({
       type: 'warning',
-      title: 'Profile selected for this launch',
-      message: 'IDACC could not remember this profile selection yet.',
-      detail: `The selected profile will still be tried now. You may need to select it again next time.\n\nDiagnostic ID: ${report.diagnosticId}`,
+      title: 'Profile could not be selected',
+      message: 'IDACC could not safely save and restart with that profile.',
+      detail: `The current profile remains selected. Repair access to the application-data folder, then try again.\n\nDiagnostic ID: ${report.diagnosticId}`,
       buttons: ['Continue'],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
     });
+    return false;
   }
 }
 
@@ -636,7 +660,7 @@ async function promptForStartupRecovery(report: StartupFailureReport): Promise<S
       type: 'error',
       title: report.title,
       message: report.title,
-      detail: `${report.detail}\n\n“Start Fresh Profile” creates a separate profile and keeps the current profile untouched.\n\nDiagnostic ID: ${report.diagnosticId}`,
+      detail: `${report.detail}\n\nChoosing another profile restarts IDACC in a fresh process. “Start Fresh Profile” creates a separate profile and keeps the current profile untouched.\n\nDiagnostic ID: ${report.diagnosticId}`,
       buttons: [
         'Try Again',
         'Open Profile Folder',
@@ -683,8 +707,9 @@ async function promptForStartupRecovery(report: StartupFailureReport): Promise<S
             [app.getPath('home')],
             [app.getAppPath(), process.resourcesPath],
           );
-          await rememberRecoveryProfile({ dataDir: profileFolder });
-          return 'retry';
+          if (await restartWithRecoveryProfile({ dataDir: profileFolder })) {
+            return 'quit';
+          }
         } catch (error) {
           const folderReport = startupFailureReport(error);
           logStartupRecoveryFailure('startup-profile-folder', folderReport);
@@ -703,8 +728,10 @@ async function promptForStartupRecovery(report: StartupFailureReport): Promise<S
       continue;
     }
     if (choice.response === 3) {
-      await rememberRecoveryProfile({ profile: freshRecoveryProfileName() });
-      return 'retry';
+      if (await restartWithRecoveryProfile({ profile: freshRecoveryProfileName() })) {
+        return 'quit';
+      }
+      continue;
     }
     return 'quit';
   }
@@ -1739,10 +1766,12 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
 
 // --- window state: reopen the app where/how the user left it ---
 interface WinState { x?: number; y?: number; width: number; height: number; fullScreen?: boolean }
-function winStatePath(): string { return join(app.getPath('userData'), 'window-state.json'); }
+function winStatePath(): string {
+  return join(privateUserDataDirectory(), 'window-state.json');
+}
 function loadWinState(): WinState {
   try {
-    const s = JSON.parse(readFileSync(winStatePath(), 'utf8')) as WinState;
+    const s = JSON.parse(readPrivateAppTextFile(winStatePath())) as WinState;
     if (typeof s.width === 'number' && typeof s.height === 'number') return s;
   } catch { /* first run / corrupt → defaults */ }
   return { width: 1180, height: 780 };
@@ -1758,7 +1787,11 @@ function saveWinState(w: BrowserWindow): void {
     // macOS fullscreen we save the pre-fullscreen bounds and re-enter fullscreen on restore.
     const fullScreen = w.isFullScreen();
     const b = fullScreen ? w.getNormalBounds() : w.getBounds();
-    writeFileSync(winStatePath(), JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height, fullScreen }));
+    const path = winStatePath();
+    writePrivateAppTextFileInPlace(
+      path,
+      JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height, fullScreen }),
+    );
   } catch { /* best-effort */ }
 }
 /** Only restore a saved position if a usable chunk of the titlebar lands on some
@@ -2567,6 +2600,12 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     });
     try {
       const serialized = JSON.stringify(result);
+      if (
+        !unifiedStackCredentialGuardSelftest()
+        || unifiedStackPayloadContainsCredential(serialized)
+      ) {
+        throw new Error('stack self-test result contained a generated runtime credential');
+      }
       const secretCandidates = [
         adminToken,
         process.env.BRAIN_TOKEN,

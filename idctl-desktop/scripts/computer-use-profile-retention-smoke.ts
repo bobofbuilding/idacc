@@ -3,6 +3,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   statSync,
@@ -18,7 +19,12 @@ process.env.IDACC_DATA_DIR = scratch;
 
 async function main(): Promise<void> {
 try {
-  const { audit, pruneComputerUseAudit } = await import('../src/main/computeruse/audit.ts');
+  const {
+    audit,
+    pruneComputerUseAudit,
+    recentAudit,
+    resetComputerUseAuditProfileState,
+  } = await import('../src/main/computeruse/audit.ts');
   const dir = join(scratch, 'computeruse', 'audit');
   mkdirSync(dir, { recursive: true });
   const now = Date.now();
@@ -42,6 +48,9 @@ try {
     detail: '10,10',
     decision: 'executed',
   });
+  assert.equal(recentAudit().length, 1);
+  resetComputerUseAuditProfileState();
+  assert.equal(recentAudit().length, 0, 'profile retry must clear the prior audit ring');
   const today = new Date(now);
   const stamp = `${today.getUTCFullYear()}${String(today.getUTCMonth() + 1).padStart(2, '0')}${String(today.getUTCDate()).padStart(2, '0')}`;
   const active = join(dir, `${stamp}.jsonl`);
@@ -51,6 +60,18 @@ try {
     assert.equal(statSync(active).mode & 0o777, 0o600);
     assert.equal(statSync(join(scratch, 'computeruse')).mode & 0o777, 0o700);
   }
+  const brokerSource = readFileSync(
+    join(process.cwd(), 'src/main/computeruse/broker.ts'),
+    'utf8',
+  );
+  assert.match(
+    brokerSource,
+    /function loadAgentTokens\(\): void \{\s*[\s\S]*?agentTokens\.clear\(\);/,
+    'loading a profile token store must replace rather than merge the bearer map',
+  );
+  const stopSource = brokerSource.slice(brokerSource.indexOf('export function stopBroker()'));
+  assert.match(stopSource, /agentTokens\.clear\(\)/);
+  assert.match(stopSource, /resetComputerUseAuditProfileState\(\)/);
 } finally {
   if (previousRoot === undefined) delete process.env.IDACC_DATA_DIR;
   else process.env.IDACC_DATA_DIR = previousRoot;

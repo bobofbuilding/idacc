@@ -73,6 +73,7 @@ import { isDashboardRelevantEvent } from '../shared/dashboardEvents.ts';
 import { identityRegisterNoop } from '../shared/identityVerification.ts';
 import { isDreamSchedule, type ScheduledDreamNewsItem } from '../shared/dreamSchedule.ts';
 import { sanitizeSecretPayload } from './secretRedaction.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -608,7 +609,9 @@ function cliEnv(): NodeJS.ProcessEnv {
     '/bin',
     ...(process.env.PATH ? process.env.PATH.split(delimiter) : []),
   ];
-  return { ...process.env, PATH: Array.from(new Set(dirs)).join(delimiter) };
+  return externalChildEnvironment(process.env, {
+    PATH: Array.from(new Set(dirs)).join(delimiter),
+  });
 }
 
 function codexModelsFromCache(): string[] {
@@ -1436,6 +1439,10 @@ export function configureKeyProvider(provider: KeyProvider): void {
 
 /** Point the desktop bridge at the app-owned Manager after profile bootstrap. */
 export function configureManagedManager(url: string, adminToken?: string): void {
+  // A startup retry may replace the supervised Manager. Never let completed or
+  // in-flight reads from the previous endpoint/profile satisfy the new client.
+  readCallCache.clear();
+  controllerProofs.clear();
   cfg = { ...cfg, managerUrl: url, apiKey: adminToken };
   client = new ManagerClient(cfg);
   brain.setTransport((request) => client.brainRequest(request));

@@ -164,18 +164,19 @@ scripts/release.sh "Meaningful release summary" X.Y.Z --publish=true
 
 Release preparation also enforces the
 [legacy release cutover record](RELEASE_CUTOVER.md). The fixed record preserves
-the exact lightweight `v0.1.620` through `v0.1.647` refs and the mixed GitHub
-Release state found by the 2026-07-26 audit: 25 exact published, non-Latest
-release identities and three exact absent releases (`v0.1.622`, `v0.1.624`,
-and `v0.1.625`). It does not authorize another range or state transition: a
-missing, changed, converted, unexpectedly published, unexpectedly unpublished,
-or additional incomplete ref fails closed. While the cutover is active, the
-generated changelog remains anchored to published `v0.1.619`, rather than any
-legacy tag or non-Latest release in the recorded interval.
+the exact `v0.1.620` through `v0.1.684` refs—63 lightweight and two unsigned
+annotated tag objects—and the mixed GitHub Release state found by the
+2026-07-26 audit: 62 exact published release identities and three exact absent
+releases (`v0.1.622`, `v0.1.624`, and `v0.1.625`). It does not authorize
+another range or state transition: a missing, changed, converted, unexpectedly
+published, unexpectedly unpublished, or additional incomplete ref fails
+closed. With `v0.1.684` as the audited legacy frontier and current GitHub
+Latest, the generated changelog is anchored to published `v0.1.684`.
 
 The command preflights `gh` authentication and Git signing, creates a signed
-annotated tag for the exact application commit, pushes the commit and tag
-atomically, requires the GitHub Git Data API to report
+annotated tag for the exact application commit, requires `git verify-tag` to
+cryptographically validate it under the local Git trust configuration before
+any push, pushes the commit and tag atomically, requires the GitHub Git Data API to report
 `verification.verified=true`, and dispatches `.github/workflows/release.yml`
 with explicit `version`, `publish`, and unique `request_id` inputs. It then
 finds the one workflow run bound to that request, the exact tag/head commit,

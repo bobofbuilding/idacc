@@ -525,6 +525,7 @@ expect(tagObject.tag === tag, `annotated tag object names ${tagObject.tag || 'mi
 expect(tagObject.object?.type === 'commit', `${tag} does not directly target a commit`);
 expect(tagObject.object?.sha === expectedCommit, `${tag} targets ${tagObject.object?.sha || 'missing'}, expected ${expectedCommit}`);
 expect(tagObject.verification?.verified === true, `${tag} signature is not GitHub-verified`);
+expect(tagObject.verification?.reason === 'valid', `${tag} signature verification reason is not valid`);
 
 const assets = new Map();
 for (const rawAsset of release.assets) {

@@ -22,6 +22,55 @@ const require = createRequire(import.meta.url);
 const pkg = JSON.parse(readFileSync(join(desktop, 'package.json'), 'utf8'));
 const build = pkg.build || {};
 const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
+const tauriConfig = JSON.parse(
+  readFileSync(join(desktop, 'src-tauri', 'tauri.conf.json'), 'utf8'),
+);
+const tauriCargo = readFileSync(
+  join(desktop, 'src-tauri', 'Cargo.toml'),
+  'utf8',
+);
+const tauriFrontendBuilder = readFileSync(
+  join(desktop, 'scripts', 'build-tauri.mjs'),
+  'utf8',
+);
+const retiredTauriScript = join(
+  desktop,
+  'scripts',
+  'retired-tauri-production.mjs',
+);
+for (const script of ['tauri', 'tauri:dev', 'tauri:build']) {
+  assert.equal(
+    pkg.scripts?.[script],
+    'node scripts/retired-tauri-production.mjs',
+    `${script} must fail closed instead of producing a non-unified application`,
+  );
+}
+assert.equal(
+  pkg.scripts?.['dev:tauri-simulation'],
+  'node scripts/run-tauri-simulation.mjs',
+);
+assert.equal(pkg.dependencies?.['@tauri-apps/api'], undefined);
+assert.equal(pkg.dependencies?.['@tauri-apps/plugin-http'], undefined);
+assert.match(pkg.devDependencies?.['@tauri-apps/api'] || '', /^\^2\./);
+assert.match(pkg.devDependencies?.['@tauri-apps/plugin-http'] || '', /^\^2\./);
+assert.equal(tauriConfig.bundle?.active, false);
+assert.match(tauriConfig.productName, /Simulation \(Developer Only\)/);
+assert.match(tauriConfig.identifier, /interface-simulation$/);
+assert.match(tauriCargo, /^name = "idacc-interface-simulation"$/m);
+assert.match(tauriCargo, /Developer-only interface simulation/);
+assert.match(
+  tauriFrontendBuilder,
+  /IDACC_TAURI_SIMULATION !== 'developer-only'/,
+);
+const retiredTauri = spawnSync(process.execPath, [retiredTauriScript], {
+  cwd: desktop,
+  encoding: 'utf8',
+});
+assert.notEqual(retiredTauri.status, 0);
+assert.match(
+  `${retiredTauri.stdout}\n${retiredTauri.stderr}`,
+  /does not bundle or supervise Manager and Brain/,
+);
 assert.match(
   gitignore,
   /^\/idctl-desktop\/resources\/THIRD_PARTY_NOTICES\.md$/m,
@@ -164,6 +213,7 @@ assert.match(String(pkg.dependencies?.['electron-updater'] || ''), /^\d+\.\d+\.\
 assert.match(String(pkg.scripts?.['build:release'] || ''), /--require-runtime/, 'production builds must require a verified staged runtime');
 assert.match(pkg.scripts?.['test:update-descriptor-contract'] || '', /update-descriptor-contract-smoke/);
 assert.match(pkg.scripts?.['test:updater-public-provider'] || '', /electron-updater-public-provider-smoke/);
+assert.match(pkg.scripts?.['test:credential-isolation'] || '', /credential-environment-smoke/);
 for (const script of ['release:mac', 'release:win', 'release:linux']) {
   assert.match(String(pkg.scripts?.[script] || ''), /build:release/, `${script} must use the runtime-bound production build`);
 }
@@ -232,6 +282,11 @@ assert.match(releaseStackSmoke, /IDACC_STACK_SELFTEST_READY_TIMEOUT_MS:\s*'90_00
 assert.match(releaseStackSmoke, /IDACC_STACK_RANDOM_PORTS:\s*'1'/);
 assert.match(releaseStackSmoke, /IDACC_RUNTIME_ROOT:\s*''/);
 assert.match(releaseStackSmoke, /timeout:\s*360_000/);
+assert.doesNotMatch(
+  releaseStackSmoke,
+  /--(?:no-sandbox|disable-setuid-sandbox)/,
+  'the packaged production smoke must exercise Electron with its sandbox defaults',
+);
 assert.doesNotMatch(
   releaseStackSmoke,
   /\b(?:manager|brain)Port\s*=\s*\d+/,
@@ -311,7 +366,10 @@ assert.equal(
 );
 assert.match(String(liveNpmResult.stdout).trim(), /^\d+\.\d+\.\d+(?:[-+].*)?$/);
 
-const workflow = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+const workflow = readFileSync(
+  join(root, '.github', 'workflows', 'ci.yml'),
+  'utf8',
+).replace(/\r\n?/g, '\n');
 assert.match(workflow, /windows-(?:latest|2025|2022)/, 'CI must exercise Windows packaging');
 assert.match(workflow, /ubuntu-(?:latest|24\.04|22\.04)/, 'CI must exercise Linux packaging');
 const crossPlatformStaticJob = workflow.slice(
@@ -490,6 +548,7 @@ for (const source of [workflow, releaseWorkflow]) {
     'computer-use-policy-smoke.ts',
     'consumer-design-gaps-smoke.ts',
     'test:subscription-portability',
+    'test:credential-isolation',
     'test:startup-recovery',
     'test:release-payload',
     'runtimeCatalog.test.ts',

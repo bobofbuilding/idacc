@@ -11,7 +11,11 @@ import {
   evaluateLegacyReleaseCutover,
   readLegacyReleaseCutover,
 } from './lib/legacy-release-cutover.mjs';
-import { SEMVER_TAG, unpublishedFrontierTags } from './lib/release-publication.mjs';
+import {
+  compareTags,
+  SEMVER_TAG,
+  unpublishedFrontierTags,
+} from './lib/release-publication.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const cutoverPath = join(root, 'release', 'legacy-release-cutover.json');
@@ -92,22 +96,119 @@ async function latestReleaseFor(repo) {
   return release ? [release] : [];
 }
 
+async function githubReleases(repo) {
+  const { base, headers } = githubApi();
+  const releases = [];
+  for (let page = 1; page <= 100; page += 1) {
+    let response;
+    try {
+      response = await fetch(
+        `${base}/repos/${repo}/releases?per_page=100&page=${page}`,
+        { headers },
+      );
+    } catch (error) {
+      fail(`could not query GitHub release inventory for ${repo}: ${error.message}`);
+    }
+    if (!response.ok) {
+      const tokenHint = response.status === 403
+        ? '; GitHub denied or rate-limited the request—set GH_TOKEN and retry'
+        : '';
+      fail(`GitHub release inventory for ${repo} returned HTTP ${response.status}${tokenHint}`);
+    }
+    const pageReleases = await response.json();
+    if (!Array.isArray(pageReleases)) {
+      fail(`GitHub release inventory for ${repo} returned an unexpected payload`);
+    }
+    releases.push(...pageReleases);
+    if (pageReleases.length < 100) return releases;
+  }
+  fail(`GitHub release inventory for ${repo} exceeded the 10,000-release safety bound`);
+}
+
+async function githubCanonicalTagVerification(repo, tag) {
+  const { base, headers } = githubApi();
+  async function githubGitObject(path, description) {
+    let response;
+    try {
+      response = await fetch(`${base}/repos/${repo}${path}`, { headers });
+    } catch (error) {
+      fail(`could not query GitHub ${description} for ${repo}: ${error.message}`);
+    }
+    if (!response.ok) {
+      const tokenHint = response.status === 403
+        ? '; GitHub denied or rate-limited the request—set GH_TOKEN and retry'
+        : '';
+      fail(`GitHub ${description} query for ${repo} returned HTTP ${response.status}${tokenHint}`);
+    }
+    const value = await response.json();
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      fail(`GitHub ${description} query for ${repo} returned an unexpected payload`);
+    }
+    return value;
+  }
+
+  const ref = await githubGitObject(
+    `/git/ref/tags/${encodeURIComponent(tag)}`,
+    `tag ref ${tag}`,
+  );
+  const objectType = ref.object?.type;
+  const objectId = ref.object?.sha;
+  if (objectType !== 'tag') {
+    return {
+      tag,
+      objectId,
+      objectType,
+    };
+  }
+  const tagObject = await githubGitObject(
+    `/git/tags/${encodeURIComponent(objectId)}`,
+    `annotated tag object ${tag}`,
+  );
+  return {
+    tag,
+    objectId,
+    objectType,
+    annotatedTagName: tagObject.tag,
+    targetObjectType: tagObject.object?.type,
+    targetCommit: tagObject.object?.sha,
+    verified: tagObject.verification?.verified,
+    verificationReason: tagObject.verification?.reason,
+  };
+}
+
 function remoteTagRefs() {
   const refs = new Map();
-  const peeled = new Set();
+  const peeled = new Map();
   const output = git(['ls-remote', '--tags', 'origin']);
   for (const line of output.split(/\r?\n/).filter(Boolean)) {
     const match = line.match(/^([0-9a-f]+)\trefs\/tags\/(.+?)(\^\{\})?$/);
     if (!match) continue;
     const [, objectId, tag, peeledSuffix] = match;
-    if (peeledSuffix) peeled.add(tag);
+    if (peeledSuffix) peeled.set(tag, objectId);
     else refs.set(tag, objectId);
   }
-  return [...refs].map(([tag, objectId]) => ({
-    tag,
-    objectId,
-    objectType: peeled.has(tag) ? 'tag' : 'commit',
-  }));
+  return [...refs].map(([tag, objectId]) => {
+    const targetCommit = peeled.get(tag);
+    if (!targetCommit) {
+      return {
+        tag,
+        objectId,
+        objectType: 'commit',
+        targetCommit: objectId,
+      };
+    }
+    const tagObject = git(['cat-file', '-p', objectId]);
+    const signatureState = /-----BEGIN [^-]+-----/.test(tagObject)
+      ? 'signed'
+      : 'unsigned';
+    return {
+      tag,
+      objectId,
+      objectType: 'tag',
+      targetCommit,
+      signatureState,
+    };
+  });
 }
 
 // A release checkout may be shallow or long-lived. Fetch tag objects, then
@@ -119,7 +220,13 @@ const tags = tagRefs.map((entry) => entry.tag);
 if (requireTag && !tags.includes(requireTag)) fail(`${requireTag} does not exist on origin`);
 const repo = repository();
 const latestRelease = await latestReleaseFor(repo);
-const latestPublished = latestRelease.find((release) => release && !release.draft);
+const releaseInventory = await githubReleases(repo);
+const stablePublishedRelease = (release) => Boolean(
+  release
+  && release.draft === false
+  && release.prerelease === false,
+);
+const latestPublished = latestRelease.find(stablePublishedRelease);
 const latestPublishedTag = latestPublished?.tag_name;
 if (latestPublishedTag && !tags.includes(latestPublishedTag)) {
   fail(`GitHub latest ${latestPublishedTag} does not exist on origin`);
@@ -127,14 +234,25 @@ if (latestPublishedTag && !tags.includes(latestPublishedTag)) {
 let cutover;
 let marker;
 const releasesByTag = new Map();
-async function releaseForTag(tag) {
-  if (!releasesByTag.has(tag)) {
-    releasesByTag.set(tag, await githubRelease(repo, `/tags/${encodeURIComponent(tag)}`, { allowNotFound: true }));
+for (const release of releaseInventory) {
+  const tag = release?.tag_name;
+  if (typeof tag !== 'string' || !tag) continue;
+  if (releasesByTag.has(tag)) {
+    fail(`GitHub release inventory contains duplicate tag ${tag}`);
   }
-  return releasesByTag.get(tag);
+  releasesByTag.set(tag, release);
+}
+async function releaseForTag(tag) {
+  return releasesByTag.get(tag) || null;
 }
 try {
   marker = readLegacyReleaseCutover(cutoverPath);
+  const canonicalTagVerification = (
+    SEMVER_TAG.test(latestPublishedTag || '')
+    && compareTags(latestPublishedTag, marker.firstCanonicalVersionMustExceed) > 0
+  )
+    ? await githubCanonicalTagVerification(repo, latestPublishedTag)
+    : null;
   const releaseRecords = await Promise.all(marker.legacyTags.map(async ({ tag }) => ({
     tag,
     release: await releaseForTag(tag),
@@ -144,6 +262,7 @@ try {
     latestPublishedTag,
     tagRefs,
     releaseRecords,
+    canonicalTagVerification,
   });
 } catch (error) {
   fail(error.message);
@@ -156,13 +275,13 @@ const missing = [];
 if (latestRelease.length) {
   for (const tag of candidates) {
     const release = await releaseForTag(tag);
-    if (!release || release.draft) missing.push(tag);
+    if (!stablePublishedRelease(release)) missing.push(tag);
   }
 } else {
   missing.push(...candidates);
 }
 
-if (requireTag && (!(await releaseForTag(requireTag)) || (await releaseForTag(requireTag)).draft)) {
+if (requireTag && !stablePublishedRelease(await releaseForTag(requireTag))) {
   fail(`${requireTag} has no published GitHub Release`);
 }
 if (missing.length) {
@@ -179,7 +298,7 @@ const state = {
     active: cutover.active,
     baselinePublishedTag: cutover.baselinePublishedTag,
     legacyTagCount: cutover.legacyTagCount,
-    publishedNonLatestReleaseCount: cutover.publishedNonLatestReleaseCount,
+    publishedReleaseCount: cutover.publishedReleaseCount,
     absentReleaseCount: cutover.absentReleaseCount,
   },
 };
@@ -189,6 +308,6 @@ if (jsonOutput) {
   if (cutover.active) {
     console.log(`✓ audited legacy cutover allows ${cutover.legacyTagCount} exact historical ref(s) after ${cutover.baselinePublishedTag}`);
   }
-  console.log(`✓ legacy release state verified: ${cutover.publishedNonLatestReleaseCount} published non-latest, ${cutover.absentReleaseCount} absent`);
+  console.log(`✓ legacy release state verified: ${cutover.publishedReleaseCount} published, ${cutover.absentReleaseCount} absent`);
   console.log(`✓ release publication parity verified for ${state.semverTagCount} semver tag(s); changelog baseline ${state.changelogBaselineTag}`);
 }

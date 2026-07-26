@@ -61,6 +61,14 @@ export function configureComputerUseAuditManager(url: string, adminToken = ''): 
   managerMirrorToken = String(adminToken);
 }
 
+/** Drop every profile-derived in-memory sink before a startup retry or exit. */
+export function resetComputerUseAuditProfileState(): void {
+  RING.splice(0, RING.length);
+  lastPruneAt = 0;
+  managerMirrorUrl = '';
+  managerMirrorToken = '';
+}
+
 export function pruneComputerUseAudit(now = Date.now()): number {
   const dir = auditDir();
   const rows = readdirSync(dir)

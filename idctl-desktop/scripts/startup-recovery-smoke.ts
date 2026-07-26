@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import {
+  chmodSync,
+  closeSync,
   existsSync,
   linkSync,
   lstatSync,
@@ -7,10 +9,13 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
+  writeSync,
   writeFileSync,
 } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, parse, resolve } from 'node:path';
 import {
@@ -21,12 +26,142 @@ import {
   writeAppProfilePreference,
 } from '../src/main/appProfilePreference.ts';
 import {
+  appendPrivateAppTextFile,
+  ensurePrivateAppDirectory,
+  openPrivateAppAppendFile,
+  readPrivateAppTextFile,
+  writePrivateAppTextFileAtomic,
+} from '../src/main/appStatePrivacy.ts';
+import { secureWindowsPrivatePath } from '../src/main/profilePrivacy.ts';
+import { isTrustedPrivatePathOwner } from '../src/main/posixFilePrivacy.ts';
+import {
   freshRecoveryProfileName,
   runStartupRecoveryLoop,
   startupFailureReport,
 } from '../src/main/startupRecovery.ts';
 
+const WINDOWS_ADD_PERMISSIVE_APP_STATE_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+$path = [string]$env:IDACC_APP_STATE_TEST_PATH
+$kind = [string]$env:IDACC_APP_STATE_TEST_KIND
+$everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+if ($kind -eq 'directory') {
+  $acl = [System.IO.Directory]::GetAccessControl($path)
+  $inheritance = (
+    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  )
+} else {
+  $acl = [System.IO.File]::GetAccessControl($path)
+  $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
+}
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $everyone,
+  [System.Security.AccessControl.FileSystemRights]::FullControl,
+  $inheritance,
+  [System.Security.AccessControl.PropagationFlags]::None,
+  [System.Security.AccessControl.AccessControlType]::Allow
+)
+[void]$acl.AddAccessRule($rule)
+if ($kind -eq 'directory') {
+  [System.IO.Directory]::SetAccessControl($path, $acl)
+} else {
+  [System.IO.File]::SetAccessControl($path, $acl)
+}
+`;
+
+const WINDOWS_ASSERT_EXACT_APP_STATE_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+$path = [string]$env:IDACC_APP_STATE_TEST_PATH
+$kind = [string]$env:IDACC_APP_STATE_TEST_KIND
+$userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$systemSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+if ($kind -eq 'directory') {
+  $acl = [System.IO.Directory]::GetAccessControl($path)
+  $expectedInheritance = (
+    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  )
+} else {
+  $acl = [System.IO.File]::GetAccessControl($path)
+  $expectedInheritance = [System.Security.AccessControl.InheritanceFlags]::None
+}
+if (-not $acl.AreAccessRulesProtected) {
+  throw 'application-state ACL inheritance remains enabled'
+}
+$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+if ($owner.Value -ne $userSid.Value) {
+  throw 'application-state ACL owner is incorrect'
+}
+$rules = @($acl.GetAccessRules(
+  $true,
+  $true,
+  [System.Security.Principal.SecurityIdentifier]
+))
+if ($rules.Count -ne 2) {
+  throw 'application-state ACL has an unexpected rule count'
+}
+foreach ($sid in @($userSid, $systemSid)) {
+  $matches = @($rules | Where-Object {
+    $_.IdentityReference.Value -eq $sid.Value
+  })
+  if ($matches.Count -ne 1) {
+    throw 'application-state ACL is missing a required rule'
+  }
+  $rule = $matches[0]
+  if (
+    $rule.IsInherited -or
+    $rule.AccessControlType -ne
+      [System.Security.AccessControl.AccessControlType]::Allow -or
+    [int]$rule.FileSystemRights -ne
+      [int][System.Security.AccessControl.FileSystemRights]::FullControl -or
+    $rule.InheritanceFlags -ne $expectedInheritance -or
+    $rule.PropagationFlags -ne
+      [System.Security.AccessControl.PropagationFlags]::None
+  ) {
+    throw 'application-state ACL rule is not exact-private'
+  }
+}
+`;
+
+function runWindowsAppStateAclFixture(
+  script: string,
+  path: string,
+  kind: 'file' | 'directory',
+): void {
+  const systemRoot = String(process.env.SystemRoot || process.env.WINDIR || '');
+  assert.ok(systemRoot, 'Windows app-state ACL smoke requires SystemRoot or WINDIR');
+  const result = spawnSync(
+    join(
+      systemRoot,
+      'System32',
+      'WindowsPowerShell',
+      'v1.0',
+      'powershell.exe',
+    ),
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '-'],
+    {
+      input: script,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        IDACC_APP_STATE_TEST_PATH: path,
+        IDACC_APP_STATE_TEST_KIND: kind,
+      },
+      windowsHide: true,
+    },
+  );
+  assert.equal(
+    result.status,
+    0,
+    String(result.stderr || result.stdout || 'Windows app-state ACL fixture failed'),
+  );
+}
+
 async function main(): Promise<void> {
+assert.equal(isTrustedPrivatePathOwner(0, 1001), true);
+assert.equal(isTrustedPrivatePathOwner(1001, 1001), true);
+assert.equal(isTrustedPrivatePathOwner(1002, 1001), false);
 const secret = `github_pat_${'x'.repeat(32)}`;
 const localPath = `/Users/private-person/idacc/profile-${Date.now()}`;
 const profileFailure = Object.assign(
@@ -94,7 +229,176 @@ try {
     { profile: 'recovery-20260726-010203' },
   );
   if (process.platform !== 'win32') {
+    assert.equal(lstatSync(scratch).mode & 0o777, 0o700);
     assert.equal(lstatSync(join(scratch, 'active-profile.json')).mode & 0o777, 0o600);
+  }
+
+  const windowsSingleObjectModes: string[] = [];
+  secureWindowsPrivatePath('C:\\IDACC\\state.json', 'file', {
+    platform: 'win32',
+    runner: (_root, _maximumSchemaVersion, mode) => {
+      windowsSingleObjectModes.push(String(mode));
+      return { status: 0, stdout: 'IDACC_WINDOWS_PROFILE_ACL_OK:1\n' };
+    },
+  });
+  secureWindowsPrivatePath('C:\\IDACC\\state', 'directory', {
+    platform: 'win32',
+    runner: (_root, _maximumSchemaVersion, mode) => {
+      windowsSingleObjectModes.push(String(mode));
+      return { status: 0, stdout: 'IDACC_WINDOWS_PROFILE_ACL_OK:1\n' };
+    },
+  });
+  assert.deepEqual(
+    windowsSingleObjectModes,
+    ['single-file', 'single-directory'],
+    'bounded app-state hardening must select the exact single-object ACL modes',
+  );
+  assert.throws(
+    () => secureWindowsPrivatePath('C:\\IDACC\\state.json', 'file', {
+      platform: 'win32',
+      runner: () => ({ status: 0, stdout: 'unverified\n' }),
+    }),
+    /application-state path/i,
+  );
+
+  const privateStateRoot = join(scratch, 'private-app-state');
+  ensurePrivateAppDirectory(privateStateRoot);
+  const privateStateFile = join(privateStateRoot, 'state.json');
+  writeFileSync(privateStateFile, '{"before":true}', { mode: 0o666 });
+  if (process.platform !== 'win32') chmodSync(privateStateFile, 0o666);
+  assert.equal(readPrivateAppTextFile(privateStateFile), '{"before":true}');
+  if (process.platform !== 'win32') {
+    assert.equal(
+      lstatSync(privateStateFile).mode & 0o777,
+      0o600,
+      'an existing permissive state file must be hardened before it is read',
+    );
+  }
+  appendPrivateAppTextFile(privateStateFile, '\n{"after":true}');
+  assert.match(readFileSync(privateStateFile, 'utf8'), /"after":true/);
+  writePrivateAppTextFileAtomic(privateStateFile, '{"atomic":true}');
+  assert.equal(readFileSync(privateStateFile, 'utf8'), '{"atomic":true}');
+  const filesystemRoot = parse(resolve(scratch)).root;
+  const filesystemRootBefore = lstatSync(filesystemRoot);
+  assert.throws(
+    () => ensurePrivateAppDirectory(filesystemRoot),
+    /unsafe/i,
+    'an application-state directory may never be a filesystem root',
+  );
+  const filesystemRootAfter = lstatSync(filesystemRoot);
+  assert.equal(filesystemRootAfter.dev, filesystemRootBefore.dev);
+  assert.equal(filesystemRootAfter.ino, filesystemRootBefore.ino);
+  if (process.platform !== 'win32') {
+    assert.equal(
+      filesystemRootAfter.mode & 0o777,
+      filesystemRootBefore.mode & 0o777,
+      'root rejection must precede every chmod',
+    );
+  }
+
+  const descriptorLog = join(privateStateRoot, 'descriptor.log');
+  appendPrivateAppTextFile(descriptorLog, 'before\n');
+  const descriptorFd = openPrivateAppAppendFile(descriptorLog);
+  const retainedDescriptorLog = join(privateStateRoot, 'descriptor-retained.log');
+  const descriptorOutside = join(scratch, 'descriptor-outside.log');
+  renameSync(descriptorLog, retainedDescriptorLog);
+  if (process.platform !== 'win32') {
+    symlinkSync(descriptorOutside, descriptorLog);
+  }
+  writeSync(descriptorFd, 'child-output\n');
+  closeSync(descriptorFd);
+  assert.match(
+    readFileSync(retainedDescriptorLog, 'utf8'),
+    /child-output/,
+    'a child descriptor must remain attached to the verified file identity',
+  );
+  assert.equal(
+    existsSync(descriptorOutside),
+    false,
+    'path replacement must not redirect writes made through the verified child descriptor',
+  );
+  if (process.platform !== 'win32') {
+    assert.throws(
+      () => appendPrivateAppTextFile(descriptorLog, 'exit\n'),
+      /unsafe/i,
+      'a later process-exit append must revalidate and reject the replaced path',
+    );
+    assert.equal(existsSync(descriptorOutside), false);
+    rmSync(descriptorLog);
+
+    const danglingTarget = join(scratch, 'outside-dangling-log');
+    const danglingLog = join(privateStateRoot, 'dangling.log');
+    symlinkSync(danglingTarget, danglingLog);
+    assert.equal(
+      existsSync(danglingLog),
+      false,
+      'the security regression requires an existsSync-invisible dangling symlink',
+    );
+    assert.throws(
+      () => appendPrivateAppTextFile(danglingLog, 'must-not-escape\n'),
+      /unsafe/i,
+    );
+    assert.equal(
+      existsSync(danglingTarget),
+      false,
+      'a dangling log symlink must not create or write its outside target',
+    );
+
+    const ancestorOutside = join(scratch, 'ancestor-outside');
+    const ancestorOutsideExisting = join(ancestorOutside, 'existing');
+    const linkedAncestor = join(privateStateRoot, 'linked-ancestor');
+    mkdirSync(ancestorOutsideExisting, { recursive: true, mode: 0o755 });
+    chmodSync(ancestorOutsideExisting, 0o755);
+    symlinkSync(ancestorOutside, linkedAncestor);
+    assert.throws(
+      () => ensurePrivateAppDirectory(join(linkedAncestor, 'existing')),
+      /unsafe/i,
+      'a final ordinary directory reached through a linked ancestor must fail closed',
+    );
+    assert.equal(
+      lstatSync(ancestorOutsideExisting).mode & 0o777,
+      0o755,
+      'ancestor rejection must happen before chmod mutates the outside directory',
+    );
+    const ancestorOutsideMissing = join(ancestorOutside, 'must-not-create');
+    assert.throws(
+      () => ensurePrivateAppDirectory(join(linkedAncestor, 'must-not-create')),
+      /unsafe/i,
+    );
+    assert.equal(
+      existsSync(ancestorOutsideMissing),
+      false,
+      'recursive directory creation must not follow a linked ancestor',
+    );
+  }
+
+  if (process.platform === 'win32') {
+    const windowsAclRoot = join(scratch, 'windows-app-state-acl');
+    mkdirSync(windowsAclRoot);
+    const windowsAclFile = join(windowsAclRoot, 'state.json');
+    writeFileSync(windowsAclFile, '{"private":true}');
+    runWindowsAppStateAclFixture(
+      WINDOWS_ADD_PERMISSIVE_APP_STATE_ACL,
+      windowsAclRoot,
+      'directory',
+    );
+    runWindowsAppStateAclFixture(
+      WINDOWS_ADD_PERMISSIVE_APP_STATE_ACL,
+      windowsAclFile,
+      'file',
+    );
+    secureWindowsPrivatePath(windowsAclRoot, 'directory');
+    secureWindowsPrivatePath(windowsAclFile, 'file');
+    runWindowsAppStateAclFixture(
+      WINDOWS_ASSERT_EXACT_APP_STATE_ACL,
+      windowsAclRoot,
+      'directory',
+    );
+    runWindowsAppStateAclFixture(
+      WINDOWS_ASSERT_EXACT_APP_STATE_ACL,
+      windowsAclFile,
+      'file',
+    );
   }
 
   const selected = join(scratch, 'Selected Profile');
@@ -328,6 +632,23 @@ try {
   );
 
   if (process.platform !== 'win32') {
+    const linkedUserDataTarget = join(scratch, 'linked-user-data-target');
+    const linkedUserDataRoot = join(scratch, 'linked-user-data-root');
+    mkdirSync(linkedUserDataTarget, { mode: 0o755 });
+    symlinkSync(linkedUserDataTarget, linkedUserDataRoot);
+    const linkedTargetMode = lstatSync(linkedUserDataTarget).mode & 0o777;
+    assert.throws(
+      () => writeAppProfilePreference(linkedUserDataRoot, {
+        profile: 'must-not-follow',
+      }),
+      /could not be read safely/i,
+    );
+    assert.equal(
+      lstatSync(linkedUserDataTarget).mode & 0o777,
+      linkedTargetMode,
+      'preference hardening must reject a linked root before chmod follows it',
+    );
+
     const realProfile = join(scratch, 'real-profile');
     const linkedProfile = join(scratch, 'linked-profile');
     mkdirSync(realProfile);
@@ -345,6 +666,22 @@ try {
   assert.match(mainSource, /Open Profile Folder/);
   assert.match(mainSource, /Choose Another Profile/);
   assert.match(mainSource, /Start Fresh Profile/);
+  assert.match(mainSource, /async function restartWithRecoveryProfile\(/);
+  assert.match(mainSource, /writeAppProfilePreference\(app\.getPath\('userData'\), preference\);[\s\S]*app\.relaunch\(\);/);
+  assert.match(mainSource, /function privateUserDataDirectory\(\): string/);
+  assert.match(mainSource, /return ensurePrivateAppDirectory\(app\.getPath\('userData'\)\)/);
+  assert.match(mainSource, /appendPrivateAppTextFile\(path,[\s\S]*rendererSafeMode/);
+  assert.match(
+    mainSource,
+    /function writeRendererCrashState[\s\S]*writePrivateAppTextFileAtomic\(/,
+    'crash state must use private atomic replacement',
+  );
+  assert.match(
+    mainSource,
+    /function saveWinState[\s\S]*writePrivateAppTextFileInPlace\(/,
+    'debounced window state must reuse a verified private identity',
+  );
+  assert.doesNotMatch(mainSource, /rememberRecoveryProfile/);
   assert.match(mainSource, /if \(startupRecoveryActive \|\| BrowserWindow\.getAllWindows\(\)\.length > 0\) return/);
   assert.match(mainSource, /validateRecoveryProfileFolder\(/);
   assert.match(mainSource, /async function createWindow\(\): Promise<void>/);
@@ -367,6 +704,57 @@ try {
   );
   assert.match(consumerStartupSource, /startupRecoveryActive = false;/);
   assert.doesNotMatch(mainSource, /rmSync\(|removeAppProfile|deleteAppProfile/);
+
+  const appStatePrivacySource = readFileSync(
+    join(process.cwd(), 'src/main/appStatePrivacy.ts'),
+    'utf8',
+  );
+  assert.match(appStatePrivacySource, /const before = lstatIfPresent\(path\)/);
+  assert.match(appStatePrivacySource, /before\.isSymbolicLink\(\)/);
+  assert.match(appStatePrivacySource, /secureWindowsPrivatePath\(path, 'directory'\)/);
+  assert.match(appStatePrivacySource, /secureWindowsPrivatePath\(path, 'file'\)/);
+  assert.match(appStatePrivacySource, /constants\.O_NOFOLLOW/);
+  assert.match(appStatePrivacySource, /assertVerifiedFileDescriptor\(/);
+  assert.match(appStatePrivacySource, /constants\.O_EXCL/);
+  assert.match(appStatePrivacySource, /isTrustedPrivatePathOwner\(entry\.uid\)/);
+  assert.match(
+    appStatePrivacySource,
+    /writableByAnotherPrincipal[\s\S]*isTrustedPrivatePathOwner\(child\.uid, uid\)/,
+    'sticky app-state parents must authenticate the traversed child owner',
+  );
+  assert.doesNotMatch(
+    appStatePrivacySource,
+    /openVerifiedPrivateAppFile\([\s\S]{0,180}constants\.O_TRUNC/,
+    'a path must be identity-verified before any truncation',
+  );
+  assert.match(
+    appStatePrivacySource,
+    /openVerifiedPrivateAppFile\([\s\S]{0,220}ftruncateSync\(fd, 0\)/,
+  );
+  assert.doesNotMatch(
+    appStatePrivacySource,
+    /existsSync/,
+    'app-state security decisions must use lstat so dangling symlinks are visible',
+  );
+
+  const systemSource = readFileSync(join(process.cwd(), 'src/main/system.ts'), 'utf8');
+  assert.doesNotMatch(
+    systemSource,
+    /existsSync\(logPath\)/,
+    'local-stack logs must not mistake dangling symlinks for missing files',
+  );
+  assert.match(systemSource, /appendPrivateAppTextFile\(\s*logPath,/);
+  assert.match(systemSource, /const logFd = openPrivateAppAppendFile\(logPath\)/);
+  assert.match(systemSource, /stdio: \['ignore', logFd, logFd\]/);
+  const exitCallbackSource = systemSource.slice(
+    systemSource.indexOf("child.on('exit'"),
+    systemSource.indexOf('child.unref()'),
+  );
+  assert.match(
+    exitCallbackSource,
+    /appendPrivateAppTextFile\(/,
+    'the background exit callback must revalidate before its later append',
+  );
 
   const appProfileSource = readFileSync(
     join(process.cwd(), 'src/main/appProfile.ts'),

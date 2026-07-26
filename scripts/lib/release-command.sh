@@ -39,6 +39,8 @@ release_assert_local_signed_tag() {
   printf '%s\n' "$tag_body" \
     | grep -Eq -- '-----BEGIN (PGP|SSH) SIGNATURE-----|-----BEGIN SIGNED MESSAGE-----' \
     || release_fail "$tag is annotated but unsigned; production tags must be created with 'git tag -s -a'"
+  git verify-tag "$tag" >/dev/null 2>&1 \
+    || release_fail "$tag signature failed cryptographic verification with 'git verify-tag'; configure local Git signature trust before releasing"
 
   tag_commit="$(git rev-list -n 1 "$tag" 2>/dev/null || true)"
   [ "$tag_commit" = "$expected_commit" ] \
@@ -79,7 +81,9 @@ release_wait_for_github_verified_tag() {
       verified="$(gh api "repos/$repository/git/tags/$tag_object" --jq '.verification.verified' 2>/dev/null || true)"
       verified_commit="$(gh api "repos/$repository/git/tags/$tag_object" --jq '.object.sha' 2>/dev/null || true)"
       verification_reason="$(gh api "repos/$repository/git/tags/$tag_object" --jq '.verification.reason' 2>/dev/null || true)"
-      if [ "$verified" = "true" ] && [ "$verified_commit" = "$expected_commit" ]; then
+      if [ "$verified" = "true" ] \
+        && [ "$verification_reason" = "valid" ] \
+        && [ "$verified_commit" = "$expected_commit" ]; then
         printf '✓ GitHub verified the signed annotated tag %s at %s\n' "$tag" "$expected_commit"
         return 0
       fi
@@ -95,18 +99,22 @@ release_wait_for_github_verified_tag() {
 release_state() {
   local repository="$1"
   local tag="$2"
-  local is_draft
+  local state
 
   if ! gh release view "$tag" --repo "$repository" >/dev/null 2>&1; then
     printf 'missing\n'
     return 0
   fi
-  is_draft="$(gh release view "$tag" --repo "$repository" --json isDraft --jq '.isDraft')"
-  if [ "$is_draft" = "true" ]; then
-    printf 'draft\n'
-  else
-    printf 'published\n'
-  fi
+  state="$(
+    gh release view "$tag" \
+      --repo "$repository" \
+      --json isDraft,isPrerelease \
+      --jq 'if .isDraft == true then "draft" elif .isPrerelease == true then "prerelease" elif .isDraft == false and .isPrerelease == false then "published" else "invalid" end'
+  )" || release_fail "cannot read the GitHub Release state for $tag"
+  case "$state" in
+    draft|prerelease|published) printf '%s\n' "$state" ;;
+    *) release_fail "GitHub returned an invalid Release state for $tag" ;;
+  esac
 }
 
 release_workflow_run_records() {

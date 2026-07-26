@@ -2,7 +2,6 @@ import {
   chmodSync,
   closeSync,
   constants,
-  copyFileSync,
   fstatSync,
   lstatSync,
   mkdirSync,
@@ -10,13 +9,33 @@ import {
   readSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import type { Stats } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import {
+  dirname,
+  join,
+  parse,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 import { TextDecoder } from 'node:util';
 import { secureWindowsProfileRoot } from './profilePrivacy.ts';
+import { copyFilePrivateSync } from './privateFileCopy.ts';
+import { CONTEXT_BUDGET_RETENTION } from './contextBudgetRetention.ts';
+import {
+  assertSafeMacProfileAncestorAcl,
+  removeAndVerifyMacAcl,
+} from './macFilePrivacy.ts';
+import {
+  assertPrivateDirectoryMode,
+  assertPrivateFileMode,
+  isTrustedPrivatePathOwner,
+} from './posixFilePrivacy.ts';
 
 export const PROFILE_SCHEMA_VERSION = 5;
 const PROFILE_MARKER_COMPATIBILITY_LIMIT_BYTES = 1024 * 1024;
@@ -184,12 +203,115 @@ function assertProfilePath(root: string, path: string): void {
   }
 }
 
+function assertSafePosixProfileAncestors(root: string): void {
+  if (process.platform === 'win32') return;
+  const absolute = resolve(root);
+  const filesystemRoot = parse(absolute).root;
+  if (absolute === filesystemRoot) {
+    throw new Error('profile root cannot be the filesystem root');
+  }
+  const components = relative(filesystemRoot, absolute)
+    .split(sep)
+    .filter(Boolean);
+  const existingDirectories = [filesystemRoot];
+  let cursor = filesystemRoot;
+  let childIsMissing = false;
+  for (
+    let componentIndex = 0;
+    componentIndex < components.length;
+    componentIndex += 1
+  ) {
+    const component = components[componentIndex];
+    cursor = join(cursor, component);
+    try {
+      const entry = lstatSync(cursor);
+      const isTarget = componentIndex === components.length - 1;
+      const trustedSystemLink = (
+        entry.isSymbolicLink()
+        && !isTarget
+        && entry.uid === 0
+        && dirname(cursor) === filesystemRoot
+      );
+      if ((!trustedSystemLink && entry.isSymbolicLink()) || (
+        !trustedSystemLink && !entry.isDirectory()
+      )) {
+        throw new Error('profile ancestor is not a regular directory');
+      }
+      existingDirectories.push(cursor);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      childIsMissing = true;
+      break;
+    }
+  }
+
+  // Root-owned aliases such as macOS /var -> /private/var are immutable to
+  // unprivileged users, but their actual target ancestry still needs the same
+  // replaceability and ACL checks. Resolve only after every lexical component
+  // has rejected user-owned links.
+  const canonicalExisting = realpathSync.native(existingDirectories.at(-1)!);
+  const canonicalFilesystemRoot = parse(canonicalExisting).root;
+  const canonicalDirectories = [canonicalFilesystemRoot];
+  let canonicalCursor = canonicalFilesystemRoot;
+  for (const component of relative(
+    canonicalFilesystemRoot,
+    canonicalExisting,
+  ).split(sep).filter(Boolean)) {
+    canonicalCursor = join(canonicalCursor, component);
+    const entry = lstatSync(canonicalCursor);
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error('profile ancestor is not a regular directory');
+    }
+    canonicalDirectories.push(canonicalCursor);
+  }
+
+  // If the complete root exists it is verified and hardened as profile state,
+  // not as an ancestor. Otherwise the deepest existing directory is the
+  // creation boundary and sticky world-writable parents are insufficient.
+  const ancestors = childIsMissing
+    ? canonicalDirectories
+    : canonicalDirectories.slice(0, -1);
+  for (let index = ancestors.length - 1; index >= 0; index -= 1) {
+    const ancestor = ancestors[index];
+    const entry = lstatSync(ancestor);
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error('profile ancestor is not a regular directory');
+    }
+    if (!isTrustedPrivatePathOwner(entry.uid)) {
+      throw new Error('profile ancestor owner is not trusted');
+    }
+    const writableByAnotherPrincipal = (entry.mode & 0o022) !== 0;
+    const sticky = (entry.mode & 0o1000) !== 0;
+    const isCreationBoundary = childIsMissing && index === ancestors.length - 1;
+    if (writableByAnotherPrincipal && (!sticky || isCreationBoundary)) {
+      throw new Error('profile parent can be replaced by another local user');
+    }
+    if (writableByAnotherPrincipal && sticky) {
+      const traversedChild = canonicalDirectories[index + 1];
+      const childEntry = traversedChild
+        ? lstatSync(traversedChild)
+        : null;
+      if (
+        !childEntry
+        || childEntry.isSymbolicLink()
+        || !childEntry.isDirectory()
+        || !isTrustedPrivatePathOwner(childEntry.uid)
+      ) {
+        throw new Error('profile parent can be replaced by another local user');
+      }
+    }
+    assertSafeMacProfileAncestorAcl(ancestor);
+  }
+}
+
 function ensurePrivateDirectory(path: string): void {
   const current = lstatIfPresent(path);
   if (current?.isSymbolicLink()) throw new Error(`refusing symbolic link in profile state: ${path}`);
   if (current && !current.isDirectory()) throw new Error(`profile state path is not a directory: ${path}`);
   if (!current) mkdirSync(path, { recursive: true, mode: 0o700 });
+  removeAndVerifyMacAcl(path);
   chmodSync(path, 0o700);
+  assertPrivateDirectoryMode(path, current || undefined);
 }
 
 function privateFileMode(mode: number): number {
@@ -204,7 +326,9 @@ function validatePrivateTree(path: string): void {
     for (const child of readdirSync(path)) validatePrivateTree(join(path, child));
     return;
   }
-  if (!entry.isFile()) throw new Error(`refusing unsupported file type in profile state: ${path}`);
+  if (!entry.isFile() || entry.nlink !== 1) {
+    throw new Error(`refusing unsupported file type in profile state: ${path}`);
+  }
 }
 
 function tightenPrivateTree(path: string): void {
@@ -212,14 +336,18 @@ function tightenPrivateTree(path: string): void {
   if (!entry) return;
   if (entry.isDirectory()) {
     chmodSync(path, 0o700);
+    assertPrivateDirectoryMode(path, entry);
     for (const child of readdirSync(path)) tightenPrivateTree(join(path, child));
     return;
   }
-  chmodSync(path, privateFileMode(entry.mode));
+  const mode = privateFileMode(entry.mode);
+  chmodSync(path, mode);
+  assertPrivateFileMode(path, mode, entry);
 }
 
 function validateAndTightenPrivateTree(path: string): void {
   validatePrivateTree(path);
+  if (lstatIfPresent(path)) removeAndVerifyMacAcl(path, true);
   tightenPrivateTree(path);
 }
 
@@ -231,7 +359,9 @@ function atomicWriteJson(path: string, value: unknown): void {
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   renameSync(temporary, path);
+  removeAndVerifyMacAcl(path);
   chmodSync(path, 0o600);
+  assertPrivateFileMode(path);
 }
 
 function copyEntry(source: string, destination: string, merge: boolean): void {
@@ -262,8 +392,9 @@ function copyEntry(source: string, destination: string, merge: boolean): void {
     return;
   }
   ensurePrivateDirectory(dirname(destination));
-  copyFileSync(source, destination, constants.COPYFILE_EXCL);
-  chmodSync(destination, privateFileMode(sourceEntry.mode));
+  copyFilePrivateSync(source, destination, {
+    mode: privateFileMode(sourceEntry.mode),
+  });
 }
 
 function copyIfAbsent(source: string, destination: string): void {
@@ -282,8 +413,9 @@ function copyRegularFileIfAbsent(source: string, destination: string): void {
     return;
   }
   ensurePrivateDirectory(dirname(destination));
-  copyFileSync(source, destination, constants.COPYFILE_EXCL);
-  chmodSync(destination, privateFileMode(sourceEntry.mode));
+  copyFilePrivateSync(source, destination, {
+    mode: privateFileMode(sourceEntry.mode),
+  });
 }
 
 function mergeMissing(source: string, destination: string): void {
@@ -292,6 +424,81 @@ function mergeMissing(source: string, destination: string): void {
   if (sourceEntry.isSymbolicLink()) throw new Error(`refusing symbolic link in legacy profile data: ${source}`);
   if (!sourceEntry.isDirectory()) throw new Error(`legacy profile entry must be a directory: ${source}`);
   copyEntry(source, destination, true);
+}
+
+function contextBudgetRecordEntries(
+  directory: string,
+): Array<{ name: string; path: string; mtime: number; bytes: number }> {
+  return readdirSync(directory)
+    .filter((name) => /^cb_.*\.json$/.test(name))
+    .map((name) => {
+      const path = join(directory, name);
+      const entry = lstatSync(path);
+      if (entry.isSymbolicLink() || !entry.isFile()) {
+        throw new Error(`refusing unsupported context-budget cache entry: ${path}`);
+      }
+      return {
+        name,
+        path,
+        mtime: entry.mtimeMs,
+        bytes: entry.size,
+      };
+    })
+    .sort((left, right) => right.mtime - left.mtime);
+}
+
+function mergeBoundedContextBudgetCache(
+  source: string,
+  destination: string,
+  now = Date.now(),
+): void {
+  const sourceEntry = lstatIfPresent(source);
+  if (!sourceEntry) return;
+  if (sourceEntry.isSymbolicLink() || !sourceEntry.isDirectory()) {
+    throw new Error(`legacy context-budget cache must be a regular directory: ${source}`);
+  }
+  ensurePrivateDirectory(destination);
+  copyRegularFileIfAbsent(join(source, 'stats.json'), join(destination, 'stats.json'));
+
+  const cutoff = now
+    - CONTEXT_BUDGET_RETENTION.auditDays * 24 * 60 * 60 * 1_000;
+  let kept = 0;
+  let bytes = 0;
+  for (const entry of contextBudgetRecordEntries(source)) {
+    const withinBounds = entry.mtime >= cutoff
+      && kept < CONTEXT_BUDGET_RETENTION.maxAuditRecords
+      && bytes + entry.bytes <= CONTEXT_BUDGET_RETENTION.maxAuditBytes;
+    if (!withinBounds) continue;
+    copyRegularFileIfAbsent(entry.path, join(destination, entry.name));
+    kept += 1;
+    bytes += entry.bytes;
+  }
+}
+
+function pruneContextBudgetMigrationCache(
+  directory: string,
+  now = Date.now(),
+): void {
+  const entry = lstatIfPresent(directory);
+  if (!entry) return;
+  if (entry.isSymbolicLink() || !entry.isDirectory()) {
+    throw new Error(`profile context-budget cache must be a regular directory: ${directory}`);
+  }
+  const cutoff = now
+    - CONTEXT_BUDGET_RETENTION.auditDays * 24 * 60 * 60 * 1_000;
+  let kept = 0;
+  let bytes = 0;
+  for (const record of contextBudgetRecordEntries(directory)) {
+    const withinBounds = record.mtime >= cutoff
+      && kept < CONTEXT_BUDGET_RETENTION.maxAuditRecords
+      && bytes + record.bytes <= CONTEXT_BUDGET_RETENTION.maxAuditBytes;
+    if (withinBounds) {
+      kept += 1;
+      bytes += record.bytes;
+    } else {
+      rmSync(record.path, { force: true });
+    }
+  }
 }
 
 function tightenKnownPermissions(paths: ProfileMigrationPaths): void {
@@ -342,10 +549,21 @@ const MIGRATIONS: ProfileMigration[] = [
     apply(paths, context) {
       // Copy rather than delete. The former location is a rollback-safe backup
       // and is ignored by new builds after this migration.
+      const destination = join(paths.cache, 'context-budget');
+      const now = Date.now();
       if (context.importLegacy) {
-        mergeMissing(join(context.legacyConfigDir, 'context-budget'), join(paths.cache, 'context-budget'));
+        mergeBoundedContextBudgetCache(
+          join(context.legacyConfigDir, 'context-budget'),
+          destination,
+          now,
+        );
       }
-      mergeMissing(join(dirname(paths.config), 'context-budget'), join(paths.cache, 'context-budget'));
+      mergeBoundedContextBudgetCache(
+        join(dirname(paths.config), 'context-budget'),
+        destination,
+        now,
+      );
+      pruneContextBudgetMigrationCache(destination, now);
     },
   },
   {
@@ -436,6 +654,7 @@ export function migrateAppProfile(
   },
 ): ProfileMetadata {
   assertCompatibleProfileBeforeMutation(paths.root);
+  assertSafePosixProfileAncestors(paths.root);
   // Windows does not implement owner/group/other isolation through chmod.
   // After the bounded compatibility-only marker preflight above, establish and
   // verify the real recursive DACL before every other profile-state access.
@@ -509,6 +728,13 @@ export function migrateAppProfile(
       appliedMigrations: [],
     };
     atomicWriteJson(marker, metadata);
+    // Establish the versioned Windows proof while the new profile is still
+    // small. Later imports create fresh children beneath exact private,
+    // inheritable parent DACLs and therefore cannot exceed the transactional
+    // first-attestation traversal on the next launch.
+    secureWindowsProfileRoot(paths.root, {
+      maximumSchemaVersion: PROFILE_SCHEMA_VERSION,
+    });
   }
 
   if (metadata.schemaVersion > PROFILE_SCHEMA_VERSION) {

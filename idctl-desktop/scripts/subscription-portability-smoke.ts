@@ -58,15 +58,26 @@ const temporary = mkdtempSync(join(tmpdir(), 'idacc-mcp-portability-'));
 try {
   const commandShim = join(temporary, 'example-mcp.cmd');
   writeFileSync(commandShim, '@echo off\r\n');
-  const launch = resolveMcpStdioLaunch('example-mcp', {}, {
+  const launch = resolveMcpStdioLaunch('example-mcp', {
+    BRAIN_TOKEN: 'explicit-mcp-token',
+  }, {
     platform: 'win32',
-    env: { PATH: temporary, PATHEXT: '.EXE;.CMD' },
+    env: {
+      PATH: temporary,
+      PATHEXT: '.EXE;.CMD',
+      BRAIN_TOKEN: 'ambient-brain-token',
+      IDACC_ADMIN_TOKEN: 'ambient-admin-token',
+      IDACC_BRAIN_TOKEN: 'ambient-brain-alias',
+    },
     home: temporary,
     pathDelimiter: ';',
   });
   assert.equal(launch.command, commandShim, 'MCP launch must resolve a Windows .cmd shim through PATHEXT');
   assert.equal(launch.shell, true, 'Windows .cmd MCP shims must launch through the platform shell');
   assert.ok(launch.env.PATH?.split(';').includes(temporary), 'MCP launch must retain the configured PATH');
+  assert.equal(launch.env.IDACC_ADMIN_TOKEN, undefined, 'MCP launch inherited the app Manager bearer');
+  assert.equal(launch.env.IDACC_BRAIN_TOKEN, undefined, 'MCP launch inherited an app Brain bearer alias');
+  assert.equal(launch.env.BRAIN_TOKEN, 'explicit-mcp-token', 'explicit MCP env must override scrubbed ambient state');
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }
@@ -110,8 +121,14 @@ assert.ok(
 
 const unifiedStack = readFileSync(new URL('../src/main/unifiedStack.ts', import.meta.url), 'utf8');
 assert.ok(
-  unifiedStack.includes("service.spec.name === 'manager' ? subscriptionRuntimeEnvironment() : process.env"),
+  unifiedStack.includes("service.spec.name === 'manager'")
+    && unifiedStack.includes('? subscriptionRuntimeEnvironment()')
+    && unifiedStack.includes(': externalChildEnvironment()'),
   'the bundled Manager must inherit the desktop subscription runtime environment',
+);
+assert.ok(
+  !unifiedStack.includes('process.env.BRAIN_TOKEN ='),
+  'the generated Brain bearer must never be written to the Electron process environment',
 );
 
 const mcpTest = readFileSync(new URL('../src/main/mcpTest.ts', import.meta.url), 'utf8');

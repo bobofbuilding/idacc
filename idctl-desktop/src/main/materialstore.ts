@@ -13,7 +13,6 @@ import { BrowserWindow, dialog } from 'electron';
 import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
-  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -33,6 +32,8 @@ import { call as bridgeCall } from './bridge.ts';
 import { recordLearnMaterial } from './controlLog.ts';
 import { getGoal, goalPriorityRank, listGoals, normalizeGoalPriority, type Goal, type GoalPriority } from './goalstore.ts';
 import { addQuestion } from './questionstore.ts';
+import { copyFilePrivateSync } from './privateFileCopy.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
 
 export type LearnMaterialKind = 'github' | 'folder' | 'site' | 'pdf';
 export type LearnPriority = 'urgent' | 'high' | 'normal';
@@ -644,8 +645,7 @@ export function importMaterialFiles(paths: string[], opts: { priority?: LearnPri
     const dir = blobDir(id);
     const name = basenameSafe(src);
     const dest = uniquePath(dir, name);
-    copyFileSync(src, dest);
-    try { chmodSync(dest, 0o600); } catch { /* best-effort */ }
+    copyFilePrivateSync(src, dest);
     const kind: LearnMaterialKind = extname(src).toLowerCase() === '.pdf' ? 'pdf' : 'site';
     created.push(saveMaterial({
       id,
@@ -1153,6 +1153,7 @@ function extractPdfTextWithPdftotext(source: string): { text: string; truncated?
     try {
       const out = execFileSync(bin, ['-layout', '-enc', 'UTF-8', source, '-'], {
         encoding: 'utf8',
+        env: externalChildEnvironment(),
         maxBuffer: MAX_PDF_TEXT_BYTES + 64_000,
         timeout: 20_000,
         stdio: ['ignore', 'pipe', 'pipe'],

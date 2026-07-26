@@ -107,6 +107,24 @@ lockVersion('idctl-desktop/package-lock.json', version);
 packageVersion('idctl/package.json', version);
 lockVersion('idctl/package-lock.json', version);
 
+const idctlVersionPath = join(root, 'idctl', 'src', 'version.ts');
+if (!existsSync(idctlVersionPath)) {
+  errors.push('idctl/src/version.ts is missing');
+} else {
+  const source = readFileSync(idctlVersionPath, 'utf8');
+  const match = /^export const IDCTL_VERSION = ("(?:[^"\\]|\\.)*");$/m.exec(source);
+  let generatedVersion = '';
+  try {
+    generatedVersion = match ? JSON.parse(match[1]) : '';
+  } catch {
+    generatedVersion = '';
+  }
+  expect(
+    generatedVersion === version,
+    `idctl/src/version.ts version ${generatedVersion || '(missing)'} does not match ${version}; run idctl/build/gen-version.mjs`,
+  );
+}
+
 const changelogPath = join(root, 'CHANGELOG.md');
 if (!existsSync(changelogPath)) {
   errors.push('CHANGELOG.md is missing');
@@ -143,10 +161,25 @@ if (mode === '--publish') {
   );
   if (tagType.ok && tagType.stdout === 'tag') {
     const tagBody = readGitObject(['cat-file', '-p', tagRef]).stdout;
+    const hasSignatureArmor = (
+      /-----BEGIN (?:PGP|SSH) SIGNATURE-----|-----BEGIN SIGNED MESSAGE-----/.test(tagBody)
+    );
     expect(
-      /-----BEGIN (?:PGP|SSH) SIGNATURE-----|-----BEGIN SIGNED MESSAGE-----/.test(tagBody),
+      hasSignatureArmor,
       `${tag} is annotated but unsigned; create it with git tag -s -a`,
     );
+    if (hasSignatureArmor) {
+      const tagVerification = readGitObject(['verify-tag', tagRef]);
+      const githubWorkflowVerified = (
+        process.env.GITHUB_ACTIONS === 'true'
+        && process.env.IDACC_GITHUB_VERIFIED_TAG === tag
+        && process.env.IDACC_GITHUB_VERIFIED_COMMIT === head
+      );
+      expect(
+        tagVerification.ok || githubWorkflowVerified,
+        `${tag} signature failed cryptographic verification with git verify-tag and has no exact GitHub workflow attestation`,
+      );
+    }
     const tagCommit = runGit(['rev-list', '-n', '1', tag]);
     expect(
       Boolean(head) && tagCommit === head,

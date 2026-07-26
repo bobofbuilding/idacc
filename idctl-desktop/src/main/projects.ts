@@ -18,8 +18,13 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync, writeFileSync, readdirSync, realpathSync, statSync, rmSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { loadSettings } from '../../../idctl/src/settings/store.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
 
 const execFileP = promisify(execFile);
+
+function gitEnvironment(additions: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return externalChildEnvironment(process.env, additions);
+}
 
 /**
  * The folder whose subdirectories are tracked as projects. Resolution order:
@@ -110,7 +115,10 @@ function githubToken(): string | undefined {
  *  transport git uses, so it's the real "do I have access" test — independent of the
  *  GitHub API token (which may be absent/expired even when the repo is reachable). */
 async function remoteReachable(slug: string): Promise<boolean> {
-  const env = { ...process.env, GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=12', GIT_TERMINAL_PROMPT: '0' };
+  const env = gitEnvironment({
+    GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=12',
+    GIT_TERMINAL_PROMPT: '0',
+  });
   for (const remote of [`git@github.com:${slug}.git`, `https://github.com/${slug}.git`]) {
     try { await execFileP('git', ['ls-remote', remote, 'HEAD'], { timeout: 25000, env }); return true; }
     catch { /* try next transport */ }
@@ -168,7 +176,10 @@ export async function cloneGithub(url: string, parentDir: string): Promise<{ ok:
   let lastErr = '';
   for (const remote of attempts) {
     try {
-      await execFileP('git', ['clone', remote, dest], { timeout: 300000 });
+      await execFileP('git', ['clone', remote, dest], {
+        env: gitEnvironment(),
+        timeout: 300000,
+      });
       return { ok: true, path: dest, name };
     } catch (e) {
       const err = e as { stderr?: string; message?: string };
@@ -306,7 +317,10 @@ export async function forkGithub(url: string, parentDir: string): Promise<{ ok: 
   for (let attempt = 0; attempt < 4; attempt++) {
     for (const remote of [sshUrl, httpsUrl]) {
       try {
-        await execFileP('git', ['clone', remote, dest], { timeout: 300000 });
+        await execFileP('git', ['clone', remote, dest], {
+          env: gitEnvironment(),
+          timeout: 300000,
+        });
         await git(dest, ['remote', 'add', 'upstream', `git@github.com:${slug}.git`]).catch(() => {});
         return { ok: true, path: dest, name, slug: forkSlug };
       } catch (e) {
@@ -322,7 +336,11 @@ export async function forkGithub(url: string, parentDir: string): Promise<{ ok: 
 
 /** Run a git command in `cwd`, returning trimmed stdout (throws on failure). */
 async function git(cwd: string, args: string[], timeoutMs = 10000): Promise<string> {
-  const { stdout } = await execFileP('git', args, { cwd, timeout: timeoutMs });
+  const { stdout } = await execFileP('git', args, {
+    cwd,
+    env: gitEnvironment(),
+    timeout: timeoutMs,
+  });
   return stdout.trim();
 }
 async function gitOk(cwd: string, args: string[]): Promise<boolean> {
@@ -489,7 +507,14 @@ const GIT_ACTIONS: Record<string, string[]> = {
 async function smartPull(path: string): Promise<{ ok: boolean; output: string }> {
   const out: string[] = [];
   const run = async (args: string[], to = 120000): Promise<{ ok: boolean; text: string }> => {
-    try { const { stdout, stderr } = await execFileP('git', args, { cwd: path, timeout: to }); return { ok: true, text: `${stdout}${stderr}`.trim() }; }
+    try {
+      const { stdout, stderr } = await execFileP('git', args, {
+        cwd: path,
+        env: gitEnvironment(),
+        timeout: to,
+      });
+      return { ok: true, text: `${stdout}${stderr}`.trim() };
+    }
     catch (e) { const err = e as { stdout?: string; stderr?: string; message?: string }; return { ok: false, text: `${err.stdout ?? ''}${err.stderr ?? ''}${err.message ?? ''}`.trim() }; }
   };
   const f = await run(['fetch', '--all', '--prune']);
@@ -547,7 +572,11 @@ export async function projectGitRun(path: string, action: string): Promise<{ ok:
   const args = GIT_ACTIONS[action];
   if (!args) return { ok: false, output: `unknown git action: ${action}` };
   try {
-    const { stdout, stderr } = await execFileP('git', args, { cwd: path, timeout: 90000 });
+    const { stdout, stderr } = await execFileP('git', args, {
+      cwd: path,
+      env: gitEnvironment(),
+      timeout: 90000,
+    });
     return { ok: true, output: `${stdout}${stderr}`.trim() || '(no output)' };
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string; message?: string };

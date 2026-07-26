@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, s
 import { isAbsolute, join } from 'node:path';
 import { configDir, resolveConfigPath } from '../../../idctl/src/settings/paths.ts';
 import { auditPreview, estimateTokens, optimizeAskCommandCore, type ContextBudgetDecision, type ContextBudgetOptions } from '../shared/contextBudget.ts';
+import { CONTEXT_BUDGET_RETENTION } from './contextBudgetRetention.ts';
+export { CONTEXT_BUDGET_RETENTION } from './contextBudgetRetention.ts';
 
 export interface ContextBudgetRecord {
   id: string;
@@ -83,12 +85,6 @@ export type ContextBudgetDecisionView = Omit<ContextBudgetDecision, 'command' | 
 };
 
 const MAX_RECENT = 80;
-export const CONTEXT_BUDGET_RETENTION = {
-  auditDays: 30,
-  maxAuditRecords: 2_000,
-  maxAuditBytes: 32 * 1024 * 1024,
-  dailyStatsDays: 90,
-} as const;
 const recent: ContextBudgetRecord[] = [];
 type MutableMeasurement = Omit<ContextBudgetMeasurement, 'savingsRatio'>;
 interface StatsFile {

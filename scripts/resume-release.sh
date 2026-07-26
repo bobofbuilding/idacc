@@ -62,6 +62,9 @@ release_wait_for_github_verified_tag "$REPOSITORY" "$TAG" "$RELEASE_COMMIT"
 node "$ROOT/scripts/check-release-publication.mjs" --allow-tag "$TAG"
 
 STATE="$(release_state "$REPOSITORY" "$TAG")"
+if [ "$STATE" = "prerelease" ]; then
+  release_fail "$TAG is a prerelease; prereleases cannot satisfy or resume the stable production release path"
+fi
 if [ "$STATE" = "published" ]; then
   (
     unset GH_TOKEN GITHUB_TOKEN IDACC_RELEASE_TOKEN RELEASE_ADMIN_TOKEN

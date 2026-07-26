@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { app, shell, systemPreferences } from 'electron';
+import { externalChildEnvironment } from '../externalChildEnvironment.ts';
 
 const execFileP = promisify(execFile);
 
@@ -124,7 +125,10 @@ async function readTccRows(): Promise<{ rows: TccRow[]; readable: boolean; error
     if (!existsSync(db.path)) continue;
     if (db.userScoped) userDbSeen = true;
     try {
-      const { stdout } = await execFileP('/usr/bin/sqlite3', ['-json', db.path, sql], { timeout: 1500 });
+      const { stdout } = await execFileP('/usr/bin/sqlite3', ['-json', db.path, sql], {
+        env: externalChildEnvironment(),
+        timeout: 1500,
+      });
       anyReadable = true;
       if (db.userScoped) userDbReadable = true;
       const parsed = stdout.trim() ? JSON.parse(stdout) as TccRow[] : [];

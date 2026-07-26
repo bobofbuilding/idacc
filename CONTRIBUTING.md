@@ -48,8 +48,9 @@ scripts/release.sh --resume 0.2.0 --publish=true
 ```
 
 Run `gh auth login --hostname github.com` first and configure a Git signing key
-that GitHub recognizes. The command rejects lightweight tags, unsigned annotated
-tags, and the retired commit/tag-only flags. `--publish=false` is a full
+that both local `git verify-tag` and GitHub recognize. The command rejects
+lightweight tags, unsigned or cryptographically invalid annotated tags, and the
+retired commit/tag-only flags. `--publish=false` is a full
 production-pipeline dry run: the signed tag is pushed and every platform is built,
 signed, verified, and attested, but the GitHub Release remains a draft.
 
@@ -77,12 +78,20 @@ electron-builder qualifier without the `Developer ID Application:` prefix and
 ending in `(TEAMID)`), and `WINDOWS_EXPECTED_PUBLISHER_SUBJECT` (the exact full
 certificate subject distinguished name).
 
-The one historical exception is the audited lightweight-tag frontier from
-`v0.1.620` through `v0.1.647`. It is an exact object-ID allowlist, not a reusable
-version range. Do not delete, rewrite, convert, or publish those tags. See the
+The one historical exception is the audited tag frontier from `v0.1.620`
+through `v0.1.684`: 63 lightweight refs and two exact unsigned annotated refs.
+It is an exact tag-object, peeled-commit, and release-identity allowlist, not a
+reusable version range. Do not delete, rewrite, convert, publish, or unpublish
+those historical records. See the
 [legacy release cutover record](docs/RELEASE_CUTOVER.md) for its invariants and
 lifecycle. Any unrecorded incomplete tag still stops a release.
 
 Do not publish a production build by hand. Local package commands are useful for
 development evidence, but only `.github/workflows/release.yml` is authorized to
 assemble and publish the unified macOS, Windows, and Linux application.
+
+`idctl-desktop/src-tauri` is retained only as a developer interface simulation.
+It does not bundle or supervise Manager and Brain, its bundler is disabled, and
+the old `tauri`, `tauri:dev`, and `tauri:build` package commands deliberately
+fail. Use `npm run dev:tauri-simulation` only for UI experiments; it is never a
+consumer or production distribution path.

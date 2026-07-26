@@ -11,6 +11,10 @@ account's private application profile.
 - The desktop creates fresh in-memory credentials on every launch. Privileged
   Manager administration routes require the Manager-only bearer credential,
   while Manager-to-Brain requests use a separate shared credential.
+- Neither credential is written to the desktop's ambient process environment.
+  Unrelated provider tools, Git hooks, diagnostics, model servers, and
+  user-configured subprocesses launch from an environment with IDACC runtime
+  bearer credentials removed.
 - The Manager administration credential is never given to Brain, app-owned
   Brain companions, the renderer, or spawned agents.
 - The narrower Brain credential is given to Brain, Manager, and the app-owned

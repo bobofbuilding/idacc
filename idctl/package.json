@@ -15,6 +15,7 @@
     "dev": "tsx watch src/cli.tsx",
     "status": "tsx src/cli.tsx status",
     "typecheck": "tsc --noEmit",
+    "prebuild:mjs": "node build/gen-version.mjs",
     "build:mjs": "esbuild src/cli.tsx --bundle --platform=node --target=node20 --format=esm --outfile=dist/idctl.mjs --banner:js=\"import{createRequire as ___cr}from'module';const require=___cr(import.meta.url);\" --jsx=automatic",
     "test": "tsx src/api/onboard.test.ts && tsx src/api/teamDesign.test.ts && tsx src/api/skillTags.test.ts && tsx src/api/managerNormalization.test.ts && tsx src/api/runtimePreflight.test.ts && tsx src/api/tasksByStatus.test.ts && tsx src/api/brainTransport.test.ts && tsx src/api/controlCenterContract.test.ts && tsx src/settings/providerTransport.test.ts && tsx src/settings/providerCatalog.test.ts && tsx src/settings/localDiscovery.test.ts && tsx src/settings/runtimeCatalog.test.ts && tsx src/settings/agentModelPolicy.test.ts && tsx src/settings/teamNames.test.ts",
     "test:provider-transport": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types src/settings/providerTransport.test.ts",

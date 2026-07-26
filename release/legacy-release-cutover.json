@@ -1,13 +1,13 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "repository": "bobofbuilding/idacc",
   "recordedAt": "2026-07-26",
   "baselinePublishedTag": "v0.1.619",
-  "firstCanonicalVersionMustExceed": "v0.1.647",
-  "reason": "Preserve the confirmed public release frontier while retiring the exact historical lightweight tags created by interrupted legacy release automation.",
+  "firstCanonicalVersionMustExceed": "v0.1.684",
+  "reason": "Preserve the confirmed public release frontier while retiring the exact historical lightweight tags and mutable releases created by interrupted legacy release automation.",
   "invariants": {
     "doNotDeleteOrRewriteTags": true,
-    "requireLightweightTagTargets": true,
+    "requireExactTagObjects": true,
     "requireExactReleaseStates": true
   },
   "legacyTags": [
@@ -16,7 +16,7 @@
       "kind": "lightweight",
       "targetCommit": "403036a3d5859e5dca6a0e2b5712b33c6f1b1cf2",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 350611358,
         "publishedAt": "2026-07-07T22:42:21Z"
       }
@@ -26,7 +26,7 @@
       "kind": "lightweight",
       "targetCommit": "63855bd3c9dc8ec1e272639168eb5bb5a4e082ec",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 350619581,
         "publishedAt": "2026-07-07T23:13:08Z"
       }
@@ -44,7 +44,7 @@
       "kind": "lightweight",
       "targetCommit": "063da5374dd79515af13d7ba803d923bc5187630",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 351031481,
         "publishedAt": "2026-07-08T15:45:34Z"
       }
@@ -70,7 +70,7 @@
       "kind": "lightweight",
       "targetCommit": "3b4974bdd86d9d98f6e736e95a4a5a3f1f1b399f",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 351513571,
         "publishedAt": "2026-07-09T12:18:02Z"
       }
@@ -80,7 +80,7 @@
       "kind": "lightweight",
       "targetCommit": "fc181ae0a9672539da54d69508b6af12c43087a1",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 351576639,
         "publishedAt": "2026-07-09T14:18:44Z"
       }
@@ -90,7 +90,7 @@
       "kind": "lightweight",
       "targetCommit": "6aacd2e3d260ad66c7a0a86632d0f73fc2ff3af4",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 351612667,
         "publishedAt": "2026-07-09T15:19:21Z"
       }
@@ -100,7 +100,7 @@
       "kind": "lightweight",
       "targetCommit": "ed189e4515e7a612135aeb68011e0098fc999d6a",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 351629731,
         "publishedAt": "2026-07-09T15:49:57Z"
       }
@@ -110,7 +110,7 @@
       "kind": "lightweight",
       "targetCommit": "2a928ef3adc9fb65042f15c63c010b95f6647db8",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 351649828,
         "publishedAt": "2026-07-09T16:29:07Z"
       }
@@ -120,7 +120,7 @@
       "kind": "lightweight",
       "targetCommit": "03849f5c46cd6c9e7cc007a5abb6f1cd5bc0820d",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 351678410,
         "publishedAt": "2026-07-09T17:23:18Z"
       }
@@ -130,7 +130,7 @@
       "kind": "lightweight",
       "targetCommit": "59bb1d779970734174f42d3a91739ed5b9a459e8",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 351709803,
         "publishedAt": "2026-07-09T18:21:16Z"
       }
@@ -140,7 +140,7 @@
       "kind": "lightweight",
       "targetCommit": "cf2d696116343391b625c0a78f7e6751fe2c4ab5",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 351814976,
         "publishedAt": "2026-07-09T22:41:55Z"
       }
@@ -150,7 +150,7 @@
       "kind": "lightweight",
       "targetCommit": "7ce2da181532d72dbebb075fdfbc656a5f3b98eb",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 351821182,
         "publishedAt": "2026-07-09T23:07:08Z"
       }
@@ -160,7 +160,7 @@
       "kind": "lightweight",
       "targetCommit": "ce9fe147608a5c0b96714dbfe3e7236c8bcbd0fa",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 351981560,
         "publishedAt": "2026-07-10T08:43:53Z"
       }
@@ -170,7 +170,7 @@
       "kind": "lightweight",
       "targetCommit": "2a9e2196233b782a07fae9f870b915c56300379b",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 352528757,
         "publishedAt": "2026-07-11T14:11:16Z"
       }
@@ -180,7 +180,7 @@
       "kind": "lightweight",
       "targetCommit": "07bed67a46b7f129223204cb5208e82ff2461718",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 353250795,
         "publishedAt": "2026-07-13T15:20:25Z"
       }
@@ -190,7 +190,7 @@
       "kind": "lightweight",
       "targetCommit": "df41416356d9ab99509c25d91cbc45324695107d",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 353251277,
         "publishedAt": "2026-07-13T15:21:19Z"
       }
@@ -200,7 +200,7 @@
       "kind": "lightweight",
       "targetCommit": "2b2bb14c3b3e8362df8da5b00a565931d1e81d39",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 353700886,
         "publishedAt": "2026-07-14T09:53:16Z"
       }
@@ -210,7 +210,7 @@
       "kind": "lightweight",
       "targetCommit": "8899e8a5332062b8ad5311554467b16922a6b1a7",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 353878176,
         "publishedAt": "2026-07-14T15:03:38Z"
       }
@@ -220,7 +220,7 @@
       "kind": "lightweight",
       "targetCommit": "6a4806cb7b5c4f7bc375de2646ddb87041196659",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 354351270,
         "publishedAt": "2026-07-15T10:23:32Z"
       }
@@ -230,7 +230,7 @@
       "kind": "lightweight",
       "targetCommit": "abe8f8e7b6368dd3e009db43483ed3e708b74b14",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 354359866,
         "publishedAt": "2026-07-15T10:38:53Z"
       }
@@ -240,7 +240,7 @@
       "kind": "lightweight",
       "targetCommit": "fdf2c78484f8b9d3751793f3cd8a042bd74b4edb",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 354363813,
         "publishedAt": "2026-07-15T10:44:02Z"
       }
@@ -250,7 +250,7 @@
       "kind": "lightweight",
       "targetCommit": "fb3c9b2b89e6e627c023ae274925cb77847ba046",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 354468764,
         "publishedAt": "2026-07-15T13:41:47Z"
       }
@@ -260,7 +260,7 @@
       "kind": "lightweight",
       "targetCommit": "0cbd97515b38d46c166c8effbc051ff86091fd7b",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 354519330,
         "publishedAt": "2026-07-15T15:01:40Z"
       }
@@ -270,7 +270,7 @@
       "kind": "lightweight",
       "targetCommit": "84b54cb65c62b1512dc22db3614b09dece755b7a",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 355825496,
         "publishedAt": "2026-07-17T17:30:49Z"
       }
@@ -280,9 +280,383 @@
       "kind": "lightweight",
       "targetCommit": "04105a945de3d2ac005f9cc1268dbbe96c3a6ad0",
       "release": {
-        "state": "published-non-latest",
+        "state": "published",
         "id": 356920235,
         "publishedAt": "2026-07-20T18:25:31Z"
+      }
+    },
+    {
+      "tag": "v0.1.648",
+      "kind": "lightweight",
+      "targetCommit": "aedbcc2abc0b6faabce1701e8922dd232320e33f",
+      "release": {
+        "state": "published",
+        "id": 356930529,
+        "publishedAt": "2026-07-20T18:47:14Z"
+      }
+    },
+    {
+      "tag": "v0.1.649",
+      "kind": "lightweight",
+      "targetCommit": "a314199ce29720f1d340a93b78736fd6c3b66846",
+      "release": {
+        "state": "published",
+        "id": 356937437,
+        "publishedAt": "2026-07-20T19:00:36Z"
+      }
+    },
+    {
+      "tag": "v0.1.650",
+      "kind": "lightweight",
+      "targetCommit": "9f56316f4bf702313abfbd67992175ed15ac6344",
+      "release": {
+        "state": "published",
+        "id": 356939204,
+        "publishedAt": "2026-07-20T19:04:16Z"
+      }
+    },
+    {
+      "tag": "v0.1.651",
+      "kind": "lightweight",
+      "targetCommit": "3c312a875a1d8be3c7689c6b766b676fc5ad3ee2",
+      "release": {
+        "state": "published",
+        "id": 356946097,
+        "publishedAt": "2026-07-20T19:19:17Z"
+      }
+    },
+    {
+      "tag": "v0.1.652",
+      "kind": "lightweight",
+      "targetCommit": "a2656462af96466622d7c3284ee264c403a46f53",
+      "release": {
+        "state": "published",
+        "id": 356972531,
+        "publishedAt": "2026-07-20T20:17:16Z"
+      }
+    },
+    {
+      "tag": "v0.1.653",
+      "kind": "lightweight",
+      "targetCommit": "4d97bb1eb233e160949414b5dac262ce6a4cae02",
+      "release": {
+        "state": "published",
+        "id": 356999257,
+        "publishedAt": "2026-07-20T21:19:14Z"
+      }
+    },
+    {
+      "tag": "v0.1.654",
+      "kind": "lightweight",
+      "targetCommit": "c311ccb29b30173bfa3aea9fa48a58b4ba8069ac",
+      "release": {
+        "state": "published",
+        "id": 357002577,
+        "publishedAt": "2026-07-20T21:27:36Z"
+      }
+    },
+    {
+      "tag": "v0.1.655",
+      "kind": "lightweight",
+      "targetCommit": "b5d5e2d98a25587f44b3a32ecef39f31e4ea3d2e",
+      "release": {
+        "state": "published",
+        "id": 357008091,
+        "publishedAt": "2026-07-20T21:42:10Z"
+      }
+    },
+    {
+      "tag": "v0.1.656",
+      "kind": "lightweight",
+      "targetCommit": "0750c90ea27663644bffd8b4acc6b5f7e8a694b6",
+      "release": {
+        "state": "published",
+        "id": 357467268,
+        "publishedAt": "2026-07-21T15:58:41Z"
+      }
+    },
+    {
+      "tag": "v0.1.657",
+      "kind": "lightweight",
+      "targetCommit": "b29f99b11733f79568d9cf50e14c269fbc34378c",
+      "release": {
+        "state": "published",
+        "id": 357650299,
+        "publishedAt": "2026-07-21T21:26:43Z"
+      }
+    },
+    {
+      "tag": "v0.1.658",
+      "kind": "lightweight",
+      "targetCommit": "0fcc67b0de6e5b1119cf6d2e8dd96d243007e533",
+      "release": {
+        "state": "published",
+        "id": 357673432,
+        "publishedAt": "2026-07-21T22:21:40Z"
+      }
+    },
+    {
+      "tag": "v0.1.659",
+      "kind": "lightweight",
+      "targetCommit": "1f69a5f7bd8ec604f72b64737d9a27565fbd1595",
+      "release": {
+        "state": "published",
+        "id": 357681317,
+        "publishedAt": "2026-07-21T22:44:12Z"
+      }
+    },
+    {
+      "tag": "v0.1.660",
+      "kind": "lightweight",
+      "targetCommit": "baa959ae46c5f37431c78b70830112ce49c01378",
+      "release": {
+        "state": "published",
+        "id": 357685258,
+        "publishedAt": "2026-07-21T22:54:59Z"
+      }
+    },
+    {
+      "tag": "v0.1.661",
+      "kind": "lightweight",
+      "targetCommit": "267557759f73a71ecaefae932e3c7f80127391ed",
+      "release": {
+        "state": "published",
+        "id": 357688825,
+        "publishedAt": "2026-07-21T23:06:16Z"
+      }
+    },
+    {
+      "tag": "v0.1.662",
+      "kind": "lightweight",
+      "targetCommit": "653c7d80fd23e415036fd782d94e0a02ba4d867c",
+      "release": {
+        "state": "published",
+        "id": 357690187,
+        "publishedAt": "2026-07-21T23:10:18Z"
+      }
+    },
+    {
+      "tag": "v0.1.663",
+      "kind": "lightweight",
+      "targetCommit": "9f8f1d8f05f22191fd4cdba4dbc2aa06fb5c72a2",
+      "release": {
+        "state": "published",
+        "id": 357694291,
+        "publishedAt": "2026-07-21T23:24:38Z"
+      }
+    },
+    {
+      "tag": "v0.1.664",
+      "kind": "lightweight",
+      "targetCommit": "960f77470438b0db953621ccedf189c6f38b5852",
+      "release": {
+        "state": "published",
+        "id": 357714056,
+        "publishedAt": "2026-07-22T00:36:36Z"
+      }
+    },
+    {
+      "tag": "v0.1.665",
+      "kind": "lightweight",
+      "targetCommit": "436f2177604276e0311f46a81ca4a4f2aedbdf00",
+      "release": {
+        "state": "published",
+        "id": 357715700,
+        "publishedAt": "2026-07-22T00:42:30Z"
+      }
+    },
+    {
+      "tag": "v0.1.666",
+      "kind": "lightweight",
+      "targetCommit": "051fa3597088243967ecb42f97e9c10f793f741b",
+      "release": {
+        "state": "published",
+        "id": 357717150,
+        "publishedAt": "2026-07-22T00:48:17Z"
+      }
+    },
+    {
+      "tag": "v0.1.667",
+      "kind": "lightweight",
+      "targetCommit": "72b1d12d642055e528eb69784b8bb9db53af3a25",
+      "release": {
+        "state": "published",
+        "id": 357720073,
+        "publishedAt": "2026-07-22T01:00:04Z"
+      }
+    },
+    {
+      "tag": "v0.1.668",
+      "kind": "lightweight",
+      "targetCommit": "746771a0af06bd2b95f9d37012f160e4aaf97d0a",
+      "release": {
+        "state": "published",
+        "id": 357749567,
+        "publishedAt": "2026-07-22T02:41:37Z"
+      }
+    },
+    {
+      "tag": "v0.1.669",
+      "kind": "lightweight",
+      "targetCommit": "0b6231e3e95a3ec05d935dadfc181661635bf9c4",
+      "release": {
+        "state": "published",
+        "id": 357772517,
+        "publishedAt": "2026-07-22T04:08:40Z"
+      }
+    },
+    {
+      "tag": "v0.1.670",
+      "kind": "lightweight",
+      "targetCommit": "ccfd3d333929cbdc284980650f5475b24af5d0c4",
+      "release": {
+        "state": "published",
+        "id": 358041941,
+        "publishedAt": "2026-07-22T13:20:37Z"
+      }
+    },
+    {
+      "tag": "v0.1.671",
+      "kind": "lightweight",
+      "targetCommit": "0916ebcf63454284598d33ee84705c3e2a8bb54e",
+      "release": {
+        "state": "published",
+        "id": 358044437,
+        "publishedAt": "2026-07-22T13:24:43Z"
+      }
+    },
+    {
+      "tag": "v0.1.672",
+      "kind": "lightweight",
+      "targetCommit": "6a19014f62a80616c0d39ad3178314763cf3532c",
+      "release": {
+        "state": "published",
+        "id": 358084548,
+        "publishedAt": "2026-07-22T14:22:34Z"
+      }
+    },
+    {
+      "tag": "v0.1.673",
+      "kind": "lightweight",
+      "targetCommit": "a3c4a3cea24e094754ddc7355ef3216af70985a9",
+      "release": {
+        "state": "published",
+        "id": 358094533,
+        "publishedAt": "2026-07-22T14:37:51Z"
+      }
+    },
+    {
+      "tag": "v0.1.674",
+      "kind": "lightweight",
+      "targetCommit": "b10f86b1291757acac6ef39232c31efb24a7897e",
+      "release": {
+        "state": "published",
+        "id": 358100352,
+        "publishedAt": "2026-07-22T14:46:32Z"
+      }
+    },
+    {
+      "tag": "v0.1.675",
+      "kind": "lightweight",
+      "targetCommit": "39d03a05f91cb6d2e5ce4c9c8574dd8be490d831",
+      "release": {
+        "state": "published",
+        "id": 358128232,
+        "publishedAt": "2026-07-22T15:30:07Z"
+      }
+    },
+    {
+      "tag": "v0.1.676",
+      "kind": "lightweight",
+      "targetCommit": "47df7663d3b7c5b224d02cbb719e581471097c38",
+      "release": {
+        "state": "published",
+        "id": 358158165,
+        "publishedAt": "2026-07-22T16:21:01Z"
+      }
+    },
+    {
+      "tag": "v0.1.677",
+      "kind": "lightweight",
+      "targetCommit": "44a4ee6bea9c7a4d3cc5f12a15514ca6aabf7447",
+      "release": {
+        "state": "published",
+        "id": 358207913,
+        "publishedAt": "2026-07-22T17:48:52Z"
+      }
+    },
+    {
+      "tag": "v0.1.678",
+      "kind": "lightweight",
+      "targetCommit": "63c0fe678b3114234729c489cca4b97099ddbd62",
+      "release": {
+        "state": "published",
+        "id": 359015561,
+        "publishedAt": "2026-07-24T00:08:37Z"
+      }
+    },
+    {
+      "tag": "v0.1.679",
+      "kind": "annotated",
+      "tagObject": "4a623d3bed2a59cdfac1b8ff1e2672e9f5d286d1",
+      "targetCommit": "58bb803a8c2633e7220f8289fbe5ac7631c54c44",
+      "signatureState": "unsigned",
+      "release": {
+        "state": "published",
+        "id": 359031661,
+        "publishedAt": "2026-07-24T01:16:41Z"
+      }
+    },
+    {
+      "tag": "v0.1.680",
+      "kind": "annotated",
+      "tagObject": "da8a7137316c8d97f837fd4c07f99544e4cd0fcd",
+      "targetCommit": "37ba4798ed1b55a991a50a8ae609630a9a8731b5",
+      "signatureState": "unsigned",
+      "release": {
+        "state": "published",
+        "id": 359033769,
+        "publishedAt": "2026-07-24T01:25:56Z"
+      }
+    },
+    {
+      "tag": "v0.1.681",
+      "kind": "lightweight",
+      "targetCommit": "db32f0986d445087f954b6c67671362adbe6d98f",
+      "release": {
+        "state": "published",
+        "id": 359040730,
+        "publishedAt": "2026-07-24T01:55:43Z"
+      }
+    },
+    {
+      "tag": "v0.1.682",
+      "kind": "lightweight",
+      "targetCommit": "dfbda66002d1baf84405e9e4464e3d08564544c3",
+      "release": {
+        "state": "published",
+        "id": 359336188,
+        "publishedAt": "2026-07-24T13:49:40Z"
+      }
+    },
+    {
+      "tag": "v0.1.683",
+      "kind": "lightweight",
+      "targetCommit": "e136cdf13729d63622a7a77f30cee5aa41c85dfa",
+      "release": {
+        "state": "published",
+        "id": 359502560,
+        "publishedAt": "2026-07-24T19:20:18Z"
+      }
+    },
+    {
+      "tag": "v0.1.684",
+      "kind": "lightweight",
+      "targetCommit": "786e44333fe067d78a208499f369e7df444d1df4",
+      "release": {
+        "state": "published",
+        "id": 359868711,
+        "publishedAt": "2026-07-25T22:00:33Z"
       }
     }
   ]

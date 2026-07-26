@@ -7,7 +7,6 @@
  */
 import {
   chmodSync,
-  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -20,6 +19,7 @@ import {
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { configDir, resolveConfigPath } from '../../../idctl/src/settings/paths.ts';
 import { loadSettings } from '../../../idctl/src/settings/store.ts';
+import { copyFilePrivateSync } from './privateFileCopy.ts';
 
 const INDEX_HEADER = `# IDACC Living Plans
 
@@ -96,8 +96,7 @@ function ensureProfileStore(configured?: string): string {
         const source = join(legacy, name);
         const destination = join(dir, basename(name));
         if (existsSync(destination)) continue;
-        copyFileSync(source, destination);
-        try { chmodSync(destination, 0o600); } catch { /* best effort */ }
+        copyFilePrivateSync(source, destination);
         imported += 1;
       }
     }
