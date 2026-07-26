@@ -48,6 +48,12 @@ const WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASES = [
   'parent-chain-incomplete',
   'profile-ancestors',
   'profile-compatibility',
+  'profile-compatibility-config',
+  'profile-compatibility-marker',
+  'profile-compatibility-lock',
+  'profile-compatibility-read',
+  'profile-compatibility-json',
+  'profile-compatibility-schema',
   'profile-parent-acl',
   'profile-attestation-check',
   'profile-create',
@@ -1350,6 +1356,7 @@ public static class IdaccProfileFileProbe {
   }
 
   function Assert-CompatibleProfileMarker {
+    $script:diagnosticPhase = 'profile-compatibility-config'
     $maximumSchemaText = [string]$env:IDACC_PROFILE_MAX_SCHEMA_VERSION
     if ([string]::IsNullOrWhiteSpace($maximumSchemaText)) {
       return
@@ -1366,6 +1373,7 @@ public static class IdaccProfileFileProbe {
     ) {
       throw 'invalid maximum profile schema version'
     }
+    $script:diagnosticPhase = 'profile-compatibility-marker'
     if (-not [System.IO.Directory]::Exists($root)) {
       return
     }
@@ -1377,11 +1385,13 @@ public static class IdaccProfileFileProbe {
       return
     }
     Assert-NotReparse $profileMarkerPath
+    $script:diagnosticPhase = 'profile-compatibility-lock'
     $markerLock = [IdaccProfileFileProbe]::OpenLockedObject(
       $profileMarkerPath,
       $false
     )
     try {
+      $script:diagnosticPhase = 'profile-compatibility-read'
       $markerInfo = [System.IO.FileInfo]::new($profileMarkerPath)
       if ($markerInfo.Length -gt 1048576) {
         throw 'profile marker exceeds the compatibility limit'
@@ -1397,10 +1407,12 @@ public static class IdaccProfileFileProbe {
     } finally {
       $markerLock.Dispose()
     }
+    $script:diagnosticPhase = 'profile-compatibility-json'
     $marker = $rawMarker | ConvertFrom-Json
     if ($null -eq $marker -or $marker -isnot [psobject]) {
       throw 'profile marker is invalid'
     }
+    $script:diagnosticPhase = 'profile-compatibility-schema'
     $schemaValue = $marker.schemaVersion
     $numericSchema = (
       $schemaValue -is [byte] -or
