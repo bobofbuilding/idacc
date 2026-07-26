@@ -32,7 +32,10 @@ import {
   readPrivateAppTextFile,
   writePrivateAppTextFileAtomic,
 } from '../src/main/appStatePrivacy.ts';
-import { secureWindowsPrivatePath } from '../src/main/profilePrivacy.ts';
+import {
+  secureWindowsPrivatePath,
+  WINDOWS_PROFILE_ACL_BOOTSTRAP,
+} from '../src/main/profilePrivacy.ts';
 import { isTrustedPrivatePathOwner } from '../src/main/posixFilePrivacy.ts';
 import {
   freshRecoveryProfileName,
@@ -139,14 +142,29 @@ function runWindowsAppStateAclFixture(
       'v1.0',
       'powershell.exe',
     ),
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '-'],
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-InputFormat',
+      'Text',
+      '-OutputFormat',
+      'Text',
+      '-Command',
+      WINDOWS_PROFILE_ACL_BOOTSTRAP,
+    ],
     {
       input: script,
       encoding: 'utf8',
       env: {
-        ...process.env,
+        SystemRoot: process.env.SystemRoot || process.env.WINDIR,
+        WINDIR: process.env.WINDIR || process.env.SystemRoot,
         IDACC_APP_STATE_TEST_PATH: path,
         IDACC_APP_STATE_TEST_KIND: kind,
+        ...(process.env.ComSpec ? { ComSpec: process.env.ComSpec } : {}),
+        ...(process.env.PSModulePath ? { PSModulePath: process.env.PSModulePath } : {}),
+        ...(process.env.TEMP ? { TEMP: process.env.TEMP } : {}),
+        ...(process.env.TMP ? { TMP: process.env.TMP } : {}),
       },
       windowsHide: true,
     },
@@ -154,8 +172,10 @@ function runWindowsAppStateAclFixture(
   assert.equal(
     result.status,
     0,
-    String(result.stderr || result.stdout || 'Windows app-state ACL fixture failed'),
+    'Windows app-state ACL fixture failed',
   );
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null);
 }
 
 async function main(): Promise<void> {

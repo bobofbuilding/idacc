@@ -78,8 +78,12 @@ function windowsPowerShellForTest(script: string, profileRoot: string): string {
     '-NonInteractive',
     '-ExecutionPolicy',
     'Bypass',
+    '-InputFormat',
+    'Text',
+    '-OutputFormat',
+    'Text',
     '-Command',
-    '-',
+    WINDOWS_PROFILE_ACL_BOOTSTRAP,
   ], {
     encoding: 'utf8',
     env: {
