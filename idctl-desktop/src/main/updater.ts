@@ -50,6 +50,7 @@ let lastFocusCheck = 0;
 let lastNotifiedVersion: string | null = null;
 let stagedInstallPrepared = false;
 let activeUpdateCheck: Promise<UpdateStatus> | null = null;
+let activeUpdateDownload: Promise<UpdateStatus> | null = null;
 
 /** Numeric semver compare: prerelease labels are treated as lower than release. */
 export function compareVersions(a: string, b: string): number {
@@ -70,6 +71,17 @@ export function compareVersions(a: string, b: string): number {
   if (!left.prerelease && right.prerelease) return 1;
   if (left.prerelease && !right.prerelease) return -1;
   return left.prerelease.localeCompare(right.prerelease);
+}
+
+/**
+ * Update artifacts must be stable, valid three-part semantic versions newer
+ * than the running application. electron-updater also rejects prereleases,
+ * but this check keeps the manual-download path fail-closed if a provider ever
+ * returns unexpected metadata.
+ */
+export function isAllowedUpdateVersion(candidate: string, current: string): boolean {
+  if (!/^v?\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/.test(candidate.trim())) return false;
+  return compareVersions(candidate, current) > 0;
 }
 
 export function parseUpdateRepository(value: string | undefined): { owner: string; repo: string } {
@@ -168,11 +180,15 @@ function bindUpdaterEvents(): void {
     emit();
   });
   autoUpdater.on('update-available', (info) => {
+    const available = isAllowedUpdateVersion(info.version, app.getVersion());
     status = {
       ...status,
       checking: false,
       latest: info.version,
-      available: compareVersions(info.version, app.getVersion()) > 0,
+      available,
+      staged: false,
+      downloading: false,
+      downloadPercent: undefined,
       notes: notes(info),
       lastChecked: Date.now(),
       error: undefined,
@@ -187,22 +203,44 @@ function bindUpdaterEvents(): void {
       available: false,
       staged: false,
       downloading: false,
+      downloadPercent: undefined,
       lastChecked: Date.now(),
       error: undefined,
     };
     emit();
   });
   autoUpdater.on('download-progress', (progress: ProgressInfo) => {
+    const percent = Number.isFinite(progress.percent)
+      ? Math.max(0, Math.min(100, progress.percent))
+      : (status.downloadPercent ?? 0);
     status = {
       ...status,
       checking: false,
       downloading: true,
-      downloadPercent: Math.max(0, Math.min(100, progress.percent)),
+      downloadPercent: percent,
       error: undefined,
     };
     emit();
   });
   autoUpdater.on('update-downloaded', (info) => {
+    const matchesCheckedRelease = Boolean(
+      status.available
+      && status.latest === info.version
+      && isAllowedUpdateVersion(info.version, app.getVersion()),
+    );
+    if (!matchesCheckedRelease) {
+      status = {
+        ...status,
+        checking: false,
+        downloading: false,
+        downloadPercent: undefined,
+        staged: false,
+        error: 'The downloaded update did not match the stable release that was checked.',
+        lastChecked: Date.now(),
+      };
+      emit();
+      return;
+    }
     status = {
       ...status,
       checking: false,
@@ -259,7 +297,10 @@ async function checkForUpdateInternal(): Promise<UpdateStatus> {
     emit();
     return { ...status };
   }
-  if (status.checking || status.downloading) return { ...status };
+  // Once a verified artifact is staged, keep its displayed version and install
+  // approval bound together until restart instead of replacing the metadata
+  // underneath it with a later check.
+  if (status.staged || status.checking || status.downloading) return { ...status };
   bindUpdaterEvents();
   status = { ...status, checking: true, error: undefined };
   emit();
@@ -267,21 +308,22 @@ async function checkForUpdateInternal(): Promise<UpdateStatus> {
     const current = configureUpdater();
     const result = await autoUpdater.checkForUpdates();
     const info = result?.updateInfo;
-    const available = Boolean(info && compareVersions(info.version, app.getVersion()) > 0);
+    const available = Boolean(info && isAllowedUpdateVersion(info.version, app.getVersion()));
     status = {
       ...status,
       checking: false,
       latest: info?.version,
       available,
+      staged: false,
+      downloading: false,
+      downloadPercent: undefined,
       notes: info ? notes(info) : status.notes,
       lastChecked: Date.now(),
       error: undefined,
     };
     emit();
     if (available && current.autoUpgrade && !status.staged) {
-      status = { ...status, downloading: true, downloadPercent: 0 };
-      emit();
-      await autoUpdater.downloadUpdate();
+      observeDetachedUpdateOperation(startUpdateDownload(true));
     }
   } catch (error) {
     status = {
@@ -307,10 +349,146 @@ export function checkForUpdate(): Promise<UpdateStatus> {
   return check;
 }
 
+function observeDetachedUpdateOperation(operation: Promise<UpdateStatus>): void {
+  void operation.catch((error) => {
+    status = {
+      ...status,
+      checking: false,
+      downloading: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+    emit();
+  });
+}
+
+/**
+ * Start the network metadata check without retaining the renderer IPC request.
+ * The updater status event carries completion and any automatic-download
+ * continuation; shutdown continues to own both operations through
+ * `drainUpdater()`.
+ */
+export function beginUpdateCheck(): UpdateStatus {
+  observeDetachedUpdateOperation(checkForUpdate());
+  return getStatus();
+}
+
+async function downloadUpdateInternal(allowActiveCheck: boolean): Promise<UpdateStatus> {
+  const readiness = updateTargetReadiness();
+  if (!readiness.ok) {
+    updateUnavailable(readiness);
+    emit();
+    return { ...status };
+  }
+  bindUpdaterEvents();
+  if (!allowActiveCheck && (activeUpdateCheck || status.checking)) {
+    return {
+      ...status,
+      error: 'An update check is still in progress. Wait for it to finish before downloading.',
+    };
+  }
+  if (status.staged) return { ...status };
+
+  try {
+    // Reapply the compiled feed immediately before every download. Profile
+    // settings can enable automatic download, but cannot redirect executable
+    // update authority.
+    configureUpdater();
+    if (
+      !status.available
+      || !status.latest
+      || !isAllowedUpdateVersion(status.latest, app.getVersion())
+    ) {
+      status = {
+        ...status,
+        checking: false,
+        downloading: false,
+        downloadPercent: undefined,
+        staged: false,
+        error: 'No newer stable IDACC update is available to download.',
+      };
+      emit();
+      return { ...status };
+    }
+
+    status = {
+      ...status,
+      checking: false,
+      downloading: true,
+      downloadPercent: 0,
+      staged: false,
+      error: undefined,
+    };
+    emit();
+    await autoUpdater.downloadUpdate();
+    if (!status.staged && !status.error) {
+      status = {
+        ...status,
+        downloading: false,
+        downloadPercent: undefined,
+        error: 'The update download finished without verified staging confirmation.',
+      };
+      emit();
+    }
+  } catch (error) {
+    status = {
+      ...status,
+      checking: false,
+      downloading: false,
+      downloadPercent: undefined,
+      staged: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+    emit();
+  }
+  return { ...status };
+}
+
+function startUpdateDownload(allowActiveCheck: boolean): Promise<UpdateStatus> {
+  if (activeUpdateDownload) return activeUpdateDownload;
+  const download = downloadUpdateInternal(allowActiveCheck);
+  activeUpdateDownload = download;
+  void download.then(
+    () => { if (activeUpdateDownload === download) activeUpdateDownload = null; },
+    () => { if (activeUpdateDownload === download) activeUpdateDownload = null; },
+  );
+  return download;
+}
+
+/** Download and verify the stable release discovered by the latest check. */
+export function downloadUpdate(): Promise<UpdateStatus> {
+  return startUpdateDownload(false);
+}
+
+/**
+ * Start a manual download without keeping the renderer IPC request open for
+ * the artifact transfer. Progress and completion travel over `update:status`,
+ * while `drainUpdater()` retains ownership of the exact background promise.
+ */
+export function beginUpdateDownload(): UpdateStatus {
+  if (activeUpdateCheck || status.checking) {
+    return {
+      ...status,
+      current: app.getVersion(),
+      error: 'An update check is still in progress. Wait for it to finish before downloading.',
+    };
+  }
+  const download = downloadUpdate();
+  observeDetachedUpdateOperation(download);
+  return getStatus();
+}
+
 export async function drainUpdater(): Promise<void> {
-  const check = activeUpdateCheck;
-  if (!check) return;
-  await check.then(() => undefined, () => undefined);
+  // A metadata check can start an automatic download before it settles. Loop
+  // until both single-flight operations are gone so terminal shutdown never
+  // abandons an updater write in progress.
+  while (activeUpdateCheck || activeUpdateDownload) {
+    const pending = [...new Set(
+      [activeUpdateCheck, activeUpdateDownload].filter(
+        (operation): operation is Promise<UpdateStatus> => operation !== null,
+      ),
+    )];
+    await Promise.allSettled(pending);
+  }
 }
 
 /**

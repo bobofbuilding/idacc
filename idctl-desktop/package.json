@@ -59,6 +59,7 @@
     "test:root-identity": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/root-identity-settings-smoke.mjs",
     "test:update-target-guard": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/update-target-guard-smoke.mjs",
     "test:unified-updater-integrity": "node scripts/unified-updater-integrity-smoke.mjs",
+    "test:unified-updater-download": "node scripts/unified-updater-download-smoke.mjs",
     "test:update-metadata-merge": "node ../scripts/merge-update-metadata-smoke.mjs",
     "test:update-descriptor-contract": "node ../scripts/update-descriptor-contract-smoke.mjs",
     "test:updater-public-provider": "node ../scripts/electron-updater-public-provider-smoke.mjs",

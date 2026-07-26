@@ -2,6 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { win32 } from 'node:path';
+import type { Readable } from 'node:stream';
 
 declare const __IDACC_WINDOWS_JOB_HOST_AVAILABLE__: boolean;
 declare const __IDACC_WINDOWS_JOB_HOST_SHA256__: string;
@@ -202,6 +203,42 @@ function childIsAlive(child: ChildProcess): boolean {
     && child.exitCode === null
     && child.signalCode === null,
   );
+}
+
+/**
+ * The Windows handshake must pause the shared runtime stream while it removes
+ * its private protocol listener and puts raced application bytes back. A
+ * Readable that was explicitly paused does not resume merely because its next
+ * owner later adds a `data` listener, so hand flowing mode to that first owner
+ * on the following microtask. `pipe()` remains safe because it resumes the
+ * source itself; readable-mode consumers remain paused and retain backpressure.
+ */
+export function armPausedStreamForConsumer(stream: Readable | null): void {
+  if (!stream) return;
+  let armed = true;
+  const cleanup = (): void => {
+    if (!armed) return;
+    armed = false;
+    stream.removeListener('newListener', onNewListener);
+    stream.removeListener('close', onClose);
+  };
+  const onClose = (): void => cleanup();
+  const onNewListener = (eventName: string | symbol): void => {
+    if (eventName !== 'data') return;
+    cleanup();
+    queueMicrotask(() => {
+      if (
+        !stream.destroyed
+        && !stream.readableEnded
+        && stream.listenerCount('data') > 0
+        && stream.readableFlowing === false
+      ) {
+        stream.resume();
+      }
+    });
+  };
+  stream.on('newListener', onNewListener);
+  stream.once('close', onClose);
 }
 
 function windowsJobHostReportedEmpty(child: ChildProcess): boolean {
@@ -626,6 +663,8 @@ async function launchWindowsManagedProcessTree(
       cleanupLaunchListeners();
       if (buffered.length) stdout.unshift(buffered);
       if (bufferedStderr.length) host.stderr?.unshift(bufferedStderr);
+      armPausedStreamForConsumer(stdout);
+      armPausedStreamForConsumer(host.stderr);
       const state: WindowsManagedJob = {
         nonce,
         actualPid,

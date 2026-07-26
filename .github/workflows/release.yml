@@ -302,6 +302,7 @@ jobs:
           npm run test:update-descriptor-contract --prefix idctl-desktop
           npm run test:updater-public-provider --prefix idctl-desktop
           npm run test:unified-updater-integrity --prefix idctl-desktop
+          npm run test:unified-updater-download --prefix idctl-desktop
           npm run test:release-payload --prefix idctl-desktop
           npm run test:selftest-result-file --prefix idctl-desktop
           npm run test:legacy-manager-updater-retired --prefix idctl-desktop

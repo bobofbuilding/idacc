@@ -360,6 +360,12 @@ setInterval(() => {}, 1000);
     if (runtimeErrorOutput.length < 4_096) runtimeErrorOutput += String(chunk);
   });
   await waitFor(
+    () => launched.child.stdout?.readableFlowing === true
+      && launched.child.stderr?.readableFlowing === true,
+    1_000,
+    'the managed runtime streams did not transfer to their first data consumers',
+  );
+  await waitFor(
     () => existsSync(rootPidPath)
       && existsSync(descendantPidPath)
       && runtimeOutput.includes('FIXTURE_IMMEDIATE_LOG')

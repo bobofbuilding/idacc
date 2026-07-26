@@ -27,7 +27,9 @@ import {
 import {
   startUpdater,
   stopUpdater,
+  beginUpdateCheck,
   checkForUpdate,
+  beginUpdateDownload,
   getStatus,
   drainUpdater,
   prepareStagedUpdateInstall,
@@ -2351,7 +2353,9 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'update:status':
       return getStatus();
     case 'update:check':
-      return checkForUpdate();
+      return beginUpdateCheck();
+    case 'update:download':
+      return beginUpdateDownload();
     case 'update:applyNow':
       {
         const applying = prepareStagedUpdateInstall();
@@ -2839,7 +2843,13 @@ if (!ownsSingleInstanceLock) {
   });
 } else if (selftest) {
   app.whenReady().then(async () => {
-    const st = await checkForUpdate();
+    await checkForUpdate();
+    // Automatic downloads are deliberately detached from the metadata check
+    // so renderer IPC never stays open for a large transfer. The self-test,
+    // however, must wait for all updater-owned work before inspecting whether
+    // the verified artifact is staged and eligible to install.
+    await drainUpdater();
+    const st = getStatus();
     console.log('SELFTEST_STATUS ' + JSON.stringify(st));
     if (selftest === 'apply' && st.staged) {
       const applied = prepareStagedUpdateInstall();

@@ -1295,11 +1295,34 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     setUnifiedUpdateCheckBusy(true);
     setMsg('checking for a verified unified IDACC update…');
     try {
-      const next = await call<{ available?: boolean; latest?: string; staged?: boolean; error?: string }>('update:check');
+      type UnifiedUpdateCheck = {
+        available?: boolean;
+        latest?: string;
+        staged?: boolean;
+        checking?: boolean;
+        downloading?: boolean;
+        downloadPercent?: number;
+        error?: string;
+      };
+      let next = await call<UnifiedUpdateCheck>('update:check');
+      const deadline = Date.now() + 20_000;
+      while (next.checking && Date.now() < deadline) {
+        await new Promise((resolveWait) => window.setTimeout(resolveWait, 250));
+        next = await call<UnifiedUpdateCheck>('update:status');
+      }
       if (next.error) throw new Error(next.error);
-      setMsg(next.available
-        ? `Unified IDACC update v${next.latest || 'latest'} is available${next.staged ? ' and ready to install from the update banner' : '; open Settings to download it'}.`
-        : 'IDACC is current. Restart the app to retry the bundled Manager and Brain; use Settings diagnostics if the issue remains.');
+      if (next.checking) {
+        setMsg('The unified update check is still running. Open Settings to follow its status.');
+      } else if (next.downloading) {
+        setMsg(
+          `Unified IDACC update v${next.latest || 'latest'} is downloading`
+          + ` (${Math.round(next.downloadPercent ?? 0)}%); follow progress in Settings.`,
+        );
+      } else {
+        setMsg(next.available
+          ? `Unified IDACC update v${next.latest || 'latest'} is available${next.staged ? ' and ready to install from the update banner' : '; open Settings to download it'}.`
+          : 'IDACC is current. Restart the app to retry the bundled Manager and Brain; use Settings diagnostics if the issue remains.');
+      }
     } catch (error) {
       setMsg(`Unified update check failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {

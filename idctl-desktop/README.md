@@ -59,6 +59,11 @@ updated through the system package manager or by installing the next `.deb`;
 the application reports that distinction instead of offering an unsupported
 self-replacement.
 
+With automatic download off, Settings checks the compiled release feed first
+and then offers **Download update** for the exact newer stable version. The
+single unified updater reports progress, verifies and stages one shared IDACC +
+Manager + Brain artifact, and still requires **Restart & update** to install.
+
 The production GitHub workflow builds macOS arm64/x64, Windows x64, and Linux
 x64 independently, verifies the clean-profile Manager/Brain startup, and
 publishes only after every signing, payload, checksum, SBOM, and provenance gate
@@ -141,6 +146,8 @@ npm run test:unified-stack-policy
 npm run test:unified-stack-integration
 npm run test:runtime-profile-isolation
 npm run test:legacy-manager-updater-retired
+npm run test:unified-updater-integrity
+npm run test:unified-updater-download
 npm run test:release-provenance
 npm run test:release-platform-config
 ```

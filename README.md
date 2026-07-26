@@ -101,7 +101,10 @@ The desktop updater:
 - reads only the compiled `bobofbuilding/idacc` GitHub release feed;
 - rejects downgrade and prerelease updates;
 - verifies electron-builder hashes and platform signatures where supported;
-- downloads only after an explicit check unless auto-download is enabled; and
+- when auto-download is off, requires **Check IDACC** followed by the explicit
+  **Download update** action and reports download progress;
+- shares concurrent download requests and drains an active download before
+  application shutdown; and
 - installs only after the user chooses **Restart & update**.
 
 macOS and Windows production jobs require signing credentials and verify the

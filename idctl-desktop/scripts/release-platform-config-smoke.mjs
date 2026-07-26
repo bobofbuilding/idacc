@@ -616,6 +616,10 @@ assert.match(releaseWorkflow, /npm run test:update-descriptor-contract --prefix 
 assert.match(releaseWorkflow, /npm run test:updater-public-provider --prefix idctl-desktop/);
 assert.match(workflow, /npm run test:update-descriptor-contract --prefix idctl-desktop/);
 assert.match(workflow, /npm run test:updater-public-provider --prefix idctl-desktop/);
+assert.match(releaseWorkflow, /npm run test:unified-updater-integrity --prefix idctl-desktop/);
+assert.match(releaseWorkflow, /npm run test:unified-updater-download --prefix idctl-desktop/);
+assert.match(workflow, /npm run test:unified-updater-integrity --prefix idctl-desktop/);
+assert.match(workflow, /npm run test:unified-updater-download --prefix idctl-desktop/);
 assert.match(workflow, /npm run test:windows-job-host --prefix idctl-desktop/);
 assert.match(releaseWorkflow, /RUNTIME_SOURCE_TOKEN/);
 assert.match(releaseWorkflow, /runtime-source-tests:/);

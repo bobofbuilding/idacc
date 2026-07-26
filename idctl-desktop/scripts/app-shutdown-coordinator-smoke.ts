@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import {
   cleanupOwnedPrimaryInstance,
@@ -30,6 +31,7 @@ import {
   configureControlWriteScheduler,
   recordControlAction,
 } from '../src/main/controlLog.ts';
+import { armPausedStreamForConsumer } from '../src/main/managedProcessTree.ts';
 
 class FakeApp implements AppShutdownHost {
   readonly calls: string[] = [];
@@ -752,5 +754,38 @@ assert.match(
 );
 assert.doesNotMatch(mainSource, /app\.on\(['"]will-quit['"]/);
 assert.doesNotMatch(permissionsSource, /export function relaunchApp/);
+
+const flowingHandoff = new PassThrough();
+flowingHandoff.pause();
+flowingHandoff.write('buffered-');
+armPausedStreamForConsumer(flowingHandoff);
+let handedOffOutput = '';
+const handedOffEnd = new Promise<void>((resolveEnd) => {
+  flowingHandoff.once('end', resolveEnd);
+});
+flowingHandoff.on('data', (chunk) => {
+  handedOffOutput += String(chunk);
+});
+flowingHandoff.end('live');
+await handedOffEnd;
+assert.equal(handedOffOutput, 'buffered-live');
+assert.equal(
+  flowingHandoff.readableFlowing,
+  true,
+  'the first data consumer must resume the explicitly paused managed stream',
+);
+
+const readableModeHandoff = new PassThrough();
+readableModeHandoff.pause();
+armPausedStreamForConsumer(readableModeHandoff);
+readableModeHandoff.end('pull-owned');
+await new Promise((resolveTurn) => setImmediate(resolveTurn));
+assert.equal(
+  readableModeHandoff.readableFlowing,
+  false,
+  'arming a managed stream must preserve backpressure until a data consumer attaches',
+);
+assert.equal(String(readableModeHandoff.read()), 'pull-owned');
+readableModeHandoff.destroy();
 
 process.stdout.write('application shutdown coordinator smoke: ok\n');

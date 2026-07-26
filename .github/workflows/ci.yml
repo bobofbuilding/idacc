@@ -83,6 +83,8 @@ jobs:
           npm run test:release-payload --prefix idctl-desktop
           npm run test:update-descriptor-contract --prefix idctl-desktop
           npm run test:updater-public-provider --prefix idctl-desktop
+          npm run test:unified-updater-integrity --prefix idctl-desktop
+          npm run test:unified-updater-download --prefix idctl-desktop
           npm run test:root-identity --prefix idctl-desktop
           node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/identity-verification-smoke.ts
           node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/health-classification-smoke.ts

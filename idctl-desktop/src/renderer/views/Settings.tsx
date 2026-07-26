@@ -95,6 +95,8 @@ type SettingsUpdateStatus = {
   available?: boolean;
   staged?: boolean;
   checking?: boolean;
+  downloading?: boolean;
+  downloadPercent?: number;
   error?: string;
   lastChecked?: number;
 };
@@ -542,7 +544,11 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     // cached status is stale enough to avoid making Settings feel like a network
     // gate for unrelated local/runtime controls.
     if (shouldCheckUpdateOnSettingsOpen(currentUpdateStatus)) {
-      void call<typeof updStatus>('update:check').then((s) => { if (s) setUpdStatus(s); }).catch(() => {});
+      void call<typeof updStatus>('update:check').then((next) => {
+        // Completion can be pushed before this short acknowledgement returns.
+        // Ignore the older in-progress snapshot in that ordering.
+        if (next && !next.checking) setUpdStatus(next);
+      }).catch(() => {});
     }
     await refreshManagedSubscriptions();
   }
@@ -683,10 +689,34 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   }
   async function checkUpdate() {
     setUpdateApplyError('');
-    setUpdStatus({ checking: true });
+    setUpdStatus((current) => ({ ...current, checking: true, error: undefined }));
     const next = await call<typeof updStatus>('update:check').catch((e) => ({ error: String(e) }));
-    setUpdStatus(next);
+    // The status event can complete before the short IPC acknowledgement
+    // returns. Do not let that older "checking" snapshot overwrite the newer
+    // terminal event.
+    if (next === null || !('checking' in next) || !next.checking) setUpdStatus(next);
     setUnifiedStack(await call<UnifiedStackViewStatus>('unifiedStack:status').catch(() => null));
+  }
+  async function downloadVerifiedUpdate() {
+    if (updStatus?.checking || updStatus?.downloading || updStatus?.staged) return;
+    setUpdateApplyError('');
+    setUpdStatus((current) => ({
+      ...current,
+      downloading: true,
+      downloadPercent: 0,
+      error: undefined,
+    }));
+    try {
+      const next = await call<SettingsUpdateStatus>('update:download');
+      // As above, progress or completion can arrive before the acknowledgement.
+      if (!next.downloading) setUpdStatus(next);
+    } catch (error) {
+      setUpdStatus((current) => ({
+        ...current,
+        downloading: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
   }
   async function applyVerifiedUpdate() {
     if (updateApplying || updateApplyRef.current) return;
@@ -3011,13 +3041,17 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           <span>IDACC version</span>
           <b className="mono">v{version || '—'}</b>
           <span>IDACC status</span>
-          <b className={updStatus?.available ? 'warn-text' : updStatus?.error ? 'status-error' : 'ok-text'}>
+          <b className={updStatus?.error ? 'status-error' : updStatus?.available ? 'warn-text' : 'ok-text'}>
             {updStatus?.checking
               ? 'checking…'
+              : updStatus?.downloading
+                ? `downloading verified v${updStatus.latest ?? '—'} · ${Math.round(updStatus.downloadPercent ?? 0)}%`
               : updStatus?.error
                 ? `error: ${updStatus.error}`
-                : updStatus?.available
-                  ? `update ready: v${updStatus.latest}${updStatus.staged ? ' (downloaded — restart to apply)' : ''}`
+                : updStatus?.available && updStatus.staged
+                  ? `verified v${updStatus.latest} ready to install`
+                  : updStatus?.available
+                    ? `v${updStatus.latest} available to download`
                   : updStatus?.latest
                     ? `up to date (latest v${updStatus.latest})`
                     : 'up to date'}
@@ -3063,7 +3097,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
               checked={upd?.autoUpgrade ?? false}
               onChange={(e) => void saveUpdate({ autoUpgrade: e.target.checked })}
             />{' '}
-            <span className="muted small">download verified unified updates automatically; restart still requires Restart & update</span>
+            <span className="muted small">when off, Check IDACC then choose Download update; every install still requires Restart & update</span>
           </b>
         </div>
         <div className="row-actions" style={{ marginTop: 10 }}>
@@ -3072,11 +3106,22 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           </span>
           <button
             className="btn"
-            disabled={updateApplying || updStatus?.checking}
+            disabled={updateApplying || updStatus?.checking || updStatus?.downloading || updStatus?.staged}
             onClick={() => void checkUpdate()}
           >
             {updStatus?.checking ? 'Checking…' : 'Check IDACC'}
           </button>
+          {updStatus?.available && !updStatus.staged && !(upd?.autoUpgrade ?? false) ? (
+            <button
+              className="btn primary"
+              disabled={updateApplying || updStatus.checking || updStatus.downloading}
+              onClick={() => void downloadVerifiedUpdate()}
+            >
+              {updStatus.downloading
+                ? `Downloading ${Math.round(updStatus.downloadPercent ?? 0)}%…`
+                : 'Download update'}
+            </button>
+          ) : null}
           {updStatus?.available && updStatus.staged ? (
             <button
               className="btn primary"

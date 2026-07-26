@@ -642,8 +642,10 @@ Manager; this is the plumbing.)
   The card shows the bundled component versions and live readiness, checks only the compiled
   `bobofbuilding/idacc` release feed, and never offers a separate Manager install or update action.
   electron-builder metadata verifies downloaded bytes, macOS/Windows production releases require
-  platform signatures, downgrades and prereleases are rejected, and applying a staged build still
-  requires the explicit **Restart & update** action. The installer is not started until the
+  platform signatures, downgrades and prereleases are rejected, and an available update exposes
+  **Download update** with live progress when automatic download is off. Concurrent requests share
+  one download, shutdown drains it, and applying a staged build still requires the explicit
+  **Restart & update** action. The installer is not started until the
   application-wide shutdown coordinator has quiesced UI mutations, stopped background loops, and
   completed bounded Manager/Brain process-tree cleanup. Linux AppImage builds support that
   replacement path; Debian packages direct the user to the system package manager instead.
@@ -723,7 +725,7 @@ Manager; this is the plumbing.)
   backend does not warn against itself.
 
 **Data & actions:** `app:hardware`, `manager:capabilities`, `app:version`, `unifiedStack:status`,
-`update:status/check/getSettings/setSettings`, `subs:status/signin/signout/install`, `manager:localConcurrency/
+`update:status/check/download/getSettings/setSettings`, `subs:status/signin/signout/install`, `manager:localConcurrency/
 setLocalConcurrency`, `ollama:tags/catalogCheck/pull/remove`, `evmRpc:list/save/remove/probe`,
 `image:getServer/setServer/detectServer`,
 `app:runInTerminal`, `providers:list/add/remove/setDefault/toggle/connect/discover`.
@@ -732,7 +734,9 @@ setLocalConcurrency`, `ollama:tags/catalogCheck/pull/remove`, `evmRpc:list/save/
 the user selects **I've finished — re-check**, then IDACC forces a status refresh and reports
 confirmed, not-yet-visible, or status-unavailable evidence. A staged unified update exposes
 **Restart & update**, rechecks the exact staged version after confirmation, and applies IDACC,
-Manager, and Brain together. Local concurrency running/queued counts refresh every three seconds
+Manager, and Brain together. Manual update mode exposes **Download update**, accurate progress and
+failure status, and never races a metadata check or abandons an active download at shutdown. Local
+concurrency running/queued counts refresh every three seconds
 while Settings is visible, refresh on focus, and have a manual **Refresh** action with freshness/
 unavailable evidence. Clipboard fallbacks confirm successful copy; when clipboard access is
 unavailable, the full command or diagnostic report remains visible for manual selection.
