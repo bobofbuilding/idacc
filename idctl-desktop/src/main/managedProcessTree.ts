@@ -59,7 +59,11 @@ const DEFAULT_FORCE_WAIT_MS = 1_000;
 const MAX_TERMINATION_WAIT_MS = 30_000;
 const WINDOWS_JOB_HANDSHAKE_TIMEOUT_MS = 15_000;
 const WINDOWS_JOB_HANDSHAKE_MAX_BYTES = 64 * 1024;
-const WINDOWS_SIGNATURE_TIMEOUT_MS = 10_000;
+// Windows PowerShell can be cold-started behind endpoint protection on the
+// first application launch. Keep verification bounded without treating a
+// normal module load as a signature failure on slower consumer machines.
+const WINDOWS_SIGNATURE_TIMEOUT_MS = 30_000;
+const WINDOWS_SIGNATURE_KILL_WAIT_MS = 1_000;
 const WINDOWS_PROTOCOL_PREFIX = 'IDACC_JOB_HOST';
 const WINDOWS_JOB_HOST_NO_CHILD_EXIT_CODE = 127;
 const WINDOWS_JOB_HOST_DRAINED_AFTER_FAILURE_EXIT_CODE = 128;
@@ -339,10 +343,18 @@ async function verifyAuthenticodePublisher(
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
   const powershell = exactWindowsPowerShellPath(env);
+  const powershellHome = win32.dirname(powershell);
+  const systemModules = win32.join(powershellHome, 'Modules');
+  const securityModule = win32.join(
+    systemModules,
+    'Microsoft.PowerShell.Security',
+    'Microsoft.PowerShell.Security.psd1',
+  );
   const script = [
     "$ErrorActionPreference = 'Stop'",
     '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)',
-    '$signature = Get-AuthenticodeSignature -LiteralPath $env:IDACC_JOB_HOST_PATH',
+    'Import-Module -Name $env:IDACC_JOB_HOST_SECURITY_MODULE -ErrorAction Stop',
+    '$signature = Microsoft.PowerShell.Security\\Get-AuthenticodeSignature -LiteralPath $env:IDACC_JOB_HOST_PATH',
     "if ($signature.Status -ne 'Valid') { exit 1 }",
     'if ($null -eq $signature.SignerCertificate) { exit 1 }',
     'if ($signature.SignerCertificate.Subject -cne $env:IDACC_JOB_HOST_PUBLISHER) { exit 1 }',
@@ -365,28 +377,49 @@ async function verifyAuthenticodePublisher(
       env: {
         SystemRoot: env.SystemRoot || env.WINDIR,
         WINDIR: env.WINDIR || env.SystemRoot,
+        // Never search user, network, or inherited module locations for the
+        // security cmdlet. Disabling module-analysis cache work also avoids a
+        // first-run scan/write under redirected profile folders.
+        PSModulePath: systemModules,
+        PSModuleAnalysisCachePath: 'NUL',
+        PSDisableModuleAnalysisCacheCleanup: '1',
         IDACC_JOB_HOST_PATH: jobHostPath,
         IDACC_JOB_HOST_PUBLISHER: expectedPublisher,
+        IDACC_JOB_HOST_SECURITY_MODULE: securityModule,
       },
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
     let settled = false;
+    let forcedError: Error | undefined;
+    let killWait: ReturnType<typeof setTimeout> | undefined;
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      if (error) {
-        try { verifier.kill('SIGKILL'); } catch { /* verifier already stopped */ }
-        reject(error);
-      }
+      if (killWait) clearTimeout(killWait);
+      if (error) reject(error);
       else resolve();
+    };
+    const stopWith = (error: Error) => {
+      if (settled || forcedError) return;
+      forcedError = error;
+      try { verifier.kill('SIGKILL'); } catch { /* verifier already stopped */ }
+      // Await the exact verifier's close event after TerminateProcess. If
+      // Windows does not report closure promptly, destroy its pipes and
+      // release the caller with the original fail-closed error.
+      killWait = setTimeout(() => {
+        verifier.stdout?.destroy();
+        verifier.stderr?.destroy();
+        finish(error);
+      }, WINDOWS_SIGNATURE_KILL_WAIT_MS);
+      killWait.unref?.();
     };
     verifier.stdout?.on('data', (chunk) => {
       const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       if (stdout.length + value.length > 128) {
-        finish(new Error('Windows Job Host signature verification failed'));
+        stopWith(new Error('Windows Job Host signature verification failed'));
         return;
       }
       stdout = Buffer.concat([stdout, value]);
@@ -394,11 +427,17 @@ async function verifyAuthenticodePublisher(
     verifier.stderr?.on('data', (chunk) => {
       stderrBytes += Buffer.byteLength(chunk);
       if (stderrBytes > 128) {
-        finish(new Error('Windows Job Host signature verification failed'));
+        stopWith(new Error('Windows Job Host signature verification failed'));
       }
     });
-    verifier.once('error', () => finish(new Error('Windows Job Host signature verification failed')));
-    verifier.once('exit', (code, signal) => {
+    verifier.once('error', () => stopWith(new Error('Windows Job Host signature verification failed')));
+    // `close`, unlike `exit`, runs after both output pipes close, so the exact
+    // success token cannot race process termination.
+    verifier.once('close', (code, signal) => {
+      if (forcedError) {
+        finish(forcedError);
+        return;
+      }
       if (
         code !== 0
         || signal
@@ -411,8 +450,7 @@ async function verifyAuthenticodePublisher(
       finish();
     });
     timeout = setTimeout(() => {
-      try { verifier.kill('SIGKILL'); } catch { /* verifier already stopped */ }
-      finish(new Error('Windows Job Host signature verification timed out'));
+      stopWith(new Error('Windows Job Host signature verification timed out'));
     }, WINDOWS_SIGNATURE_TIMEOUT_MS);
     timeout.unref?.();
   });

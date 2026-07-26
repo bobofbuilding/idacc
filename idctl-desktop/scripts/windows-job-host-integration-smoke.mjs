@@ -14,12 +14,28 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
+const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const managedProcessTreeSource = readFileSync(
+  join(desktop, 'src', 'main', 'managedProcessTree.ts'),
+  'utf8',
+);
+assert.match(managedProcessTreeSource, /WINDOWS_SIGNATURE_TIMEOUT_MS = 30_000/);
+assert.match(managedProcessTreeSource, /PSModulePath: systemModules/);
+assert.match(managedProcessTreeSource, /PSModuleAnalysisCachePath: 'NUL'/);
+assert.match(managedProcessTreeSource, /PSDisableModuleAnalysisCacheCleanup: '1'/);
+assert.match(managedProcessTreeSource, /IDACC_JOB_HOST_SECURITY_MODULE: securityModule/);
+assert.match(
+  managedProcessTreeSource,
+  /Microsoft\.PowerShell\.Security\\\\Get-AuthenticodeSignature/,
+);
+assert.match(managedProcessTreeSource, /verifier\.once\('close'/);
+assert.doesNotMatch(managedProcessTreeSource, /verifier\.once\('exit'/);
+
 if (process.platform !== 'win32') {
   console.log('Windows Job Host integration smoke: skipped (non-Windows)');
   process.exit(0);
 }
 
-const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const buildModePath = join(desktop, 'out', 'build-mode.json');
 const jobHostPath = join(desktop, 'out', 'native', 'idacc-job-host.exe');
 const bootstrapPath = join(desktop, 'out', 'main', 'managed-service-bootstrap.cjs');
