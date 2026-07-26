@@ -289,6 +289,7 @@ jobs:
           npm run test:computer-use-retention --prefix idctl-desktop
           npm run test:computer-use-session-discovery --prefix idctl-desktop
           npm run test:brain-plans-profile --prefix idctl-desktop
+          npm run test:goals-plan-separation --prefix idctl-desktop
           npm run test:dream-view-polish --prefix idctl-desktop
           npm run test:consumer-onboarding --prefix idctl-desktop
           npm run test:unified-stack-policy --prefix idctl-desktop

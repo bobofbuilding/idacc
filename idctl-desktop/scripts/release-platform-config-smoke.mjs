@@ -596,6 +596,7 @@ for (const source of [workflow, releaseWorkflow]) {
     'computer-use-policy-smoke.ts',
     'consumer-design-gaps-smoke.ts',
     'test:subscription-portability',
+    'test:goals-plan-separation',
     'test:credential-isolation',
     'test:startup-recovery',
     'test:release-payload',

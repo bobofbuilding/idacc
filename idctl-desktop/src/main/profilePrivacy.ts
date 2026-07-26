@@ -21,6 +21,7 @@ const WINDOWS_PROFILE_STREAMING_TIMEOUT_MS = 5 * 60_000;
 const WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASES = [
   'validate-root',
   'validate-volume',
+  'configure-output',
   'compile-native',
   'configure-policy',
   'single-object-type',
@@ -56,6 +57,14 @@ const WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASES = [
   'profile-verify',
   'profile-attestation-write',
   'profile-attestation-verify',
+  'helper-path',
+  'helper-launch',
+  'helper-timeout',
+  'helper-terminated',
+  'helper-parse',
+  'helper-host-error',
+  'helper-no-marker',
+  'helper-invalid-output',
 ] as const;
 const WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASE_SET = new Set<string>(
   WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASES,
@@ -74,8 +83,11 @@ type WindowsProfileAclMode =
 export interface WindowsProfileAclRunResult {
   status: number | null;
   stdout?: string;
+  stderrPresent?: boolean;
+  parserFailure?: boolean;
   error?: unknown;
   signal?: NodeJS.Signals | null;
+  diagnosticPhase?: WindowsProfileAclDiagnosticPhase;
 }
 
 export type WindowsProfileAclRunner = (
@@ -134,6 +146,12 @@ export function windowsProfilePrivacyDiagnosticPhase(
 function windowsProfileAclResultDiagnosticPhase(
   result: WindowsProfileAclRunResult,
 ): WindowsProfileAclDiagnosticPhase | undefined {
+  if (
+    typeof result.diagnosticPhase === 'string'
+    && WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASE_SET.has(result.diagnosticPhase)
+  ) {
+    return result.diagnosticPhase;
+  }
   for (const line of String(result.stdout || '').split(/\r?\n/)) {
     const match = new RegExp(`^${WINDOWS_PROFILE_ACL_FAILED}:([a-z-]+)$`).exec(
       line.trim(),
@@ -146,6 +164,27 @@ function windowsProfileAclResultDiagnosticPhase(
     }
   }
   return undefined;
+}
+
+function windowsProfileAclFailureDiagnosticPhase(
+  result: WindowsProfileAclRunResult,
+  verified: boolean,
+): WindowsProfileAclDiagnosticPhase | undefined {
+  const emitted = windowsProfileAclResultDiagnosticPhase(result);
+  if (emitted) return emitted;
+
+  const errorCode = result.error && typeof result.error === 'object'
+    ? String((result.error as NodeJS.ErrnoException).code || '').toUpperCase()
+    : '';
+  if (errorCode === 'ETIMEDOUT') return 'helper-timeout';
+  if (result.error) return 'helper-launch';
+  if (result.signal) return 'helper-terminated';
+  if (result.status === null) return 'helper-launch';
+  if (result.status !== 0) {
+    if (result.parserFailure) return 'helper-parse';
+    return result.stderrPresent ? 'helper-host-error' : 'helper-no-marker';
+  }
+  return verified ? undefined : 'helper-invalid-output';
 }
 
 /**
@@ -315,12 +354,13 @@ function rollbackOversizedWindowsCache(
  * child ACLs are replaced rather than trusted.
  */
 export const WINDOWS_PROFILE_ACL_SCRIPT = String.raw`
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-
-$script:diagnosticPhase = 'validate-root'
+$script:diagnosticPhase = 'configure-output'
 try {
+  $ErrorActionPreference = 'Stop'
+  $ProgressPreference = 'SilentlyContinue'
+  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+  $script:diagnosticPhase = 'validate-root'
   $rootInput = [string]$env:IDACC_PROFILE_ACL_ROOT
   if ([string]::IsNullOrWhiteSpace($rootInput)) {
     throw 'missing profile root'
@@ -1665,8 +1705,8 @@ function defaultWindowsProfileAclRunner(
   let executable: string;
   try {
     executable = windowsPowerShellPath();
-  } catch (error) {
-    return { status: null, error };
+  } catch {
+    return { status: null, diagnosticPhase: 'helper-path' };
   }
   const environment: NodeJS.ProcessEnv = {
     SystemRoot: process.env.SystemRoot || process.env.WINDIR,
@@ -1701,9 +1741,14 @@ function defaultWindowsProfileAclRunner(
       : WINDOWS_PROFILE_ACL_TIMEOUT_MS,
     windowsHide: true,
   });
+  const stderr = String(result.stderr || '').replaceAll('\u0000', '');
   return {
     status: result.status,
     stdout: String(result.stdout || '').replaceAll('\u0000', ''),
+    stderrPresent: Boolean(stderr.trim()),
+    parserFailure:
+      /(?:ParserError|ParseException|unexpected token|missing closing|terminator expected)/i
+        .test(stderr),
     error: result.error,
     signal: result.signal,
   };
@@ -1737,12 +1782,15 @@ export function secureWindowsPrivatePath(
       kind === 'directory' ? 'single-directory' : 'single-file',
     );
   } catch {
-    throw profilePrivacyError('application-state path');
+    throw profilePrivacyError('application-state path', 'helper-launch');
   }
   const verified = String(result.stdout || '').split(/\r?\n/).some((line) => (
     line.trim() === `${WINDOWS_PROFILE_ACL_OK}:1`
   ));
-  const diagnosticPhase = windowsProfileAclResultDiagnosticPhase(result);
+  const diagnosticPhase = windowsProfileAclFailureDiagnosticPhase(
+    result,
+    verified,
+  );
   if (
     result.status !== 0
     || result.error
@@ -1793,7 +1841,7 @@ export function secureWindowsProfileRoot(
     try {
       return runner(normalized, options.maximumSchemaVersion, mode);
     } catch {
-      throw profilePrivacyError();
+      throw profilePrivacyError('profile', 'helper-launch');
     }
   };
   const hasLine = (result: WindowsProfileAclRunResult, expected: string): boolean => (
@@ -1811,15 +1859,19 @@ export function secureWindowsProfileRoot(
   );
   const assertSuccess = (result: WindowsProfileAclRunResult): void => {
     assertNotNewer(result);
-    const diagnosticPhase = windowsProfileAclResultDiagnosticPhase(result);
+    const verified = String(result.stdout || '').split(/\r?\n/).some((line) => (
+      new RegExp(`^${WINDOWS_PROFILE_ACL_OK}:\\d+$`).test(line.trim())
+    ));
+    const diagnosticPhase = windowsProfileAclFailureDiagnosticPhase(
+      result,
+      verified,
+    );
     if (
       result.status !== 0
       || result.error
       || result.signal
       || diagnosticPhase
-      || !String(result.stdout || '').split(/\r?\n/).some((line) => (
-        new RegExp(`^${WINDOWS_PROFILE_ACL_OK}:\\d+$`).test(line.trim())
-      ))
+      || !verified
     ) {
       throw profilePrivacyError(
         'profile',

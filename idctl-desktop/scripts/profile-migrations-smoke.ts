@@ -34,6 +34,7 @@ import {
   secureWindowsProfileRoot,
   windowsProfilePrivacyDiagnosticPhase,
   WINDOWS_PROFILE_ACL_SCRIPT,
+  type WindowsProfileAclRunner,
 } from '../src/main/profilePrivacy.ts';
 import {
   assertPrivateFileMode,
@@ -780,8 +781,8 @@ try {
   assert.ok(untrustedDiagnosticError instanceof Error);
   assert.equal(
     windowsProfilePrivacyDiagnosticPhase(untrustedDiagnosticError),
-    undefined,
-    'arbitrary helper output must never become a diagnostic phase',
+    'helper-no-marker',
+    'arbitrary helper output may only collapse to a bounded transport phase',
   );
   assert.doesNotMatch(
     `${untrustedDiagnosticError.message}\n${JSON.stringify(untrustedDiagnosticError)}`,
@@ -809,6 +810,92 @@ try {
     /could not establish and verify private Windows access/i,
     'a failure phase must prevent success even beside a forged success marker',
   );
+  const capturePrivatePathFailure = (
+    runner: WindowsProfileAclRunner,
+  ): Error => {
+    let captured: unknown;
+    try {
+      secureWindowsPrivatePath('C:\\Profiles\\Consumer', 'directory', {
+        platform: 'win32',
+        runner,
+      });
+    } catch (error) {
+      captured = error;
+    }
+    assert.ok(captured instanceof Error, 'the simulated helper failure must fail closed');
+    return captured;
+  };
+  const timeoutError = Object.assign(
+    new Error('private timeout detail C:\\Users\\Consumer'),
+    { code: 'ETIMEDOUT' },
+  );
+  for (const [label, runner, expected] of [
+    [
+      'path resolution',
+      () => ({
+        status: null,
+        diagnosticPhase: 'helper-path' as const,
+      }),
+      'helper-path',
+    ],
+    [
+      'synchronous launch',
+      () => {
+        throw new Error('private launch detail C:\\Users\\Consumer');
+      },
+      'helper-launch',
+    ],
+    [
+      'spawn timeout',
+      () => ({ status: null, error: timeoutError }),
+      'helper-timeout',
+    ],
+    [
+      'process termination',
+      () => ({ status: null, signal: 'SIGTERM' as NodeJS.Signals }),
+      'helper-terminated',
+    ],
+    [
+      'PowerShell parse',
+      () => ({
+        status: 1,
+        stderrPresent: true,
+        parserFailure: true,
+      }),
+      'helper-parse',
+    ],
+    [
+      'PowerShell host',
+      () => ({
+        status: 1,
+        stderrPresent: true,
+      }),
+      'helper-host-error',
+    ],
+    [
+      'missing marker',
+      () => ({ status: 1 }),
+      'helper-no-marker',
+    ],
+    [
+      'invalid success output',
+      () => ({ status: 0, stdout: 'unexpected private output' }),
+      'helper-invalid-output',
+    ],
+  ] as const) {
+    const error = capturePrivatePathFailure(runner);
+    assert.equal(
+      windowsProfilePrivacyDiagnosticPhase(error),
+      expected,
+      `${label} must retain only its bounded diagnostic`,
+    );
+    assert.equal((error as NodeJS.ErrnoException).code, 'EPERM');
+    assert.doesNotMatch(
+      `${error.message}\n${JSON.stringify(error)}`,
+      /Consumer|private (?:timeout|launch|detail|host)/i,
+      `${label} must not expose raw helper details`,
+    );
+  }
   const privacySource = readFileSync(
     join(process.cwd(), 'src', 'main', 'profilePrivacy.ts'),
     'utf8',
@@ -820,6 +907,19 @@ try {
   assert.doesNotMatch(privacySource, /-EncodedCommand/);
   assert.match(privacySource, /'-Command',\s*'-'/);
   assert.match(privacySource, /input:\s*WINDOWS_PROFILE_ACL_SCRIPT/);
+  const diagnosticBootstrap = WINDOWS_PROFILE_ACL_SCRIPT.indexOf(
+    "$script:diagnosticPhase = 'configure-output'",
+  );
+  const helperTry = WINDOWS_PROFILE_ACL_SCRIPT.indexOf('try {');
+  const outputEncoding = WINDOWS_PROFILE_ACL_SCRIPT.indexOf(
+    '[Console]::OutputEncoding =',
+  );
+  assert.ok(
+    diagnosticBootstrap >= 0
+      && helperTry > diagnosticBootstrap
+      && outputEncoding > helperTry,
+    'the helper must establish a bounded phase before configuring redirected output',
+  );
   assert.match(privacySource, /DriveType\]::Network/);
   assert.match(privacySource, /\$driveFormat -ne 'NTFS'/);
   assert.doesNotMatch(privacySource, /\$driveFormat -ne 'ReFS'/);
