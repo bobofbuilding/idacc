@@ -30,6 +30,7 @@ import {
 } from '../src/main/profileMigrations.ts';
 import {
   normalizeWindowsProfileRoot,
+  secureWindowsPrivatePath,
   secureWindowsProfileRoot,
   WINDOWS_PROFILE_ACL_SCRIPT,
 } from '../src/main/profilePrivacy.ts';
@@ -585,6 +586,20 @@ foreach ($item in @($directory, $file)) {
 
 const temp = mkdtempSync(join(tmpdir(), 'idacc-profile-migrations-'));
 try {
+  if (process.platform === 'win32') {
+    // Windows hosted-runner TEMP directories may intentionally grant another
+    // principal child-creation rights. That is not a safe parent for testing a
+    // missing consumer profile: production correctly rejects the resulting
+    // path-creation race. Establish the same exact app-owned boundary that the
+    // desktop applies to its userData root before creating profiles beneath it.
+    secureWindowsPrivatePath(temp, 'directory');
+    assert.match(
+      windowsPowerShellForTest(WINDOWS_ASSERT_PRIVATE_DIRECTORY_ACL, temp),
+      /IDACC_TEST_PRIVATE_DIRECTORY_OK/,
+      'the Windows migration fixture root must be an exact private app-owned boundary',
+    );
+  }
+
   // The pure contract is exercised on every host. Windows paths are validated
   // before the privileged OS runner, while non-Windows behavior is a no-op.
   let fakeRunnerCalls = 0;

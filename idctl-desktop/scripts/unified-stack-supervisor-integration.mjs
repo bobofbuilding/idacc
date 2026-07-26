@@ -651,8 +651,11 @@ function canBind(port) {
 }
 
 try {
-  const electronArgs = process.platform === 'linux' && process.env.CI
-    ? ['--disable-setuid-sandbox', '.']
+  const isGitHubActionsLinux = process.platform === 'linux'
+    && process.env.CI === 'true'
+    && process.env.GITHUB_ACTIONS === 'true';
+  const electronArgs = isGitHubActionsLinux
+    ? ['--no-sandbox', '.']
     : ['.'];
   const env = {
     ...process.env,

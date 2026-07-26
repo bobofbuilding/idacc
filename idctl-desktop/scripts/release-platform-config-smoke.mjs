@@ -258,6 +258,10 @@ const dashboardRenderedSmoke = readFileSync(
   join(desktop, 'scripts', 'dashboard-rendered-smoke.mjs'),
   'utf8',
 );
+const supervisorIntegrationSmoke = readFileSync(
+  join(desktop, 'scripts', 'unified-stack-supervisor-integration.mjs'),
+  'utf8',
+);
 assert.match(mainSource, /writeStackSelftestResultFile/);
 assert.match(mainSource, /IDACC_STACK_SELFTEST_RESULT_FILE/);
 assert.match(
@@ -299,7 +303,7 @@ assert.match(
 assert.match(
   dashboardRenderedSmoke,
   /isGitHubActionsLinux\s*\?\s*\['--no-sandbox', main\]\s*:\s*\[main\]/,
-  'only the rendered dashboard smoke may bypass an unavailable GitHub-hosted Linux sandbox',
+  'the rendered dashboard smoke may bypass an unavailable GitHub-hosted Linux sandbox only behind its narrow guard',
 );
 assert.equal(
   (dashboardRenderedSmoke.match(/--no-sandbox/g) || []).length,
@@ -310,6 +314,26 @@ assert.doesNotMatch(
   dashboardRenderedSmoke,
   /--disable-setuid-sandbox/,
   'the ineffective setuid-only bypass must not mask GitHub-hosted Linux sandbox failures',
+);
+assert.match(
+  supervisorIntegrationSmoke,
+  /process\.platform === 'linux'\s*&&\s*process\.env\.CI === 'true'\s*&&\s*process\.env\.GITHUB_ACTIONS === 'true'/,
+  'the supervisor integration sandbox bypass must remain restricted to GitHub Actions on Linux',
+);
+assert.match(
+  supervisorIntegrationSmoke,
+  /isGitHubActionsLinux\s*\?\s*\['--no-sandbox', '\.'\]\s*:\s*\['\.'\]/,
+  'the supervisor integration may bypass an unavailable GitHub-hosted Linux sandbox only behind its narrow guard',
+);
+assert.equal(
+  (supervisorIntegrationSmoke.match(/--no-sandbox/g) || []).length,
+  1,
+  'the supervisor integration must contain exactly one narrowly gated sandbox bypass',
+);
+assert.doesNotMatch(
+  supervisorIntegrationSmoke,
+  /--disable-setuid-sandbox/,
+  'the supervisor integration must not use an ineffective setuid-only sandbox bypass',
 );
 assert.doesNotMatch(
   releaseStackSmoke,
