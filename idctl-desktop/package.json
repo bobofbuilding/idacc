@@ -254,8 +254,8 @@
     "typescript": "^5.6.3"
   },
   "dependencies": {
-    "@noble/curves": "^1.9.7",
-    "@noble/hashes": "^1.8.0",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
     "@nut-tree-fork/libnut-darwin": "^2.7.5",
     "@walletconnect/universal-provider": "^2.23.10",
     "cross-spawn": "7.0.6",
