@@ -17,7 +17,10 @@ jobs:
   cross-platform-static:
     name: Static checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Windows exercises the real first-run ACL migration in four fresh
+    # Electron profiles. Leave enough job time for those bounded security
+    # helpers and the supervisor lifecycle assertions to complete.
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash

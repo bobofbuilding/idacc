@@ -654,6 +654,13 @@ try {
   const isGitHubActionsLinux = process.platform === 'linux'
     && process.env.CI === 'true'
     && process.env.GITHUB_ACTIONS === 'true';
+  const isWindows = process.platform === 'win32';
+  // A first Windows launch performs the real profile ACL migration. Its
+  // security helper is deliberately allowed up to two minutes, so the outer
+  // integration harness must leave time for readiness and orderly shutdown
+  // instead of killing Electron while that security work is still running.
+  const positiveSelftestTimeoutMs = isWindows ? 180_000 : 40_000;
+  const negativeSelftestTimeoutMs = isWindows ? 150_000 : 20_000;
   const electronArgs = isGitHubActionsLinux
     ? ['--no-sandbox', '.']
     : ['.'];
@@ -690,18 +697,24 @@ try {
     BRAIN_SYNC_ONCHAIN_SCRIPT: join(runtime, 'brain', 'sync-onchain.mjs'),
   };
   delete env.ELECTRON_RUN_AS_NODE;
+  const positiveStartedAt = Date.now();
   const result = spawnSync(electron, electronArgs, {
     cwd: desktop,
     env,
     encoding: 'utf8',
-    timeout: 40_000,
+    timeout: positiveSelftestTimeoutMs,
     killSignal: 'SIGKILL',
     maxBuffer: 4 * 1024 * 1024,
   });
+  const positiveElapsedMs = Date.now() - positiveStartedAt;
   assert.equal(
     result.status,
     0,
-    `stack selftest failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    'stack selftest failed'
+    + `\nelapsedMs: ${positiveElapsedMs}`
+    + `\nstatus: ${result.status}\nsignal: ${result.signal}`
+    + `\nerror: ${result.error?.message || ''}`
+    + `\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
   const line = String(result.stdout)
     .split(/\r?\n/)
@@ -924,6 +937,7 @@ try {
         cycleCadenceHours: 24,
       },
     }, null, 2), { mode: 0o600 });
+    const negativeStartedAt = Date.now();
     const negative = spawnSync(electron, electronArgs, {
       cwd: desktop,
       env: {
@@ -938,14 +952,18 @@ try {
         IDACC_TEST_LISTENER_STATUS_MODE: mode,
       },
       encoding: 'utf8',
-      timeout: 20_000,
+      timeout: negativeSelftestTimeoutMs,
       killSignal: 'SIGKILL',
       maxBuffer: 4 * 1024 * 1024,
     });
+    const negativeElapsedMs = Date.now() - negativeStartedAt;
     assert.equal(
       negative.status,
       1,
       `${mode} listener status unexpectedly satisfied readiness`
+      + `\nelapsedMs: ${negativeElapsedMs}`
+      + `\nstatus: ${negative.status}\nsignal: ${negative.signal}`
+      + `\nerror: ${negative.error?.message || ''}`
       + `\nstdout:\n${negative.stdout}\nstderr:\n${negative.stderr}`,
     );
     assert.equal(existsSync(negativeResultFile), true, `${mode} case did not publish a result`);
