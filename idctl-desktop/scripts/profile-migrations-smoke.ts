@@ -402,14 +402,14 @@ $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
 )
 [void]$security.AddAccessRule($rule)
 [System.IO.File]::SetAccessControl($file, $security)
+$sections = (
+  [System.Security.AccessControl.AccessControlSections]::Access -bor
+  [System.Security.AccessControl.AccessControlSections]::Owner -bor
+  [System.Security.AccessControl.AccessControlSections]::Group
+)
+$stored = [System.IO.File]::GetAccessControl($file, $sections)
 [Console]::Out.WriteLine(
-  $security.GetSecurityDescriptorSddlForm(
-    (
-      [System.Security.AccessControl.AccessControlSections]::Access -bor
-      [System.Security.AccessControl.AccessControlSections]::Owner -bor
-      [System.Security.AccessControl.AccessControlSections]::Group
-    )
-  )
+  $stored.GetSecurityDescriptorSddlForm($sections)
 )
 `;
 
