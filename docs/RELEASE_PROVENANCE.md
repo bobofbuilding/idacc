@@ -146,8 +146,10 @@ Windows builds discover the installed Visual Studio Roslyn compiler through
 targeting pack. They compile both app-owned native helpers twice from the
 committed C# source with deterministic path mapping, require byte-identical
 output, load-test the privacy helper under Windows PowerShell 5.1, and record
-the exact source/compiler/binary identities in the build evidence. Production
-packaging Authenticode-signs the Job Host and verifies its exact publisher
+the exact source/compiler/binary identities in the build evidence. Compiler
+identity covers the complete selected Roslyn directory and each explicit .NET
+Framework reference assembly, as well as the `csc.exe` version and digest.
+Production packaging Authenticode-signs the Job Host and verifies its exact publisher
 alongside the desktop executable and installer; unsigned CI builds remain
 pinned to the deterministic binary digest.
 

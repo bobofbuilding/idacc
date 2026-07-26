@@ -16,6 +16,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -194,6 +195,95 @@ function windowsNetFrameworkReferences() {
   return references;
 }
 
+function hashWindowsFileEntries(entries, label) {
+  if (entries.length < 1 || entries.length > 4_096) {
+    throw new Error(`${label} file set is invalid`);
+  }
+  const digest = createHash('sha256');
+  let byteLength = 0;
+  for (const entry of [...entries].sort((left, right) => (
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+  ))) {
+    const content = readFileSync(entry.path);
+    byteLength += content.length;
+    if (
+      !entry.name
+      || entry.name.includes('\0')
+      || byteLength > 1024 * 1024 * 1024
+    ) {
+      throw new Error(`${label} file set is invalid`);
+    }
+    digest.update(entry.name, 'utf8');
+    digest.update('\0');
+    digest.update(String(content.length), 'utf8');
+    digest.update('\0');
+    digest.update(content);
+    digest.update('\0');
+  }
+  return {
+    sha256: digest.digest('hex'),
+    fileCount: entries.length,
+    byteLength,
+  };
+}
+
+function hashWindowsDirectory(root, label) {
+  const files = [];
+  const visit = (directory) => {
+    const entries = readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => (
+        left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+      ));
+    for (const entry of entries) {
+      const path = win32.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(path);
+      } else if (entry.isFile()) {
+        files.push({
+          name: win32.relative(root, path).replaceAll('\\', '/'),
+          path,
+        });
+      } else {
+        throw new Error(`${label} contains an unsupported filesystem entry`);
+      }
+      if (files.length > 4_096) {
+        throw new Error(`${label} contains too many files`);
+      }
+    }
+  };
+  visit(root);
+  return hashWindowsFileEntries(files, label);
+}
+
+function windowsRoslynToolchain() {
+  const executable = windowsRoslynCompilerExecutable();
+  const references = windowsNetFrameworkReferences();
+  const compilerTree = hashWindowsDirectory(
+    win32.dirname(executable),
+    'Visual Studio Roslyn compiler tree',
+  );
+  const referenceSet = hashWindowsFileEntries(
+    references.map((path) => ({
+      name: win32.basename(path).toLowerCase(),
+      path,
+    })),
+    '.NET Framework 4.8 reference set',
+  );
+  const compilationInputsSha256 = createHash('sha256')
+    .update('visual-studio-roslyn\0net48\0', 'utf8')
+    .update(compilerTree.sha256, 'utf8')
+    .update('\0')
+    .update(referenceSet.sha256, 'utf8')
+    .digest('hex');
+  return {
+    executable,
+    references,
+    compilerTree,
+    referenceSet,
+    compilationInputsSha256,
+  };
+}
+
 function runWindowsCompiler(
   executable,
   source,
@@ -314,12 +404,20 @@ function prepareWindowsProfileNativeHelper(nativeSource) {
       compilerKind: null,
       targetFramework: null,
       deterministic: null,
+      compilerTreeSha256: null,
+      compilerTreeFileCount: null,
+      compilerTreeByteLength: null,
+      referenceSetSha256: null,
+      referenceFileCount: null,
+      referenceByteLength: null,
+      compilationInputsSha256: null,
     };
   }
 
   const executable = windowsPowerShellExecutable();
-  const compilerExecutable = windowsRoslynCompilerExecutable();
-  const references = windowsNetFrameworkReferences();
+  const toolchain = windowsRoslynToolchain();
+  const compilerExecutable = toolchain.executable;
+  const references = toolchain.references;
   const scratch = mkdtempSync(join(tmpdir(), 'idacc-profile-native-'));
   const firstRoot = join(scratch, 'first');
   const secondRoot = join(scratch, 'second');
@@ -462,6 +560,13 @@ try {
       compilerKind: 'visual-studio-roslyn',
       targetFramework: 'net48',
       deterministic: true,
+      compilerTreeSha256: toolchain.compilerTree.sha256,
+      compilerTreeFileCount: toolchain.compilerTree.fileCount,
+      compilerTreeByteLength: toolchain.compilerTree.byteLength,
+      referenceSetSha256: toolchain.referenceSet.sha256,
+      referenceFileCount: toolchain.referenceSet.fileCount,
+      referenceByteLength: toolchain.referenceSet.byteLength,
+      compilationInputsSha256: toolchain.compilationInputsSha256,
     };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -500,6 +605,13 @@ function prepareWindowsJobHost(compilerProvenance) {
       compilerKind: null,
       targetFramework: null,
       deterministic: null,
+      compilerTreeSha256: null,
+      compilerTreeFileCount: null,
+      compilerTreeByteLength: null,
+      referenceSetSha256: null,
+      referenceFileCount: null,
+      referenceByteLength: null,
+      compilationInputsSha256: null,
     };
   }
 
@@ -515,8 +627,9 @@ function prepareWindowsJobHost(compilerProvenance) {
     );
   }
 
-  const compilerExecutable = windowsRoslynCompilerExecutable();
-  const references = windowsNetFrameworkReferences();
+  const toolchain = windowsRoslynToolchain();
+  const compilerExecutable = toolchain.executable;
+  const references = toolchain.references;
   const scratch = mkdtempSync(join(tmpdir(), 'idacc-job-host-'));
   const firstRoot = join(scratch, 'first');
   const secondRoot = join(scratch, 'second');
@@ -560,6 +673,14 @@ function prepareWindowsJobHost(compilerProvenance) {
       || compilerProvenance.compilerKind !== 'visual-studio-roslyn'
       || compilerProvenance.targetFramework !== 'net48'
       || compilerProvenance.deterministic !== true
+      || toolchain.compilerTree.sha256 !== compilerProvenance.compilerTreeSha256
+      || toolchain.compilerTree.fileCount !== compilerProvenance.compilerTreeFileCount
+      || toolchain.compilerTree.byteLength !== compilerProvenance.compilerTreeByteLength
+      || toolchain.referenceSet.sha256 !== compilerProvenance.referenceSetSha256
+      || toolchain.referenceSet.fileCount !== compilerProvenance.referenceFileCount
+      || toolchain.referenceSet.byteLength !== compilerProvenance.referenceByteLength
+      || toolchain.compilationInputsSha256
+        !== compilerProvenance.compilationInputsSha256
       || createHash('sha256').update(readFileSync(compilerExecutable)).digest('hex')
         !== compilerProvenance.compilerSha256
     ) {
@@ -581,6 +702,13 @@ function prepareWindowsJobHost(compilerProvenance) {
       compilerKind: compilerProvenance.compilerKind,
       targetFramework: compilerProvenance.targetFramework,
       deterministic: compilerProvenance.deterministic,
+      compilerTreeSha256: compilerProvenance.compilerTreeSha256,
+      compilerTreeFileCount: compilerProvenance.compilerTreeFileCount,
+      compilerTreeByteLength: compilerProvenance.compilerTreeByteLength,
+      referenceSetSha256: compilerProvenance.referenceSetSha256,
+      referenceFileCount: compilerProvenance.referenceFileCount,
+      referenceByteLength: compilerProvenance.referenceByteLength,
+      compilationInputsSha256: compilerProvenance.compilationInputsSha256,
     };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -599,6 +727,8 @@ if (process.argv.includes('--probe-windows-native-toolchain')) {
       || profileHelper.compilerKind !== 'visual-studio-roslyn'
       || jobHost.compilerKind !== 'visual-studio-roslyn'
       || profileHelper.compilerSha256 !== jobHost.compilerSha256
+      || profileHelper.compilationInputsSha256
+        !== jobHost.compilationInputsSha256
     ) {
       throw new Error('Windows native toolchain probe did not produce both helpers');
     }
@@ -772,6 +902,13 @@ writeFileSync(resolve(ROOT, 'out/build-mode.json'), JSON.stringify({
     compilerKind: windowsProfileNative.compilerKind,
     targetFramework: windowsProfileNative.targetFramework,
     deterministic: windowsProfileNative.deterministic,
+    compilerTreeSha256: windowsProfileNative.compilerTreeSha256,
+    compilerTreeFileCount: windowsProfileNative.compilerTreeFileCount,
+    compilerTreeByteLength: windowsProfileNative.compilerTreeByteLength,
+    referenceSetSha256: windowsProfileNative.referenceSetSha256,
+    referenceFileCount: windowsProfileNative.referenceFileCount,
+    referenceByteLength: windowsProfileNative.referenceByteLength,
+    compilationInputsSha256: windowsProfileNative.compilationInputsSha256,
   },
   windowsJobHost: {
     buildPlatform: process.platform,
@@ -790,6 +927,13 @@ writeFileSync(resolve(ROOT, 'out/build-mode.json'), JSON.stringify({
     compilerKind: windowsJobHost.compilerKind,
     targetFramework: windowsJobHost.targetFramework,
     deterministic: windowsJobHost.deterministic,
+    compilerTreeSha256: windowsJobHost.compilerTreeSha256,
+    compilerTreeFileCount: windowsJobHost.compilerTreeFileCount,
+    compilerTreeByteLength: windowsJobHost.compilerTreeByteLength,
+    referenceSetSha256: windowsJobHost.referenceSetSha256,
+    referenceFileCount: windowsJobHost.referenceFileCount,
+    referenceByteLength: windowsJobHost.referenceByteLength,
+    compilationInputsSha256: windowsJobHost.compilationInputsSha256,
   },
 }) + '\n');
 console.log(`built ${releaseBuild ? 'production' : 'development'} bundle → out/`);

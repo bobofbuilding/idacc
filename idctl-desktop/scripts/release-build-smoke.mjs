@@ -84,6 +84,25 @@ if (process.platform === 'win32') {
   assert.equal(buildMode.windowsJobHost?.compilerKind, 'visual-studio-roslyn');
   assert.equal(buildMode.windowsJobHost?.targetFramework, 'net48');
   assert.equal(buildMode.windowsJobHost?.deterministic, true);
+  assert.match(
+    String(buildMode.windowsJobHost?.compilerTreeSha256 || ''),
+    /^[0-9a-f]{64}$/,
+  );
+  assert.ok(Number.isSafeInteger(buildMode.windowsJobHost?.compilerTreeFileCount));
+  assert.ok(buildMode.windowsJobHost.compilerTreeFileCount >= 3);
+  assert.ok(Number.isSafeInteger(buildMode.windowsJobHost?.compilerTreeByteLength));
+  assert.ok(buildMode.windowsJobHost.compilerTreeByteLength > 0);
+  assert.match(
+    String(buildMode.windowsJobHost?.referenceSetSha256 || ''),
+    /^[0-9a-f]{64}$/,
+  );
+  assert.equal(buildMode.windowsJobHost?.referenceFileCount, 3);
+  assert.ok(Number.isSafeInteger(buildMode.windowsJobHost?.referenceByteLength));
+  assert.ok(buildMode.windowsJobHost.referenceByteLength > 0);
+  assert.match(
+    String(buildMode.windowsJobHost?.compilationInputsSha256 || ''),
+    /^[0-9a-f]{64}$/,
+  );
   if (buildMode.windowsJobHost?.expectedPublisher) {
     assert.equal(buildMode.windowsJobHost?.verificationMode, 'authenticode-publisher');
   } else {
@@ -110,6 +129,18 @@ if (process.platform === 'win32') {
   assert.equal(buildMode.windowsProfileNative?.compilerKind, 'visual-studio-roslyn');
   assert.equal(buildMode.windowsProfileNative?.targetFramework, 'net48');
   assert.equal(buildMode.windowsProfileNative?.deterministic, true);
+  assert.equal(
+    buildMode.windowsProfileNative?.compilerTreeSha256,
+    buildMode.windowsJobHost?.compilerTreeSha256,
+  );
+  assert.equal(
+    buildMode.windowsProfileNative?.referenceSetSha256,
+    buildMode.windowsJobHost?.referenceSetSha256,
+  );
+  assert.equal(
+    buildMode.windowsProfileNative?.compilationInputsSha256,
+    buildMode.windowsJobHost?.compilationInputsSha256,
+  );
 } else {
   assert.equal(buildMode.windowsJobHost?.available, false);
   assert.equal(buildMode.windowsJobHost?.executableSha256, null);
@@ -120,6 +151,13 @@ if (process.platform === 'win32') {
   assert.equal(buildMode.windowsJobHost?.compilerKind, null);
   assert.equal(buildMode.windowsJobHost?.targetFramework, null);
   assert.equal(buildMode.windowsJobHost?.deterministic, null);
+  assert.equal(buildMode.windowsJobHost?.compilerTreeSha256, null);
+  assert.equal(buildMode.windowsJobHost?.compilerTreeFileCount, null);
+  assert.equal(buildMode.windowsJobHost?.compilerTreeByteLength, null);
+  assert.equal(buildMode.windowsJobHost?.referenceSetSha256, null);
+  assert.equal(buildMode.windowsJobHost?.referenceFileCount, null);
+  assert.equal(buildMode.windowsJobHost?.referenceByteLength, null);
+  assert.equal(buildMode.windowsJobHost?.compilationInputsSha256, null);
   assert.equal(existsSync(join(out, 'native', 'idacc-job-host.exe')), false);
   assert.equal(buildMode.windowsProfileNative?.embedded, false);
   assert.equal(buildMode.windowsProfileNative?.assemblySha256, null);
@@ -128,6 +166,13 @@ if (process.platform === 'win32') {
   assert.equal(buildMode.windowsProfileNative?.compilerKind, null);
   assert.equal(buildMode.windowsProfileNative?.targetFramework, null);
   assert.equal(buildMode.windowsProfileNative?.deterministic, null);
+  assert.equal(buildMode.windowsProfileNative?.compilerTreeSha256, null);
+  assert.equal(buildMode.windowsProfileNative?.compilerTreeFileCount, null);
+  assert.equal(buildMode.windowsProfileNative?.compilerTreeByteLength, null);
+  assert.equal(buildMode.windowsProfileNative?.referenceSetSha256, null);
+  assert.equal(buildMode.windowsProfileNative?.referenceFileCount, null);
+  assert.equal(buildMode.windowsProfileNative?.referenceByteLength, null);
+  assert.equal(buildMode.windowsProfileNative?.compilationInputsSha256, null);
 }
 const files = walk(out);
 assert.equal(files.some((path) => path.endsWith('.map')), false, 'production bundles must not ship source maps');

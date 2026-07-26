@@ -624,5 +624,13 @@ process.exit(0);
   for (const host of activeHosts) {
     try { host.kill('SIGKILL'); } catch { /* already stopped */ }
   }
-  rmSync(scratch, { recursive: true, force: true });
+  // Windows can keep a just-exited process's cwd or a newly written fixture
+  // under a short-lived scanner/stdio handle. fs.rm's bounded EBUSY retry is
+  // the platform-supported teardown path; a persistent lock still fails.
+  rmSync(scratch, {
+    recursive: true,
+    force: true,
+    maxRetries: 20,
+    retryDelay: 100,
+  });
 }

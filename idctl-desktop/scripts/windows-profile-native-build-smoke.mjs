@@ -28,6 +28,8 @@ assert.match(source, /\$script:diagnosticPhase = 'load-native'/);
 assert.match(buildSource, /Microsoft\.VisualStudio\.Component\.Roslyn\.Compiler/);
 assert.match(buildSource, /MSBuild\\Current\\Bin\\Roslyn\\csc\.exe/);
 assert.match(buildSource, /function runWindowsCompiler/);
+assert.match(buildSource, /function hashWindowsDirectory/);
+assert.match(buildSource, /function windowsRoslynToolchain/);
 assert.match(buildSource, /'\/deterministic\+'/);
 assert.match(buildSource, /'\/nowarn:0649'/);
 assert.match(buildSource, /`\/pathmap:\$\{pathMapSource\}=\/_\/idacc-native`/);
@@ -56,6 +58,16 @@ if (process.platform === 'win32') {
   assert.equal(provenance.compilerKind, 'visual-studio-roslyn');
   assert.equal(provenance.targetFramework, 'net48');
   assert.equal(provenance.deterministic, true);
+  assert.match(String(provenance.compilerTreeSha256 || ''), /^[0-9a-f]{64}$/);
+  assert.ok(Number.isSafeInteger(provenance.compilerTreeFileCount));
+  assert.ok(provenance.compilerTreeFileCount >= 3);
+  assert.ok(Number.isSafeInteger(provenance.compilerTreeByteLength));
+  assert.ok(provenance.compilerTreeByteLength > 0);
+  assert.match(String(provenance.referenceSetSha256 || ''), /^[0-9a-f]{64}$/);
+  assert.equal(provenance.referenceFileCount, 3);
+  assert.ok(Number.isSafeInteger(provenance.referenceByteLength));
+  assert.ok(provenance.referenceByteLength > 0);
+  assert.match(String(provenance.compilationInputsSha256 || ''), /^[0-9a-f]{64}$/);
   assert.equal(
     main.includes(provenance.assemblySha256),
     true,
@@ -73,6 +85,13 @@ if (process.platform === 'win32') {
   assert.equal(provenance.compilerKind, null);
   assert.equal(provenance.targetFramework, null);
   assert.equal(provenance.deterministic, null);
+  assert.equal(provenance.compilerTreeSha256, null);
+  assert.equal(provenance.compilerTreeFileCount, null);
+  assert.equal(provenance.compilerTreeByteLength, null);
+  assert.equal(provenance.referenceSetSha256, null);
+  assert.equal(provenance.referenceFileCount, null);
+  assert.equal(provenance.referenceByteLength, null);
+  assert.equal(provenance.compilationInputsSha256, null);
 }
 
 console.log('Windows profile native build smoke: ok');
