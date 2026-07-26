@@ -60,6 +60,31 @@ async function waitFor(predicate, timeoutMs, message) {
   throw new Error(message);
 }
 
+async function forceStopTestChild(child) {
+  if (!child) return;
+  if (child.exitCode === null && child.signalCode === null) {
+    try { child.kill('SIGKILL'); } catch { /* already stopped */ }
+  }
+  if (child.exitCode === null && child.signalCode === null) {
+    await new Promise((resolveExit) => {
+      let timeout;
+      const finish = () => {
+        clearTimeout(timeout);
+        child.removeListener('exit', finish);
+        child.removeListener('error', finish);
+        resolveExit();
+      };
+      child.once('exit', finish);
+      child.once('error', finish);
+      timeout = setTimeout(finish, 5_000);
+      if (child.exitCode !== null || child.signalCode !== null) finish();
+    });
+  }
+  child.stdin?.destroy();
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+}
+
 async function expectLaunchFailure(
   module,
   overrides,
@@ -241,23 +266,14 @@ setInterval(() => {}, 1000);
   const retainedLaunch =
     managed.retainedManagedProcessTreeLaunchFailure(retainedLaunchError);
   activeHosts.add(retainedLaunch.child);
-  await waitFor(
-    () => retainedLaunch.child.exitCode !== null
-      || retainedLaunch.child.signalCode !== null,
-    10_000,
-    'the retained pre-STARTED Job Host did not eventually finish cleanup',
-  );
-  assert.equal(
-    retainedLaunch.child.exitCode,
-    0,
-    'a later host exit must preserve the queried-empty cleanup proof',
-  );
+  // The test-only branch deliberately hands the exact host back immediately,
+  // simulating an expired launch-cleanup deadline. Exercise the supervisor's
+  // required retry now instead of racing the host's independent ACK deadline.
   const retainedRetry = await managed.terminateManagedProcessTree(
     retainedLaunch.child,
     () => true,
     { platform: 'win32', forceWaitMs: 1_000 },
   );
-  activeHosts.delete(retainedLaunch.child);
   assert.equal(retainedRetry.accepted, true);
   assert.equal(
     retainedRetry.treeKillSucceeded,
@@ -265,7 +281,13 @@ setInterval(() => {}, 1000);
     'a shutdown retry must re-evaluate and clear the exact retained host',
   );
   assert.equal(retainedRetry.exited, true);
+  assert.equal(
+    retainedLaunch.child.exitCode,
+    0,
+    'the retained cleanup retry must preserve the queried-empty proof',
+  );
   assert.equal(pidAlive(retainedLaunch.actualPid), false);
+  activeHosts.delete(retainedLaunch.child);
 
   const missingRuntimeFailure = await expectLaunchFailure(
     managed,
@@ -373,7 +395,6 @@ setInterval(() => {}, 1000);
   );
   assert.equal(firstStop, secondStop, 'concurrent Job shutdown must be single-flight');
   const stopped = await firstStop;
-  activeHosts.delete(launched.child);
   assert.equal(stopped.accepted, true);
   assert.equal(stopped.treeKillAttempted, true);
   assert.equal(stopped.treeKillSucceeded, true);
@@ -386,6 +407,7 @@ setInterval(() => {}, 1000);
     5_000,
     'the queried-empty Job left a runtime descendant alive',
   );
+  activeHosts.delete(launched.child);
 
   const naturalRootPidPath = join(scratch, 'natural-root.pid');
   const naturalDescendantPidPath = join(scratch, 'natural-descendant.pid');
@@ -424,7 +446,6 @@ setInterval(() => {}, 1000);
     10_000,
     'the Job Host did not observe its runtime root exit',
   );
-  activeHosts.delete(naturalExit.child);
   assert.equal(naturalExit.child.exitCode, 23);
   const naturalDrain = await managed.terminateManagedProcessTree(
     naturalExit.child,
@@ -438,6 +459,7 @@ setInterval(() => {}, 1000);
     'runtime-root exit left a Job descendant alive',
   );
   assert.equal(existsSync(naturalGracefulPath), false);
+  activeHosts.delete(naturalExit.child);
 
   const hostCrashRootPidPath = join(scratch, 'host-crash-root.pid');
   const hostCrashDescendantPidPath = join(scratch, 'host-crash-descendant.pid');
@@ -475,7 +497,6 @@ setInterval(() => {}, 1000);
     5_000,
     'the exact Job Host did not terminate',
   );
-  activeHosts.delete(hostCrash.child);
   await waitFor(
     () => !pidAlive(hostCrashRootPid) && !pidAlive(hostCrashDescendantPid),
     10_000,
@@ -493,6 +514,7 @@ setInterval(() => {}, 1000);
     'an abrupt host exit must not be misreported as queried-empty shutdown',
   );
   assert.equal(hostCrashProof.exited, true);
+  activeHosts.delete(hostCrash.child);
 
   await expectLaunchFailure(
     managed,
@@ -620,9 +642,9 @@ process.exit(0);
 
   console.log('Windows Job Host integration smoke: ok');
 } finally {
-  try { parentFixture?.kill('SIGKILL'); } catch { /* already stopped */ }
+  await forceStopTestChild(parentFixture);
   for (const host of activeHosts) {
-    try { host.kill('SIGKILL'); } catch { /* already stopped */ }
+    await forceStopTestChild(host);
   }
   // Windows can keep a just-exited process's cwd or a newly written fixture
   // under a short-lived scanner/stdio handle. fs.rm's bounded EBUSY retry is
