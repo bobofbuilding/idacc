@@ -13,8 +13,8 @@
  * GITHUB_API_BASE can override the API root (used by the smoke test to point at a local mock).
  */
 import { execFileSync } from 'node:child_process';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -96,6 +96,9 @@ async function main() {
   process.exit(0);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (
+  process.argv[1]
+  && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
   main();
 }
