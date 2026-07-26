@@ -1271,11 +1271,24 @@ try {
   writeFileSync(join(legacy, 'computeruse', 'agent-tokens.json'), '{"token":"agent"}\n', { mode: 0o644 });
   writeFileSync(legacyDesktopSigner, '{"schemaVersion":1,"signers":{"lead":{"encryptedPrivateKey":"ciphertext"}}}\n', { mode: 0o644 });
 
-  const first = migrateAppProfile(profile, {
-    profileName: 'default',
-    legacyConfigDir: legacy,
-    legacyDesktopSignerVault: legacyDesktopSigner,
-  });
+  let first: ReturnType<typeof migrateAppProfile>;
+  try {
+    first = migrateAppProfile(profile, {
+      profileName: 'default',
+      legacyConfigDir: legacy,
+      legacyDesktopSignerVault: legacyDesktopSigner,
+    });
+  } catch (error) {
+    if (process.platform === 'win32') {
+      const diagnosticLine = windowsProfilePrivacyDiagnosticLine(error);
+      assert.fail(
+        `the first Windows profile migration failed at phase: ${
+          windowsProfilePrivacyDiagnosticPhase(error) || 'unavailable'
+        }${diagnosticLine ? ` (helper line ${diagnosticLine})` : ''}`,
+      );
+    }
+    throw error;
+  }
   assert.equal(first.schemaVersion, PROFILE_SCHEMA_VERSION);
   assert.deepEqual(first.appliedMigrations.map((entry) => entry.version), [1, 2, 3, 4, 5]);
   assert.equal(readFileSync(profile.config, 'utf8'), '{"version":1,"defaultTeam":"default"}\n');
