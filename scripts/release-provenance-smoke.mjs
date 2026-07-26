@@ -15,10 +15,12 @@ import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
+  isContainedRuntimeManifestSymlink,
   isContainedRuntimeSymlink,
   sha256,
   sha256File,
   validateRuntimeLock,
+  verifyRuntimeManifest,
 } from './lib/runtime-provenance.mjs';
 import {
   desktopPackagedExclusionRoots,
@@ -236,6 +238,26 @@ try {
     false,
     'absolute links must be rejected',
   );
+  assert.equal(
+    isContainedRuntimeManifestSymlink(
+      'brain/node_modules/.bin/node-which',
+      '../which/bin/node-which',
+    ),
+    true,
+    'manifest policy must accept the same contained npm .bin link as filesystem staging',
+  );
+  for (const unsafeTarget of [
+    '../../../../outside-runtime',
+    '/tmp/outside-runtime',
+    'C:/outside-runtime',
+    '..\\outside-runtime',
+  ]) {
+    assert.equal(
+      isContainedRuntimeManifestSymlink('brain/node_modules/.bin/node-which', unsafeTarget),
+      false,
+      `manifest policy must reject unsafe symlink target ${unsafeTarget}`,
+    );
+  }
 
   const managerSource = join(scratch, 'manager');
   const brainSource = join(scratch, 'brain');
@@ -302,6 +324,23 @@ try {
   assert.equal(manifest.components.brain.commit, brain.commit);
   assert.match(manifest.trees.runtime, /^[0-9a-f]{64}$/);
   assert.ok(manifest.files.length >= 8);
+  assert.match(
+    verifyRuntimeManifest(runtimeRoot, {
+      ...manifest,
+      files: [
+        ...manifest.files,
+        {
+          path: 'brain/node_modules/.bin/escape',
+          type: 'symlink',
+          size: 1,
+          sha256: '0'.repeat(64),
+          target: '../../../../outside-runtime',
+        },
+      ],
+    }, lock).join('\n'),
+    /runtime manifest files\[\d+\] is invalid/,
+    'staging verification must reject a manifest the production parser would reject',
+  );
 
   run(process.execPath, [
     join(root, 'scripts', 'verify-runtime-manifest.mjs'),

@@ -5,7 +5,14 @@ import {
   readdirSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import {
+  dirname,
+  isAbsolute,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 export const RUNTIME_LOCK_SCHEMA_VERSION = 1;
@@ -180,6 +187,37 @@ function portablePath(root, path) {
   return relative(root, path).split(sep).join('/');
 }
 
+function safeRuntimeManifestPath(value) {
+  if (
+    typeof value !== 'string'
+    || !value
+    || value === 'manifest.json'
+    || value.startsWith('/')
+    || value.includes('\\')
+    || value.split('/').some((part) => !part || part === '.' || part === '..')
+  ) return '';
+  return value;
+}
+
+export function isContainedRuntimeManifestSymlink(linkPath, target) {
+  if (
+    !safeRuntimeManifestPath(linkPath)
+    || typeof target !== 'string'
+    || !target
+    || posix.isAbsolute(target)
+    || target.includes('\\')
+    || target.includes('\0')
+    || /^[A-Za-z]:/.test(target)
+  ) return false;
+  const destination = posix.normalize(posix.join(posix.dirname(linkPath), target));
+  return Boolean(
+    destination
+    && destination !== '..'
+    && !destination.startsWith('../')
+    && !posix.isAbsolute(destination)
+  );
+}
+
 export function isContainedRuntimeSymlink(root, linkPath, target) {
   if (!target || isAbsolute(target)) return false;
   const destination = resolve(dirname(linkPath), target);
@@ -262,9 +300,44 @@ export function verifyRuntimeManifest(runtimeRoot, manifest, runtimeLock) {
   if (manifest.schemaVersion !== RUNTIME_MANIFEST_SCHEMA_VERSION) {
     errors.push(`runtime manifest schemaVersion must be ${RUNTIME_MANIFEST_SCHEMA_VERSION}`);
   }
-  if (!Array.isArray(manifest.files)) {
-    errors.push('runtime manifest files must be an array');
+  if (
+    !Array.isArray(manifest.files)
+    || manifest.files.length < 1
+    || manifest.files.length > 100_000
+  ) {
+    errors.push('runtime manifest files must be a bounded non-empty array');
     return errors;
+  }
+  const expectedRecords = [];
+  const seenPaths = new Set();
+  for (const [index, record] of manifest.files.entries()) {
+    const path = record && typeof record === 'object'
+      ? safeRuntimeManifestPath(record.path)
+      : '';
+    const type = record?.type;
+    const target = type === 'symlink' ? record?.target : undefined;
+    const valid = Boolean(
+      path
+      && (type === 'file' || type === 'symlink')
+      && Number.isSafeInteger(record?.size)
+      && record.size >= 0
+      && HEX_64.test(record?.sha256 || '')
+      && (
+        type === 'symlink'
+          ? isContainedRuntimeManifestSymlink(path, target)
+          : record.target === undefined
+      )
+    );
+    if (!valid) {
+      errors.push(`runtime manifest files[${index}] is invalid`);
+      continue;
+    }
+    if (seenPaths.has(path)) {
+      errors.push(`runtime manifest contains duplicate file ${path}`);
+      continue;
+    }
+    seenPaths.add(path);
+    expectedRecords.push(record);
   }
 
   let actual = [];
@@ -274,7 +347,7 @@ export function verifyRuntimeManifest(runtimeRoot, manifest, runtimeLock) {
     errors.push(error instanceof Error ? error.message : String(error));
     return errors;
   }
-  const expectedLines = manifest.files.map((record) => canonicalRecord(record));
+  const expectedLines = expectedRecords.map((record) => canonicalRecord(record));
   const actualLines = actual.map((record) => canonicalRecord(record));
   const expectedSet = new Set(expectedLines);
   const actualSet = new Set(actualLines);

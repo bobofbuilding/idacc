@@ -113,6 +113,56 @@ const manifestValue = {
 };
 const manifest = parseRuntimeManifest(manifestValue);
 assert.equal(manifest.components.manager.version, '1.2.3');
+const npmBinTarget = '../which/bin/node-which';
+const symlinkFixtureFiles = [
+  ...fixtureFiles,
+  {
+    path: 'brain/node_modules/.bin/node-which',
+    type: 'symlink',
+    size: Buffer.byteLength(npmBinTarget),
+    sha256: sha256(`symlink\0${npmBinTarget}`),
+    target: npmBinTarget,
+  },
+].sort((left, right) => left.path.localeCompare(right.path));
+const symlinkManifestValue = {
+  ...manifestValue,
+  trees: {
+    manager: treeHash(symlinkFixtureFiles, 'manager'),
+    brain: treeHash(symlinkFixtureFiles, 'brain'),
+    runtime: treeHash(symlinkFixtureFiles),
+  },
+  files: symlinkFixtureFiles,
+};
+assert.equal(
+  parseRuntimeManifest(symlinkManifestValue).files
+    .find((record) => record.type === 'symlink')?.target,
+  npmBinTarget,
+  'production manifest parsing must accept npm .bin links that remain inside the runtime root',
+);
+for (const unsafeTarget of [
+  '../../../../outside-runtime',
+  '/tmp/outside-runtime',
+  'C:/outside-runtime',
+  '..\\outside-runtime',
+]) {
+  assert.throws(
+    () => parseRuntimeManifest({
+      ...symlinkManifestValue,
+      files: symlinkFixtureFiles.map((record) => (
+        record.type === 'symlink'
+          ? {
+              ...record,
+              target: unsafeTarget,
+              size: Buffer.byteLength(unsafeTarget),
+              sha256: sha256(`symlink\0${unsafeTarget}`),
+            }
+          : record
+      )),
+    }),
+    /files\[\d+\] is invalid/,
+    `production manifest parsing must reject unsafe symlink target ${unsafeTarget}`,
+  );
+}
 assert.throws(
   () => parseRuntimeManifest({ schemaVersion: 1, components: {} }),
   /schemaVersion/,

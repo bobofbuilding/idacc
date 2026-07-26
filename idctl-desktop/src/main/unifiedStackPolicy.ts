@@ -12,7 +12,15 @@ import {
   unlinkSync,
 } from 'node:fs';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import {
+  basename,
+  dirname,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 
 export type UnifiedServiceName = 'manager' | 'brain';
 
@@ -112,13 +120,21 @@ function safeManifestPath(value: unknown): string | undefined {
   return path;
 }
 
-function safeSymlinkTarget(value: unknown): string | undefined {
-  const target = nonEmptyString(value);
+function safeSymlinkTarget(value: unknown, linkPath: string): string | undefined {
+  const target = typeof value === 'string' && value ? value : undefined;
   if (
     !target
-    || target.startsWith('/')
+    || posix.isAbsolute(target)
     || target.includes('\\')
-    || target.split('/').some((part) => part === '..')
+    || target.includes('\0')
+    || /^[A-Za-z]:/.test(target)
+  ) return undefined;
+  const destination = posix.normalize(posix.join(posix.dirname(linkPath), target));
+  if (
+    !destination
+    || destination === '..'
+    || destination.startsWith('../')
+    || posix.isAbsolute(destination)
   ) return undefined;
   return target;
 }
@@ -212,7 +228,9 @@ export function parseRuntimeManifest(value: unknown): RuntimeManifest {
     const type = file?.type;
     const size = Number(file?.size);
     const digest = file && nonEmptyString(file.sha256);
-    const target = type === 'symlink' ? safeSymlinkTarget(file?.target) : undefined;
+    const target = type === 'symlink' && path
+      ? safeSymlinkTarget(file?.target, path)
+      : undefined;
     if (
       !file
       || !path
@@ -375,6 +393,10 @@ export function verifyRuntimePayload(root: string, manifest: RuntimeManifest): s
       continue;
     }
     const target = readlinkSync(path);
+    if (!safeSymlinkTarget(target, record.path)) {
+      errors.push(`runtime symlink escapes its root: ${record.path}`);
+      continue;
+    }
     if (target !== record.target || Buffer.byteLength(target) !== record.size) {
       errors.push(`runtime symlink target changed: ${record.path}`);
       continue;

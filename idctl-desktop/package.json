@@ -25,7 +25,7 @@
     "start": "npm run build && electron .",
     "dev": "node scripts/build.mjs && electron .",
     "stage:runtimes": "node scripts/stage-unified-runtime.mjs",
-    "verify:runtimes": "node ../scripts/verify-runtime-manifest.mjs",
+    "verify:runtimes": "node ../scripts/verify-runtime-manifest.mjs && node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/runtime-manifest-policy-check.ts resources/idacc-runtime/manifest.json",
     "prepare:notices": "node ../scripts/generate-release-metadata.mjs --notices-only resources/THIRD_PARTY_NOTICES.md",
     "release:metadata": "node ../scripts/generate-release-metadata.mjs",
     "predist": "npm run stage:runtimes",

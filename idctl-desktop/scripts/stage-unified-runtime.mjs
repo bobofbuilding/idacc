@@ -432,6 +432,13 @@ try {
   writeFileSync(join(payload, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
   const manifestErrors = verifyRuntimeManifest(payload, manifest, lock);
   if (manifestErrors.length) fail(`generated runtime manifest failed verification:\n- ${manifestErrors.join('\n- ')}`);
+  run(process.execPath, [
+    '--disable-warning=ExperimentalWarning',
+    '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON',
+    '--experimental-strip-types',
+    join(desktop, 'scripts', 'runtime-manifest-policy-check.ts'),
+    join(payload, 'manifest.json'),
+  ], desktop);
 
   atomicInstall(payload, target);
   console.log(`Staged exact unified runtime → ${target}`);
