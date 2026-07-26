@@ -74,7 +74,7 @@ export interface IdctlConfig {
    */
   orgSync?: { enabled?: boolean; autoRebuild?: boolean };
   /**
-   * Disabled-by-default background goal driver. When enabled, only active goals whose own
+   * Background goal driver. The global master defaults on, but only active goals whose own
    * autopilot flag is true can spawn gap-fill tasks and publish team instructions.
    */
   goalDriver?: GoalDriverSettings;
@@ -569,6 +569,15 @@ export function defaultMcpEndpoint(transport: McpTransport): string {
   return transport === 'stdio' ? 'npx' : 'http://127.0.0.1:8000/mcp';
 }
 
+/** Safe first-run goal cadence: globally available, with every goal still opt-in. */
+export function defaultGoalDriverSettings(): GoalDriverSettings {
+  return {
+    enabled: true,
+    cadenceMs: 15 * 60 * 1000,
+    maxOpenTasksPerGoal: 3,
+  };
+}
+
 /** The empty config returned on first run (no file yet). */
 export function emptyConfig(): IdctlConfig {
   return {
@@ -578,6 +587,7 @@ export function emptyConfig(): IdctlConfig {
     rootIdentity: defaultRootIdentitySettings(),
     update: defaultUpdateSettings(),
     brainAutomation: defaultBrainAutomationSettings(),
+    goalDriver: defaultGoalDriverSettings(),
     defaultTeam: DEFAULT_TEAM,
     knownTeams: [DEFAULT_TEAM],
   };

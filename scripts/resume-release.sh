@@ -57,35 +57,91 @@ cleanup() {
 trap cleanup EXIT
 git worktree add --quiet --detach "$WORKTREE" "$TAG"
 node "$WORKTREE/scripts/validate-release-schema.mjs" --publish "$VER"
-cleanup
-trap - EXIT
 
 release_wait_for_github_verified_tag "$REPOSITORY" "$TAG" "$RELEASE_COMMIT"
 node "$ROOT/scripts/check-release-publication.mjs" --allow-tag "$TAG"
 
 STATE="$(release_state "$REPOSITORY" "$TAG")"
 if [ "$STATE" = "published" ]; then
-  printf '✓ %s is already published; no duplicate workflow was dispatched\n' "$TAG"
+  (
+    unset GH_TOKEN GITHUB_TOKEN IDACC_RELEASE_TOKEN RELEASE_ADMIN_TOKEN
+    node "$WORKTREE/scripts/verify-public-release.mjs" \
+      --repo "$REPOSITORY" \
+      --tag "$TAG" \
+      --commit "$RELEASE_COMMIT"
+  )
+  cleanup
+  trap - EXIT
+  printf '✓ %s is already published and its public release/update path is verified; no duplicate workflow was dispatched\n' "$TAG"
   exit 0
 fi
 
-ACTIVE_RUN="$(release_active_workflow_url "$REPOSITORY" "$TAG")"
+ACTIVE_RUN="$(release_active_workflow_record "$REPOSITORY" "$TAG" "$RELEASE_COMMIT" "$PUBLISH")"
 if [ -n "$ACTIVE_RUN" ]; then
-  printf '✓ Production release is already active for %s; no duplicate was dispatched: %s\n' "$TAG" "$ACTIVE_RUN"
+  IFS=$'\t' read -r RUN_ID RUN_URL <<< "$ACTIVE_RUN"
+  printf '▶ waiting for already-active exact Production release run %s: %s\n' "$RUN_ID" "$RUN_URL"
+  release_wait_for_workflow_run \
+    "$REPOSITORY" "$RUN_ID" "$TAG" "$RELEASE_COMMIT" "$PUBLISH"
+  if [ "$PUBLISH" = "true" ]; then
+    (
+      unset GH_TOKEN GITHUB_TOKEN IDACC_RELEASE_TOKEN RELEASE_ADMIN_TOKEN
+      node "$WORKTREE/scripts/verify-public-release.mjs" \
+        --repo "$REPOSITORY" \
+        --tag "$TAG" \
+        --commit "$RELEASE_COMMIT"
+    )
+  else
+    [ "$(release_state "$REPOSITORY" "$TAG")" = "draft" ] \
+      || release_fail "publish=false run $RUN_ID did not retain the expected draft release"
+  fi
+  cleanup
+  trap - EXIT
+  printf '✓ Production release run %s and its requested completion state are verified\n' "$RUN_ID"
   exit 0
 fi
 
-SUCCESSFUL_RUN="$(release_successful_workflow_url "$REPOSITORY" "$TAG")"
+SUCCESSFUL_RUN="$(release_successful_workflow_record "$REPOSITORY" "$TAG" "$RELEASE_COMMIT" "$PUBLISH")"
 if [ "$PUBLISH" = "false" ] && [ "$STATE" = "draft" ] && [ -n "$SUCCESSFUL_RUN" ]; then
-  printf '✓ publish=false verification already completed for %s; draft retained: %s\n' "$TAG" "$SUCCESSFUL_RUN"
+  IFS=$'\t' read -r RUN_ID RUN_URL <<< "$SUCCESSFUL_RUN"
+  release_wait_for_workflow_run \
+    "$REPOSITORY" "$RUN_ID" "$TAG" "$RELEASE_COMMIT" "$PUBLISH"
+  cleanup
+  trap - EXIT
+  printf '✓ publish=false verification already completed for %s; exact run %s retained the draft: %s\n' \
+    "$TAG" "$RUN_ID" "$RUN_URL"
   exit 0
 fi
 
+REQUEST_ID="idacc-$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
 gh workflow run release.yml \
   --repo "$REPOSITORY" \
   --ref "$TAG" \
   --field "version=$VER" \
-  --field "publish=$PUBLISH"
+  --field "publish=$PUBLISH" \
+  --field "request_id=$REQUEST_ID"
 
-printf '✓ dispatched Production release for %s at %s (publish=%s)\n' "$TAG" "$RELEASE_COMMIT" "$PUBLISH"
-printf '  monitor: gh run list --repo %s --workflow release.yml --branch %s\n' "$REPOSITORY" "$TAG"
+RUN_RECORD="$(release_wait_for_dispatched_workflow_record \
+  "$REPOSITORY" "$TAG" "$RELEASE_COMMIT" "$PUBLISH" "$REQUEST_ID")"
+IFS=$'\t' read -r RUN_ID RUN_URL <<< "$RUN_RECORD"
+printf '▶ dispatched exact Production release request %s as run %s: %s\n' \
+  "$REQUEST_ID" "$RUN_ID" "$RUN_URL"
+release_wait_for_workflow_run \
+  "$REPOSITORY" "$RUN_ID" "$TAG" "$RELEASE_COMMIT" "$PUBLISH" "$REQUEST_ID"
+
+if [ "$PUBLISH" = "true" ]; then
+  (
+    unset GH_TOKEN GITHUB_TOKEN IDACC_RELEASE_TOKEN RELEASE_ADMIN_TOKEN
+    node "$WORKTREE/scripts/verify-public-release.mjs" \
+      --repo "$REPOSITORY" \
+      --tag "$TAG" \
+      --commit "$RELEASE_COMMIT"
+  )
+else
+  [ "$(release_state "$REPOSITORY" "$TAG")" = "draft" ] \
+    || release_fail "publish=false run $RUN_ID did not retain the expected draft release"
+fi
+
+cleanup
+trap - EXIT
+printf '✓ completed and independently verified Production release run %s for %s at %s (publish=%s)\n' \
+  "$RUN_ID" "$TAG" "$RELEASE_COMMIT" "$PUBLISH"

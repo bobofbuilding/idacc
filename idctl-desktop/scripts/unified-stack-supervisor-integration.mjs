@@ -133,7 +133,7 @@ writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-database-url.txt'), proc
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-sqlite-path.txt'), process.env.SQLITE_PATH || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-workspace-path.txt'), process.env.AGENT_MANAGER_WORKDIR || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-shared-workspace-path.txt'), process.env.ID_WORKSPACE_DIR || '');
-if (attempt < 3) {
+if (attempt < 3 && process.env.IDACC_TEST_SKIP_STARTUP_CRASHES !== '1') {
   console.error('intentional manager startup crash ' + attempt);
   process.exit(23);
 }
@@ -430,7 +430,7 @@ lines.on('line', async line => {
 `;
 
 const brainListenerSource = `
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 const root = process.env.IDACC_DATA_DIR;
 const attemptsPath = join(root, 'brain-listener-attempts.txt');
@@ -440,6 +440,9 @@ attempts += 1;
 writeFileSync(attemptsPath, String(attempts), { mode: 0o600 });
 writeFileSync(join(root, 'brain-listener-admin-token.txt'), process.env.IDACC_ADMIN_TOKEN || '', { mode: 0o600 });
 const cursorPath = process.env.BRAIN_LISTENER_CURSOR_FILE;
+const statusPath = process.env.BRAIN_LISTENER_STATUS_FILE;
+const statusNonce = process.env.BRAIN_LISTENER_INSTANCE_NONCE || '';
+const statusMode = process.env.IDACC_TEST_LISTENER_STATUS_MODE || 'valid';
 let cursor = 0;
 if (cursorPath && existsSync(cursorPath)) {
   cursor = Number(JSON.parse(readFileSync(cursorPath, 'utf8')).seq || 0);
@@ -467,8 +470,36 @@ if (cursorPath) {
     seq: cursor,
   }), { mode: 0o600 });
 }
-if (attempts === 1) process.exit(23);
-setInterval(() => {}, 1000);
+const publishStatus = () => {
+  if (!statusPath || !statusNonce) throw new Error('listener readiness environment is missing');
+  const temporary = statusPath + '.' + process.pid + '.tmp';
+  writeFileSync(temporary, JSON.stringify({
+    schemaVersion: 1,
+    instanceNonce: statusMode === 'wrong-nonce' ? 'wrong-listener-nonce' : statusNonce,
+    pid: process.pid,
+    primaryTeam: {
+      id: process.env.ID_TEAM || 'default',
+      name: process.env.ID_TEAM || 'default',
+      active: true,
+    },
+    teamCount: 1,
+    lastSuccessfulPollAt: new Date(
+      Date.now() - (statusMode === 'stale' ? 60_000 : 0),
+    ).toISOString(),
+    cursors: [{
+      id: process.env.ID_TEAM || 'default',
+      name: process.env.ID_TEAM || 'default',
+      seq: cursor,
+    }],
+  }), { mode: 0o600 });
+  renameSync(temporary, statusPath);
+  try { chmodSync(statusPath, 0o600); } catch {}
+};
+if (statusMode !== 'missing') publishStatus();
+if (attempts === 1 && process.env.IDACC_TEST_SKIP_STARTUP_CRASHES !== '1') process.exit(23);
+setInterval(() => {
+  if (statusMode !== 'missing') publishStatus();
+}, 2500);
 process.on('SIGTERM', () => process.exit(0));
 `;
 
@@ -694,7 +725,9 @@ try {
   assert.ok(cycle);
   assert.equal(listener.enabled, true);
   assert.equal(listener.running, true);
+  assert.equal(listener.healthy, true);
   assert.equal(listener.phase, 'running');
+  assert.match(listener.lastSuccessfulPollAt || '', /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(cycle.enabled, true);
   const manager = status.services.find((service) => service.name === 'manager');
   const brain = status.services.find((service) => service.name === 'brain');
@@ -768,6 +801,18 @@ try {
   const listenerCursor = JSON.parse(readFileSync(cursorFile, 'utf8'));
   assert.equal(listenerCursor.seq, 1);
   assert.equal(listenerCursor.team, 'default');
+  const listenerStatusFile = join(profile, 'brain', 'brain-listener-status.json');
+  const listenerStatus = JSON.parse(readFileSync(listenerStatusFile, 'utf8'));
+  assert.equal(listenerStatus.schemaVersion, 1);
+  assert.equal(listenerStatus.pid, listener.pid);
+  assert.match(listenerStatus.instanceNonce, /^[0-9a-f]{48}$/);
+  assert.ok(
+    Date.parse(listenerStatus.lastSuccessfulPollAt) >= Date.parse(listener.lastSuccessfulPollAt),
+    'private listener status regressed behind the publicly reported successful poll',
+  );
+  assert.equal(listenerStatus.teamCount, 1);
+  assert.deepEqual(listenerStatus.primaryTeam, { id: 'default', name: 'default', active: true });
+  assert.deepEqual(listenerStatus.cursors, [{ id: 'default', name: 'default', seq: 1 }]);
   const listenerIngest = JSON.parse(readFileSync(join(profile, 'brain-listener-ingest.json'), 'utf8'));
   assert.deepEqual(listenerIngest.eventIds, [1]);
   assert.equal(listenerIngest.requests, 1, 'listener replayed an already-cursored event after restart');
@@ -808,17 +853,79 @@ try {
 
   assert.equal(line.includes(brainToken), false, 'stack status exposed the session token');
   assert.equal(line.includes(managerAdminToken), false, 'stack status exposed the Manager admin bearer');
+  assert.equal(line.includes(listenerStatus.instanceNonce), false, 'stack status exposed the listener process nonce');
   assert.equal(authLine.includes(managerAdminToken), false, 'auth smoke exposed the Manager admin bearer');
   assert.equal(statSync(join(profile, 'logs', 'manager.log')).mode & 0o777, 0o600);
   assert.equal(statSync(join(profile, 'logs', 'brain-listener.log')).mode & 0o777, 0o600);
   assert.equal(statSync(join(profile, 'logs', 'brain-cycle.log')).mode & 0o777, 0o600);
   if (process.platform !== 'win32') {
     assert.equal(statSync(cursorFile).mode & 0o777, 0o600);
+    assert.equal(statSync(listenerStatusFile).mode & 0o777, 0o600);
     assert.equal(statSync(cycleStateFile).mode & 0o777, 0o600);
     assert.equal(statSync(join(brainSkillsRoot, 'brain', 'SKILL.md')).mode & 0o777, 0o600);
   }
   assert.equal(await canBind(Number(new URL(manager.url).port)), true, 'manager port remained occupied after shutdown');
   assert.equal(await canBind(Number(new URL(brain.url).port)), true, 'Brain port remained occupied after shutdown');
+
+  for (const [mode, expectedError] of [
+    ['missing', /not present/],
+    ['wrong-nonce', /managed process/],
+    ['stale', /recently/],
+  ]) {
+    const negativeProfile = join(scratch, `profile-${mode}`);
+    const negativeResultFile = join(negativeProfile, 'stack-selftest-result.json');
+    mkdirSync(join(negativeProfile, 'config'), { recursive: true });
+    writeFileSync(join(negativeProfile, 'config', 'config.json'), JSON.stringify({
+      version: 1,
+      managers: [],
+      providers: [],
+      projects: [],
+      brainAutomation: {
+        cycleEnabled: false,
+        cycleCadenceHours: 24,
+      },
+    }, null, 2), { mode: 0o600 });
+    const negative = spawnSync(electron, ['.'], {
+      cwd: desktop,
+      env: {
+        ...env,
+        IDACC_DATA_DIR: negativeProfile,
+        IDACC_PROFILE: `listener-readiness-${mode}`,
+        IDACC_STACK_SELFTEST_RESULT_FILE: negativeResultFile,
+        IDACC_STACK_SELFTEST_READY_TIMEOUT_MS: '6000',
+        IDACC_STACK_AUTH_SELFTEST: '0',
+        IDACC_STACK_SELFTEST_ENABLE_BRAIN_CYCLE: '0',
+        IDACC_TEST_SKIP_STARTUP_CRASHES: '1',
+        IDACC_TEST_LISTENER_STATUS_MODE: mode,
+      },
+      encoding: 'utf8',
+      timeout: 20_000,
+      killSignal: 'SIGKILL',
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    assert.equal(
+      negative.status,
+      1,
+      `${mode} listener status unexpectedly satisfied readiness`
+      + `\nstdout:\n${negative.stdout}\nstderr:\n${negative.stderr}`,
+    );
+    assert.equal(existsSync(negativeResultFile), true, `${mode} case did not publish a result`);
+    const negativeStatus = JSON.parse(readFileSync(negativeResultFile, 'utf8'));
+    const negativeListener = negativeStatus.companions
+      .find((companion) => companion.name === 'brain-listener');
+    assert.equal(negativeStatus.ready, false);
+    assert.ok(negativeListener, `${mode} case omitted listener state`);
+    assert.equal(negativeListener.running, true, `${mode} case did not retain a live listener process`);
+    assert.equal(negativeListener.healthy, false, `${mode} case trusted an invalid listener status`);
+    assert.equal(negativeListener.phase, 'starting');
+    assert.match(negativeListener.error || '', expectedError);
+    const negativeStatusPath = join(negativeProfile, 'brain', 'brain-listener-status.json');
+    assert.equal(
+      existsSync(negativeStatusPath),
+      mode !== 'missing',
+      `${mode} case published an unexpected listener status file state`,
+    );
+  }
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

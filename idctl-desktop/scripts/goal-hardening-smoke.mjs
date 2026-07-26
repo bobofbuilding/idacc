@@ -90,6 +90,12 @@ try {
     cadenceMs: 5 * 60 * 1000,
     maxOpenTasksPerGoal: 12,
   });
+  assert.deepEqual(normalizeGoalDriverConfig(undefined), {
+    enabled: true,
+    cadenceMs: 15 * 60 * 1000,
+    maxOpenTasksPerGoal: 3,
+  });
+  assert.equal(normalizeGoalDriverConfig({ enabled: false }).enabled, false);
   assert.deepEqual(goalDriverControlValue({ enabled: true, cadenceMs: 30 * 60 * 1000, maxOpenTasksPerGoal: 3 }), {
     schemaVersion: 1,
     enabled: true,

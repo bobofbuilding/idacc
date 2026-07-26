@@ -40,6 +40,54 @@ export function hasRuntimeCode(code: string): boolean {
 }
 
 export type EnsBindingState = 'verified' | 'mismatch' | 'unbound' | 'missing';
+export type IdentityStandardEvidenceState = 'verified' | 'warn' | 'missing' | 'self';
+
+export type IdentityStandardEvidence = {
+  ensBinding: IdentityStandardEvidenceState;
+  ensip24: IdentityStandardEvidenceState;
+  erc8004: IdentityStandardEvidenceState;
+  erc8048: IdentityStandardEvidenceState;
+  erc8049: IdentityStandardEvidenceState;
+  b20: IdentityStandardEvidenceState;
+};
+
+/**
+ * Keep generic public evidence distinct from standard conformance. A matching
+ * ENS address record can verify that one binding, but neither it nor deployed
+ * bytecode can promote draft metadata standards beyond Manager-declared
+ * evidence without canonical targets and a versioned attestation contract.
+ */
+export function classifyIdentityStandardEvidence(input: {
+  hasAgent: boolean;
+  hasDomain: boolean;
+  hasWallet: boolean;
+  hasSmartAccount: boolean;
+  ensBindingVerified: boolean;
+  ensip24Declared: boolean;
+  erc8004Declared: boolean;
+  erc8048Declared: boolean;
+  erc8049Declared: boolean;
+  b20Declared: boolean;
+}): IdentityStandardEvidence {
+  if (!input.hasAgent) {
+    return {
+      ensBinding: 'missing',
+      ensip24: 'missing',
+      erc8004: 'missing',
+      erc8048: 'missing',
+      erc8049: 'missing',
+      b20: 'missing',
+    };
+  }
+  return {
+    ensBinding: input.ensBindingVerified ? 'verified' : input.hasDomain ? 'warn' : 'missing',
+    ensip24: input.ensip24Declared ? 'self' : input.hasDomain ? 'warn' : 'missing',
+    erc8004: input.erc8004Declared ? 'self' : input.hasWallet ? 'warn' : 'missing',
+    erc8048: input.erc8048Declared ? 'self' : input.hasDomain || input.hasWallet ? 'warn' : 'missing',
+    erc8049: input.erc8049Declared ? 'self' : input.hasSmartAccount ? 'warn' : 'missing',
+    b20: input.b20Declared ? 'self' : 'warn',
+  };
+}
 
 /**
  * Resolver output is only a verified identity binding when it matches at

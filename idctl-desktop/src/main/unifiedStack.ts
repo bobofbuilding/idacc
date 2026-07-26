@@ -41,6 +41,7 @@ import {
   parseRuntimeManifest,
   recentCrashes,
   restartDelayMs,
+  readBrainListenerStatusFile,
   rotateServiceLog,
   shouldOpenCrashFuse,
   validateServiceHealth,
@@ -59,7 +60,7 @@ const COMPILED_RUNTIME_MANIFEST_SHA256 = typeof __IDACC_RUNTIME_MANIFEST_SHA256_
 type ServiceName = UnifiedServiceName;
 type ServicePhase = 'missing' | 'starting' | 'running' | 'unhealthy' | 'backoff' | 'fused' | 'stopping' | 'stopped';
 type CompanionName = 'brain-listener' | 'brain-cycle';
-type CompanionPhase = 'disabled' | 'waiting' | 'starting' | 'running' | 'backoff' | 'fused' | 'stopping' | 'stopped';
+type CompanionPhase = 'disabled' | 'waiting' | 'starting' | 'running' | 'unhealthy' | 'backoff' | 'fused' | 'stopping' | 'stopped';
 
 export interface ServiceState {
   name: ServiceName;
@@ -90,6 +91,7 @@ export interface CompanionState {
   name: CompanionName;
   enabled: boolean;
   running: boolean;
+  healthy?: boolean;
   phase: CompanionPhase;
   pid?: number;
   restartCount: number;
@@ -97,6 +99,7 @@ export interface CompanionState {
   fuseUntil?: string;
   lastStartedAt?: string;
   lastCompletedAt?: string;
+  lastSuccessfulPollAt?: string;
   lastExit?: string;
   error?: string;
 }
@@ -164,10 +167,14 @@ interface ManagedCompanion {
   enabled: boolean;
   continuous: boolean;
   phase: CompanionPhase;
+  instanceNonce?: string;
+  statusPath?: string;
+  statusHealthy?: boolean;
+  healthError?: string;
+  lastSuccessfulPollAt?: string;
   child?: ChildProcess;
   log?: WriteStream;
   watchdog?: ReturnType<typeof setInterval>;
-  readyTimer?: ReturnType<typeof setTimeout>;
   restartTimer?: ReturnType<typeof setTimeout>;
   forceKillTimer?: ReturnType<typeof setTimeout>;
   restartAttempts: number;
@@ -230,7 +237,7 @@ let managerCompatibilityLastCheckedAt = 0;
 
 function runtimeRoot(): string {
   const testRoot = process.env.IDACC_RUNTIME_ROOT?.trim();
-  if (testRoot && (!app.isPackaged || process.env.IDACC_STACK_SELFTEST)) return resolve(testRoot);
+  if (testRoot && !app.isPackaged) return resolve(testRoot);
   return app.isPackaged
     ? join(process.resourcesPath, 'idacc-runtime')
     : join(app.getAppPath(), 'resources', 'idacc-runtime');
@@ -471,11 +478,9 @@ function isCompanionAlive(companion: ManagedCompanion): boolean {
 
 function clearCompanionTimers(companion: ManagedCompanion): void {
   if (companion.watchdog) clearInterval(companion.watchdog);
-  if (companion.readyTimer) clearTimeout(companion.readyTimer);
   if (companion.restartTimer) clearTimeout(companion.restartTimer);
   if (companion.forceKillTimer) clearTimeout(companion.forceKillTimer);
   companion.watchdog = undefined;
-  companion.readyTimer = undefined;
   companion.restartTimer = undefined;
   companion.forceKillTimer = undefined;
   companion.nextStartAt = undefined;
@@ -598,7 +603,8 @@ function coreServicesReady(): boolean {
   });
 }
 
-function companionEnvironment(name: CompanionName): NodeJS.ProcessEnv {
+function companionEnvironment(companion: ManagedCompanion): NodeJS.ProcessEnv {
+  const { name } = companion;
   const brain = services.get('brain');
   const manager = services.get('manager');
   const settings = loadSettings(profile?.config);
@@ -635,6 +641,10 @@ function companionEnvironment(name: CompanionName): NodeJS.ProcessEnv {
       BRAIN_STATE_DIR: profile.brain,
       BRAIN_DB_PATH: join(profile.brain, 'brain.db'),
       BRAIN_LISTENER_CURSOR_FILE: join(profile.brain, 'brain-listener-cursor.json'),
+      ...(name === 'brain-listener' && companion.statusPath && companion.instanceNonce ? {
+        BRAIN_LISTENER_STATUS_FILE: companion.statusPath,
+        BRAIN_LISTENER_INSTANCE_NONCE: companion.instanceNonce,
+      } : {}),
     } : {}),
   };
   // The Manager bearer never crosses into Brain, agents, or app-owned Brain
@@ -643,6 +653,10 @@ function companionEnvironment(name: CompanionName): NodeJS.ProcessEnv {
   delete env.BRAIN_SYNC_ONCHAIN_SCRIPT;
   delete env.BRAIN_CYCLE_REPO_PROJECT;
   delete env.BRAIN_SQLITE_VEC_EXTENSION;
+  if (name !== 'brain-listener') {
+    delete env.BRAIN_LISTENER_STATUS_FILE;
+    delete env.BRAIN_LISTENER_INSTANCE_NONCE;
+  }
   for (const key of Object.keys(env)) {
     if (key.startsWith('BRAIN_CONSOLIDATION_')) delete env[key];
   }
@@ -650,6 +664,48 @@ function companionEnvironment(name: CompanionName): NodeJS.ProcessEnv {
   // defaults and cannot be activated by a caller's shell environment.
   env.BRAIN_CONSOLIDATION_TAKES = '0';
   return env;
+}
+
+function refreshBrainListenerStatus(companion: ManagedCompanion): void {
+  if (companion.name !== 'brain-listener') return;
+  if (stopping || companion.phase === 'stopping') {
+    companion.statusHealthy = false;
+    companion.healthError = 'listener is stopping';
+    return;
+  }
+  const child = companion.child;
+  const pid = child?.pid;
+  if (
+    !isCompanionAlive(companion)
+    || !Number.isInteger(pid)
+    || Number(pid) <= 0
+    || !companion.instanceNonce
+    || !companion.statusPath
+  ) {
+    companion.statusHealthy = false;
+    companion.healthError = 'listener process has not published a successful-poll status';
+    return;
+  }
+  const options = {
+    instanceNonce: companion.instanceNonce,
+    pid: Number(pid),
+  };
+  let status = readBrainListenerStatusFile(companion.statusPath, options);
+  if (status.error === 'listener status file changed while it was being checked') {
+    status = readBrainListenerStatusFile(companion.statusPath, options);
+  }
+  companion.statusHealthy = status.healthy;
+  if (status.lastSuccessfulPollAt) {
+    companion.lastSuccessfulPollAt = status.lastSuccessfulPollAt;
+  }
+  companion.healthError = status.error;
+  if (status.healthy) {
+    companion.phase = 'running';
+  } else if (companion.phase === 'running' || companion.phase === 'unhealthy') {
+    companion.phase = 'unhealthy';
+  } else {
+    companion.phase = 'starting';
+  }
 }
 
 function scheduleContinuousCompanion(
@@ -714,10 +770,8 @@ function handleCompanionTermination(
   if (companion.child !== child) return;
   companion.child = undefined;
   if (companion.watchdog) clearInterval(companion.watchdog);
-  if (companion.readyTimer) clearTimeout(companion.readyTimer);
   if (companion.forceKillTimer) clearTimeout(companion.forceKillTimer);
   companion.watchdog = undefined;
-  companion.readyTimer = undefined;
   companion.forceKillTimer = undefined;
   closeCompanionLog(companion, child);
 
@@ -726,6 +780,10 @@ function handleCompanionTermination(
   companion.terminationReason = undefined;
   companion.lastExit = `${new Date(now).toISOString()} — ${reason}`;
   companion.error = code === 0 ? undefined : reason;
+  if (companion.name === 'brain-listener') {
+    companion.statusHealthy = false;
+    companion.healthError = 'listener process is not running';
+  }
 
   if (!companion.continuous) {
     let state = readCycleState(now);
@@ -796,6 +854,11 @@ async function launchCompanion(companion: ManagedCompanion): Promise<void> {
       lastRunId: runId,
     });
     companion.lastStartedAt = now;
+  } else if (companion.name === 'brain-listener') {
+    companion.instanceNonce = randomBytes(24).toString('hex');
+    companion.statusHealthy = false;
+    companion.healthError = 'listener status file is not present';
+    companion.lastSuccessfulPollAt = undefined;
   }
 
   rotateCompanionLog(companion);
@@ -824,7 +887,7 @@ async function launchCompanion(companion: ManagedCompanion): Promise<void> {
   try {
     child = spawn(process.execPath, [companion.entry], {
       cwd: companion.cwd,
-      env: companionEnvironment(companion.name),
+      env: companionEnvironment(companion),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (error) {
@@ -856,17 +919,9 @@ async function launchCompanion(companion: ManagedCompanion): Promise<void> {
     code,
     signal ? `exited from signal ${signal}` : `exited with code ${code ?? 'unknown'}`,
   ));
-  if (companion.continuous) {
-    companion.readyTimer = setTimeout(() => {
-      companion.readyTimer = undefined;
-      if (companion.child === child && isCompanionAlive(companion)) {
-        companion.phase = 'running';
-      }
-    }, 750);
-    companion.readyTimer.unref?.();
-  }
   companion.watchdog = setInterval(() => {
     rotateCompanionLog(companion);
+    refreshBrainListenerStatus(companion);
     if (!isCompanionAlive(companion) && companion.child === child) {
       terminal(child.exitCode, 'liveness watchdog observed a stopped companion');
     }
@@ -1356,6 +1411,9 @@ async function startUnifiedStackInternal(paths: AppProfilePaths): Promise<Unifie
     enabled: existsSync(listenerEntry) && !manifestResult.error,
     continuous: true,
     phase: existsSync(listenerEntry) && !manifestResult.error ? 'waiting' : 'disabled',
+    statusPath: join(paths.brain, 'brain-listener-status.json'),
+    statusHealthy: false,
+    healthError: 'listener has not started',
     restartAttempts: 0,
     crashTimes: [],
     error: existsSync(listenerEntry) ? manifestResult.error : 'listener is not present in this build',
@@ -1565,6 +1623,9 @@ function publicCompanionState(companion: ManagedCompanion): CompanionState {
     name: companion.name,
     enabled: companion.enabled,
     running,
+    ...(companion.name === 'brain-listener' ? {
+      healthy: running && companion.statusHealthy === true,
+    } : {}),
     phase: companion.phase,
     pid: running ? companion.child?.pid : undefined,
     restartCount: companion.restartAttempts,
@@ -1572,8 +1633,11 @@ function publicCompanionState(companion: ManagedCompanion): CompanionState {
     fuseUntil: companion.fuseUntil ? new Date(companion.fuseUntil).toISOString() : undefined,
     lastStartedAt: companion.lastStartedAt ? new Date(companion.lastStartedAt).toISOString() : undefined,
     lastCompletedAt: companion.lastCompletedAt ? new Date(companion.lastCompletedAt).toISOString() : undefined,
+    lastSuccessfulPollAt: companion.lastSuccessfulPollAt,
     lastExit: companion.lastExit,
-    error: companion.error,
+    error: running
+      ? companion.healthError || companion.error
+      : companion.error || companion.healthError,
   };
 }
 
@@ -1599,6 +1663,8 @@ export async function unifiedStackStatus(): Promise<UnifiedStackStatus> {
   }));
   const managerCompatibility = await probeManagerCompatibility();
   await startBrainCompanionsIfReady();
+  const managedListener = companions.get('brain-listener');
+  if (managedListener) refreshBrainListenerStatus(managedListener);
   const publicServices = active.map(publicServiceState);
   const publicCompanions = [...companions.values()].map(publicCompanionState);
   const listener = publicCompanions.find((companion) => companion.name === 'brain-listener');
@@ -1619,6 +1685,11 @@ export async function unifiedStackStatus(): Promise<UnifiedStackStatus> {
       ))
       && managerCompatibility.ready
       && brainCatalogState.healthy
-      && Boolean(listener?.enabled && listener.running && listener.phase === 'running'),
+      && Boolean(
+        listener?.enabled
+        && listener.running
+        && listener.healthy
+        && listener.phase === 'running',
+      ),
   };
 }

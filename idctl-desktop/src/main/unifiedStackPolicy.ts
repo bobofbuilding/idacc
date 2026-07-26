@@ -1,15 +1,20 @@
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   readFileSync,
+  readSync,
   readlinkSync,
   readdirSync,
   renameSync,
   statSync,
   truncateSync,
   unlinkSync,
+  constants as fsConstants,
 } from 'node:fs';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import {
@@ -70,6 +75,18 @@ export interface HealthValidation {
   error?: string;
 }
 
+export interface BrainListenerStatusValidation {
+  healthy: boolean;
+  lastSuccessfulPollAt?: string;
+  teamCount?: number;
+  primaryTeam?: {
+    id: string;
+    name: string;
+    active: boolean;
+  };
+  error?: string;
+}
+
 export interface LogRetentionPolicy {
   maxBytes: number;
   keepFiles: number;
@@ -87,6 +104,10 @@ const SERVICE_ALIASES: Record<UnifiedServiceName, ReadonlySet<string>> = {
   brain: new Set(['brain', 'idacc-brain', 'id-agents-brain']),
 };
 
+export const BRAIN_LISTENER_STATUS_MAX_BYTES = 512 * 1024;
+export const BRAIN_LISTENER_STATUS_FRESHNESS_MS = 30_000;
+const BRAIN_LISTENER_STATUS_FUTURE_SKEW_MS = 5_000;
+
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -103,6 +124,232 @@ function firstString(source: Record<string, unknown>, keys: string[]): string | 
     if (value) return value;
   }
   return undefined;
+}
+
+function listenerStatusError(
+  error: string,
+  lastSuccessfulPollAt?: string,
+): BrainListenerStatusValidation {
+  return {
+    healthy: false,
+    ...(lastSuccessfulPollAt ? { lastSuccessfulPollAt } : {}),
+    error,
+  };
+}
+
+/**
+ * Validate the process-bound status written after a successful listener poll.
+ * The instance nonce prevents a status file from an earlier listener process
+ * from making a newly spawned process look ready.
+ */
+export function validateBrainListenerStatus(
+  value: unknown,
+  options: {
+    instanceNonce: string;
+    pid: number;
+    now?: number;
+    freshnessMs?: number;
+  },
+): BrainListenerStatusValidation {
+  const source = record(value);
+  if (!source || source.schemaVersion !== 1) {
+    return listenerStatusError('listener status did not match schema version 1');
+  }
+  if (
+    typeof source.instanceNonce !== 'string'
+    || !source.instanceNonce
+    || source.instanceNonce !== options.instanceNonce
+    || !Number.isInteger(source.pid)
+    || Number(source.pid) <= 0
+    || Number(source.pid) !== options.pid
+  ) {
+    return listenerStatusError('listener status did not match the managed process');
+  }
+
+  const primaryTeam = record(source.primaryTeam);
+  const primaryTeamId = primaryTeam && nonEmptyString(primaryTeam.id);
+  const primaryTeamName = primaryTeam && nonEmptyString(primaryTeam.name);
+  const primaryTeamActive = primaryTeam?.active;
+  const teamCount = source.teamCount;
+  if (
+    !primaryTeamId
+    || primaryTeamId.length > 256
+    || !primaryTeamName
+    || primaryTeamName.length > 256
+    || typeof primaryTeamActive !== 'boolean'
+    || typeof teamCount !== 'number'
+    || !Number.isSafeInteger(teamCount)
+    || teamCount < 1
+    || teamCount > 512
+    || !Array.isArray(source.cursors)
+    || source.cursors.length !== teamCount
+  ) {
+    return listenerStatusError('listener status contained an invalid team summary');
+  }
+
+  const seenTeamIds = new Set<string>();
+  let includesPrimaryTeam = false;
+  for (const rawCursor of source.cursors) {
+    const cursor = record(rawCursor);
+    const id = cursor && nonEmptyString(cursor.id);
+    const name = cursor && nonEmptyString(cursor.name);
+    const seq = cursor?.seq;
+    if (
+      !id
+      || id.length > 256
+      || !name
+      || name.length > 256
+      || typeof seq !== 'number'
+      || !Number.isSafeInteger(seq)
+      || seq < 0
+      || seenTeamIds.has(id)
+    ) {
+      return listenerStatusError('listener status contained an invalid cursor summary');
+    }
+    seenTeamIds.add(id);
+    if (id === primaryTeamId) includesPrimaryTeam = true;
+  }
+  if (includesPrimaryTeam !== primaryTeamActive) {
+    return listenerStatusError('listener status primary-team activity disagreed with its cursors');
+  }
+
+  const lastSuccessfulPollAt = typeof source.lastSuccessfulPollAt === 'string'
+    ? source.lastSuccessfulPollAt
+    : '';
+  const pollTimestamp = Date.parse(lastSuccessfulPollAt);
+  if (
+    !lastSuccessfulPollAt
+    || !Number.isFinite(pollTimestamp)
+    || new Date(pollTimestamp).toISOString() !== lastSuccessfulPollAt
+  ) {
+    return listenerStatusError('listener status did not contain a valid successful-poll timestamp');
+  }
+  const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+  const freshnessMs = Math.max(1_000, Math.floor(
+    options.freshnessMs ?? BRAIN_LISTENER_STATUS_FRESHNESS_MS,
+  ));
+  if (pollTimestamp > now + BRAIN_LISTENER_STATUS_FUTURE_SKEW_MS) {
+    return listenerStatusError(
+      'listener successful-poll timestamp is in the future',
+      lastSuccessfulPollAt,
+    );
+  }
+  if (now - pollTimestamp > freshnessMs) {
+    return listenerStatusError(
+      'listener has not completed a successful poll recently',
+      lastSuccessfulPollAt,
+    );
+  }
+  return {
+    healthy: true,
+    lastSuccessfulPollAt,
+    teamCount,
+    primaryTeam: {
+      id: primaryTeamId,
+      name: primaryTeamName,
+      active: primaryTeamActive,
+    },
+  };
+}
+
+/**
+ * Read a listener status file without following symbolic links or accepting an
+ * oversized/permissive file. All failures are represented as not-ready state.
+ */
+export function readBrainListenerStatusFile(
+  path: string,
+  options: {
+    instanceNonce: string;
+    pid: number;
+    now?: number;
+    freshnessMs?: number;
+    maxBytes?: number;
+  },
+): BrainListenerStatusValidation {
+  let before;
+  try {
+    before = lstatSync(path);
+  } catch {
+    return listenerStatusError('listener status file is not present');
+  }
+  const requestedMaxBytes = Number.isFinite(options.maxBytes)
+    ? Number(options.maxBytes)
+    : BRAIN_LISTENER_STATUS_MAX_BYTES;
+  const maxBytes = Math.min(
+    BRAIN_LISTENER_STATUS_MAX_BYTES,
+    Math.max(
+      1_024,
+      Math.floor(requestedMaxBytes),
+    ),
+  );
+  if (before.isSymbolicLink()) {
+    return listenerStatusError('listener status file cannot be a symbolic link');
+  }
+  if (!before.isFile()) {
+    return listenerStatusError('listener status path is not a regular file');
+  }
+  if (before.size < 1 || before.size > maxBytes) {
+    return listenerStatusError('listener status file exceeded its size limit');
+  }
+  if (process.platform !== 'win32' && (before.mode & 0o077) !== 0) {
+    return listenerStatusError('listener status file is not private');
+  }
+
+  let descriptor: number | undefined;
+  try {
+    const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
+    descriptor = openSync(path, fsConstants.O_RDONLY | noFollow);
+    const opened = fstatSync(descriptor);
+    if (
+      !opened.isFile()
+      || opened.size < 1
+      || opened.size > maxBytes
+      || (process.platform !== 'win32' && (opened.mode & 0o077) !== 0)
+      || (
+        before.dev !== 0
+        && before.ino !== 0
+        && (opened.dev !== before.dev || opened.ino !== before.ino)
+      )
+      || opened.size !== before.size
+      || opened.mtimeMs !== before.mtimeMs
+      || opened.ctimeMs !== before.ctimeMs
+    ) {
+      return listenerStatusError('listener status file changed while it was being checked');
+    }
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const bytesRead = readSync(descriptor, buffer, offset, buffer.length - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const after = fstatSync(descriptor);
+    if (offset > maxBytes) {
+      return listenerStatusError('listener status file exceeded its size limit');
+    }
+    if (
+      after.size !== opened.size
+      || after.mtimeMs !== opened.mtimeMs
+      || after.ctimeMs !== opened.ctimeMs
+      || (process.platform !== 'win32' && (after.mode & 0o077) !== 0)
+    ) {
+      return listenerStatusError('listener status file changed while it was being read');
+    }
+    const raw = buffer.subarray(0, offset).toString('utf8');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return listenerStatusError('listener status file did not contain valid JSON');
+    }
+    return validateBrainListenerStatus(parsed, options);
+  } catch {
+    return listenerStatusError('listener status file could not be read safely');
+  } finally {
+    if (descriptor !== undefined) {
+      try { closeSync(descriptor); } catch { /* already closed */ }
+    }
+  }
 }
 
 const HEX_40 = /^[0-9a-f]{40}$/;

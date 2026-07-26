@@ -65,6 +65,8 @@ jobs:
           npm run test:org-hierarchy --prefix idctl-desktop
           npm run test:release-platform-config --prefix idctl-desktop
           npm run test:release-preflight --prefix idctl-desktop
+          npm run test:update-descriptor-contract --prefix idctl-desktop
+          npm run test:updater-public-provider --prefix idctl-desktop
           npm run test:root-identity --prefix idctl-desktop
           node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/identity-verification-smoke.ts
           node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/health-classification-smoke.ts
@@ -86,6 +88,7 @@ jobs:
           npm run test:dream-view-polish --prefix idctl-desktop
           npm run test:consumer-onboarding --prefix idctl-desktop
           npm run test:unified-stack-policy --prefix idctl-desktop
+          npm run test:unified-runtime-contract --prefix idctl-desktop
           npm run test:selftest-result-file --prefix idctl-desktop
           npm run test:legacy-manager-updater-retired --prefix idctl-desktop
           npm audit --prefix idctl-desktop --audit-level=high

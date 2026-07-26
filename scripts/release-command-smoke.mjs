@@ -53,15 +53,45 @@ assert.match(releaseScript, /RANGE="\$\{CHANGELOG_BASELINE\}\.\.HEAD"/);
 assert.match(releaseScript, /CHANGELOG_LINES=\("\$PRIMARY_NOTE"\)/);
 assert.match(releaseScript, /append_changelog_line "\$note"/);
 assert.doesNotMatch(releaseScript, /git describe/, 'changelog history must start at the published release, not an unpublished local tag');
-assert.match(resumeScript, /release_active_workflow_url/);
+assert.match(releaseHelpers, /release_active_workflow_record/);
+assert.match(releaseHelpers, /release_successful_workflow_record/);
+assert.match(releaseHelpers, /release_wait_for_dispatched_workflow_record/);
+assert.match(releaseHelpers, /release_wait_for_workflow_run/);
+assert.match(releaseHelpers, /run\.head_sha === process\.env\.IDACC_EXPECTED_COMMIT/);
+assert.match(releaseHelpers, /run\.head_branch === process\.env\.IDACC_EXPECTED_TAG/);
+assert.match(releaseHelpers, /run\.event === "workflow_dispatch"/);
+assert.match(releaseHelpers, /multiple matching \$kind Production release runs/);
+assert.match(resumeScript, /release_active_workflow_record/);
+assert.match(resumeScript, /release_successful_workflow_record/);
 assert.match(resumeScript, /gh workflow run release\.yml/);
 assert.match(resumeScript, /--field "version=\$VER"/);
 assert.match(resumeScript, /--field "publish=\$PUBLISH"/);
+assert.match(resumeScript, /--field "request_id=\$REQUEST_ID"/);
+assert.match(resumeScript, /REQUEST_ID="idacc-\$\(node -e/);
+assert.match(resumeScript, /release_wait_for_dispatched_workflow_record/);
+assert.match(resumeScript, /release_wait_for_workflow_run/);
+assert.match(resumeScript, /scripts\/verify-public-release\.mjs/);
+assert.match(resumeScript, /unset GH_TOKEN GITHUB_TOKEN IDACC_RELEASE_TOKEN RELEASE_ADMIN_TOKEN/);
+const dispatchCompletion = resumeScript.slice(resumeScript.indexOf('gh workflow run release.yml'));
+assert.ok(
+  dispatchCompletion.indexOf('release_wait_for_dispatched_workflow_record')
+    < dispatchCompletion.indexOf('release_wait_for_workflow_run')
+    && dispatchCompletion.indexOf('release_wait_for_workflow_run')
+      < dispatchCompletion.indexOf('scripts/verify-public-release.mjs'),
+  'release command must discover and await its exact workflow run before public completion verification',
+);
 
 assert.match(workflow, /^name:\s*Production release\s*$/m);
+assert.match(
+  workflow,
+  /^run-name:\s*Production release v\$\{\{\s*inputs\.version\s*\}\} publish=\$\{\{\s*inputs\.publish\s*\}\} request=\$\{\{\s*inputs\.request_id\s*\}\}\s*$/m,
+);
 assert.match(workflow, /^\s*workflow_dispatch:\s*$/m);
 assert.match(workflow, /^\s*version:\s*$/m);
 assert.match(workflow, /^\s*publish:\s*$/m);
+assert.match(workflow, /^\s*request_id:\s*$/m);
+assert.match(workflow, /RELEASE_REQUEST_ID:\s*\$\{\{\s*inputs\.request_id\s*\}\}/);
+assert.match(workflow, /\^\[A-Za-z0-9\]\[A-Za-z0-9\._-\]\{7,127\}\$/);
 assert.match(workflow, /default:\s*false/);
 assert.match(workflow, /Require a GitHub-verified signed annotated tag/);
 assert.match(workflow, /git\/tags\/\$TAG_SHA" --jq '\.tag'/);
@@ -71,6 +101,16 @@ assert.match(workflow, /\$GITHUB_SHA" != "\$TAG_COMMIT/);
 assert.match(workflow, /Dispatch this workflow from the exact signed tag/);
 assert.match(workflow, /Require GitHub-enforced immutable releases/);
 assert.match(workflow, /repos\/\$GITHUB_REPOSITORY\/immutable-releases/);
+assert.equal(
+  (workflow.match(/repos\/\$GITHUB_REPOSITORY\/immutable-releases/g) || []).length,
+  3,
+  'the immutable-release repository setting must be checked at every publication boundary',
+);
+assert.equal(
+  (workflow.match(/GH_TOKEN="\$RELEASE_ADMIN_TOKEN" gh api/g) || []).length,
+  3,
+  'every immutable-release setting read must use the dedicated Administration:read token',
+);
 assert.match(workflow, /Enable GitHub release immutability/);
 assert.match(workflow, /compare\/\$RELEASE_COMMIT\.\.\.main/);
 assert.match(workflow, /check-release-publication\.mjs --allow-tag "\$RELEASE_TAG"/);
@@ -88,6 +128,14 @@ assert.match(workflow, /ref:\s*\$\{\{\s*needs\.validate\.outputs\.release_commit
 assert.match(workflow, /Verify GitHub locked the published release/);
 assert.match(workflow, /Verify GitHub locked the promoted release/);
 assert.match(workflow, /releases\/tags\/\$RELEASE_TAG"[\s\S]*--jq '\.immutable'/);
+assert.match(workflow, /xcrun notarytool submit "\$DMG"/);
+assert.match(workflow, /xcrun stapler staple "\$DMG"/);
+assert.match(workflow, /verify-public-release:/);
+assert.match(workflow, /node scripts\/verify-public-release\.mjs/);
+assert.match(workflow, /node scripts\/verify-update-descriptors\.mjs/);
+assert.match(workflow, /Revalidate updater semantics before immutable promotion/);
+assert.match(provenance, /repository-level Actions secret[\s\S]*RUNTIME_SOURCE_TOKEN|RUNTIME_SOURCE_TOKEN[\s\S]*repository-level/);
+assert.match(provenance, /RELEASE_ADMIN_TOKEN[\s\S]*Administration/);
 assert.equal(cutoverMarker.baselinePublishedTag, 'v0.1.619');
 assert.equal(cutoverMarker.firstCanonicalVersionMustExceed, 'v0.1.647');
 assert.equal(cutoverMarker.schemaVersion, 2);
@@ -175,5 +223,7 @@ try {
 await import('./release-publication-smoke.mjs');
 await import('./release-publication-cli-smoke.mjs');
 await import('./release-draft-promotion-smoke.mjs');
+await import('./public-release-verifier-smoke.mjs');
+await import('./release-workflow-wait-smoke.mjs');
 
 console.log('release command smoke: ok');

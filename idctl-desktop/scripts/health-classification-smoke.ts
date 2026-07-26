@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   classifyAgentAvailability,
   classifyThroughputSample,
@@ -64,5 +67,12 @@ assert.equal(classifyThroughputSample(18, 1, 3, 1_000_000), 'harness-24h-average
 assert.equal(classifyThroughputSample(18, 1_000_001, 3, 1_000_000), 'harness-24h-average');
 assert.equal(classifyThroughputSample(-1, 900_000, 3, 1_000_000), 'harness-24h-average');
 assert.equal(classifyThroughputSample(undefined, undefined, 0, 1_000_000), 'no-harness-telemetry');
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const healthView = readFileSync(join(root, 'src', 'renderer', 'views', 'Health.tsx'), 'utf8');
+assert.match(healthView, />harness telemetry</);
+assert.match(healthView, /performance telemetry, not provider billing/);
+assert.match(healthView, /fresh harness sample/);
+assert.match(healthView, /24h harness average/);
 
 console.log('health classification smoke: ok');

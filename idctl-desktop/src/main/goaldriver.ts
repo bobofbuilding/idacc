@@ -8,6 +8,7 @@
 
 import type { ManagerClient } from '../../../idctl/src/api/client.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
+import { defaultGoalDriverSettings } from '../../../idctl/src/settings/schema.ts';
 import { getGoal, goalPriorityRank, listGoals, normalizeGoalPriority, type Goal } from './goalstore.ts';
 
 export interface GoalDriverConfig {
@@ -32,17 +33,21 @@ interface ManagerGoalAutopilotSyncResult {
   errors?: Array<{ goal?: string; error?: string }>;
 }
 
+const sharedGoalDriverDefaults = defaultGoalDriverSettings();
+
 export const GOAL_DRIVER_DEFAULTS: GoalDriverConfig = {
-  enabled: true,
-  cadenceMs: 15 * 60 * 1000,
-  maxOpenTasksPerGoal: 3,
+  enabled: sharedGoalDriverDefaults.enabled !== false,
+  cadenceMs: sharedGoalDriverDefaults.cadenceMs ?? 15 * 60 * 1000,
+  maxOpenTasksPerGoal: sharedGoalDriverDefaults.maxOpenTasksPerGoal ?? 3,
 };
 
 export function normalizeGoalDriverConfig(input?: Partial<GoalDriverConfig> | null): GoalDriverConfig {
   const requestedCadence = Number(input?.cadenceMs);
   const requestedTasks = Number(input?.maxOpenTasksPerGoal);
   return {
-    enabled: input?.enabled === true,
+    enabled: typeof input?.enabled === 'boolean'
+      ? input.enabled
+      : GOAL_DRIVER_DEFAULTS.enabled,
     cadenceMs: Number.isFinite(requestedCadence) && requestedCadence > 0
       ? Math.max(5 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Math.floor(requestedCadence)))
       : GOAL_DRIVER_DEFAULTS.cadenceMs,
@@ -220,10 +225,10 @@ export async function runGoalDriverOnce(getClient: () => ManagerClient, rawCfg: 
   }
   goals = afterSyncGoals;
 
-  // The manager is the durable owner of goal execution: it remains alive when
-  // IDACC closes and already enforces per-team, per-lead, duplicate, backlog,
-  // and query-capacity guards. IDACC synchronizes goal knowledge and triggers
-  // that single producer instead of creating a second, competing task fanout.
+  // The Manager is the authoritative goal executor while the unified app is
+  // running and already enforces per-team, per-lead, duplicate, backlog, and
+  // query-capacity guards. IDACC synchronizes goal knowledge and triggers that
+  // single producer instead of creating a second, competing task fanout.
   try {
     const envelope = await client.withTeam('default').remote<ManagerGoalAutopilotSyncResult>(
       `/task sync-autopilot-goals --limit ${Math.max(1, Math.min(12, cfg.maxOpenTasksPerGoal, goals.length || 1))}`,

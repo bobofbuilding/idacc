@@ -30,9 +30,9 @@
     "release:metadata": "node ../scripts/generate-release-metadata.mjs",
     "predist": "npm run stage:runtimes",
     "dist": "npm run build:release && electron-builder --dir",
-    "release:mac": "node scripts/release-preflight.mjs --platform mac --require-signing && npm run stage:runtimes && npm run build:release && electron-builder --mac dmg zip --publish never",
-    "release:win": "node scripts/release-preflight.mjs --platform win --require-signing && npm run stage:runtimes && npm run build:release && electron-builder --win nsis --publish never",
-    "release:linux": "node scripts/release-preflight.mjs --platform linux && npm run stage:runtimes && npm run build:release && electron-builder --linux AppImage deb --publish never",
+    "release:mac": "node scripts/release-preflight.mjs --platform mac --require-signing && npm run stage:runtimes && npm run build:release && node scripts/run-production-builder.mjs --platform mac -- --mac dmg zip --publish never",
+    "release:win": "node scripts/release-preflight.mjs --platform win --require-signing && npm run stage:runtimes && npm run build:release && node scripts/run-production-builder.mjs --platform win -- --win nsis --publish never",
+    "release:linux": "node scripts/release-preflight.mjs --platform linux && npm run stage:runtimes && npm run build:release && node scripts/run-production-builder.mjs --platform linux -- --linux AppImage deb --publish never",
     "dmg": "npm run release:mac",
     "typecheck": "tsc --noEmit",
     "test:chat-failure": "node scripts/chat-terminal-failure-smoke.mjs",
@@ -45,6 +45,7 @@
     "test:unified-stack": "node ../scripts/unified-stack-release-smoke.mjs \"release/mac-arm64/ID Agents Control Center.app\"",
     "test:unified-stack-policy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/unified-stack-supervisor-smoke.mjs",
     "test:unified-stack-integration": "node scripts/unified-stack-supervisor-integration.mjs",
+    "test:unified-runtime-contract": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/unified-runtime-contract-smoke.ts",
     "test:runtime-profile-isolation": "../idctl/node_modules/.bin/tsx scripts/runtime-profile-isolation-smoke.ts",
     "test:release-cleanup": "node ../scripts/release-artifact-cleanup-smoke.mjs",
     "test:release-published": "node ../scripts/release-published-smoke.mjs",
@@ -55,6 +56,8 @@
     "test:update-target-guard": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/update-target-guard-smoke.mjs",
     "test:unified-updater-integrity": "node scripts/unified-updater-integrity-smoke.mjs",
     "test:update-metadata-merge": "node ../scripts/merge-update-metadata-smoke.mjs",
+    "test:update-descriptor-contract": "node ../scripts/update-descriptor-contract-smoke.mjs",
+    "test:updater-public-provider": "node ../scripts/electron-updater-public-provider-smoke.mjs",
     "test:update-repo": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/update-repo-migration-smoke.mjs",
     "test:legacy-manager-updater-retired": "node scripts/legacy-manager-updater-retired-smoke.mjs",
     "test:team-provider-lanes": "node scripts/team-builder-provider-lanes-smoke.mjs",
@@ -175,6 +178,10 @@
         "dmg",
         "zip"
       ]
+    },
+    "dmg": {
+      "sign": true,
+      "writeUpdateInfo": false
     },
     "win": {
       "icon": "build/icon.ico",

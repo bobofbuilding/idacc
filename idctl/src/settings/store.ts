@@ -9,18 +9,25 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, chmodSync, renameSync, unlinkSync } from 'node:fs';
 import { resolveConfigPath, configDir } from './paths.ts';
-import { emptyConfig, defaultHeadroomPilotSettings, defaultRootIdentitySettings, isValidEvmAddress, isValidLiveEnsRoot, normalizeBrainAutomationSettings, normalizeEnsRoot, normalizeRootIdentitySettings, normalizeUpdateSettings, ROOT_IDENTITY_CHAIN_ID, DEFAULT_TEAM, type BrainAutomationSettings, type DraftDispatcherSettings, type EvmRpcProfile, type EvmRpcRequest, type GoalDriverSettings, type HeadroomPilotSettings, type IdctlConfig, type ImageServerConfig, type LocalModelCatalogEntry, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderModelSelection, type ProviderProfile, type ProviderSync, type RootIdentitySettings, type UpdateSettings, type WalletConnectSettings } from './schema.ts';
+import { emptyConfig, defaultGoalDriverSettings, defaultHeadroomPilotSettings, defaultRootIdentitySettings, isValidEvmAddress, isValidLiveEnsRoot, normalizeBrainAutomationSettings, normalizeEnsRoot, normalizeRootIdentitySettings, normalizeUpdateSettings, ROOT_IDENTITY_CHAIN_ID, DEFAULT_TEAM, type BrainAutomationSettings, type DraftDispatcherSettings, type EvmRpcProfile, type EvmRpcRequest, type GoalDriverSettings, type HeadroomPilotSettings, type IdctlConfig, type ImageServerConfig, type LocalModelCatalogEntry, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderModelSelection, type ProviderProfile, type ProviderSync, type RootIdentitySettings, type UpdateSettings, type WalletConnectSettings } from './schema.ts';
 import { filterParkedMcpServers, isParkedMcpServer } from './mcpCatalog.ts';
 import { normalizeProviderBaseUrl, providerTransportDecision } from './providerTransport.ts';
 
-function normalizeGoalDriver(input: unknown): GoalDriverSettings | undefined {
-  if (!input || typeof input !== 'object') return undefined;
+function normalizeGoalDriver(input: unknown): GoalDriverSettings {
+  const defaults = defaultGoalDriverSettings();
+  if (!input || typeof input !== 'object') return defaults;
   const raw = input as Record<string, unknown>;
-  const out: GoalDriverSettings = {};
-  if (typeof raw.enabled === 'boolean') out.enabled = raw.enabled;
-  if (typeof raw.cadenceMs === 'number' && Number.isFinite(raw.cadenceMs) && raw.cadenceMs > 0) out.cadenceMs = Math.floor(raw.cadenceMs);
-  if (typeof raw.maxOpenTasksPerGoal === 'number' && Number.isFinite(raw.maxOpenTasksPerGoal) && raw.maxOpenTasksPerGoal > 0) out.maxOpenTasksPerGoal = Math.floor(raw.maxOpenTasksPerGoal);
-  return out;
+  return {
+    enabled: typeof raw.enabled === 'boolean' ? raw.enabled : defaults.enabled,
+    cadenceMs: typeof raw.cadenceMs === 'number' && Number.isFinite(raw.cadenceMs) && raw.cadenceMs > 0
+      ? Math.floor(raw.cadenceMs)
+      : defaults.cadenceMs,
+    maxOpenTasksPerGoal: typeof raw.maxOpenTasksPerGoal === 'number'
+      && Number.isFinite(raw.maxOpenTasksPerGoal)
+      && raw.maxOpenTasksPerGoal > 0
+      ? Math.floor(raw.maxOpenTasksPerGoal)
+      : defaults.maxOpenTasksPerGoal,
+  };
 }
 
 function normalizeDraftDispatcher(input: unknown): DraftDispatcherSettings | undefined {

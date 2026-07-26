@@ -153,9 +153,11 @@ type UnifiedStackViewStatus = {
     name: 'brain-listener' | 'brain-cycle';
     enabled: boolean;
     running: boolean;
+    healthy?: boolean;
     phase: string;
     nextStartAt?: string;
     lastCompletedAt?: string;
+    lastSuccessfulPollAt?: string;
     error?: string;
   }>;
   brainCatalog?: {
@@ -2947,8 +2949,10 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         </p>
         <div className="kv">
           <span>event learning</span>
-          <b className={brainListener?.running ? 'ok-text' : 'warn-text'}>
-            {brainListener?.running ? 'running' : brainListener?.error || brainListener?.phase || 'checking…'}
+          <b className={brainListener?.healthy ? 'ok-text' : 'warn-text'}>
+            {brainListener?.healthy
+              ? `running${brainListener.lastSuccessfulPollAt ? ` · last poll ${timeAgo(Date.parse(brainListener.lastSuccessfulPollAt))}` : ''}`
+              : brainListener?.error || brainListener?.phase || 'checking…'}
           </b>
           <span>profile skill catalog</span>
           <b className={unifiedStack?.brainCatalog?.healthy ? 'ok-text' : 'warn-text'}>

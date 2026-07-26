@@ -1,4 +1,5 @@
 name: Production release
+run-name: Production release v${{ inputs.version }} publish=${{ inputs.publish }} request=${{ inputs.request_id }}
 
 on:
   workflow_dispatch:
@@ -12,12 +13,17 @@ on:
         required: true
         default: false
         type: boolean
+      request_id:
+        description: Unique release-command dispatch identity
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 env:
   RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_REQUEST_ID: ${{ inputs.request_id }}
 
 concurrency:
   group: production-release
@@ -48,6 +54,10 @@ jobs:
             echo "::error::Release version must be plain semver X.Y.Z."
             exit 1
           fi
+          if [[ ! "$RELEASE_REQUEST_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]]; then
+            echo "::error::request_id must be a unique 8-128 character release-command identity."
+            exit 1
+          fi
           printf 'tag=v%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Require a GitHub-verified signed annotated tag
@@ -75,10 +85,14 @@ jobs:
       - name: Require GitHub-enforced immutable releases
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
         run: |
+          if [ -z "$RELEASE_ADMIN_TOKEN" ]; then
+            echo "::error::The repository-level RELEASE_ADMIN_TOKEN secret is required with Administration:read access to this repository." >&2
+            exit 1
+          fi
           IMMUTABLE_RELEASES="$(
-            gh api \
+            GH_TOKEN="$RELEASE_ADMIN_TOKEN" gh api \
               -H "X-GitHub-Api-Version: 2026-03-10" \
               "repos/$GITHUB_REPOSITORY/immutable-releases" \
               --jq '.enabled' 2>/dev/null || true
@@ -254,8 +268,11 @@ jobs:
           npm run test:dream-view-polish --prefix idctl-desktop
           npm run test:consumer-onboarding --prefix idctl-desktop
           npm run test:unified-stack-policy --prefix idctl-desktop
+          npm run test:unified-runtime-contract --prefix idctl-desktop
           xvfb-run -a npm run test:unified-stack-integration --prefix idctl-desktop
           npm run test:update-metadata-merge --prefix idctl-desktop
+          npm run test:update-descriptor-contract --prefix idctl-desktop
+          npm run test:updater-public-provider --prefix idctl-desktop
           npm run test:unified-updater-integrity --prefix idctl-desktop
           npm run test:release-payload --prefix idctl-desktop
           npm run test:selftest-result-file --prefix idctl-desktop
@@ -562,11 +579,16 @@ jobs:
         env:
           CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_DEVELOPER_ID_P12 || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_DEVELOPER_ID_PASSWORD || '' }}
+          CSC_NAME: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_SIGNING_IDENTITY || '' }}
+          MACOS_EXPECTED_SIGNING_IDENTITY: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_SIGNING_IDENTITY || '' }}
+          MACOS_EXPECTED_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_TEAM_ID || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_TEAM_ID || '' }}
           APPLE_API_KEY: ${{ steps.apple-key.outputs.path }}
           APPLE_API_KEY_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_API_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ matrix.platform == 'mac' && secrets.APPLE_API_ISSUER || '' }}
           WIN_CSC_LINK: ${{ matrix.platform == 'win' && secrets.WINDOWS_CODESIGN_P12 || '' }}
           WIN_CSC_KEY_PASSWORD: ${{ matrix.platform == 'win' && secrets.WINDOWS_CODESIGN_PASSWORD || '' }}
+          WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ${{ matrix.platform == 'win' && secrets.WINDOWS_EXPECTED_PUBLISHER_SUBJECT || '' }}
         run: >-
           node idctl-desktop/scripts/release-preflight.mjs
           --platform ${{ matrix.platform }}
@@ -578,28 +600,72 @@ jobs:
         env:
           CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_DEVELOPER_ID_P12 || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_DEVELOPER_ID_PASSWORD || '' }}
+          CSC_NAME: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_SIGNING_IDENTITY || '' }}
+          MACOS_EXPECTED_SIGNING_IDENTITY: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_SIGNING_IDENTITY || '' }}
+          MACOS_EXPECTED_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_TEAM_ID || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_TEAM_ID || '' }}
           APPLE_API_KEY: ${{ steps.apple-key.outputs.path }}
           APPLE_API_KEY_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_API_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ matrix.platform == 'mac' && secrets.APPLE_API_ISSUER || '' }}
           WIN_CSC_LINK: ${{ matrix.platform == 'win' && secrets.WINDOWS_CODESIGN_P12 || '' }}
           WIN_CSC_KEY_PASSWORD: ${{ matrix.platform == 'win' && secrets.WINDOWS_CODESIGN_PASSWORD || '' }}
+          WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ${{ matrix.platform == 'win' && secrets.WINDOWS_EXPECTED_PUBLISHER_SUBJECT || '' }}
         run: |
           npm run build:release
           npm run test:release-build-output
-          npx electron-builder ${{ matrix.target_args }} --${{ matrix.arch }} --publish never
+          node scripts/run-production-builder.mjs \
+            --platform ${{ matrix.platform }} \
+            -- ${{ matrix.target_args }} --${{ matrix.arch }} --publish never
+
+      - name: Notarize and staple the signed macOS disk image
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          APPLE_API_KEY: ${{ steps.apple-key.outputs.path }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          test -f "$APPLE_API_KEY"
+          test -n "$APPLE_API_KEY_ID"
+          test -n "$APPLE_API_ISSUER"
+          DMG_COUNT=0
+          while IFS= read -r -d '' DMG; do
+            DMG_COUNT=$((DMG_COUNT + 1))
+            codesign --verify --verbose=2 "$DMG"
+            xcrun notarytool submit "$DMG" \
+              --key "$APPLE_API_KEY" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER" \
+              --wait
+            xcrun stapler staple "$DMG"
+          done < <(find idctl-desktop/release -maxdepth 1 -type f -name '*.dmg' -print0)
+          test "$DMG_COUNT" -gt 0
 
       - name: Verify macOS signature, notarization, and Gatekeeper acceptance
         if: matrix.platform == 'mac'
         shell: bash
+        env:
+          MACOS_EXPECTED_SIGNING_IDENTITY: ${{ secrets.MACOS_EXPECTED_SIGNING_IDENTITY }}
+          MACOS_EXPECTED_TEAM_ID: ${{ secrets.MACOS_EXPECTED_TEAM_ID }}
         run: |
           APP="idctl-desktop/release/${{ matrix.unpacked }}"
           test -d "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
+          APP_SIGNING_INFO="$(codesign -dv --verbose=4 "$APP" 2>&1)"
+          test "$(printf '%s\n' "$APP_SIGNING_INFO" | sed -n 's/^Identifier=//p' | head -1)" = "world.idchain.idagents-control"
+          test "$(printf '%s\n' "$APP_SIGNING_INFO" | sed -n 's/^TeamIdentifier=//p' | head -1)" = "$MACOS_EXPECTED_TEAM_ID"
+          test "$(printf '%s\n' "$APP_SIGNING_INFO" | sed -n 's/^Authority=//p' | head -1)" = "Developer ID Application: $MACOS_EXPECTED_SIGNING_IDENTITY"
+          APP_REQUIREMENT="=designated => anchor apple generic and identifier \"world.idchain.idagents-control\" and certificate leaf[subject.OU] = \"$MACOS_EXPECTED_TEAM_ID\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+          codesign --verify --deep --strict --verbose=2 -R="$APP_REQUIREMENT" "$APP"
           spctl --assess --type execute --verbose=4 "$APP"
           xcrun stapler validate "$APP"
           DMG_COUNT=0
           while IFS= read -r -d '' DMG; do
             DMG_COUNT=$((DMG_COUNT + 1))
+            codesign --verify --verbose=2 "$DMG"
+            DMG_SIGNING_INFO="$(codesign -dv --verbose=4 "$DMG" 2>&1)"
+            test "$(printf '%s\n' "$DMG_SIGNING_INFO" | sed -n 's/^TeamIdentifier=//p' | head -1)" = "$MACOS_EXPECTED_TEAM_ID"
+            test "$(printf '%s\n' "$DMG_SIGNING_INFO" | sed -n 's/^Authority=//p' | head -1)" = "Developer ID Application: $MACOS_EXPECTED_SIGNING_IDENTITY"
             xcrun stapler validate "$DMG"
             spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
           done < <(find idctl-desktop/release -maxdepth 1 -type f -name '*.dmg' -print0)
@@ -608,17 +674,24 @@ jobs:
       - name: Verify Windows Authenticode signatures
         if: matrix.platform == 'win'
         shell: pwsh
+        env:
+          WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ${{ secrets.WINDOWS_EXPECTED_PUBLISHER_SUBJECT }}
         run: |
           $app = "idctl-desktop/release/${{ matrix.unpacked }}/ID Agents Control Center.exe"
           $installer = Get-ChildItem "idctl-desktop/release/*.exe" | Where-Object { $_.FullName -ne (Resolve-Path $app) } | Select-Object -First 1
           if (-not (Test-Path $app)) { throw "Packaged application executable is missing" }
           if (-not $installer) { throw "NSIS installer is missing" }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_EXPECTED_PUBLISHER_SUBJECT)) { throw "WINDOWS_EXPECTED_PUBLISHER_SUBJECT is required" }
           foreach ($file in @($app, $installer.FullName)) {
             $signature = Get-AuthenticodeSignature $file
             if ($signature.Status -ne "Valid") {
               throw "Invalid Authenticode signature for $file`: $($signature.StatusMessage)"
             }
+            if ($signature.SignerCertificate.Subject -cne $env:WINDOWS_EXPECTED_PUBLISHER_SUBJECT) {
+              throw "Authenticode publisher subject for $file does not exactly match the production signing contract"
+            }
           }
+          node idctl-desktop/scripts/verify-packaged-publisher.mjs "idctl-desktop/release/${{ matrix.unpacked }}/resources/app-update.yml"
 
       - name: Verify payload and clean-profile manager/Brain startup
         shell: bash
@@ -799,6 +872,9 @@ jobs:
           test -f publish/latest-mac.yml
           test -f publish/latest.yml
           test -f publish/latest-linux.yml
+          node scripts/verify-update-descriptors.mjs \
+            --directory publish \
+            --version "$RELEASE_VERSION"
 
       - name: Upload the assembled release
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -931,6 +1007,7 @@ jobs:
         if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
           ALREADY_PUBLISHED: ${{ steps.release-assets.outputs.already_published }}
@@ -938,8 +1015,12 @@ jobs:
           if [ "$ALREADY_PUBLISHED" = "true" ]; then
             echo "$RELEASE_TAG is already published; verified assets were left unchanged."
           else
+            if [ -z "$RELEASE_ADMIN_TOKEN" ]; then
+              echo "::error::The repository-level RELEASE_ADMIN_TOKEN secret is required with Administration:read access to this repository." >&2
+              exit 1
+            fi
             test "$(
-              gh api \
+              GH_TOKEN="$RELEASE_ADMIN_TOKEN" gh api \
                 -H "X-GitHub-Api-Version: 2026-03-10" \
                 "repos/$GITHUB_REPOSITORY/immutable-releases" \
                 --jq '.enabled'
@@ -989,6 +1070,9 @@ jobs:
         with:
           node-version-file: .node-version
 
+      - name: Install release metadata dependencies
+        run: npm ci --prefix idctl-desktop --omit=dev --ignore-scripts
+
       - name: Reconfirm the exact successful run and immutable artifact
         shell: bash
         env:
@@ -1035,14 +1119,27 @@ jobs:
           --expected-commit "$RELEASE_COMMIT"
           --run-id "$VERIFIED_RUN_ID"
 
+      - name: Revalidate updater semantics before immutable promotion
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: >-
+          node scripts/verify-update-descriptors.mjs
+          --directory draft-assets
+          --version "$RELEASE_VERSION"
+
       - name: Publish the artifact-bound draft
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
           RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
         run: |
+          if [ -z "$RELEASE_ADMIN_TOKEN" ]; then
+            echo "::error::The repository-level RELEASE_ADMIN_TOKEN secret is required with Administration:read access to this repository." >&2
+            exit 1
+          fi
           test "$(
-            gh api \
+            GH_TOKEN="$RELEASE_ADMIN_TOKEN" gh api \
               -H "X-GitHub-Api-Version: 2026-03-10" \
               "repos/$GITHUB_REPOSITORY/immutable-releases" \
               --jq '.enabled'
@@ -1065,3 +1162,44 @@ jobs:
           )" = "true"
           TAG_OBJECT="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT" --jq '.object.sha')" = "$RELEASE_COMMIT"
+
+  verify-public-release:
+    name: Verify public immutable release and updater
+    needs:
+      - validate
+      - publish
+      - promote-draft
+    if: >-
+      ${{
+        always()
+        && inputs.publish
+        && needs.validate.result == 'success'
+        && (needs.publish.result == 'success' || needs.promote-draft.result == 'success')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the exact published source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Verify the unauthenticated public release and updater downloads
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+        run: >-
+          node scripts/verify-public-release.mjs
+          --repo "$GITHUB_REPOSITORY"
+          --tag "$RELEASE_TAG"
+          --commit "$RELEASE_COMMIT"

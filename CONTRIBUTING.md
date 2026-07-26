@@ -29,7 +29,11 @@ preflights GitHub CLI authentication and Git tag signing before changing files,
 bumps the version (next patch unless an explicit version is supplied), writes the
 CHANGELOG entry, typechecks, commits, creates a signed annotated tag, atomically
 pushes the exact commit and tag, requires GitHub to report the signature as
-verified, and dispatches the cross-platform **Production release** workflow:
+verified, and dispatches the cross-platform **Production release** workflow.
+Each dispatch carries a unique request ID. The command waits for the one run
+bound to that request, the exact tag/head commit, and the requested publish
+mode, requires terminal success, and, when publishing, requires the anonymous
+public release verifier to pass before it returns:
 
 ```sh
 scripts/release.sh "Short summary of the change for the changelog"
@@ -52,10 +56,26 @@ signed, verified, and attested, but the GitHub Release remains a draft.
 Before it changes files, the command also checks that the current release frontier
 has no tag without a published GitHub Release. If a dispatch, build, or publish
 was interrupted after the tag was pushed, use `--resume` for that version.
-Resume validates the exact signed tag again and does not dispatch a duplicate
-while a run is active, after a successful dry run, or after publication. A failed
-run may be safely dispatched again; the workflow compares any existing draft
-assets byte-for-byte and uploads only missing assets.
+Resume validates the exact signed tag again, waits for the exact matching active
+run instead of dispatching a duplicate, and re-runs public verification for an
+already published version. A failed run may be safely dispatched again; the
+workflow compares any existing draft assets byte-for-byte and uploads only
+missing assets.
+
+Production fails closed unless it produces exactly seven consumer installers:
+macOS arm64 and x64 DMG plus ZIP, Windows x64 EXE, and Linux x64 AppImage plus
+DEB. Before publication, the workflow validates the updater descriptors against
+those installer bytes. After publication, the consumer-path verifier checks the
+public Atom feed and web Latest route, then anonymously downloads and hashes all
+seven installers.
+
+The protected `production` environment must include the expected signer
+controls documented in
+[`docs/RELEASE_PROVENANCE.md`](docs/RELEASE_PROVENANCE.md):
+`MACOS_EXPECTED_TEAM_ID`, `MACOS_EXPECTED_SIGNING_IDENTITY` (the
+electron-builder qualifier without the `Developer ID Application:` prefix and
+ending in `(TEAMID)`), and `WINDOWS_EXPECTED_PUBLISHER_SUBJECT` (the exact full
+certificate subject distinguished name).
 
 The one historical exception is the audited lightweight-tag frontier from
 `v0.1.620` through `v0.1.647`. It is an exact object-ID allowlist, not a reusable

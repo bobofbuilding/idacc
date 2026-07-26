@@ -32,7 +32,7 @@ export interface Goal {
   origin?: GoalOrigin;   // user Goals tab records are "goals"; Work > Plans uses "plans"
   status: GoalStatus;
   priority?: GoalPriority; // primary goal first, secondary next, general supporting goals last
-  autopilot?: boolean;   // opt-in: eligible for the disabled-by-default goal driver
+  autopilot?: boolean;   // per-goal opt-in for the globally available goal driver
   content: string;       // the goal statement (markdown)
   driver?: {
     lastRunAt?: number;

@@ -3,14 +3,14 @@
 ## Status
 
 The six-phase command-surface refactor is implemented and verified in the unified
-`v0.1.685` production candidate. It becomes the in-service baseline when that signed
-candidate is promoted.
+application. A build becomes the in-service baseline only after its signed release
+passes the public publication verifier.
 
 | Component | Baseline | Role |
 |---|---:|---|
-| Unified IDACC application | `v0.1.685` production candidate | Dashboard commands, control panels, chat intents, local cache, and compatibility UI |
-| Bundled Manager | `bobofbuilding/id-agents` `v0.1.145` | Fleet mutations, durable control state/events, Brain relay, and task execution |
-| Bundled Brain | `v0.1.2` | Manager-event learning, task lineage, durable memory, and duplicate/no-op suppression |
+| Unified IDACC application | Signed public release | Dashboard commands, control panels, chat intents, local cache, and compatibility UI |
+| Bundled Manager | Exact `release/runtime-lock.json` pin | Fleet mutations, durable control state/events, Brain relay, and task execution |
+| Bundled Brain | Exact `release/runtime-lock.json` pin | Manager-event learning, task lineage, durable memory, and duplicate/no-op suppression |
 
 This document is the maintained operating contract. The original pre-refactor audit has
 been condensed because its claims about a read-only Dashboard, missing Manager routes,

@@ -2,6 +2,7 @@ import { app } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { selectAppProfile } from './appProfileSelection.ts';
 import { migrateAppProfile, PROFILE_SCHEMA_VERSION } from './profileMigrations.ts';
 
 export { PROFILE_SCHEMA_VERSION } from './profileMigrations.ts';
@@ -16,9 +17,7 @@ export interface AppProfilePaths {
   cache: string;
 }
 
-export function appProfilePaths(): AppProfilePaths {
-  const root = process.env.IDACC_DATA_DIR?.trim()
-    || join(app.getPath('userData'), 'profiles', process.env.IDACC_PROFILE?.trim() || 'default');
+function profilePaths(root: string): AppProfilePaths {
   return {
     root,
     config: join(root, 'config', 'config.json'),
@@ -28,6 +27,17 @@ export function appProfilePaths(): AppProfilePaths {
     logs: join(root, 'logs'),
     cache: join(root, 'cache'),
   };
+}
+
+function appProfileSelection() {
+  return selectAppProfile(app.getPath('userData'), {
+    dataDir: process.env.IDACC_DATA_DIR,
+    profile: process.env.IDACC_PROFILE,
+  });
+}
+
+export function appProfilePaths(): AppProfilePaths {
+  return profilePaths(appProfileSelection().root);
 }
 
 function ensureManagedManagerProfile(configPath: string, managedUrl?: string): void {
@@ -66,14 +76,13 @@ export function updateManagedManagerProfileUrl(configPath: string, url: string):
  * rollback-safe backup.
  */
 export function initializeAppProfile(): AppProfilePaths {
-  const explicitDataDir = Boolean(process.env.IDACC_DATA_DIR?.trim());
-  const paths = appProfilePaths();
-  const profileName = process.env.IDACC_PROFILE?.trim() || 'default';
+  const selection = appProfileSelection();
+  const paths = profilePaths(selection.root);
   migrateAppProfile(paths, {
-    profileName,
+    profileName: selection.profileName,
     legacyConfigDir: join(homedir(), '.config', 'idctl'),
     legacyDesktopSignerVault: join(app.getPath('userData'), 'keys', 'agent-signers.json'),
-    allowLegacyImport: profileName === 'default' && !explicitDataDir,
+    allowLegacyImport: selection.profileName === 'default' && !selection.explicitDataDir,
   });
 
   process.env.IDACC_DATA_DIR = paths.root;

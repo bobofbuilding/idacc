@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { signingIdentityErrors } from './release-signing-policy.mjs';
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -37,6 +38,7 @@ if (platform === 'mac') {
   expect(existsSync(join(desktop, String(pkg.build?.mac?.entitlements || ''))), 'macOS app entitlements are missing');
   expect(existsSync(join(desktop, String(pkg.build?.mac?.entitlementsInherit || ''))), 'macOS inherited entitlements are missing');
   if (requireSigning) {
+    errors.push(...signingIdentityErrors('mac'));
     expect(has('CSC_LINK'), 'CSC_LINK is required for a production Developer ID build');
     expect(has('CSC_KEY_PASSWORD'), 'CSC_KEY_PASSWORD is required for a production Developer ID build');
     const apiKey = has('APPLE_API_KEY') && has('APPLE_API_KEY_ID') && has('APPLE_API_ISSUER');
@@ -53,6 +55,7 @@ if (platform === 'win') {
   expect(pkg.build?.win?.signAndEditExecutable === true, 'Windows executable signing must be enabled');
   expect(pkg.build?.win?.verifyUpdateCodeSignature === true, 'Windows update signature verification must be enabled');
   if (requireSigning) {
+    errors.push(...signingIdentityErrors('win'));
     const linkName = has('WIN_CSC_LINK') ? 'WIN_CSC_LINK' : 'CSC_LINK';
     const passwordName = has('WIN_CSC_KEY_PASSWORD') ? 'WIN_CSC_KEY_PASSWORD' : 'CSC_KEY_PASSWORD';
     expect(has(linkName), 'WIN_CSC_LINK or CSC_LINK is required for a production Authenticode build');

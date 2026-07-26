@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 const work = await readFile(new URL('../src/main/work.ts', import.meta.url), 'utf8');
 const goaldriver = await readFile(new URL('../src/main/goaldriver.ts', import.meta.url), 'utf8');
+const settingsSchema = await readFile(new URL('../../idctl/src/settings/schema.ts', import.meta.url), 'utf8');
 const goalsView = await readFile(new URL('../src/renderer/views/Goals.tsx', import.meta.url), 'utf8');
 
 assert.match(
@@ -17,11 +18,16 @@ assert.match(
 );
 assert.match(
   goaldriver,
-  /enabled:\s*true/,
-  'Goal driver master default should be enabled; per-goal Autopilot remains the opt-in',
+  /defaultGoalDriverSettings/,
+  'Desktop goal cadence should consume the shared first-run default',
 );
 assert.match(
-  goaldriver,
+  settingsSchema,
+  /defaultGoalDriverSettings[\s\S]*enabled:\s*true[\s\S]*goalDriver:\s*defaultGoalDriverSettings\(\)/,
+  'Fresh profiles should persist the enabled global master while per-goal Autopilot remains the opt-in',
+);
+assert.match(
+  settingsSchema,
   /maxOpenTasksPerGoal:\s*3/,
   'Goal driver should request a bounded number of manager-owned tasks per pass',
 );
@@ -32,7 +38,7 @@ assert.match(
 );
 assert.match(
   goaldriver,
-  /The manager is the durable owner of goal execution/,
+  /The Manager is the authoritative goal executor[\s\S]*single producer/,
   'Goal driver should document the single-producer ownership boundary',
 );
 assert.match(goalsView, /Live manager task progress for this goal/, 'Goals should show actual live manager progress instead of only lifetime task refs');

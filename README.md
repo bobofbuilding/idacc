@@ -16,7 +16,8 @@ separate manager or Brain checkout.
 The exact Manager and Brain source commits, dependency locks, entry points, and
 per-file hashes are recorded in `release/runtime-lock.json` and the generated
 runtime manifest. Release builds refuse dirty or mismatched runtime sources.
-The `v0.1.685` production candidate pins Manager `v0.1.145` and Brain `v0.1.2`.
+That machine-readable lock is the source of truth for every release; the README
+does not maintain a second, potentially stale copy of the runtime versions.
 
 The `idctl/` terminal interface remains available for developers and advanced
 operators, but it is not required for the consumer desktop application.

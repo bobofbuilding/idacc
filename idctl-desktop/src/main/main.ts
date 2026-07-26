@@ -2241,7 +2241,13 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
       adminToken = unifiedStackAdminToken();
       configureManagedManager(activeManagerUrl, adminToken);
       configureComputerUseAuditManager(activeManagerUrl, adminToken);
-      const deadline = Date.now() + 25_000;
+      const readinessTimeoutInput = Number(
+        process.env.IDACC_STACK_SELFTEST_READY_TIMEOUT_MS || 25_000,
+      );
+      const readinessTimeoutMs = Number.isFinite(readinessTimeoutInput)
+        ? Math.min(120_000, Math.max(1_000, Math.floor(readinessTimeoutInput)))
+        : 25_000;
+      const deadline = Date.now() + readinessTimeoutMs;
       status = await unifiedStackStatus();
       while (!status.ready && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 500));
@@ -2381,7 +2387,8 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     try { startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }
     // Keep model lanes current and notify mounted pickers after each bounded refresh pass.
     try { startModelRefreshLoop(() => publishStoreChange('runtime:probe')); } catch (e) { console.warn('[model-refresh] failed to start:', e); }
-    // Disabled by default: when enabled, active+autopilot goals gap-fill fleet tasks.
+    // Globally available by default, but only active goals whose own Autopilot
+    // switch is enabled can gap-fill fleet tasks.
     try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
     // Medium-risk, non-authority Brain skill proposals are reviewed by two
     // independent fleet agents. Only genuine disagreement or privileged/sensitive

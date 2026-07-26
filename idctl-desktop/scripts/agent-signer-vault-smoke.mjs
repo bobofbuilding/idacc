@@ -44,7 +44,10 @@ assert.match(vault, /agentSignerVaultPathForConfig\(appProfilePaths\(\)\.config\
 assert.match(vault, /secureStorageStatus\(safeStorage\)/);
 assert.doesNotMatch(vault, /app\.getPath\(['"]userData['"]\).*agent-signers/);
 assert.match(appProfile, /legacyDesktopSignerVault:\s*join\(app\.getPath\('userData'\), 'keys', 'agent-signers\.json'\)/);
-assert.match(appProfile, /allowLegacyImport:\s*profileName === 'default' && !explicitDataDir/);
+assert.match(
+  appProfile,
+  /allowLegacyImport:\s*selection\.profileName === 'default' && !selection\.explicitDataDir/,
+);
 assert.match(vault, /mode: 0o600/);
 assert.match(vault, /privateKey\.fill\(0\)/);
 assert.doesNotMatch(vault, /privateKey:\s*string/);

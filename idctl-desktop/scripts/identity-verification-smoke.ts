@@ -6,6 +6,7 @@ import {
   ENS_ADDR_SELECTOR,
   ENS_RESOLVER_SELECTOR,
   classifyEnsBinding,
+  classifyIdentityStandardEvidence,
   decodeAbiAddress,
   encodeEnsCall,
   ensNamehash,
@@ -31,6 +32,31 @@ assert.equal(classifyEnsBinding(resolved, []), 'unbound');
 assert.equal(classifyEnsBinding(resolved, [resolved.toUpperCase().replace('0X', '0x')]), 'verified');
 assert.equal(classifyEnsBinding(resolved, ['0xabcdefabcdefabcdefabcdefabcdefabcdefabcd']), 'mismatch');
 assert.equal(classifyEnsBinding('', [resolved]), 'missing');
+const declaredDraftStandards = classifyIdentityStandardEvidence({
+  hasAgent: true,
+  hasDomain: true,
+  hasWallet: true,
+  hasSmartAccount: true,
+  ensBindingVerified: true,
+  ensip24Declared: true,
+  erc8004Declared: true,
+  erc8048Declared: true,
+  erc8049Declared: true,
+  b20Declared: true,
+});
+assert.deepEqual(declaredDraftStandards, {
+  ensBinding: 'verified',
+  ensip24: 'self',
+  erc8004: 'self',
+  erc8048: 'self',
+  erc8049: 'self',
+  b20: 'self',
+});
+assert.deepEqual(
+  Object.entries(declaredDraftStandards).filter(([, state]) => state === 'verified').map(([standard]) => standard),
+  ['ensBinding'],
+  'verified ENS binding and generic contract evidence must not promote draft standards',
+);
 assert.deepEqual(identityRegisterNoop({
   id: 'a',
   name: 'alice',
@@ -56,5 +82,9 @@ assert.match(view, /Verify live evidence/);
 assert.match(view, /Manager record/);
 assert.match(view, /Declared contract/);
 assert.match(view, /no duplicate transaction was sent/);
+assert.match(view, /Onchain identity &amp; metadata evidence/);
+assert.match(view, /ENS address binding is verified separately/);
+assert.match(view, /Generic bytecode never proves conformance to a draft metadata standard/);
+assert.match(view, /versioned attestation schema and trust roots/);
 
 console.log('identity verification smoke: ok');

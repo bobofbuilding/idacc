@@ -99,6 +99,12 @@ const sortedFiles = [...files.values()].sort((left, right) => left.url.localeCom
 if (args.includes('--require-mac-arches')) {
   const seenInputArches = new Set();
   for (const { path, document } of documents) {
+    if (
+      document.files.length !== 1
+      || !String(document.files[0]?.url || '').toLowerCase().endsWith('.zip')
+    ) {
+      fail(`${basename(path)} must contain exactly one ZIP updater and no DMG or other file record`);
+    }
     const arches = new Set(document.files.flatMap((file) => {
       const tokens = String(file?.url || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
       return ['arm64', 'x64'].filter((arch) => tokens.includes(arch));
@@ -107,6 +113,9 @@ if (args.includes('--require-mac-arches')) {
     const [arch] = arches;
     if (seenInputArches.has(arch)) fail(`duplicate macOS ${arch} update feed`);
     seenInputArches.add(arch);
+  }
+  if (sortedFiles.length !== 2 || sortedFiles.some((file) => !file.url.toLowerCase().endsWith('.zip'))) {
+    fail('merged macOS feed must contain exactly the arm64 and x64 ZIP updaters');
   }
   for (const arch of ['arm64', 'x64']) {
     const zipFiles = sortedFiles.filter((file) => {

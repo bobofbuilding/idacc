@@ -356,9 +356,10 @@ and errors.
 
 **Data & actions:** `usage` (`/usage`, null when absent), `agents:allTeams`, `probeAll/probeOne`.
 
-**Polish:** token numbers are manager-reported harness telemetry for trends, not provider billing
-invoices; the source is labeled **harness telemetry**, and stale last-turn samples remain visible but
-no longer drive the live gauge. The model-lanes
+**Polish:** token numbers are manager-reported harness performance telemetry for trends, not provider
+billing invoices. Provider invoices remain provider-owned; IDACC does not estimate or reconcile them
+from heterogeneous subscription, API, and local-runtime token reports. The source is labeled
+**harness telemetry**, and stale last-turn samples remain visible but no longer drive the live gauge. The model-lanes
 panel uses aligned runtime/type/models/source/checked columns plus the same Settings availability gate
 as the per-agent Harness dropdown: unavailable curated fallback harnesses are hidden unless already
 assigned, synced API/provider lanes are selectable through the manager `provider-api` harness, and
@@ -417,9 +418,12 @@ already exists, so it cannot submit a duplicate registration transaction. A Mana
 is labeled as declared until the live ENS resolver address matches the selected controller or Agent
 Safe; resolving an address with no comparison target is not marked verified. Verified controller
 signatures are discarded after recovery and only their short-lived proof timestamps remain. ENS
-binding and deployed-contract evidence are live-verifiable. Standard-specific external verification for ERC-8004,
-ERC-8048/ERC-721T, ERC-8049, and B20 still requires pinned registry addresses and ABI/interface
-contracts from the Manager/backend before those individual claims can be marked verified.
+address binding and deployed-contract evidence are live-verifiable, but neither generic bytecode nor
+an ENS address record proves draft metadata-standard conformance. Standard-specific external
+verification for ENSIP-24, ERC-8004, ERC-8048/ERC-721T, ERC-8049, and B20 requires canonical targets,
+versioned ABI/interface contracts, and subject bindings from the Manager/backend before those
+individual claims can be marked verified. Manifest hashes, metadata-hook trust, and runtime signatures
+remain external trust claims until the Manager supplies a versioned attestation schema and trust roots.
 
 ---
 
@@ -774,13 +778,14 @@ implemented and covered by focused smoke or rendered-interaction tests:
 | Chat | Dead scroll-ref code is removed; plan detection is conservative; malformed or attachment-bearing reserved control commands fail locally; reply, activity, and delegation annotations are exact-query scoped; concurrent writes and deletion are guarded |
 | First-run setup | Existing starter agents are preserved; stale assignments and stopped starters are repaired only inside an explicit, batch-verified setup run |
 
-The genuinely remaining limitations are narrower and are documented here so fixed items do not
-stay disguised as open work:
+The remaining external and intentional scope boundaries are documented here so they are not
+mistaken for incomplete consumer design work:
 
-| Area | Remaining limitation |
+| Area | External or intentional scope boundary |
 |---|---|
-| Identity & Keys | Standard-specific external attestation for ERC-8004, ERC-8048/ERC-721T, ERC-8049, and B20 still needs pinned registry addresses and ABI/interface contracts from the Manager/backend |
-| Health | Throughput is Manager harness performance telemetry rather than provider billing |
+| Identity & Keys | Draft ENSIP-24, ERC-8004, ERC-8048/ERC-721T, ERC-8049, and B20 conformance stays declared until the Manager/backend supplies canonical targets, versioned interfaces, subject bindings, and trust roots. Manifest hashes, metadata-hook trust, and runtime signatures likewise require a versioned external attestation contract |
+| Health | Throughput is Manager harness performance telemetry. Provider invoices remain provider-owned and are not inferred from heterogeneous runtime token reports |
+| Context compression | The optional Headroom retrieval resolver is a validated pilot, not a core route. Production uses deterministic direct routing and protected-content fallback until the Manager advertises a versioned resolve-before-act contract and quality gates pass |
 
-_These remaining rows are explicit product limitations, not claims that the completed v0.1.685
-design work above is still partial._
+_These boundaries do not prevent the unified application, Manager, Brain, local goals, or deterministic
+context path from operating as documented in v0.1.685._

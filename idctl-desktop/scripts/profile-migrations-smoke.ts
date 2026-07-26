@@ -13,6 +13,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  normalizeAppProfileName,
+  selectAppProfile,
+} from '../src/main/appProfileSelection.ts';
+import {
   migrateAppProfile,
   PROFILE_SCHEMA_VERSION,
   type ProfileMigrationPaths,
@@ -32,6 +36,46 @@ function paths(root: string): ProfileMigrationPaths {
 
 const temp = mkdtempSync(join(tmpdir(), 'idacc-profile-migrations-'));
 try {
+  const userData = join(temp, 'user-data');
+  assert.equal(normalizeAppProfileName(), 'default');
+  assert.equal(normalizeAppProfileName('   '), 'default');
+  assert.deepEqual(selectAppProfile(userData), {
+    root: join(userData, 'profiles', 'default'),
+    profileName: 'default',
+    explicitDataDir: false,
+  });
+  assert.deepEqual(selectAppProfile(userData, { profile: 'work-2026_07.v1' }), {
+    root: join(userData, 'profiles', 'work-2026_07.v1'),
+    profileName: 'work-2026_07.v1',
+    explicitDataDir: false,
+  });
+  for (const unsafe of [
+    '../escape',
+    'a/b',
+    'a\\b',
+    '.',
+    '..',
+    '/tmp/x',
+    'C:\\x',
+    'bad\u0000name',
+    'bad\nname',
+    'a'.repeat(65),
+  ]) {
+    assert.throws(
+      () => selectAppProfile(userData, { profile: unsafe }),
+      /IDACC_PROFILE must be a 1-64 character name/,
+    );
+  }
+  const customRoot = join(temp, 'custom-profile-root');
+  assert.deepEqual(selectAppProfile(userData, {
+    dataDir: ` ${customRoot} `,
+    profile: 'portable',
+  }), {
+    root: customRoot,
+    profileName: 'portable',
+    explicitDataDir: true,
+  });
+
   const legacy = join(temp, 'legacy');
   const legacyDesktopSigner = join(temp, 'old-user-data', 'keys', 'agent-signers.json');
   const profile = paths(join(temp, 'profile'));

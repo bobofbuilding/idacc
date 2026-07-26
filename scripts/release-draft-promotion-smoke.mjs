@@ -35,13 +35,21 @@ assert.match(promotion, /github-token:\s*\$\{\{\s*github\.token\s*\}\}/);
 assert.match(promotion, /node scripts\/verify-release-promotion\.mjs/);
 assert.match(promotion, /--reference immutable-run-assets/);
 assert.match(promotion, /--candidate draft-assets/);
+assert.match(promotion, /npm ci --prefix idctl-desktop --omit=dev --ignore-scripts/);
+assert.match(promotion, /Revalidate updater semantics before immutable promotion/);
+assert.match(promotion, /node scripts\/verify-update-descriptors\.mjs/);
+assert.match(promotion, /--directory draft-assets/);
+assert.match(promotion, /RELEASE_ADMIN_TOKEN:\s*\$\{\{\s*secrets\.RELEASE_ADMIN_TOKEN\s*\}\}/);
+assert.match(promotion, /GH_TOKEN="\$RELEASE_ADMIN_TOKEN" gh api/);
 assert.match(promotion, /Verify GitHub locked the promoted release/);
 assert.match(promotion, /repos\/\$GITHUB_REPOSITORY\/releases\/tags\/\$RELEASE_TAG/);
 assert.match(promotion, /--jq '\.immutable'/);
 assert.match(promotion, /git\/tags\/\$TAG_OBJECT" --jq '\.object\.sha'/);
 assert.ok(
   promotion.indexOf('Bind every draft byte to the immutable successful-run artifact')
-    < promotion.indexOf('Publish the artifact-bound draft')
+    < promotion.indexOf('Revalidate updater semantics before immutable promotion')
+    && promotion.indexOf('Revalidate updater semantics before immutable promotion')
+      < promotion.indexOf('Publish the artifact-bound draft')
     && promotion.indexOf('Publish the artifact-bound draft')
       < promotion.indexOf('Verify GitHub locked the promoted release'),
 );
@@ -53,10 +61,12 @@ function sha256(data) {
 function writeChecksums(directory) {
   const names = [
     'ID-Agents-Control-Center-1.2.3-arm64.dmg',
+    'ID-Agents-Control-Center-1.2.3-x64.dmg',
     'ID-Agents-Control-Center-1.2.3-arm64.zip',
+    'ID-Agents-Control-Center-1.2.3-x64.zip',
     'ID-Agents-Control-Center-1.2.3-x64.AppImage',
     'ID-Agents-Control-Center-1.2.3-x64.deb',
-    'ID-Agents-Control-Center-Setup-1.2.3.exe',
+    'ID-Agents-Control-Center-1.2.3-x64.exe',
     'IDACC-provenance-darwin-arm64.tar.gz',
     'IDACC-provenance-darwin-x64.tar.gz',
     'IDACC-provenance-linux-x64.tar.gz',
@@ -77,8 +87,10 @@ function writeBundle(directory, marker, sourceCommit = commit) {
   mkdirSync(directory, { recursive: true });
   const nativeArtifacts = [
     ['ID-Agents-Control-Center-1.2.3-arm64.dmg', 'darwin', 'arm64'],
+    ['ID-Agents-Control-Center-1.2.3-x64.dmg', 'darwin', 'x64'],
     ['ID-Agents-Control-Center-1.2.3-arm64.zip', 'darwin', 'arm64'],
-    ['ID-Agents-Control-Center-Setup-1.2.3.exe', 'win32', 'x64'],
+    ['ID-Agents-Control-Center-1.2.3-x64.zip', 'darwin', 'x64'],
+    ['ID-Agents-Control-Center-1.2.3-x64.exe', 'win32', 'x64'],
     ['ID-Agents-Control-Center-1.2.3-x64.AppImage', 'linux', 'x64'],
     ['ID-Agents-Control-Center-1.2.3-x64.deb', 'linux', 'x64'],
   ];

@@ -32,6 +32,17 @@ assert.match(pkg.scripts?.['build:release'] || '', /--require-runtime/);
 for (const script of ['dist', 'release:mac', 'release:win', 'release:linux']) {
   assert.match(pkg.scripts?.[script] || '', /npm run build:release/, `${script} must pin the staged runtime into the build`);
 }
+for (const [script, platform] of [
+  ['release:mac', 'mac'],
+  ['release:win', 'win'],
+  ['release:linux', 'linux'],
+]) {
+  assert.match(
+    pkg.scripts?.[script] || '',
+    new RegExp(`node scripts/run-production-builder\\.mjs --platform ${platform} --`),
+    `${script} must enter electron-builder through the production policy wrapper`,
+  );
+}
 const targets = (value) => (Array.isArray(value) ? value : [value])
   .map((entry) => typeof entry === 'string' ? entry : entry?.target)
   .filter(Boolean);
@@ -64,6 +75,12 @@ assert.deepEqual(new Set(targets(build.mac?.target)), new Set(['dmg', 'zip']));
 assert.equal(build.mac?.hardenedRuntime, true);
 assert.equal(build.mac?.notarize, true);
 assert.equal(build.mac?.gatekeeperAssess, false);
+assert.equal(build.dmg?.sign, true, 'the distributable DMG must carry its own code signature');
+assert.equal(
+  build.dmg?.writeUpdateInfo,
+  false,
+  'macOS updater metadata must describe the ZIP because stapling changes the DMG bytes after packaging',
+);
 assert.ok(existsSync(join(desktop, build.mac?.entitlements || '')));
 assert.ok(existsSync(join(desktop, build.mac?.entitlementsInherit || '')));
 
@@ -112,12 +129,42 @@ assert.equal(build.linux?.maintainer, 'IDACC Contributors', 'Linux package metad
 assert.match(String(pkg.devDependencies?.electron || ''), /^41\.\d+\.\d+$/, 'Electron 41 is the newest line compatible with manager better-sqlite3 12.8');
 assert.match(String(pkg.dependencies?.['electron-updater'] || ''), /^\d+\.\d+\.\d+$/, 'electron-updater must be exact');
 assert.match(String(pkg.scripts?.['build:release'] || ''), /--require-runtime/, 'production builds must require a verified staged runtime');
+assert.match(pkg.scripts?.['test:update-descriptor-contract'] || '', /update-descriptor-contract-smoke/);
+assert.match(pkg.scripts?.['test:updater-public-provider'] || '', /electron-updater-public-provider-smoke/);
 for (const script of ['release:mac', 'release:win', 'release:linux']) {
   assert.match(String(pkg.scripts?.[script] || ''), /build:release/, `${script} must use the runtime-bound production build`);
 }
+const signingPolicySource = readFileSync(join(desktop, 'scripts', 'release-signing-policy.mjs'), 'utf8');
+const builderWrapperSource = readFileSync(join(desktop, 'scripts', 'run-production-builder.mjs'), 'utf8');
+const publisherVerifierSource = readFileSync(join(desktop, 'scripts', 'verify-packaged-publisher.mjs'), 'utf8');
+assert.match(signingPolicySource, /--config\.forceCodeSigning=true/);
+assert.match(signingPolicySource, /--config\.mac\.identity=/);
+assert.match(signingPolicySource, /--config\.win\.signtoolOptions\.publisherName=/);
+assert.match(signingPolicySource, /MACOS_EXPECTED_TEAM_ID/);
+assert.match(signingPolicySource, /MACOS_EXPECTED_SIGNING_IDENTITY/);
+assert.match(signingPolicySource, /WINDOWS_EXPECTED_PUBLISHER_SUBJECT/);
+assert.match(builderWrapperSource, /electron-builder\/out\/cli\/cli\.js/);
+assert.match(builderWrapperSource, /productionBuilderArgs/);
+assert.match(publisherVerifierSource, /publisherName/);
+assert.match(publisherVerifierSource, /WINDOWS_EXPECTED_PUBLISHER_SUBJECT/);
 const { validateConfiguration } = require('app-builder-lib/out/util/config/config.js');
 const { DebugLogger } = require('builder-util/out/DebugLogger.js');
 await validateConfiguration(build, new DebugLogger(false));
+await validateConfiguration({
+  ...build,
+  forceCodeSigning: true,
+  mac: {
+    ...build.mac,
+    identity: 'IDACC Contributors (IDACC12345)',
+  },
+  win: {
+    ...build.win,
+    signtoolOptions: {
+      ...(build.win?.signtoolOptions || {}),
+      publisherName: 'CN=IDACC Contributors, O=IDACC Contributors, C=US',
+    },
+  },
+}, new DebugLogger(false));
 for (const icon of ['build/icon.icns', 'build/icon.ico', 'build/icon.png']) {
   assert.ok(existsSync(join(desktop, icon)), `${icon} is missing`);
 }
@@ -137,7 +184,27 @@ assert.match(
   /requireAttestation:\s*app\.isPackaged/,
   'packaged services must attest their exact service ID, runtime version, and process nonce',
 );
+assert.match(
+  unifiedStackSource,
+  /testRoot && !app\.isPackaged/,
+  'a packaged app must never honor an external runtime-root override',
+);
+assert.doesNotMatch(
+  unifiedStackSource,
+  /app\.isPackaged \|\| process\.env\.IDACC_STACK_SELFTEST/,
+  'packaged self-tests must exercise the runtime physically bundled in the app',
+);
 assert.match(releaseStackSmoke, /IDACC_STACK_SELFTEST_RESULT_FILE:\s*resultFile/);
+assert.match(releaseStackSmoke, /IDACC_STACK_SELFTEST_READY_TIMEOUT_MS:\s*'90_000'/);
+assert.match(releaseStackSmoke, /IDACC_STACK_RANDOM_PORTS:\s*'1'/);
+assert.match(releaseStackSmoke, /IDACC_RUNTIME_ROOT:\s*''/);
+assert.match(releaseStackSmoke, /timeout:\s*360_000/);
+assert.doesNotMatch(
+  releaseStackSmoke,
+  /\b(?:manager|brain)Port\s*=\s*\d+/,
+  'release stack smoke must use and report the randomly reserved service endpoints',
+);
+assert.match(releaseStackSmoke, /maxRetries:\s*process\.platform === 'win32'/);
 assert.match(releaseStackSmoke, /mode\s*&\s*0o777\)\s*!==\s*0o600/);
 assert.match(pkg.scripts?.['test:selftest-result-file'] || '', /selftest-result-file-smoke/);
 assert.match(pkg.scripts?.['test:legacy-manager-updater-retired'] || '', /legacy-manager-updater-retired-smoke/);
@@ -224,8 +291,8 @@ assert.equal(
 
 const releaseWorkflow = readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf8');
 const actionPins = [
-  ['checkout', '3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1', 7, 9],
-  ['setup-node', '820762786026740c76f36085b0efc47a31fe5020 # v7.0.0', 3, 5],
+  ['checkout', '3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1', 7, 10],
+  ['setup-node', '820762786026740c76f36085b0efc47a31fe5020 # v7.0.0', 3, 6],
   ['upload-artifact', '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1', 2, 2],
   ['download-artifact', '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1', 0, 5],
   ['attest', 'f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0', 0, 3],
@@ -270,12 +337,43 @@ for (const target of ['darwin-arm64', 'darwin-x64', 'win32-x64', 'linux-x64']) {
 }
 assert.match(releaseWorkflow, /WINDOWS_CODESIGN_P12/);
 assert.match(releaseWorkflow, /MACOS_DEVELOPER_ID_P12/);
+assert.match(releaseWorkflow, /MACOS_EXPECTED_TEAM_ID/);
+assert.match(releaseWorkflow, /MACOS_EXPECTED_SIGNING_IDENTITY/);
+assert.match(releaseWorkflow, /WINDOWS_EXPECTED_PUBLISHER_SUBJECT/);
+assert.match(releaseWorkflow, /node scripts\/run-production-builder\.mjs/);
+assert.match(releaseWorkflow, /node idctl-desktop\/scripts\/verify-packaged-publisher\.mjs/);
+assert.match(releaseWorkflow, /SignerCertificate\.Subject -cne \$env:WINDOWS_EXPECTED_PUBLISHER_SUBJECT/);
+assert.match(releaseWorkflow, /TeamIdentifier=\/\//);
+assert.match(releaseWorkflow, /Developer ID Application: \$MACOS_EXPECTED_SIGNING_IDENTITY/);
+assert.match(releaseWorkflow, /certificate leaf\[subject\.OU\] =/);
+assert.match(releaseWorkflow, /1\.2\.840\.113635\.100\.6\.1\.13/);
 assert.match(releaseWorkflow, /merge-update-metadata\.mjs/);
 assert.match(releaseWorkflow, /merge-release-metadata\.mjs/);
+assert.match(releaseWorkflow, /node scripts\/verify-update-descriptors\.mjs/);
+assert.match(releaseWorkflow, /npm run test:update-descriptor-contract --prefix idctl-desktop/);
+assert.match(releaseWorkflow, /npm run test:updater-public-provider --prefix idctl-desktop/);
+assert.match(workflow, /npm run test:update-descriptor-contract --prefix idctl-desktop/);
+assert.match(workflow, /npm run test:updater-public-provider --prefix idctl-desktop/);
 assert.match(releaseWorkflow, /RUNTIME_SOURCE_TOKEN/);
 assert.match(releaseWorkflow, /runtime-source-tests:/);
 assert.match(releaseWorkflow, /Require GitHub-enforced immutable releases/);
 assert.match(releaseWorkflow, /repos\/\$GITHUB_REPOSITORY\/immutable-releases/);
+assert.equal(
+  (releaseWorkflow.match(/GH_TOKEN="\$RELEASE_ADMIN_TOKEN" gh api/g) || []).length,
+  3,
+  'every immutable-releases setting read must use the dedicated repository Administration token',
+);
+assert.equal(
+  (releaseWorkflow.match(/repos\/\$GITHUB_REPOSITORY\/immutable-releases/g) || []).length,
+  3,
+  'immutability must be preflighted before validation, initial publication, and draft promotion',
+);
+assert.match(releaseWorkflow, /xcrun notarytool submit "\$DMG"/);
+assert.match(releaseWorkflow, /xcrun stapler staple "\$DMG"/);
+assert.match(releaseWorkflow, /codesign --verify --verbose=2 "\$DMG"/);
+assert.match(releaseWorkflow, /verify-public-release:/);
+assert.match(releaseWorkflow, /node scripts\/verify-public-release\.mjs/);
+assert.match(releaseWorkflow, /Verify the unauthenticated public release and updater downloads/);
 assert.match(releaseWorkflow, /Verify GitHub locked the published release/);
 assert.match(releaseWorkflow, /Verify GitHub locked the promoted release/);
 assert.match(releaseWorkflow, /npm run ci:preflight --prefix \.runtime-sources\/manager/);

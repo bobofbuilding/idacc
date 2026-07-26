@@ -300,4 +300,5 @@ bash "$ROOT/scripts/resume-release.sh" "$VER" "--publish=$PUBLISH"
 PUSHED_TAG=""
 trap - EXIT
 
-printf '✓ prepared and dispatched %s from exact commit %s (publish=%s)\n' "$TAG" "$RELEASE_COMMIT" "$PUBLISH"
+printf '✓ prepared %s and completed its exact Production release workflow at %s (publish=%s)\n' \
+  "$TAG" "$RELEASE_COMMIT" "$PUBLISH"

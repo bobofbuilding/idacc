@@ -33,6 +33,7 @@ import {
   type ExecutionChain,
 } from '../../shared/signingGuardrails.ts';
 import {
+  classifyIdentityStandardEvidence,
   identityRegisterNoop,
   registeredIdentityDomain,
 } from '../../shared/identityVerification.ts';
@@ -385,12 +386,25 @@ function identityStandardRows(
   liveEvidence?: LiveIdentityEvidence | null,
 ): ReviewRow[] {
   if (!agent) {
+    const states = classifyIdentityStandardEvidence({
+      hasAgent: false,
+      hasDomain: false,
+      hasWallet: false,
+      hasSmartAccount: false,
+      ensBindingVerified: false,
+      ensip24Declared: false,
+      erc8004Declared: false,
+      erc8048Declared: false,
+      erc8049Declared: false,
+      b20Declared: false,
+    });
     return [
-      { label: 'ENS / ENSIP-24', state: 'missing', note: 'select an agent' },
-      { label: 'ERC-8004', state: 'missing', note: 'select an agent' },
-      { label: 'ERC-8048 / ERC-721T', state: 'missing', note: 'select an agent' },
-      { label: 'ERC-8049', state: 'missing', note: 'select an agent' },
-      { label: 'B20 extraMetadata', state: 'missing', note: 'select an agent' },
+      { label: 'ENS address binding', state: states.ensBinding, note: 'select an agent' },
+      { label: 'ENSIP-24 arbitrary data', state: states.ensip24, note: 'select an agent' },
+      { label: 'ERC-8004', state: states.erc8004, note: 'select an agent' },
+      { label: 'ERC-8048 / ERC-721T', state: states.erc8048, note: 'select an agent' },
+      { label: 'ERC-8049', state: states.erc8049, note: 'select an agent' },
+      { label: 'B20 extraMetadata', state: states.b20, note: 'select an agent' },
     ];
   }
 
@@ -470,22 +484,41 @@ function identityStandardRows(
     'base.b20.extraMetadata',
     'token.extraMetadata',
   ]);
+  const states = classifyIdentityStandardEvidence({
+    hasAgent: true,
+    hasDomain: Boolean(domain),
+    hasWallet: Boolean(wallet),
+    hasSmartAccount: Boolean(acct?.smartAccount),
+    ensBindingVerified: liveEvidence?.resolver.state === 'verified',
+    ensip24Declared: Boolean(ensip24),
+    erc8004Declared: Boolean(erc8004),
+    erc8048Declared: Boolean(erc8048),
+    erc8049Declared: Boolean(erc8049),
+    b20Declared: Boolean(b20),
+  });
 
   return [
     {
-      label: 'ENS / ENSIP-24',
-      state: liveEvidence?.resolver.state === 'verified' ? 'verified' : ensip24 ? 'self' : domain ? 'warn' : 'missing',
+      label: 'ENS address binding',
+      state: states.ensBinding,
       note: liveEvidence?.resolver.detail
         ? liveEvidence.resolver.detail
-        : ensip24
-        ? `${metadataHitSource(ensip24)}; resolver data bytes still need a live ENSIP-24 read`
         : domain
-          ? `${domain}; ENSIP-24 resolver data read pending`
-          : 'no ENS/idchain name or arbitrary-data resolver evidence',
+          ? `${domain}; live resolver address check pending`
+          : 'no ENS/idchain name is declared',
+    },
+    {
+      label: 'ENSIP-24 arbitrary data',
+      state: states.ensip24,
+      note: ensip24
+        ? `${metadataHitSource(ensip24)}; draft data(bytes32,string) evidence remains unverified`
+        : domain
+          ? `${domain}; no ENSIP-24 arbitrary-data record is declared`
+          : 'no arbitrary-data resolver evidence',
     },
     {
       label: 'ERC-8004',
-      state: erc8004 ? 'self' : wallet ? 'warn' : 'missing',
+      state: states.erc8004,
       note: erc8004
         ? `${metadataHitSource(erc8004)}; agentWallet/agentURI should be verified onchain`
         : wallet
@@ -494,14 +527,14 @@ function identityStandardRows(
     },
     {
       label: 'ERC-8048 / ERC-721T',
-      state: erc8048 ? 'self' : domain || wallet ? 'warn' : 'missing',
+      state: states.erc8048,
       note: erc8048
         ? `${metadataHitSource(erc8048)}; token-level context/endpoints remain untrusted until fetched and verified`
         : 'no token-level metadata, ERC-721T context, endpoint, address, or metadata_contract evidence',
     },
     {
       label: 'ERC-8049',
-      state: erc8049 ? 'self' : acct?.smartAccount ? 'warn' : 'missing',
+      state: states.erc8049,
       note: erc8049
         ? `${metadataHitSource(erc8049)}; contractMetadata(string) read pending`
         : acct?.smartAccount
@@ -510,7 +543,7 @@ function identityStandardRows(
     },
     {
       label: 'B20 extraMetadata',
-      state: b20 ? 'self' : 'warn',
+      state: states.b20,
       note: b20
         ? `${metadataHitSource(b20)}; extraMetadata values are acknowledged but not rendered raw`
         : 'no Base B20 issuer extraMetadata evidence reported for this agent',
@@ -552,7 +585,7 @@ function reviewRows(
     {
       label: 'Live trust checks',
       state: 'pending',
-      note: agent ? 'ENSIP-24, ERC-8004, ERC-8048/721T, ERC-8049, and B20 live reads are tracked below' : 'select an agent',
+      note: agent ? 'ENS address binding is checked separately from draft metadata-standard attestations' : 'select an agent',
     },
   ];
 }
@@ -2036,14 +2069,14 @@ export function Identity({ store }: { store: FleetStore }) {
               <details id="identity-standards" className="card identity-review-details identity-standards" role="status">
                 <summary>
                   <span>
-                    <b>Onchain metadata standards</b>
+                    <b>Onchain identity &amp; metadata evidence</b>
                     <span className="muted small">{standardVerified} verified · {standardDeclared} declared · {standardCoverage.length} tracked</span>
                   </span>
                   <StatusPill state={standardVerified === standardCoverage.length ? 'verified' : (standardVerified || standardDeclared) ? 'warn' : 'missing'} />
                 </summary>
                 <div className="identity-review-body">
                   <p className="muted small">
-                    Read-only coverage check for public identity metadata. Live verification reads the Ethereum ENS resolver and deployed bytecode for the selected Safe and declared metadata contracts through your configured RPCs. Raw resolver bytes, contract bytes, and issuer extraMetadata are never displayed.
+                    Read-only coverage check for public identity metadata. Live verification reads the Ethereum ENS address binding and deployed bytecode for the selected Safe and declared metadata contracts through your configured RPCs. Generic bytecode never proves conformance to a draft metadata standard. Raw resolver bytes, contract bytes, and issuer extraMetadata are never displayed.
                   </p>
                   <div className="row-actions" style={{ marginBottom: 10 }}>
                     <button className="btn" disabled={identityEvidenceBusy || !selAgent} onClick={() => void verifyLiveIdentity()}>
@@ -2538,8 +2571,8 @@ export function Identity({ store }: { store: FleetStore }) {
                     <b>{caps?.provider ?? '-'}</b>
 	                  </div>
 	                  <div className="auth-list">
-	                    <div><StatusPill state="pending" /><span>Live ENSIP-24 / ERC-8004 / ERC-8048 / ERC-8049 / B20 reads are tracked but not yet verifiable.</span></div>
-	                    <div><StatusPill state="pending" /><span>Manifest hash, metadata hook trust, and runtime signature verification are not yet verifiable.</span></div>
+	                    <div><StatusPill state="pending" /><span>ENS address binding is verified separately. Draft ENSIP-24 / ERC-8004 / ERC-8048 / ERC-8049 / B20 evidence stays declared until canonical standard targets and interfaces are available.</span></div>
+	                    <div><StatusPill state="pending" /><span>Manifest hashes, metadata-hook trust, and runtime signatures remain external trust claims until the Manager supplies a versioned attestation schema and trust roots.</span></div>
 	                    <div><StatusPill state="self" /><span>Better Auth proves operator login only; it is not wallet or agent identity proof.</span></div>
 	                  </div>
                 </div>

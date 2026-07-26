@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -13,11 +15,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   canonicalLoopbackServiceUrl,
+  BRAIN_LISTENER_STATUS_MAX_BYTES,
+  readBrainListenerStatusFile,
   parseRuntimeManifest,
   restartDelayMs,
   rotateServiceLog,
   shouldOpenCrashFuse,
   validateServiceHealth,
+  validateBrainListenerStatus,
   manifestDigestMatches,
   runtimeManifestSha256,
   verifyRuntimePayload,
@@ -174,6 +179,137 @@ assert.throws(
 const serializedManifest = JSON.stringify(manifestValue);
 assert.equal(manifestDigestMatches(serializedManifest, runtimeManifestSha256(serializedManifest)), true);
 assert.equal(manifestDigestMatches(`${serializedManifest} `, runtimeManifestSha256(serializedManifest)), false);
+
+const listenerStatusRoot = mkdtempSync(join(tmpdir(), 'idacc-listener-status-'));
+try {
+  const statusPath = join(listenerStatusRoot, 'brain-listener-status.json');
+  const now = Date.parse('2026-07-26T12:00:00.000Z');
+  const listenerNonce = 'listener-process-nonce';
+  const listenerPid = 42_424;
+  const validStatus = {
+    schemaVersion: 1,
+    instanceNonce: listenerNonce,
+    pid: listenerPid,
+    primaryTeam: { id: 'default', name: 'Default', active: true },
+    teamCount: 1,
+    lastSuccessfulPollAt: new Date(now - 1_000).toISOString(),
+    cursors: [{ id: 'default', name: 'Default', seq: 17 }],
+  };
+  writeFileSync(statusPath, JSON.stringify(validStatus), { mode: 0o600 });
+  assert.deepEqual(
+    readBrainListenerStatusFile(statusPath, {
+      instanceNonce: listenerNonce,
+      pid: listenerPid,
+      now,
+    }),
+    {
+      healthy: true,
+      lastSuccessfulPollAt: validStatus.lastSuccessfulPollAt,
+      teamCount: 1,
+      primaryTeam: { id: 'default', name: 'Default', active: true },
+    },
+    'a fresh process-bound listener poll must satisfy readiness',
+  );
+  assert.match(
+    validateBrainListenerStatus(
+      { ...validStatus, instanceNonce: 'stale-process-nonce' },
+      { instanceNonce: listenerNonce, pid: listenerPid, now },
+    ).error || '',
+    /managed process/,
+    'a listener status from an earlier spawn must not satisfy readiness',
+  );
+  const staleStatus = validateBrainListenerStatus(
+    {
+      ...validStatus,
+      lastSuccessfulPollAt: new Date(now - 30_001).toISOString(),
+    },
+    { instanceNonce: listenerNonce, pid: listenerPid, now },
+  );
+  assert.equal(staleStatus.healthy, false);
+  assert.equal(staleStatus.lastSuccessfulPollAt, new Date(now - 30_001).toISOString());
+  assert.match(staleStatus.error || '', /recently/);
+  assert.match(
+    validateBrainListenerStatus(
+      { ...validStatus, pid: listenerPid + 1 },
+      { instanceNonce: listenerNonce, pid: listenerPid, now },
+    ).error || '',
+    /managed process/,
+  );
+  const inactivePrimary = validateBrainListenerStatus({
+    ...validStatus,
+    primaryTeam: { ...validStatus.primaryTeam, active: false },
+    cursors: [{ id: 'research-id', name: 'Research', seq: 3 }],
+  }, { instanceNonce: listenerNonce, pid: listenerPid, now });
+  assert.equal(inactivePrimary.healthy, true);
+  assert.equal(inactivePrimary.primaryTeam?.active, false);
+  assert.match(
+    validateBrainListenerStatus(
+      {
+        ...validStatus,
+        primaryTeam: { ...validStatus.primaryTeam, active: false },
+      },
+      { instanceNonce: listenerNonce, pid: listenerPid, now },
+    ).error || '',
+    /activity disagreed/,
+  );
+
+  const missingStatusPath = join(listenerStatusRoot, 'never-published.json');
+  for (const checkedAt of [now, now + 60_000]) {
+    const missing = readBrainListenerStatusFile(missingStatusPath, {
+      instanceNonce: listenerNonce,
+      pid: listenerPid,
+      now: checkedAt,
+    });
+    assert.equal(missing.healthy, false);
+    assert.match(missing.error || '', /not present/);
+  }
+
+  const malformedPath = join(listenerStatusRoot, 'malformed.json');
+  writeFileSync(malformedPath, '{"schemaVersion":', { mode: 0o600 });
+  assert.match(
+    readBrainListenerStatusFile(malformedPath, {
+      instanceNonce: listenerNonce,
+      pid: listenerPid,
+      now,
+    }).error || '',
+    /valid JSON/,
+  );
+
+  const oversizedPath = join(listenerStatusRoot, 'oversized.json');
+  writeFileSync(oversizedPath, Buffer.alloc(BRAIN_LISTENER_STATUS_MAX_BYTES + 1), { mode: 0o600 });
+  assert.match(
+    readBrainListenerStatusFile(oversizedPath, {
+      instanceNonce: listenerNonce,
+      pid: listenerPid,
+      now,
+    }).error || '',
+    /size limit/,
+  );
+
+  if (process.platform !== 'win32') {
+    const symlinkPath = join(listenerStatusRoot, 'status-link.json');
+    symlinkSync(statusPath, symlinkPath);
+    assert.match(
+      readBrainListenerStatusFile(symlinkPath, {
+        instanceNonce: listenerNonce,
+        pid: listenerPid,
+        now,
+      }).error || '',
+      /symbolic link/,
+    );
+    chmodSync(statusPath, 0o644);
+    assert.match(
+      readBrainListenerStatusFile(statusPath, {
+        instanceNonce: listenerNonce,
+        pid: listenerPid,
+        now,
+      }).error || '',
+      /not private/,
+    );
+  }
+} finally {
+  rmSync(listenerStatusRoot, { recursive: true, force: true });
+}
 
 const integrityRoot = mkdtempSync(join(tmpdir(), 'idacc-runtime-integrity-'));
 try {

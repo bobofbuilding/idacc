@@ -22,9 +22,6 @@ function metadata(arch, digest) {
     `  - url: IDACC-1.2.3-${arch}.zip`,
     `    sha512: ${digest}`,
     '    size: 42',
-    `  - url: IDACC-1.2.3-${arch}.dmg`,
-    `    sha512: ${digest}`,
-    '    size: 43',
     `path: IDACC-1.2.3-${arch}.zip`,
     `sha512: ${digest}`,
     `releaseDate: '2026-07-25T00:00:0${arch === 'arm64' ? 1 : 2}.000Z'`,
@@ -47,9 +44,33 @@ try {
   ]);
   const merged = load(readFileSync(output, 'utf8'));
   assert.equal(merged.version, '1.2.3');
-  assert.equal(merged.files.length, 4);
+  assert.equal(merged.files.length, 2);
+  assert.ok(merged.files.every((file) => file.url.endsWith('.zip')));
   assert.match(merged.path, /x64\.zip$/);
   assert.equal(merged.sha512, intelDigest);
+
+  const dmgContaminated = join(scratch, 'dmg-contaminated.yml');
+  writeFileSync(
+    dmgContaminated,
+    metadata('x64', intelDigest).replace(
+      'path: IDACC-1.2.3-x64.zip',
+      [
+        '  - url: IDACC-1.2.3-x64.dmg',
+        `    sha512: ${intelDigest}`,
+        '    size: 43',
+        'path: IDACC-1.2.3-x64.zip',
+      ].join('\n'),
+    ),
+  );
+  const dmgResult = spawnSync(process.execPath, [
+    script,
+    '--input', arm,
+    '--input', dmgContaminated,
+    '--output', output,
+    '--require-mac-arches',
+  ], { encoding: 'utf8' });
+  assert.notEqual(dmgResult.status, 0);
+  assert.match(dmgResult.stderr, /exactly one ZIP updater and no DMG/);
 
   const mismatch = join(scratch, 'mismatch.yml');
   writeFileSync(mismatch, metadata('x64', intelDigest).replace('version: 1.2.3', 'version: 1.2.4'));

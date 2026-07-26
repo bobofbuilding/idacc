@@ -23,9 +23,6 @@ if (!existsSync(binary)) {
 }
 const profile = mkdtempSync(join(tmpdir(), 'idacc-clean-profile-'));
 const resultFile = join(profile, 'stack-selftest-result.json');
-const offset = process.pid % 1000;
-const managerPort = 44000 + offset;
-const brainPort = 45000 + offset;
 
 try {
   const useXvfb = process.platform === 'linux';
@@ -33,15 +30,21 @@ try {
   const commandArgs = useXvfb ? ['-a', binary] : [];
   const execution = spawnSync(command, commandArgs, {
     encoding: 'utf8',
-    timeout: 60_000,
+    timeout: 360_000,
     maxBuffer: 4 * 1024 * 1024,
     env: {
       ...process.env,
       IDACC_DATA_DIR: profile,
       IDACC_STACK_SELFTEST: '1',
       IDACC_STACK_SELFTEST_RESULT_FILE: resultFile,
-      MANAGER_URL: `http://127.0.0.1:${managerPort}`,
-      BRAIN_URL: `http://127.0.0.1:${brainPort}`,
+      // Reserve 90 seconds for readiness and leave the remaining 270 seconds
+      // for the expanded cross-platform contract and orderly shutdown.
+      IDACC_STACK_SELFTEST_READY_TIMEOUT_MS: '90_000',
+      IDACC_STACK_RANDOM_PORTS: '1',
+      IDACC_RUNTIME_ROOT: '',
+      MANAGER_URL: '',
+      BRAIN_URL: '',
+      IDACC_BRAIN_URL: '',
     },
   });
   const stdout = String(execution.stdout || '');
@@ -81,6 +84,12 @@ try {
   if (status.ready !== true || status.services?.length !== 2 || status.services.some((service) => !service.bundled || !service.healthy)) {
     throw new Error(`unified stack did not become ready: ${JSON.stringify(status)}`);
   }
+  const manager = status.services.find((service) => service.name === 'manager');
+  const brain = status.services.find((service) => service.name === 'brain');
+  const listener = status.companions?.find((companion) => companion.name === 'brain-listener');
+  if (!manager?.url || !brain?.url || listener?.healthy !== true || listener?.phase !== 'running') {
+    throw new Error(`unified stack did not report its live listener and service endpoints: ${JSON.stringify(status)}`);
+  }
   if (
     status.managerCompatibility?.ready !== true
     || status.runtimeContract?.managerCapabilities !== true
@@ -88,7 +97,10 @@ try {
     || status.runtimeContract?.controlStateCompareAndSet !== true
     || status.runtimeContract?.controlEventIdempotency !== true
     || status.runtimeContract?.brainLearnedControlEvent !== true
+    || status.runtimeContract?.brainLearnedSecondaryTeamEvent !== true
     || status.runtimeContract?.brainListenerCursorAdvanced !== true
+    || status.runtimeContract?.brainMultiTeamCursors !== true
+    || status.runtimeContract?.brainTimelineReplaySafe !== true
     || status.runtimeContract?.localAgentSpawn !== true
     || status.runtimeContract?.localAgentPrivateLog !== true
     || status.runtimeContract?.localAgentStop !== true
@@ -101,8 +113,13 @@ try {
   }
   console.log(
     `Unified clean-profile stack check passed on ${process.platform}`
-    + ` via ${resultSource}: manager :${managerPort}, Brain :${brainPort}`,
+    + ` via ${resultSource}: manager ${manager.url}, Brain ${brain.url}`,
   );
 } finally {
-  rmSync(profile, { recursive: true, force: true });
+  rmSync(profile, {
+    recursive: true,
+    force: true,
+    maxRetries: process.platform === 'win32' ? 10 : 2,
+    retryDelay: 200,
+  });
 }
