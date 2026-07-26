@@ -49,6 +49,11 @@ npm run release:win --prefix idctl-desktop
 npm run release:linux --prefix idctl-desktop
 ```
 
+Windows source and package builds require Visual Studio Build Tools with the
+Roslyn Compiler component and .NET Framework 4.8 targeting pack. The build
+discovers that toolchain through `vswhere`, compiles both app-owned helpers
+twice, and rejects non-deterministic output before packaging.
+
 The AppImage target supports the unified in-app updater. Debian packages are
 updated through the system package manager or by installing the next `.deb`;
 the application reports that distinction instead of offering an unsupported

@@ -607,6 +607,7 @@ jobs:
           WIN_CSC_KEY_PASSWORD: ""
           WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ""
         run: |
+          npm run test:windows-native-toolchain
           npm run build
           npm run test:windows-job-host
           npm run test:windows-profile-native-build

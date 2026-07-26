@@ -80,10 +80,10 @@ if (process.platform === 'win32') {
     'Windows release output must identify the Job Host compiler',
   );
   assert.ok(String(buildMode.windowsJobHost?.compilerFileVersion || '').trim());
-  assert.match(
-    String(buildMode.windowsJobHost?.codeDomAssembly || ''),
-    /Microsoft\.CSharp/i,
-  );
+  assert.match(String(buildMode.windowsJobHost?.compilerAssembly || ''), /^csc,/i);
+  assert.equal(buildMode.windowsJobHost?.compilerKind, 'visual-studio-roslyn');
+  assert.equal(buildMode.windowsJobHost?.targetFramework, 'net48');
+  assert.equal(buildMode.windowsJobHost?.deterministic, true);
   if (buildMode.windowsJobHost?.expectedPublisher) {
     assert.equal(buildMode.windowsJobHost?.verificationMode, 'authenticode-publisher');
   } else {
@@ -103,23 +103,31 @@ if (process.platform === 'win32') {
   assert.match(
     String(buildMode.windowsProfileNative?.compilerSha256 || ''),
     /^[0-9a-f]{64}$/,
-    'Windows release output must identify its CodeDOM compiler',
+    'Windows release output must identify its Roslyn compiler',
   );
   assert.ok(String(buildMode.windowsProfileNative?.compilerFileVersion || '').trim());
-  assert.match(
-    String(buildMode.windowsProfileNative?.codeDomAssembly || ''),
-    /Microsoft\.CSharp/i,
-  );
+  assert.match(String(buildMode.windowsProfileNative?.compilerAssembly || ''), /^csc,/i);
+  assert.equal(buildMode.windowsProfileNative?.compilerKind, 'visual-studio-roslyn');
+  assert.equal(buildMode.windowsProfileNative?.targetFramework, 'net48');
+  assert.equal(buildMode.windowsProfileNative?.deterministic, true);
 } else {
   assert.equal(buildMode.windowsJobHost?.available, false);
   assert.equal(buildMode.windowsJobHost?.executableSha256, null);
   assert.equal(buildMode.windowsJobHost?.byteLength, null);
   assert.equal(buildMode.windowsJobHost?.verificationMode, 'unavailable');
   assert.equal(buildMode.windowsJobHost?.compilerSha256, null);
+  assert.equal(buildMode.windowsJobHost?.compilerAssembly, null);
+  assert.equal(buildMode.windowsJobHost?.compilerKind, null);
+  assert.equal(buildMode.windowsJobHost?.targetFramework, null);
+  assert.equal(buildMode.windowsJobHost?.deterministic, null);
   assert.equal(existsSync(join(out, 'native', 'idacc-job-host.exe')), false);
   assert.equal(buildMode.windowsProfileNative?.embedded, false);
   assert.equal(buildMode.windowsProfileNative?.assemblySha256, null);
   assert.equal(buildMode.windowsProfileNative?.compilerSha256, null);
+  assert.equal(buildMode.windowsProfileNative?.compilerAssembly, null);
+  assert.equal(buildMode.windowsProfileNative?.compilerKind, null);
+  assert.equal(buildMode.windowsProfileNative?.targetFramework, null);
+  assert.equal(buildMode.windowsProfileNative?.deterministic, null);
 }
 const files = walk(out);
 assert.equal(files.some((path) => path.endsWith('.map')), false, 'production bundles must not ship source maps');

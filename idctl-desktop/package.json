@@ -37,6 +37,7 @@
     "typecheck": "tsc --noEmit",
     "test:app-shutdown": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/app-shutdown-coordinator-smoke.ts",
     "test:computer-use-shutdown": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/computer-use-shutdown-smoke.ts",
+    "test:windows-native-toolchain": "node scripts/build.mjs --probe-windows-native-toolchain",
     "test:windows-job-host": "node scripts/windows-job-host-integration-smoke.mjs",
     "test:chat-failure": "node scripts/chat-terminal-failure-smoke.mjs",
     "test:background-policy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/background-policy-smoke.mjs",

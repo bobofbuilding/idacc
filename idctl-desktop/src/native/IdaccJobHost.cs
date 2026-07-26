@@ -19,7 +19,6 @@ internal static class IdaccJobHost {
   private const int JobObjectExtendedLimitInformation = 9;
   private const long PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D;
   private const long PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002;
-  private const uint WAIT_OBJECT_0 = 0x00000000;
   private const uint WAIT_TIMEOUT = 0x00000102;
   private const uint STILL_ACTIVE = 259;
   private const int STD_OUTPUT_HANDLE = -11;

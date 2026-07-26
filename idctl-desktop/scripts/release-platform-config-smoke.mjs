@@ -33,6 +33,10 @@ assert.equal(
   pkg.scripts?.['test:windows-job-host'],
   'node scripts/windows-job-host-integration-smoke.mjs',
 );
+assert.equal(
+  pkg.scripts?.['test:windows-native-toolchain'],
+  'node scripts/build.mjs --probe-windows-native-toolchain',
+);
 const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
 const tauriConfig = JSON.parse(
   readFileSync(join(desktop, 'src-tauri', 'tauri.conf.json'), 'utf8'),
@@ -534,6 +538,18 @@ for (const [name, source] of [
 for (const target of ['darwin-arm64', 'darwin-x64', 'win32-x64', 'linux-x64']) {
   assert.match(releaseWorkflow, new RegExp(target), `production release is missing ${target}`);
 }
+for (const windowsRunner of ['windows-2022', 'windows-2025']) {
+  assert.match(
+    workflow,
+    new RegExp(`- ${windowsRunner}`),
+    `CI must exercise native-helper discovery on ${windowsRunner}`,
+  );
+}
+assert.match(
+  workflow,
+  /Verify the Windows native compiler and helper sources[\s\S]*if: runner\.os == 'Windows'[\s\S]*npm run test:windows-native-toolchain --prefix idctl-desktop/,
+  'CI must probe the native compiler before the full Windows build',
+);
 const nativeReleaseBuildJob = releaseWorkflow.slice(
   releaseWorkflow.indexOf('  native-build:'),
   releaseWorkflow.indexOf('\n  attest-native:'),
@@ -553,6 +569,7 @@ assert.ok(
   'the native release job must exercise an unsigned Windows build before its signed build',
 );
 for (const command of [
+  'npm run test:windows-native-toolchain',
   'npm run build',
   'npm run test:windows-job-host',
   'npm run test:windows-profile-native-build',

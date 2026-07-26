@@ -25,14 +25,19 @@ assert.match(source, /\$nativeBundleMode -eq 'embedded'[\s\S]*ComputeHash/);
 assert.match(source, /\$nativeSourceHasher\.ComputeHash\(\$nativeSourceBytes\)/);
 assert.match(source, /\[Reflection\.Assembly\]::Load\(\$nativeAssemblyBytes\)/);
 assert.match(source, /\$script:diagnosticPhase = 'load-native'/);
-assert.match(buildSource, /System\.CodeDom\.Compiler\.CompilerParameters/);
-assert.match(buildSource, /-CompilerParameters \$compilerParameters/);
+assert.match(buildSource, /Microsoft\.VisualStudio\.Component\.Roslyn\.Compiler/);
+assert.match(buildSource, /MSBuild\\Current\\Bin\\Roslyn\\csc\.exe/);
+assert.match(buildSource, /function runWindowsCompiler/);
+assert.match(buildSource, /'\/deterministic\+'/);
+assert.match(buildSource, /'\/nowarn:0649'/);
+assert.match(buildSource, /`\/pathmap:\$\{pathMapSource\}=\/_\/idacc-native`/);
+assert.match(buildSource, /matchAll\(\/\\b\(\?:CS\|BC\)\\d\{4\}\\b\/g\)/);
 assert.match(buildSource, /\[firstOutput, secondOutput\]/);
 assert.match(buildSource, /assembly\.equals\(reproducedAssembly\)/);
 assert.doesNotMatch(
   buildSource,
-  /Add-Type[^\n]*-CompilerOptions/,
-  'Windows PowerShell 5.1 does not support the PowerShell 7 CompilerOptions parameter',
+  /System\.CodeDom\.Compiler\.CompilerParameters|CSharpCodeProvider/,
+  'the build must not route deterministic compilation through the legacy CodeDOM compiler',
 );
 
 if (process.platform === 'win32') {
@@ -47,7 +52,10 @@ if (process.platform === 'win32') {
   assert.match(String(provenance.clrVersion || ''), /^\d+(?:\.\d+)+$/);
   assert.ok(String(provenance.compilerFileVersion || '').trim());
   assert.match(String(provenance.compilerSha256 || ''), /^[0-9a-f]{64}$/);
-  assert.match(String(provenance.codeDomAssembly || ''), /Microsoft\.CSharp/i);
+  assert.match(String(provenance.compilerAssembly || ''), /^csc,/i);
+  assert.equal(provenance.compilerKind, 'visual-studio-roslyn');
+  assert.equal(provenance.targetFramework, 'net48');
+  assert.equal(provenance.deterministic, true);
   assert.equal(
     main.includes(provenance.assemblySha256),
     true,
@@ -61,7 +69,10 @@ if (process.platform === 'win32') {
   assert.equal(provenance.clrVersion, null);
   assert.equal(provenance.compilerFileVersion, null);
   assert.equal(provenance.compilerSha256, null);
-  assert.equal(provenance.codeDomAssembly, null);
+  assert.equal(provenance.compilerAssembly, null);
+  assert.equal(provenance.compilerKind, null);
+  assert.equal(provenance.targetFramework, null);
+  assert.equal(provenance.deterministic, null);
 }
 
 console.log('Windows profile native build smoke: ok');

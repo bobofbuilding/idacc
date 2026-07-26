@@ -158,7 +158,10 @@ npm run verify:runtimes --prefix idctl-desktop
 
 Native packages must be built on their target operating system because the
 Manager includes a native SQLite module. The production workflow rebuilds it for
-each Electron/OS/architecture combination before packaging.
+each Electron/OS/architecture combination before packaging. Windows builds
+also require Visual Studio Build Tools with the Roslyn Compiler component and
+.NET Framework 4.8 targeting pack; the build discovers them through `vswhere`
+and verifies byte-identical native-helper output.
 
 Useful release gates include:
 

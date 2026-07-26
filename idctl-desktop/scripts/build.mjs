@@ -88,6 +88,175 @@ function windowsPowerShellExecutable() {
   return executable;
 }
 
+function requireLocalWindowsPath(value, label, expectedBasename = '') {
+  const normalized = win32.normalize(String(value || '').trim());
+  if (
+    !normalized
+    || !win32.isAbsolute(normalized)
+    || !/^[A-Za-z]:\\/.test(normalized)
+    || normalized.startsWith('\\\\')
+    || normalized.slice(win32.parse(normalized).root.length).includes(':')
+    || (expectedBasename && win32.basename(normalized).toLowerCase() !== expectedBasename)
+  ) {
+    throw new Error(`${label} is unavailable`);
+  }
+  return normalized;
+}
+
+function windowsRoslynCompilerExecutable() {
+  const programFilesX86 = requireLocalWindowsPath(
+    process.env['ProgramFiles(x86)'] || process.env.ProgramFiles,
+    'Windows Program Files directory',
+  );
+  const vswhere = requireLocalWindowsPath(
+    win32.join(
+      programFilesX86,
+      'Microsoft Visual Studio',
+      'Installer',
+      'vswhere.exe',
+    ),
+    'Visual Studio discovery tool',
+    'vswhere.exe',
+  );
+  if (!existsSync(vswhere)) {
+    throw new Error('Visual Studio discovery tool is unavailable');
+  }
+  const result = spawnSync(vswhere, [
+    '-latest',
+    '-products',
+    '*',
+    '-requires',
+    'Microsoft.VisualStudio.Component.Roslyn.Compiler',
+    '-find',
+    String.raw`MSBuild\Current\Bin\Roslyn\csc.exe`,
+  ], {
+    encoding: 'utf8',
+    env: {
+      SystemRoot: process.env.SystemRoot || process.env.WINDIR,
+      WINDIR: process.env.WINDIR || process.env.SystemRoot,
+    },
+    maxBuffer: 1024 * 1024,
+    timeout: 30_000,
+    windowsHide: true,
+  });
+  const candidates = String(result.stdout || '')
+    .replaceAll('\0', '')
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (
+    result.error
+    || result.signal
+    || result.status !== 0
+    || candidates.length !== 1
+  ) {
+    throw new Error('Visual Studio Roslyn compiler discovery failed');
+  }
+  const compiler = requireLocalWindowsPath(
+    candidates[0],
+    'Visual Studio Roslyn compiler',
+    'csc.exe',
+  );
+  if (
+    !/\\MSBuild\\Current\\Bin\\Roslyn\\csc\.exe$/i.test(compiler)
+    || !existsSync(compiler)
+  ) {
+    throw new Error('Visual Studio Roslyn compiler is unavailable');
+  }
+  return compiler;
+}
+
+function windowsNetFrameworkReferences() {
+  const programFilesX86 = requireLocalWindowsPath(
+    process.env['ProgramFiles(x86)'] || process.env.ProgramFiles,
+    'Windows Program Files directory',
+  );
+  const directory = requireLocalWindowsPath(
+    win32.join(
+      programFilesX86,
+      'Reference Assemblies',
+      'Microsoft',
+      'Framework',
+      '.NETFramework',
+      'v4.8',
+    ),
+    '.NET Framework 4.8 reference directory',
+  );
+  const references = ['mscorlib.dll', 'System.dll', 'System.Core.dll']
+    .map((name) => requireLocalWindowsPath(
+      win32.join(directory, name),
+      `.NET Framework 4.8 ${name}`,
+      name.toLowerCase(),
+    ));
+  if (references.some((reference) => !existsSync(reference))) {
+    throw new Error('.NET Framework 4.8 reference assemblies are unavailable');
+  }
+  return references;
+}
+
+function runWindowsCompiler(
+  executable,
+  source,
+  output,
+  references,
+  target,
+  pathMapSource,
+  mainClass = '',
+) {
+  if (/[=,]/.test(pathMapSource)) {
+    throw new Error('Windows native helper source root is unsupported');
+  }
+  const args = [
+    '/nologo',
+    '/noconfig',
+    '/utf8output',
+    '/deterministic+',
+    '/optimize+',
+    '/debug-',
+    '/warn:4',
+    '/warnaserror+',
+    // Win32 fills the declared interop-layout fields outside C#'s assignment
+    // analysis. Keep every other compiler warning fatal.
+    '/nowarn:0649',
+    '/langversion:5',
+    '/platform:anycpu',
+    '/nostdlib+',
+    `/target:${target}`,
+    `/out:${output}`,
+    `/pathmap:${pathMapSource}=/_/idacc-native`,
+    ...references.map((reference) => `/reference:${reference}`),
+  ];
+  if (mainClass) args.push(`/main:${mainClass}`);
+  args.push(source);
+  const environment = {
+    SystemRoot: process.env.SystemRoot || process.env.WINDIR,
+    WINDIR: process.env.WINDIR || process.env.SystemRoot,
+  };
+  for (const key of ['ComSpec', 'TEMP', 'TMP']) {
+    if (process.env[key]) environment[key] = process.env[key];
+  }
+  const result = spawnSync(executable, args, {
+    cwd: win32.dirname(executable),
+    encoding: 'utf8',
+    env: environment,
+    maxBuffer: 4 * 1024 * 1024,
+    timeout: 120_000,
+    windowsHide: true,
+  });
+  if (result.error || result.signal || result.status !== 0) {
+    const diagnosticCodes = [
+      ...String(result.stdout || '').matchAll(/\b(?:CS|BC)\d{4}\b/g),
+      ...String(result.stderr || '').matchAll(/\b(?:CS|BC)\d{4}\b/g),
+    ].map((match) => match[0]).filter((entry, index, all) => (
+      all.indexOf(entry) === index
+    )).slice(0, 8);
+    const suffix = diagnosticCodes.length > 0
+      ? ` (${diagnosticCodes.join(', ')})`
+      : '';
+    throw new Error(`Windows Roslyn compilation failed${suffix}`);
+  }
+}
+
 function runWindowsPowerShell(executable, script, input, extraEnvironment = {}, timeout = 120_000) {
   const environment = {
     SystemRoot: process.env.SystemRoot || process.env.WINDIR,
@@ -141,34 +310,34 @@ function prepareWindowsProfileNativeHelper(nativeSource) {
       clrVersion: null,
       compilerFileVersion: null,
       compilerSha256: null,
-      codeDomAssembly: null,
+      compilerAssembly: null,
+      compilerKind: null,
+      targetFramework: null,
+      deterministic: null,
     };
   }
 
   const executable = windowsPowerShellExecutable();
+  const compilerExecutable = windowsRoslynCompilerExecutable();
+  const references = windowsNetFrameworkReferences();
   const scratch = mkdtempSync(join(tmpdir(), 'idacc-profile-native-'));
   const firstRoot = join(scratch, 'first');
   const secondRoot = join(scratch, 'second');
   mkdirSync(firstRoot, { recursive: false });
   mkdirSync(secondRoot, { recursive: false });
+  const sourcePath = join(scratch, 'IdaccProfileFileProbe.cs');
   const firstOutput = join(firstRoot, 'IdaccProfileFileProbe.dll');
   const secondOutput = join(secondRoot, 'IdaccProfileFileProbe.dll');
+  writeFileSync(sourcePath, nativeSource, 'utf8');
   try {
-    const compiler = String.raw`
-$ErrorActionPreference = 'Stop'
-$source = [Console]::In.ReadToEnd()
-if ([string]::IsNullOrWhiteSpace($source)) { exit 1 }
-$compilerParameters = [System.CodeDom.Compiler.CompilerParameters]::new()
-$compilerParameters.CompilerOptions = '/optimize+ /debug- /deterministic'
-Add-Type -TypeDefinition $source -Language CSharp -OutputAssembly $env:IDACC_PROFILE_NATIVE_OUTPUT -OutputType Library -CompilerParameters $compilerParameters
-if (-not [System.IO.File]::Exists($env:IDACC_PROFILE_NATIVE_OUTPUT)) { exit 1 }
-`;
     for (const output of [firstOutput, secondOutput]) {
-      runWindowsPowerShell(
-        executable,
-        compiler,
-        nativeSource,
-        { IDACC_PROFILE_NATIVE_OUTPUT: output },
+      runWindowsCompiler(
+        compilerExecutable,
+        sourcePath,
+        output,
+        references,
+        'library',
+        scratch,
       );
     }
     const assembly = readFileSync(firstOutput);
@@ -217,8 +386,7 @@ try {
     $null -eq $type.GetMethod('ReadLockedSecurityDescriptor') -or
     $null -eq $type.GetMethod('SetSecurityWithoutPropagation')
   ) { exit 1 }
-  $runtimeDirectory = [Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()
-  $compilerPath = [System.IO.Path]::Combine($runtimeDirectory, 'csc.exe')
+  $compilerPath = [string]$env:IDACC_PROFILE_NATIVE_COMPILER
   if (-not [System.IO.File]::Exists($compilerPath)) { exit 1 }
   $compilerHasher = [Security.Cryptography.SHA256]::Create()
   try {
@@ -242,7 +410,9 @@ try {
       ).FileVersion
     )
     compilerSha256 = $compilerDigest
-    codeDomAssembly = [string][Microsoft.CSharp.CSharpCodeProvider].Assembly.FullName
+    compilerAssembly = [string](
+      [Reflection.AssemblyName]::GetAssemblyName($compilerPath).FullName
+    )
   } | ConvertTo-Json -Compress))
   exit 0
 } catch {
@@ -253,7 +423,10 @@ try {
       executable,
       loader,
       assembly.toString('base64'),
-      { IDACC_PROFILE_NATIVE_SHA256: assemblySha256 },
+      {
+        IDACC_PROFILE_NATIVE_SHA256: assemblySha256,
+        IDACC_PROFILE_NATIVE_COMPILER: compilerExecutable,
+      },
     ));
     const corrupted = Buffer.from(assembly);
     corrupted[corrupted.length - 1] ^= 0x01;
@@ -263,7 +436,10 @@ try {
         executable,
         loader,
         corrupted.toString('base64'),
-        { IDACC_PROFILE_NATIVE_SHA256: assemblySha256 },
+        {
+          IDACC_PROFILE_NATIVE_SHA256: assemblySha256,
+          IDACC_PROFILE_NATIVE_COMPILER: compilerExecutable,
+        },
       );
       corruptedAccepted = true;
     } catch {
@@ -282,7 +458,10 @@ try {
       clrVersion: String(metadata.clrVersion || ''),
       compilerFileVersion: String(metadata.compilerFileVersion || ''),
       compilerSha256: String(metadata.compilerSha256 || ''),
-      codeDomAssembly: String(metadata.codeDomAssembly || ''),
+      compilerAssembly: String(metadata.compilerAssembly || ''),
+      compilerKind: 'visual-studio-roslyn',
+      targetFramework: 'net48',
+      deterministic: true,
     };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -317,7 +496,10 @@ function prepareWindowsJobHost(compilerProvenance) {
       clrVersion: null,
       compilerFileVersion: null,
       compilerSha256: null,
-      codeDomAssembly: null,
+      compilerAssembly: null,
+      compilerKind: null,
+      targetFramework: null,
+      deterministic: null,
     };
   }
 
@@ -333,34 +515,27 @@ function prepareWindowsJobHost(compilerProvenance) {
     );
   }
 
-  const powershell = windowsPowerShellExecutable();
+  const compilerExecutable = windowsRoslynCompilerExecutable();
+  const references = windowsNetFrameworkReferences();
   const scratch = mkdtempSync(join(tmpdir(), 'idacc-job-host-'));
   const firstRoot = join(scratch, 'first');
   const secondRoot = join(scratch, 'second');
   mkdirSync(firstRoot, { recursive: false });
   mkdirSync(secondRoot, { recursive: false });
+  const sourceFile = join(scratch, 'IdaccJobHost.cs');
   const firstOutput = join(firstRoot, 'idacc-job-host.exe');
   const secondOutput = join(secondRoot, 'idacc-job-host.exe');
+  writeFileSync(sourceFile, source, 'utf8');
   try {
-    const compiler = String.raw`
-$ErrorActionPreference = 'Stop'
-$source = [Console]::In.ReadToEnd()
-if ([string]::IsNullOrWhiteSpace($source)) { exit 1 }
-$compilerParameters = [System.CodeDom.Compiler.CompilerParameters]::new()
-$compilerParameters.GenerateExecutable = $true
-$compilerParameters.GenerateInMemory = $false
-$compilerParameters.IncludeDebugInformation = $false
-$compilerParameters.MainClass = 'IdaccJobHost'
-$compilerParameters.CompilerOptions = '/optimize+ /debug- /deterministic /platform:anycpu'
-Add-Type -TypeDefinition $source -Language CSharp -OutputAssembly $env:IDACC_JOB_HOST_OUTPUT -OutputType ConsoleApplication -CompilerParameters $compilerParameters
-if (-not [System.IO.File]::Exists($env:IDACC_JOB_HOST_OUTPUT)) { exit 1 }
-`;
     for (const output of [firstOutput, secondOutput]) {
-      runWindowsPowerShell(
-        powershell,
-        compiler,
-        source,
-        { IDACC_JOB_HOST_OUTPUT: output },
+      runWindowsCompiler(
+        compilerExecutable,
+        sourceFile,
+        output,
+        references,
+        'exe',
+        scratch,
+        'IdaccJobHost',
       );
     }
     const executable = readFileSync(firstOutput);
@@ -381,7 +556,12 @@ if (-not [System.IO.File]::Exists($env:IDACC_JOB_HOST_OUTPUT)) { exit 1 }
     if (
       !/^[0-9a-f]{64}$/.test(String(compilerProvenance.compilerSha256 || ''))
       || !String(compilerProvenance.compilerFileVersion || '').trim()
-      || !/Microsoft\.CSharp/i.test(String(compilerProvenance.codeDomAssembly || ''))
+      || !/^csc,/i.test(String(compilerProvenance.compilerAssembly || ''))
+      || compilerProvenance.compilerKind !== 'visual-studio-roslyn'
+      || compilerProvenance.targetFramework !== 'net48'
+      || compilerProvenance.deterministic !== true
+      || createHash('sha256').update(readFileSync(compilerExecutable)).digest('hex')
+        !== compilerProvenance.compilerSha256
     ) {
       throw new Error('Windows Job Host compiler provenance is unavailable');
     }
@@ -397,11 +577,38 @@ if (-not [System.IO.File]::Exists($env:IDACC_JOB_HOST_OUTPUT)) { exit 1 }
       clrVersion: compilerProvenance.clrVersion,
       compilerFileVersion: compilerProvenance.compilerFileVersion,
       compilerSha256: compilerProvenance.compilerSha256,
-      codeDomAssembly: compilerProvenance.codeDomAssembly,
+      compilerAssembly: compilerProvenance.compilerAssembly,
+      compilerKind: compilerProvenance.compilerKind,
+      targetFramework: compilerProvenance.targetFramework,
+      deterministic: compilerProvenance.deterministic,
     };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+if (process.argv.includes('--probe-windows-native-toolchain')) {
+  const profileHelper = prepareWindowsProfileNativeHelper(
+    extractWindowsProfileNativeSource(),
+  );
+  const jobHost = prepareWindowsJobHost(profileHelper);
+  if (process.platform === 'win32') {
+    if (
+      !profileHelper.embedded
+      || !jobHost.available
+      || profileHelper.compilerKind !== 'visual-studio-roslyn'
+      || jobHost.compilerKind !== 'visual-studio-roslyn'
+      || profileHelper.compilerSha256 !== jobHost.compilerSha256
+    ) {
+      throw new Error('Windows native toolchain probe did not produce both helpers');
+    }
+  }
+  console.log(
+    process.platform === 'win32'
+      ? 'Windows native toolchain probe: ok'
+      : 'Windows native toolchain probe: skipped on non-Windows',
+  );
+  process.exit(0);
 }
 
 if (requireRuntime && !existsSync(runtimeManifestPath)) {
@@ -561,7 +768,10 @@ writeFileSync(resolve(ROOT, 'out/build-mode.json'), JSON.stringify({
     clrVersion: windowsProfileNative.clrVersion,
     compilerFileVersion: windowsProfileNative.compilerFileVersion,
     compilerSha256: windowsProfileNative.compilerSha256,
-    codeDomAssembly: windowsProfileNative.codeDomAssembly,
+    compilerAssembly: windowsProfileNative.compilerAssembly,
+    compilerKind: windowsProfileNative.compilerKind,
+    targetFramework: windowsProfileNative.targetFramework,
+    deterministic: windowsProfileNative.deterministic,
   },
   windowsJobHost: {
     buildPlatform: process.platform,
@@ -576,7 +786,10 @@ writeFileSync(resolve(ROOT, 'out/build-mode.json'), JSON.stringify({
     clrVersion: windowsJobHost.clrVersion,
     compilerFileVersion: windowsJobHost.compilerFileVersion,
     compilerSha256: windowsJobHost.compilerSha256,
-    codeDomAssembly: windowsJobHost.codeDomAssembly,
+    compilerAssembly: windowsJobHost.compilerAssembly,
+    compilerKind: windowsJobHost.compilerKind,
+    targetFramework: windowsJobHost.targetFramework,
+    deterministic: windowsJobHost.deterministic,
   },
 }) + '\n');
 console.log(`built ${releaseBuild ? 'production' : 'development'} bundle → out/`);

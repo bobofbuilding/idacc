@@ -141,11 +141,15 @@ and verifies them, typechecks the application, audits every production
 dependency tree, builds an unpacked application, runs the clean-stack release
 smoke test, and uploads short-lived provenance evidence.
 
-Windows builds also compile the app-owned Job Host twice from the committed C#
-source, require byte-identical output, and record its source/compiler/binary
-digests in the build evidence. Production packaging Authenticode-signs that
-host and verifies its exact publisher alongside the desktop executable and
-installer; unsigned CI builds remain pinned to the deterministic binary digest.
+Windows builds discover the installed Visual Studio Roslyn compiler through
+`vswhere` and require its Roslyn Compiler component plus the .NET Framework 4.8
+targeting pack. They compile both app-owned native helpers twice from the
+committed C# source with deterministic path mapping, require byte-identical
+output, load-test the privacy helper under Windows PowerShell 5.1, and record
+the exact source/compiler/binary identities in the build evidence. Production
+packaging Authenticode-signs the Job Host and verifies its exact publisher
+alongside the desktop executable and installer; unsigned CI builds remain
+pinned to the deterministic binary digest.
 
 The Manager source repository is public; the Brain source repository is
 private. The IDACC repository must provide `RUNTIME_SOURCE_TOKEN` as a
