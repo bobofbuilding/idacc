@@ -54,6 +54,10 @@ const WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASES = [
   'profile-compatibility-read',
   'profile-compatibility-json',
   'profile-compatibility-schema',
+  'profile-compatibility-schema-type',
+  'profile-compatibility-schema-convert',
+  'profile-compatibility-schema-range',
+  'profile-compatibility-schema-newer',
   'profile-parent-acl',
   'profile-attestation-check',
   'profile-create',
@@ -1414,23 +1418,24 @@ public static class IdaccProfileFileProbe {
     }
     $script:diagnosticPhase = 'profile-compatibility-schema'
     $schemaValue = $marker.schemaVersion
-    $numericSchema = (
-      $schemaValue -is [byte] -or
-      $schemaValue -is [sbyte] -or
-      $schemaValue -is [short] -or
-      $schemaValue -is [ushort] -or
-      $schemaValue -is [int] -or
-      $schemaValue -is [uint] -or
-      $schemaValue -is [long] -or
-      $schemaValue -is [ulong] -or
-      $schemaValue -is [decimal] -or
-      $schemaValue -is [single] -or
-      $schemaValue -is [double]
-    )
-    if (-not $numericSchema) {
+    $script:diagnosticPhase = 'profile-compatibility-schema-type'
+    if (
+      $null -eq $schemaValue -or
+      $schemaValue -is [string] -or
+      $schemaValue -is [bool] -or
+      $schemaValue -is [char] -or
+      $schemaValue -is [datetime] -or
+      $schemaValue -is [System.Array]
+    ) {
       throw 'profile marker schema version is invalid'
     }
-    $schemaNumber = [double]$schemaValue
+    $script:diagnosticPhase = 'profile-compatibility-schema-convert'
+    try {
+      $schemaNumber = [double]$schemaValue
+    } catch {
+      throw 'profile marker schema version is invalid'
+    }
+    $script:diagnosticPhase = 'profile-compatibility-schema-range'
     if (
       [double]::IsNaN($schemaNumber) -or
       [double]::IsInfinity($schemaNumber) -or
@@ -1439,6 +1444,7 @@ public static class IdaccProfileFileProbe {
     ) {
       throw 'profile marker schema version is invalid'
     }
+    $script:diagnosticPhase = 'profile-compatibility-schema-newer'
     if ($schemaNumber -gt $maximumSchemaVersion) {
       [Console]::Out.WriteLine('${WINDOWS_PROFILE_NEWER}')
       exit 42
