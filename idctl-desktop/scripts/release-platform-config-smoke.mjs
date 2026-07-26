@@ -254,6 +254,10 @@ for (const icon of ['build/icon.icns', 'build/icon.ico', 'build/icon.png']) {
 
 const mainSource = readFileSync(join(desktop, 'src', 'main', 'main.ts'), 'utf8');
 const releaseStackSmoke = readFileSync(join(root, 'scripts', 'unified-stack-release-smoke.mjs'), 'utf8');
+const dashboardRenderedSmoke = readFileSync(
+  join(desktop, 'scripts', 'dashboard-rendered-smoke.mjs'),
+  'utf8',
+);
 assert.match(mainSource, /writeStackSelftestResultFile/);
 assert.match(mainSource, /IDACC_STACK_SELFTEST_RESULT_FILE/);
 assert.match(
@@ -286,6 +290,26 @@ assert.doesNotMatch(
   releaseStackSmoke,
   /--(?:no-sandbox|disable-setuid-sandbox)/,
   'the packaged production smoke must exercise Electron with its sandbox defaults',
+);
+assert.match(
+  dashboardRenderedSmoke,
+  /process\.platform === 'linux'\s*&&\s*process\.env\.CI === 'true'\s*&&\s*process\.env\.GITHUB_ACTIONS === 'true'/,
+  'the rendered dashboard sandbox bypass must remain restricted to GitHub Actions on Linux',
+);
+assert.match(
+  dashboardRenderedSmoke,
+  /isGitHubActionsLinux\s*\?\s*\['--no-sandbox', main\]\s*:\s*\[main\]/,
+  'only the rendered dashboard smoke may bypass an unavailable GitHub-hosted Linux sandbox',
+);
+assert.equal(
+  (dashboardRenderedSmoke.match(/--no-sandbox/g) || []).length,
+  1,
+  'the rendered dashboard smoke must contain exactly one narrowly gated sandbox bypass',
+);
+assert.doesNotMatch(
+  dashboardRenderedSmoke,
+  /--disable-setuid-sandbox/,
+  'the ineffective setuid-only bypass must not mask GitHub-hosted Linux sandbox failures',
 );
 assert.doesNotMatch(
   releaseStackSmoke,

@@ -15,6 +15,7 @@ interface HarnessState {
   calls: Array<{ method: string; args: unknown[] }>;
   navigations: string[];
   refreshes: number;
+  completeProbe: (() => void) | null;
 }
 
 declare global {
@@ -29,6 +30,7 @@ const harness: HarnessState = {
   calls: [],
   navigations: [],
   refreshes: 0,
+  completeProbe: null,
 };
 window.__dashboardHarness = harness;
 window.confirm = () => true;
@@ -36,8 +38,12 @@ window.confirm = () => true;
 const transport: Transport = async (method, args) => {
   harness.calls.push({ method, args });
   if (method === 'probeAll') {
-    await new Promise((resolve) => window.setTimeout(resolve, 180));
-    return { ok: true, result: { dispatched: 1 } };
+    return new Promise((resolve) => {
+      harness.completeProbe = () => {
+        harness.completeProbe = null;
+        resolve({ ok: true, result: { dispatched: 1 } });
+      };
+    });
   }
   if (method === 'projects:list' || method === 'tasks:allTeams') return { ok: true, result: [] };
   if (method === 'remote') return { ok: true, result: { ok: true, reply: 'accepted' } };

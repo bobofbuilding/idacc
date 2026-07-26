@@ -17,15 +17,23 @@ assert.deepEqual(
   ['.exe', '.cmd'],
   'Windows executable discovery must honor PATHEXT',
 );
-const windowsCandidates = executableCandidatePaths('/tools', 'claude', {
+const executableDirectory = join(tmpdir(), 'idacc-subscription-portability-tools');
+const windowsCandidates = executableCandidatePaths(executableDirectory, 'claude', {
   platform: 'win32',
   pathExt: '.EXE;.CMD',
 });
-assert.ok(windowsCandidates.some((candidate) => candidate.endsWith('claude.exe')));
-assert.ok(windowsCandidates.some((candidate) => candidate.endsWith('claude.cmd')));
 assert.deepEqual(
-  executableCandidatePaths('/tools', 'claude', { platform: 'linux' }),
-  ['/tools/claude'],
+  windowsCandidates,
+  [
+    join(executableDirectory, 'claude.exe'),
+    join(executableDirectory, 'claude.cmd'),
+  ],
+  'Windows executable discovery must append PATHEXT candidates using host-native filesystem paths',
+);
+assert.deepEqual(
+  executableCandidatePaths(executableDirectory, 'claude', { platform: 'linux' }),
+  [join(executableDirectory, 'claude')],
+  'non-Windows executable discovery must preserve an extensionless host-native filesystem path',
 );
 assert.equal(executableRequiresShell('C:\\Tools\\claude.cmd', 'win32'), true);
 assert.equal(executableRequiresShell('C:\\Tools\\claude.exe', 'win32'), false);

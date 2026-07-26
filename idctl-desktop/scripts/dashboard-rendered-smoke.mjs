@@ -26,6 +26,14 @@ const interactionScript = String.raw`
     }
     throw new Error('Timed out waiting for ' + selector + ' during ' + (window.__dashboardStep || 'unknown') + '; debug=' + JSON.stringify(window.__dashboardDebug || {}) + '; body=' + document.body.innerText.slice(0, 800));
   };
+  const waitUntil = async (condition, description, timeout = 2500) => {
+    const started = Date.now();
+    while (Date.now() - started < timeout) {
+      if (condition()) return;
+      await sleep(10);
+    }
+    throw new Error('Timed out waiting for ' + description + ' during ' + (window.__dashboardStep || 'unknown') + '; debug=' + JSON.stringify(window.__dashboardDebug || {}) + '; body=' + document.body.innerText.slice(0, 800));
+  };
   const button = (label, root = document) => {
     const match = [...root.querySelectorAll('button')].find((element) => element.textContent.trim() === label);
     if (!match) throw new Error('Button not found: ' + label);
@@ -120,9 +128,17 @@ const interactionScript = String.raw`
   const protectedClose = button('Close drawer', busyPrompt);
   ensure(protectedClose.disabled, 'in-flight drawer close was not disabled');
   ensure(document.querySelector('.drawer'), 'in-flight backdrop click closed the drawer');
-  await sleep(240);
-  ensure(!protectedClose.disabled, 'drawer remained locked after command completion');
-  protectedClose.click();
+  await waitUntil(
+    () => typeof window.__dashboardHarness.completeProbe === 'function',
+    'the controlled probe request to start',
+  );
+  window.__dashboardHarness.completeProbe();
+  await waitFor('[data-command-id="drawer.quick.probe"][data-command-state="succeeded"]');
+  const settledClose = await waitFor('.drawer-close-guard .btn.danger:not([disabled])');
+  ensure(settledClose === protectedClose, 'command completion replaced the guarded close action');
+  ensure(!document.querySelector('.drawer-guard-badge'), 'settled command left the drawer busy guard visible');
+  ensure(window.__dashboardHarness.calls.filter((row) => row.method === 'probeAll').length === 1, 'probe command did not settle exactly once');
+  settledClose.click();
   await sleep(40);
   ensure(!document.querySelector('.drawer'), 'settled drawer did not close explicitly');
   ensure(document.activeElement === quickTrigger, 'quick drawer did not restore trigger focus');
@@ -178,8 +194,11 @@ app.whenReady().then(async () => {
 
   const env = { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' };
   delete env.ELECTRON_RUN_AS_NODE;
-  const electronArgs = process.platform === 'linux' && process.env.CI
-    ? ['--disable-setuid-sandbox', main]
+  const isGitHubActionsLinux = process.platform === 'linux'
+    && process.env.CI === 'true'
+    && process.env.GITHUB_ACTIONS === 'true';
+  const electronArgs = isGitHubActionsLinux
+    ? ['--no-sandbox', main]
     : [main];
   const child = spawn(electronPath, electronArgs, {
     cwd: temp,
