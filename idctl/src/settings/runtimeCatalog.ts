@@ -360,14 +360,17 @@ export function runtimeHasEffort(runtime?: string): boolean {
 }
 
 /**
- * Output speed options per runtime. Claude Code's interactive `/fast` toggle is
- * exposed in the UI for Claude Code runtimes only; other runtimes have no speed
- * knob.
+ * Output speed options per runtime. Claude Code supports process-local launch
+ * settings, so Manager can apply fastMode without changing the person's
+ * persistent Claude settings. Other runtimes have no reviewed speed contract.
  */
 export const RUNTIME_SPEEDS: Record<string, string[]> = {
   'claude-code-cli': ['default', 'fast'],
   'claude-code-local': ['default', 'fast'],
 };
+
+export const CLAUDE_FAST_MODE_NOTICE =
+  'Fast keeps the supported Claude Opus model’s quality and capabilities and does not lower Effort, but it can replace another selected model with a Fast-compatible Opus. It costs more per token, is billed from usage credits as extra usage, and requires a compatible Claude Code release plus any required organization approval. Claude Code falls back to standard speed when Fast is unavailable or rate-limited.';
 
 /** The speed scale this runtime honors (empty if it has no speed knob). */
 export function speedOptions(runtime?: string): string[] {
@@ -377,6 +380,16 @@ export function speedOptions(runtime?: string): string[] {
 /** Does this runtime have an output-speed knob at all? */
 export function runtimeHasSpeed(runtime?: string): boolean {
   return speedOptions(runtime).length > 0;
+}
+
+/** Normalize untrusted agent metadata before binding it to the speed picker. */
+export function normalizeSpeedPreference(speed: unknown): 'default' | 'fast' {
+  return speed === 'fast' ? 'fast' : 'default';
+}
+
+/** Consumer-facing labels keep Fast's model and billing impact visible. */
+export function speedOptionLabel(speed: string): string {
+  return speed === 'fast' ? 'Fast (Opus · usage credits)' : 'Standard';
 }
 
 /** Current known models per runtime, used when no probeable provider is configured. */

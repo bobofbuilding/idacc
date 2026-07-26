@@ -18,6 +18,9 @@ jobs:
     name: Static checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -65,6 +68,7 @@ jobs:
           npm run test:org-hierarchy --prefix idctl-desktop
           npm run test:release-platform-config --prefix idctl-desktop
           npm run test:release-preflight --prefix idctl-desktop
+          npm run test:release-payload --prefix idctl-desktop
           npm run test:update-descriptor-contract --prefix idctl-desktop
           npm run test:updater-public-provider --prefix idctl-desktop
           npm run test:root-identity --prefix idctl-desktop
@@ -77,9 +81,11 @@ jobs:
           npm run test:secure-settings-vault --prefix idctl-desktop
           npm run test:agent-signer-vault --prefix idctl-desktop
           npm run test:provider-transport --prefix idctl
+          node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl/src/settings/runtimeCatalog.test.ts
           npm run test:capability-worker-scope --prefix idctl-desktop
           npm run test:secret-redaction --prefix idctl-desktop
           npm run test:profile-migrations --prefix idctl-desktop
+          npm run test:startup-recovery --prefix idctl-desktop
           npm run test:runtime-profile-isolation --prefix idctl-desktop
           npm run test:context-budget-retention --prefix idctl-desktop
           npm run test:computer-use-retention --prefix idctl-desktop

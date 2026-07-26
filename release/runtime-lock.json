@@ -3,19 +3,19 @@
   "components": {
     "manager": {
       "repository": "https://github.com/bobofbuilding/id-agents.git",
-      "commit": "7af487cabc60b71ba942bfe8e8a25e15eebc1df3",
-      "tree": "a2736a2aed6d0f2414092c38bef9e7d755463daa",
-      "version": "0.1.147",
-      "packageLockSha256": "27da3a26052c844d3f67e298d7c66b7f294ac5074f7088501d8e8b314b2ef45d",
+      "commit": "1711cfeb62655f6a2a56e1c2ede92a8fba8be229",
+      "tree": "68d6ad62a29f37ccda946c40da1429f726d24b2c",
+      "version": "0.1.149",
+      "packageLockSha256": "69c61593462c8e106f1a19e8439ff9a9798c49aa91acdc9994434de5591aa930",
       "entrypoint": "dist/start-agent-manager.js",
       "serviceId": "idagents-manager"
     },
     "brain": {
       "repository": "https://github.com/bobofbuilding/brain.git",
-      "commit": "3887e7749216e1ab79877ecfc2418219894a8039",
-      "tree": "906d028d9a48792ef318facad5a9b6685b1e8f5a",
-      "version": "0.1.4",
-      "packageLockSha256": "4fc4c462f74199d37669828706c147c8cbe4457953e1158eb4842dbfc0df6faf",
+      "commit": "155b42f09cbabd3bd87989ffad7856ad667bd754",
+      "tree": "6981a70caaba168b627bbd59ae6a36819f666145",
+      "version": "0.1.5",
+      "packageLockSha256": "9e00b630c6621fad72c942d3190e1474a68b520bffd08de7f8a0615673d3a7cc",
       "entrypoint": "brain.mjs",
       "serviceId": "idagents-brain"
     }

@@ -3,19 +3,20 @@ import { build } from 'esbuild';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const dir = await mkdtemp(join(tmpdir(), 'idacc-command-surface-'));
 
 async function bundle(relativePath, name) {
   const outfile = join(dir, `${name}.mjs`);
   await build({
-    entryPoints: [new URL(relativePath, import.meta.url).pathname],
+    entryPoints: [fileURLToPath(new URL(relativePath, import.meta.url))],
     outfile,
     bundle: true,
     platform: 'node',
     format: 'esm',
   });
-  return import(`file://${outfile}?v=${Date.now()}-${name}`);
+  return import(`${pathToFileURL(outfile).href}?v=${Date.now()}-${name}`);
 }
 
 function memoryStorage() {

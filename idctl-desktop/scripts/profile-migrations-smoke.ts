@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -11,7 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import {
   normalizeAppProfileName,
   selectAppProfile,
@@ -21,6 +27,11 @@ import {
   PROFILE_SCHEMA_VERSION,
   type ProfileMigrationPaths,
 } from '../src/main/profileMigrations.ts';
+import {
+  normalizeWindowsProfileRoot,
+  secureWindowsProfileRoot,
+  WINDOWS_PROFILE_ACL_SCRIPT,
+} from '../src/main/profilePrivacy.ts';
 
 function paths(root: string): ProfileMigrationPaths {
   return {
@@ -34,8 +45,566 @@ function paths(root: string): ProfileMigrationPaths {
   };
 }
 
+function windowsPowerShellForTest(script: string, profileRoot: string): string {
+  const systemRoot = String(process.env.SystemRoot || process.env.WINDIR || '');
+  assert.ok(systemRoot, 'Windows ACL smoke requires SystemRoot or WINDIR');
+  const executable = win32.join(
+    systemRoot,
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+  const result = spawnSync(executable, [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-Command',
+    '-',
+  ], {
+    encoding: 'utf8',
+    env: {
+      SystemRoot: process.env.SystemRoot || process.env.WINDIR,
+      WINDIR: process.env.WINDIR || process.env.SystemRoot,
+      IDACC_TEST_PROFILE_ROOT: profileRoot,
+      ...(process.env.TEMP ? { TEMP: process.env.TEMP } : {}),
+      ...(process.env.TMP ? { TMP: process.env.TMP } : {}),
+    },
+    input: script,
+    maxBuffer: 1024 * 1024,
+    windowsHide: true,
+  });
+  assert.equal(result.status, 0, 'Windows ACL test helper must complete successfully');
+  assert.equal(result.error, undefined);
+  return String(result.stdout || '').replaceAll('\u0000', '');
+}
+
+const WINDOWS_ADD_PERMISSIVE_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$child = [System.IO.Path]::Combine($root, 'nested', 'secret.txt')
+$everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+
+$rootSecurity = [System.IO.Directory]::GetAccessControl($root)
+$rootRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $everyone,
+  [System.Security.AccessControl.FileSystemRights]::FullControl,
+  (
+    [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+    [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  ),
+  [System.Security.AccessControl.PropagationFlags]::None,
+  [System.Security.AccessControl.AccessControlType]::Allow
+)
+[void]$rootSecurity.AddAccessRule($rootRule)
+[System.IO.Directory]::SetAccessControl($root, $rootSecurity)
+
+$childSecurity = [System.IO.File]::GetAccessControl($child)
+$childRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $everyone,
+  [System.Security.AccessControl.FileSystemRights]::FullControl,
+  [System.Security.AccessControl.InheritanceFlags]::None,
+  [System.Security.AccessControl.PropagationFlags]::None,
+  [System.Security.AccessControl.AccessControlType]::Allow
+)
+[void]$childSecurity.AddAccessRule($childRule)
+[System.IO.File]::SetAccessControl($child, $childSecurity)
+
+foreach ($item in @(
+  [pscustomobject]@{ Path = $root; IsDirectory = $true },
+  [pscustomobject]@{ Path = $child; IsDirectory = $false }
+)) {
+  if ($item.IsDirectory) {
+    $security = [System.IO.Directory]::GetAccessControl($item.Path)
+  } else {
+    $security = [System.IO.File]::GetAccessControl($item.Path)
+  }
+  $rules = @($security.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ))
+  if (@($rules | Where-Object {
+    $_.IdentityReference.Value -eq $everyone.Value
+  }).Count -lt 1) {
+    throw 'failed to construct permissive ACL fixture'
+  }
+}
+[Console]::Out.WriteLine('IDACC_TEST_PERMISSIVE_OK')
+`;
+
+const WINDOWS_ASSERT_PRIVATE_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$allowed = @($userSid.Value, 'S-1-5-18')
+$objects = @(
+  [pscustomobject]@{ Path = $root; IsDirectory = $true },
+  [pscustomobject]@{ Path = [System.IO.Path]::Combine($root, 'nested'); IsDirectory = $true },
+  [pscustomobject]@{ Path = [System.IO.Path]::Combine($root, 'nested', 'secret.txt'); IsDirectory = $false }
+)
+foreach ($item in $objects) {
+  if ($item.IsDirectory) {
+    $security = [System.IO.Directory]::GetAccessControl($item.Path)
+  } else {
+    $security = [System.IO.File]::GetAccessControl($item.Path)
+  }
+  if (-not $security.AreAccessRulesProtected) {
+    throw 'ACL inheritance remains enabled'
+  }
+  $owner = $security.GetOwner([System.Security.Principal.SecurityIdentifier])
+  if ($owner.Value -ne $userSid.Value) {
+    throw 'unexpected owner'
+  }
+  $rules = @($security.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ))
+  if ($rules.Count -ne 2) {
+    throw 'unexpected rule count'
+  }
+  foreach ($rule in $rules) {
+    if (
+      $rule.IsInherited -or
+      $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+      $allowed -notcontains $rule.IdentityReference.Value -or
+      [int]$rule.FileSystemRights -ne
+        [int][System.Security.AccessControl.FileSystemRights]::FullControl
+    ) {
+      throw 'unexpected ACL rule'
+    }
+  }
+}
+[Console]::Out.WriteLine('IDACC_TEST_PRIVATE_OK')
+`;
+
+const WINDOWS_ADD_INHERIT_ONLY_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$security = [System.IO.Directory]::GetAccessControl($root)
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $everyone,
+  [System.Security.AccessControl.FileSystemRights]::FullControl,
+  [System.Security.AccessControl.InheritanceFlags]::ContainerInherit,
+  [System.Security.AccessControl.PropagationFlags]::InheritOnly,
+  [System.Security.AccessControl.AccessControlType]::Allow
+)
+[void]$security.AddAccessRule($rule)
+[System.IO.Directory]::SetAccessControl($root, $security)
+$stored = @(
+  ([System.IO.Directory]::GetAccessControl($root)).GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ) | Where-Object {
+    $_.IdentityReference.Value -eq $everyone.Value -and
+    (
+      $_.PropagationFlags -band
+      [System.Security.AccessControl.PropagationFlags]::InheritOnly
+    ) -ne 0 -and
+    (
+      $_.InheritanceFlags -band
+      [System.Security.AccessControl.InheritanceFlags]::ContainerInherit
+    ) -ne 0
+  }
+)
+if ($stored.Count -lt 1) {
+  throw 'failed to construct InheritOnly ACL fixture'
+}
+[Console]::Out.WriteLine('IDACC_TEST_INHERIT_ONLY_OK')
+`;
+
+const WINDOWS_ADD_CREATE_CHILD_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$security = [System.IO.Directory]::GetAccessControl($root)
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $everyone,
+  [System.Security.AccessControl.FileSystemRights]::CreateDirectories,
+  [System.Security.AccessControl.InheritanceFlags]::None,
+  [System.Security.AccessControl.PropagationFlags]::None,
+  [System.Security.AccessControl.AccessControlType]::Allow
+)
+[void]$security.AddAccessRule($rule)
+[System.IO.Directory]::SetAccessControl($root, $security)
+$stored = @(
+  ([System.IO.Directory]::GetAccessControl($root)).GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ) | Where-Object {
+    $_.IdentityReference.Value -eq $everyone.Value -and
+    (
+      [int]$_.FileSystemRights -band
+      [int][System.Security.AccessControl.FileSystemRights]::CreateDirectories
+    ) -ne 0
+  }
+)
+if ($stored.Count -lt 1) {
+  throw 'failed to construct create-child ACL fixture'
+}
+[Console]::Out.WriteLine('IDACC_TEST_CREATE_CHILD_OK')
+`;
+
+const WINDOWS_READ_ROOT_AND_LINK_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$linked = [System.IO.Path]::Combine($root, 'linked.txt')
+$sections = (
+  [System.Security.AccessControl.AccessControlSections]::Access -bor
+  [System.Security.AccessControl.AccessControlSections]::Owner -bor
+  [System.Security.AccessControl.AccessControlSections]::Group
+)
+$snapshot = [ordered]@{
+  root = (
+    [System.IO.Directory]::GetAccessControl($root, $sections)
+  ).GetSecurityDescriptorSddlForm($sections)
+  linked = (
+    [System.IO.File]::GetAccessControl($linked, $sections)
+  ).GetSecurityDescriptorSddlForm($sections)
+}
+[Console]::Out.WriteLine(($snapshot | ConvertTo-Json -Compress))
+`;
+
+const WINDOWS_READ_NEWER_TREE_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$sections = (
+  [System.Security.AccessControl.AccessControlSections]::Access -bor
+  [System.Security.AccessControl.AccessControlSections]::Owner -bor
+  [System.Security.AccessControl.AccessControlSections]::Group
+)
+$snapshot = [ordered]@{
+  root = (
+    [System.IO.Directory]::GetAccessControl($root, $sections)
+  ).GetSecurityDescriptorSddlForm($sections)
+  marker = (
+    [System.IO.File]::GetAccessControl(
+      [System.IO.Path]::Combine($root, 'profile.json'),
+      $sections
+    )
+  ).GetSecurityDescriptorSddlForm($sections)
+  sentinel = (
+    [System.IO.File]::GetAccessControl(
+      [System.IO.Path]::Combine($root, 'future-state', 'sentinel.txt'),
+      $sections
+    )
+  ).GetSecurityDescriptorSddlForm($sections)
+}
+[Console]::Out.WriteLine(($snapshot | ConvertTo-Json -Compress))
+`;
+
+const WINDOWS_READ_SECRET_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$file = [System.IO.Path]::Combine($root, 'nested', 'secret.txt')
+$sections = (
+  [System.Security.AccessControl.AccessControlSections]::Access -bor
+  [System.Security.AccessControl.AccessControlSections]::Owner -bor
+  [System.Security.AccessControl.AccessControlSections]::Group
+)
+$snapshot = [ordered]@{
+  root = (
+    [System.IO.Directory]::GetAccessControl($root, $sections)
+  ).GetSecurityDescriptorSddlForm($sections)
+  secret = (
+    [System.IO.File]::GetAccessControl($file, $sections)
+  ).GetSecurityDescriptorSddlForm($sections)
+}
+[Console]::Out.WriteLine(($snapshot | ConvertTo-Json -Compress))
+`;
+
+const WINDOWS_ADD_WORKSPACE_FILE_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$file = [System.IO.Path]::Combine($root, 'workspace', 'repo', 'preserve.txt')
+$everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$security = [System.IO.File]::GetAccessControl($file)
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $everyone,
+  [System.Security.AccessControl.FileSystemRights]::Read,
+  [System.Security.AccessControl.InheritanceFlags]::None,
+  [System.Security.AccessControl.PropagationFlags]::None,
+  [System.Security.AccessControl.AccessControlType]::Allow
+)
+[void]$security.AddAccessRule($rule)
+[System.IO.File]::SetAccessControl($file, $security)
+[Console]::Out.WriteLine(
+  $security.GetSecurityDescriptorSddlForm(
+    (
+      [System.Security.AccessControl.AccessControlSections]::Access -bor
+      [System.Security.AccessControl.AccessControlSections]::Owner -bor
+      [System.Security.AccessControl.AccessControlSections]::Group
+    )
+  )
+)
+`;
+
+const WINDOWS_READ_WORKSPACE_FILE_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$file = [System.IO.Path]::Combine($root, 'workspace', 'repo', 'preserve.txt')
+$sections = (
+  [System.Security.AccessControl.AccessControlSections]::Access -bor
+  [System.Security.AccessControl.AccessControlSections]::Owner -bor
+  [System.Security.AccessControl.AccessControlSections]::Group
+)
+$security = [System.IO.File]::GetAccessControl($file, $sections)
+[Console]::Out.WriteLine($security.GetSecurityDescriptorSddlForm($sections))
+`;
+
+const WINDOWS_ASSERT_PRIVATE_DIRECTORY_ACL = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$systemSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$security = [System.IO.Directory]::GetAccessControl($root)
+if (-not $security.AreAccessRulesProtected) {
+  throw 'ACL inheritance remains enabled'
+}
+if (
+  $security.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne
+  $userSid.Value
+) {
+  throw 'unexpected owner'
+}
+$expectedInheritance = (
+  [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+  [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+)
+$rules = @($security.GetAccessRules(
+  $true,
+  $true,
+  [System.Security.Principal.SecurityIdentifier]
+))
+if ($rules.Count -ne 2) {
+  throw 'unexpected rule count'
+}
+foreach ($sid in @($userSid, $systemSid)) {
+  $matching = @($rules | Where-Object {
+    $_.IdentityReference.Value -eq $sid.Value
+  })
+  if (
+    $matching.Count -ne 1 -or
+    $matching[0].IsInherited -or
+    $matching[0].AccessControlType -ne
+      [System.Security.AccessControl.AccessControlType]::Allow -or
+    [int]$matching[0].FileSystemRights -ne
+      [int][System.Security.AccessControl.FileSystemRights]::FullControl -or
+    $matching[0].InheritanceFlags -ne $expectedInheritance -or
+    $matching[0].PropagationFlags -ne
+      [System.Security.AccessControl.PropagationFlags]::None
+  ) {
+    throw 'unexpected ACL rule'
+  }
+}
+[Console]::Out.WriteLine('IDACC_TEST_PRIVATE_DIRECTORY_OK')
+`;
+
+const WINDOWS_CREATE_AND_ASSERT_PRIVATE_WORKSPACE_CHILD = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$root = [System.IO.Path]::GetFullPath([string]$env:IDACC_TEST_PROFILE_ROOT)
+$workspace = [System.IO.Path]::Combine($root, 'workspace')
+$directory = [System.IO.Path]::Combine($workspace, 'created-after-hardening')
+$file = [System.IO.Path]::Combine($directory, 'private-state.txt')
+[void][System.IO.Directory]::CreateDirectory($directory)
+[System.IO.File]::WriteAllText($file, 'private')
+$userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$systemSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+foreach ($item in @($directory, $file)) {
+  if ([System.IO.Directory]::Exists($item)) {
+    $security = [System.IO.Directory]::GetAccessControl($item)
+  } else {
+    $security = [System.IO.File]::GetAccessControl($item)
+  }
+  if (
+    $security.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne
+      $userSid.Value
+  ) {
+    throw 'new workspace content has an unexpected owner'
+  }
+  $rules = @($security.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ))
+  if ($rules.Count -ne 2) {
+    throw 'new workspace content has an unexpected rule count'
+  }
+  foreach ($rule in $rules) {
+    if (
+      -not $rule.IsInherited -or
+      $rule.AccessControlType -ne
+        [System.Security.AccessControl.AccessControlType]::Allow -or
+      [int]$rule.FileSystemRights -ne
+        [int][System.Security.AccessControl.FileSystemRights]::FullControl -or
+      (
+        $rule.IdentityReference.Value -ne $userSid.Value -and
+        $rule.IdentityReference.Value -ne $systemSid.Value
+      )
+    ) {
+      throw 'new workspace content did not inherit the private boundary'
+    }
+  }
+}
+[Console]::Out.WriteLine('IDACC_TEST_PRIVATE_WORKSPACE_CHILD_OK')
+`;
+
 const temp = mkdtempSync(join(tmpdir(), 'idacc-profile-migrations-'));
 try {
+  // The pure contract is exercised on every host. Windows paths are validated
+  // before the privileged OS runner, while non-Windows behavior is a no-op.
+  let fakeRunnerCalls = 0;
+  let fakeMaximumSchemaVersion: number | undefined;
+  const fakeRunner = (root: string, maximumSchemaVersion?: number) => {
+    fakeRunnerCalls += 1;
+    fakeMaximumSchemaVersion = maximumSchemaVersion;
+    assert.equal(root, 'C:\\Profiles\\Consumer');
+    return { status: 0, stdout: 'IDACC_WINDOWS_PROFILE_ACL_OK:3\n' };
+  };
+  assert.equal(
+    secureWindowsProfileRoot('/private/profile', {
+      platform: 'darwin',
+      runner: () => {
+        throw new Error('non-Windows must not invoke the Windows ACL runner');
+      },
+    }),
+    '/private/profile',
+  );
+  assert.equal(
+    normalizeWindowsProfileRoot('C:/Profiles/Consumer'),
+    'C:\\Profiles\\Consumer',
+  );
+  assert.equal(
+    secureWindowsProfileRoot('C:/Profiles/Consumer', {
+      platform: 'win32',
+      runner: fakeRunner,
+      maximumSchemaVersion: PROFILE_SCHEMA_VERSION,
+    }),
+    'C:\\Profiles\\Consumer',
+  );
+  assert.equal(fakeRunnerCalls, 1);
+  assert.equal(fakeMaximumSchemaVersion, PROFILE_SCHEMA_VERSION);
+  for (const unsafeWindowsRoot of [
+    'relative\\profile',
+    'C:\\',
+    '\\\\server\\share\\profile',
+    '\\\\?\\C:\\profile',
+    '\\\\.\\C:\\profile',
+    'C:\\profile\\data:stream',
+  ]) {
+    assert.throws(
+      () => secureWindowsProfileRoot(unsafeWindowsRoot, {
+        platform: 'win32',
+        runner: fakeRunner,
+      }),
+      /could not establish and verify private Windows access/i,
+    );
+  }
+  assert.equal(fakeRunnerCalls, 1, 'unsafe paths must be rejected before the OS runner');
+  assert.throws(
+    () => secureWindowsProfileRoot('C:\\Profiles\\Consumer', {
+      platform: 'win32',
+      maximumSchemaVersion: PROFILE_SCHEMA_VERSION,
+      runner: () => ({
+        status: 42,
+        stdout: 'IDACC_WINDOWS_PROFILE_NEWER\n',
+      }),
+    }),
+    /created by a newer application version/i,
+  );
+  for (const failedResult of [
+    { status: 1, stdout: 'IDACC_WINDOWS_PROFILE_ACL_FAILED\n' },
+    { status: 0, stdout: '' },
+    { status: null, stdout: '', error: new Error('missing helper') },
+    { status: null, stdout: '', signal: 'SIGTERM' as NodeJS.Signals },
+  ]) {
+    assert.throws(
+      () => secureWindowsProfileRoot('C:\\Profiles\\Consumer', {
+        platform: 'win32',
+        runner: () => failedResult,
+      }),
+      /could not establish and verify private Windows access/i,
+    );
+  }
+  const privacySource = readFileSync(
+    join(process.cwd(), 'src', 'main', 'profilePrivacy.ts'),
+    'utf8',
+  );
+  assert.ok(
+    Buffer.from(WINDOWS_PROFILE_ACL_SCRIPT, 'utf16le').toString('base64').length > 32_767,
+    'the native helper fixture must remain large enough to catch argv transport regressions',
+  );
+  assert.doesNotMatch(privacySource, /-EncodedCommand/);
+  assert.match(privacySource, /'-Command',\s*'-'/);
+  assert.match(privacySource, /input:\s*WINDOWS_PROFILE_ACL_SCRIPT/);
+  assert.match(privacySource, /DriveType\]::Network/);
+  assert.match(privacySource, /\$driveFormat -ne 'NTFS'/);
+  assert.doesNotMatch(privacySource, /\$driveFormat -ne 'ReFS'/);
+  assert.match(privacySource, /FileAttributes\]::ReparsePoint/);
+  assert.match(privacySource, /SetAccessRuleProtection\(\$true, \$false\)/);
+  assert.match(privacySource, /SecurityIdentifier\]::new\('S-1-5-18'\)/);
+  assert.match(privacySource, /SecurityIdentifier\]::new\('S-1-3-0'\)/);
+  assert.match(privacySource, /FileSystemRights\]::DeleteSubdirectoriesAndFiles/);
+  assert.match(privacySource, /FileSystemRights\]::CreateDirectories/);
+  assert.match(privacySource, /-not \$isVolumeRoot -and/);
+  assert.match(
+    privacySource,
+    /\$profileRootWasMissing -and\s+\$isCreationBoundary -and/,
+  );
+  assert.match(
+    privacySource,
+    /\$isCreationBoundary -and \$appliesToChildDirectory/,
+  );
+  assert.match(privacySource, /profile parent can be replaced by another principal/);
+  assert.match(privacySource, /\$rules\.Count -ne 2/);
+  assert.match(privacySource, /Get-ProfileObjects \$root/);
+  assert.match(privacySource, /GetObjectIdentity\(string path, bool isDirectory\)/);
+  assert.match(privacySource, /SetSecurityWithoutPropagation/);
+  assert.match(privacySource, /profile object identity changed/);
+  assert.match(privacySource, /GetFileInformationByHandleEx/);
+  assert.match(privacySource, /FileIdLow/);
+  assert.match(privacySource, /FileIdHigh/);
+  assert.match(privacySource, /OpenLockedObject/);
+  assert.match(privacySource, /AssertLockedPath\(locked, path\)/);
+  assert.match(privacySource, /ReadLockedSecurityDescriptor/);
+  assert.match(privacySource, /GetSecurityInfo/);
+  assert.match(privacySource, /Close-ProfileObjects \$verifiedObjects/);
+  assert.match(privacySource, /\$maximumProfileObjects = 4096/);
+  assert.match(privacySource, /if \(Test-SamePath \$current \$workspaceRoot\) \{\s*continue/);
+  assert.match(privacySource, /New-PrivateDirectorySecurity \$true/);
+  assert.doesNotMatch(privacySource, /New-PrivateDirectorySecurity \$false/);
+  assert.match(privacySource, /\.idacc-windows-acl-v2\.json/);
+  assert.match(privacySource, /if \(Test-AclAttestation\) \{/);
+  assert.match(privacySource, /Assert-CompatibleProfileMarker/);
+  assert.match(privacySource, /IDACC_WINDOWS_PROFILE_NEWER/);
+  assert.match(privacySource, /WINDOWS_PROFILE_ACL_TIMEOUT_MS = 2 \* 60_000/);
+  const migrationSource = readFileSync(
+    join(process.cwd(), 'src', 'main', 'profileMigrations.ts'),
+    'utf8',
+  );
+  assert.match(
+    migrationSource,
+    /assertCompatibleProfileBeforeMutation\(paths\.root\);[\s\S]*secureWindowsProfileRoot\(paths\.root, \{[\s\S]*maximumSchemaVersion: PROFILE_SCHEMA_VERSION,[\s\S]*const marker = join\(paths\.root, 'profile\.json'\);/,
+    'only the bounded compatibility marker preflight may precede Windows ACL enforcement',
+  );
+
   const userData = join(temp, 'user-data');
   assert.equal(normalizeAppProfileName(), 'default');
   assert.equal(normalizeAppProfileName('   '), 'default');
@@ -101,19 +670,25 @@ try {
   assert.deepEqual(first.appliedMigrations.map((entry) => entry.version), [1, 2, 3, 4, 5]);
   assert.equal(readFileSync(profile.config, 'utf8'), '{"version":1,"defaultTeam":"default"}\n');
   assert.equal(readFileSync(join(profile.root, 'config', 'goals', 'goal.json'), 'utf8'), '{"id":"legacy"}\n');
-  assert.equal(statSync(join(profile.root, 'config', 'goals')).mode & 0o777, 0o700);
-  assert.equal(statSync(join(profile.root, 'config', 'goals', 'goal.json')).mode & 0o777, 0o600);
-  assert.equal(statSync(join(profile.root, 'config', 'goals', 'nested', 'helper.sh')).mode & 0o777, 0o700);
+  if (process.platform !== 'win32') {
+    // Windows privacy is enforced by the profile root ACL; POSIX mode bits
+    // are not a meaningful ownership boundary there.
+    assert.equal(statSync(join(profile.root, 'config', 'goals')).mode & 0o777, 0o700);
+    assert.equal(statSync(join(profile.root, 'config', 'goals', 'goal.json')).mode & 0o777, 0o600);
+    assert.equal(statSync(join(profile.root, 'config', 'goals', 'nested', 'helper.sh')).mode & 0o777, 0o700);
+  }
   assert.equal(existsSync(join(profile.root, 'config', 'safe-roles-state.json')), false);
   assert.equal(existsSync(join(legacy, 'safe-roles-state.json')), true);
   assert.equal(readFileSync(join(profile.cache, 'context-budget', 'cb_old.json'), 'utf8'), '{"id":"cb_old"}\n');
   assert.equal(readFileSync(join(legacy, 'context-budget', 'cb_old.json'), 'utf8'), '{"id":"cb_old"}\n');
   assert.equal(readFileSync(join(profile.root, 'computeruse', 'agent-tokens.json'), 'utf8'), '{"token":"agent"}\n');
   assert.equal(readFileSync(join(legacy, 'computeruse', 'agent-tokens.json'), 'utf8'), '{"token":"agent"}\n');
-  assert.equal(statSync(join(profile.root, 'computeruse', 'agent-tokens.json')).mode & 0o777, 0o600);
-  assert.equal(statSync(profile.config).mode & 0o777, 0o600);
   assert.equal(readFileSync(join(profile.root, 'config', 'agent-signers.json'), 'utf8'), readFileSync(legacyDesktopSigner, 'utf8'));
-  assert.equal(statSync(join(profile.root, 'config', 'agent-signers.json')).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') {
+    assert.equal(statSync(join(profile.root, 'computeruse', 'agent-tokens.json')).mode & 0o777, 0o600);
+    assert.equal(statSync(profile.config).mode & 0o777, 0o600);
+    assert.equal(statSync(join(profile.root, 'config', 'agent-signers.json')).mode & 0o777, 0o600);
+  }
 
   // Reruns are resumable/idempotent and local profile data wins over legacy.
   writeFileSync(profile.config, '{"version":1,"defaultTeam":"custom"}\n', { mode: 0o600 });
@@ -167,6 +742,79 @@ try {
   assert.equal(existsSync(join(resumed.root, 'config', 'context-budget', 'cb_resume.json')), true);
   assert.equal(existsSync(join(resumed.root, 'config', 'agent-signers.json')), true);
 
+  // A future-version profile is compatibility-inspected without changing even
+  // its root mode, timestamps, entries, or existing data.
+  const newerProfile = paths(join(temp, 'newer-profile'));
+  const newerSentinel = join(newerProfile.root, 'future-state', 'sentinel.txt');
+  mkdirSync(join(newerProfile.root, 'future-state'), {
+    recursive: true,
+    mode: 0o755,
+  });
+  writeFileSync(join(newerProfile.root, 'profile.json'), JSON.stringify({
+    schemaVersion: PROFILE_SCHEMA_VERSION + 1,
+    profile: 'future',
+    createdAt: '2026-07-26T00:00:00.000Z',
+    updatedAt: '2026-07-26T00:00:00.000Z',
+    migratedFrom: null,
+    appliedMigrations: [],
+  }) + '\n', { mode: 0o644 });
+  writeFileSync(newerSentinel, 'future data\n', { mode: 0o644 });
+  const newerBefore = {
+    entries: readdirSync(newerProfile.root).sort(),
+    rootMode: statSync(newerProfile.root).mode,
+    rootMtime: statSync(newerProfile.root).mtimeMs,
+    markerMode: statSync(join(newerProfile.root, 'profile.json')).mode,
+    markerMtime: statSync(join(newerProfile.root, 'profile.json')).mtimeMs,
+    sentinelMode: statSync(newerSentinel).mode,
+    sentinelMtime: statSync(newerSentinel).mtimeMs,
+  };
+  assert.throws(
+    () => migrateAppProfile(newerProfile, {
+      profileName: 'future',
+      legacyConfigDir: legacy,
+    }),
+    /created by a newer application version/i,
+  );
+  assert.deepEqual(readdirSync(newerProfile.root).sort(), newerBefore.entries);
+  assert.equal(statSync(newerProfile.root).mode, newerBefore.rootMode);
+  assert.equal(statSync(newerProfile.root).mtimeMs, newerBefore.rootMtime);
+  assert.equal(
+    statSync(join(newerProfile.root, 'profile.json')).mode,
+    newerBefore.markerMode,
+  );
+  assert.equal(
+    statSync(join(newerProfile.root, 'profile.json')).mtimeMs,
+    newerBefore.markerMtime,
+  );
+  assert.equal(statSync(newerSentinel).mode, newerBefore.sentinelMode);
+  assert.equal(statSync(newerSentinel).mtimeMs, newerBefore.sentinelMtime);
+  assert.equal(readFileSync(newerSentinel, 'utf8'), 'future data\n');
+
+  const hardlinkedMarkerProfile = paths(join(temp, 'hardlinked-marker-profile'));
+  const hardlinkedMarkerOutside = join(temp, 'hardlinked-marker-outside.json');
+  mkdirSync(hardlinkedMarkerProfile.root);
+  writeFileSync(hardlinkedMarkerOutside, JSON.stringify({
+    schemaVersion: PROFILE_SCHEMA_VERSION,
+    profile: 'hardlinked-marker',
+    appliedMigrations: [],
+  }));
+  linkSync(
+    hardlinkedMarkerOutside,
+    join(hardlinkedMarkerProfile.root, 'profile.json'),
+  );
+  assert.throws(
+    () => migrateAppProfile(hardlinkedMarkerProfile, {
+      profileName: 'hardlinked-marker',
+      legacyConfigDir: legacy,
+    }),
+    /Cannot safely open IDACC profile metadata/i,
+  );
+  assert.deepEqual(
+    readdirSync(hardlinkedMarkerProfile.root),
+    ['profile.json'],
+    'a hard-linked marker must fail before profile directories are created',
+  );
+
   // Corrupt metadata is never overwritten with a fresh profile.
   const corrupt = paths(join(temp, 'corrupt'));
   mkdirSync(corrupt.root, { recursive: true });
@@ -206,6 +854,306 @@ try {
       /refusing symbolic link in profile state/,
     );
     assert.equal(existsSync(join(temp, 'outside-dir', 'config.json')), false);
+  } else {
+    const newerAclBefore = windowsPowerShellForTest(
+      WINDOWS_READ_NEWER_TREE_ACL,
+      newerProfile.root,
+    ).trim();
+    assert.throws(
+      () => secureWindowsProfileRoot(newerProfile.root, {
+        maximumSchemaVersion: PROFILE_SCHEMA_VERSION,
+      }),
+      /created by a newer application version/i,
+    );
+    assert.equal(
+      windowsPowerShellForTest(
+        WINDOWS_READ_NEWER_TREE_ACL,
+        newerProfile.root,
+      ).trim(),
+      newerAclBefore,
+      'native Windows compatibility rejection must not change any tree ACL',
+    );
+
+    // This branch runs in the real Windows CI job. Begin with an explicit
+    // Everyone grant on both the profile root and a child file, then prove the
+    // production helper recursively replaces and verifies both DACLs.
+    const windowsAclProfile = join(temp, 'windows-acl-profile');
+    const windowsAclChildDirectory = join(windowsAclProfile, 'nested');
+    mkdirSync(windowsAclChildDirectory, { recursive: true });
+    writeFileSync(join(windowsAclChildDirectory, 'secret.txt'), 'private\n');
+    assert.match(
+      windowsPowerShellForTest(WINDOWS_ADD_PERMISSIVE_ACL, windowsAclProfile),
+      /IDACC_TEST_PERMISSIVE_OK/,
+    );
+    secureWindowsProfileRoot(windowsAclProfile);
+    assert.match(
+      windowsPowerShellForTest(WINDOWS_ASSERT_PRIVATE_ACL, windowsAclProfile),
+      /IDACC_TEST_PRIVATE_OK/,
+    );
+
+    // Retained no-follow handles make conversion transactional with respect to
+    // path identity: a pre-opened writer conflicts during the complete scan, so
+    // no object ACL is changed before the helper fails closed.
+    const lockedWriterProfile = join(temp, 'locked-writer-profile');
+    const lockedWriterDirectory = join(lockedWriterProfile, 'nested');
+    const lockedWriterFile = join(lockedWriterDirectory, 'secret.txt');
+    mkdirSync(lockedWriterDirectory, { recursive: true });
+    writeFileSync(lockedWriterFile, 'held open\n');
+    assert.match(
+      windowsPowerShellForTest(WINDOWS_ADD_PERMISSIVE_ACL, lockedWriterProfile),
+      /IDACC_TEST_PERMISSIVE_OK/,
+    );
+    const lockedWriterAclBefore = windowsPowerShellForTest(
+      WINDOWS_READ_SECRET_ACL,
+      lockedWriterProfile,
+    ).trim();
+    const competingWriter = openSync(lockedWriterFile, 'r+');
+    try {
+      assert.throws(
+        () => secureWindowsProfileRoot(lockedWriterProfile),
+        /could not establish and verify private Windows access/i,
+      );
+    } finally {
+      closeSync(competingWriter);
+    }
+    assert.equal(
+      windowsPowerShellForTest(
+        WINDOWS_READ_SECRET_ACL,
+        lockedWriterProfile,
+      ).trim(),
+      lockedWriterAclBefore,
+      'a competing writer must cause failure before every ACL mutation',
+    );
+    secureWindowsProfileRoot(lockedWriterProfile);
+    assert.match(
+      windowsPowerShellForTest(
+        WINDOWS_ASSERT_PRIVATE_ACL,
+        lockedWriterProfile,
+      ),
+      /IDACC_TEST_PRIVATE_OK/,
+    );
+
+    // The retained-handle budget is a fail-before-mutation production bound,
+    // not only a timeout. Exceeding it leaves the original tree untouched.
+    const overLimitProfile = join(temp, 'over-limit-profile');
+    const overLimitNested = join(overLimitProfile, 'nested');
+    const overLimitBulk = join(overLimitProfile, 'bulk');
+    mkdirSync(overLimitNested, { recursive: true });
+    mkdirSync(overLimitBulk);
+    writeFileSync(join(overLimitNested, 'secret.txt'), 'private\n');
+    for (let index = 0; index < 4093; index += 1) {
+      writeFileSync(join(overLimitBulk, `${index}.txt`), 'x');
+    }
+    assert.match(
+      windowsPowerShellForTest(WINDOWS_ADD_PERMISSIVE_ACL, overLimitProfile),
+      /IDACC_TEST_PERMISSIVE_OK/,
+    );
+    const overLimitAclBefore = windowsPowerShellForTest(
+      WINDOWS_READ_SECRET_ACL,
+      overLimitProfile,
+    ).trim();
+    assert.throws(
+      () => secureWindowsProfileRoot(overLimitProfile),
+      /could not establish and verify private Windows access/i,
+    );
+    assert.equal(
+      windowsPowerShellForTest(
+        WINDOWS_READ_SECRET_ACL,
+        overLimitProfile,
+      ).trim(),
+      overLimitAclBefore,
+      'the object bound must fail before every ACL mutation',
+    );
+
+    // Hardening the profile itself is insufficient if an untrusted principal
+    // can replace it through a permissive parent directory.
+    const replaceableParent = join(temp, 'replaceable-parent');
+    const replaceableProfile = join(replaceableParent, 'nested');
+    mkdirSync(replaceableProfile, { recursive: true });
+    writeFileSync(join(replaceableProfile, 'secret.txt'), 'private\n');
+    assert.match(
+      windowsPowerShellForTest(WINDOWS_ADD_PERMISSIVE_ACL, replaceableParent),
+      /IDACC_TEST_PERMISSIVE_OK/,
+    );
+    assert.throws(
+      () => secureWindowsProfileRoot(replaceableProfile),
+      /could not establish and verify private Windows access/i,
+    );
+
+    // Directory junctions are reparse points and must fail before ACL mutation.
+    const junctionTarget = join(temp, 'junction-target');
+    const junctionProfile = join(temp, 'junction-profile');
+    mkdirSync(junctionTarget);
+    mkdirSync(junctionProfile);
+    symlinkSync(junctionTarget, join(junctionProfile, 'linked'), 'junction');
+    assert.throws(
+      () => secureWindowsProfileRoot(junctionProfile),
+      /could not establish and verify private Windows access/i,
+    );
+
+    // InheritOnly does not mean harmless: a ContainerInherit rule on any
+    // ancestor grants its dangerous rights to a directory on the path.
+    const inheritOnlyParent = join(temp, 'inherit-only-parent');
+    const inheritOnlyProfile = join(inheritOnlyParent, 'profiles', 'default');
+    mkdirSync(inheritOnlyParent);
+    assert.match(
+      windowsPowerShellForTest(WINDOWS_ADD_INHERIT_ONLY_ACL, inheritOnlyParent),
+      /IDACC_TEST_INHERIT_ONLY_OK/,
+    );
+    assert.throws(
+      () => secureWindowsProfileRoot(inheritOnlyProfile),
+      /could not establish and verify private Windows access/i,
+    );
+    assert.equal(
+      existsSync(inheritOnlyProfile),
+      false,
+      'unsafe inherited rights must be rejected before creating the profile',
+    );
+
+    // A create-only grant is sufficient to win a missing-path race and retain
+    // an open handle after the profile ACL is replaced.
+    const createChildParent = join(temp, 'create-child-parent');
+    const createChildProfile = join(createChildParent, 'profiles', 'default');
+    mkdirSync(createChildParent);
+    assert.match(
+      windowsPowerShellForTest(WINDOWS_ADD_CREATE_CHILD_ACL, createChildParent),
+      /IDACC_TEST_CREATE_CHILD_OK/,
+    );
+    assert.throws(
+      () => secureWindowsProfileRoot(createChildProfile),
+      /could not establish and verify private Windows access/i,
+    );
+    assert.equal(
+      existsSync(createChildProfile),
+      false,
+      'untrusted child-creation rights must be rejected before path creation',
+    );
+
+    // A hard-linked file aliases one security descriptor outside the profile.
+    // Detection must happen for the entire tree before even the root ACL moves.
+    const hardlinkProfile = join(temp, 'hardlink-profile');
+    const hardlinkOutside = join(temp, 'hardlink-outside.txt');
+    mkdirSync(hardlinkProfile);
+    writeFileSync(hardlinkOutside, 'shared inode\n');
+    linkSync(hardlinkOutside, join(hardlinkProfile, 'linked.txt'));
+    const hardlinkAclBefore = windowsPowerShellForTest(
+      WINDOWS_READ_ROOT_AND_LINK_ACL,
+      hardlinkProfile,
+    ).trim();
+    assert.throws(
+      () => secureWindowsProfileRoot(hardlinkProfile),
+      /could not establish and verify private Windows access/i,
+    );
+    assert.equal(
+      windowsPowerShellForTest(
+        WINDOWS_READ_ROOT_AND_LINK_ACL,
+        hardlinkProfile,
+      ).trim(),
+      hardlinkAclBefore,
+      'hard-link rejection must precede every ACL mutation',
+    );
+
+    // Existing repository contents are outside recursive app-state hardening.
+    // A deliberate junction and a nonstandard file ACL must survive unchanged.
+    // The workspace root itself is private and protects future direct children,
+    // but existing descendant ACLs remain user-managed and may permit direct
+    // access to a principal that already knows their path.
+    const opaqueWorkspaceProfile = join(temp, 'opaque-workspace-profile');
+    const opaqueWorkspace = join(opaqueWorkspaceProfile, 'workspace');
+    const opaqueRepository = join(opaqueWorkspace, 'repo');
+    const opaqueJunctionTarget = join(temp, 'opaque-junction-target');
+    mkdirSync(opaqueRepository, { recursive: true });
+    mkdirSync(opaqueJunctionTarget);
+    writeFileSync(join(opaqueWorkspaceProfile, 'profile.json'), JSON.stringify({
+      schemaVersion: PROFILE_SCHEMA_VERSION,
+      profile: 'opaque-workspace',
+      appliedMigrations: [],
+    }));
+    writeFileSync(join(opaqueRepository, 'preserve.txt'), 'preserve me\n');
+    symlinkSync(
+      opaqueJunctionTarget,
+      join(opaqueRepository, 'deliberate-junction'),
+      'junction',
+    );
+    const workspaceFileAclBefore = windowsPowerShellForTest(
+      WINDOWS_ADD_WORKSPACE_FILE_ACL,
+      opaqueWorkspaceProfile,
+    ).trim();
+    secureWindowsProfileRoot(opaqueWorkspaceProfile);
+    assert.equal(
+      windowsPowerShellForTest(
+        WINDOWS_READ_WORKSPACE_FILE_ACL,
+        opaqueWorkspaceProfile,
+      ).trim(),
+      workspaceFileAclBefore,
+      'workspace descendant ACLs must remain untouched',
+    );
+    assert.equal(
+      lstatSync(join(opaqueRepository, 'deliberate-junction')).isSymbolicLink(),
+      true,
+      'workspace junctions must remain present and uninspected',
+    );
+    assert.match(
+      windowsPowerShellForTest(
+        WINDOWS_ASSERT_PRIVATE_DIRECTORY_ACL,
+        opaqueWorkspace,
+      ),
+      /IDACC_TEST_PRIVATE_DIRECTORY_OK/,
+    );
+    assert.match(
+      windowsPowerShellForTest(
+        WINDOWS_CREATE_AND_ASSERT_PRIVATE_WORKSPACE_CHILD,
+        opaqueWorkspaceProfile,
+      ),
+      /IDACC_TEST_PRIVATE_WORKSPACE_CHILD_OK/,
+      'new workspace content must inherit the private user-and-System boundary',
+    );
+    const opaqueAttestation = join(
+      opaqueWorkspaceProfile,
+      '.idacc-windows-acl-v2.json',
+    );
+    const attestationMtime = statSync(opaqueAttestation).mtimeMs;
+    secureWindowsProfileRoot(opaqueWorkspaceProfile);
+    assert.equal(
+      statSync(opaqueAttestation).mtimeMs,
+      attestationMtime,
+      'an exact attested profile must use the bounded steady-state path',
+    );
+
+    // The consumer default starts below a profiles parent that does not yet
+    // exist. The privacy boundary must safely create the complete path.
+    const freshDefaultProfile = join(
+      temp,
+      'fresh-windows-user-data',
+      'profiles',
+      'default',
+    );
+    assert.equal(existsSync(join(temp, 'fresh-windows-user-data')), false);
+    secureWindowsProfileRoot(freshDefaultProfile);
+    assert.equal(existsSync(freshDefaultProfile), true);
+    assert.equal(
+      existsSync(join(freshDefaultProfile, '.idacc-windows-acl-v2.json')),
+      false,
+      'an interrupted bootstrap must leave an otherwise empty selectable root',
+    );
+    assert.match(
+      windowsPowerShellForTest(
+        WINDOWS_ASSERT_PRIVATE_DIRECTORY_ACL,
+        freshDefaultProfile,
+      ),
+      /IDACC_TEST_PRIVATE_DIRECTORY_OK/,
+    );
+    migrateAppProfile(paths(freshDefaultProfile), {
+      profileName: 'default',
+      legacyConfigDir: join(temp, 'fresh-missing-legacy'),
+      allowLegacyImport: false,
+    });
+    secureWindowsProfileRoot(freshDefaultProfile);
+    assert.equal(
+      existsSync(join(freshDefaultProfile, '.idacc-windows-acl-v2.json')),
+      true,
+      'the completed migrated profile must gain its steady-state attestation',
+    );
   }
 
   process.stdout.write('profile migrations smoke: ok\n');

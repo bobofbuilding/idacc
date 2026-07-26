@@ -3,8 +3,8 @@
  * id-agents manager, and loads the React renderer.
  */
 
-import { app, BrowserWindow, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage, clipboard } from 'electron';
-import { join } from 'node:path';
+import { app, BrowserWindow, dialog, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage, clipboard } from 'electron';
+import { dirname, isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import {
@@ -55,6 +55,20 @@ import { getPermissions, openPermissionSettings, relaunchApp, type CuPermissionP
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
 import { initializeAppProfile, updateManagedManagerProfileUrl } from './appProfile.ts';
+import { normalizeAppProfileName } from './appProfileSelection.ts';
+import {
+  readAppProfilePreference,
+  validateRecoveryProfileFolder,
+  writeAppProfilePreference,
+  type AppProfilePreference,
+} from './appProfilePreference.ts';
+import {
+  freshRecoveryProfileName,
+  runStartupRecoveryLoop,
+  startupFailureReport,
+  type StartupFailureReport,
+  type StartupRecoveryDecision,
+} from './startupRecovery.ts';
 import {
   configureUnifiedBrainAutomation,
   startUnifiedStack,
@@ -426,9 +440,9 @@ function requireTrustedIpcSender(event: Electron.IpcMainInvokeEvent): void {
   }
 }
 
-function loadRendererApp(target: BrowserWindow): void {
+function loadRendererApp(target: BrowserWindow): Promise<void> {
   const initialView = process.env.IDCTL_VIEW;
-  void target.loadFile(rendererIndexFile(), initialView ? { search: `view=${initialView}` } : undefined);
+  return target.loadFile(rendererIndexFile(), initialView ? { search: `view=${initialView}` } : undefined);
 }
 
 function rendererCrashFallbackHtml(state: RendererCrashState | null, details: Electron.RenderProcessGoneDetails): string {
@@ -474,7 +488,9 @@ function scheduleRendererRecovery(target: BrowserWindow, details: Electron.Rende
     try {
       if (target.isDestroyed()) return;
       if (attempt <= RENDERER_RECOVERY_MAX_RELOADS) {
-        loadRendererApp(target);
+        void loadRendererApp(target).catch((error) => {
+          logStartupRecoveryFailure('renderer-recovery', startupFailureReport(error));
+        });
       } else {
         void target.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(rendererCrashFallbackHtml(state, details))}`);
       }
@@ -492,6 +508,233 @@ function scheduleRendererStableReset(): void {
     rendererStableTimer = null;
   }, RENDERER_STABLE_RESET_MS);
   rendererStableTimer.unref?.();
+}
+
+// Destroying a partially created window must not trigger the normal
+// window-all-closed quit path while the native recovery dialog is active.
+let startupRecoveryActive = false;
+
+function logStartupRecoveryFailure(scope: string, report: StartupFailureReport): void {
+  // Never log the originating exception: startup errors commonly contain home
+  // paths, query-string credentials, or child-process environment fragments.
+  console.error(`[${scope}]`, {
+    code: report.code,
+    diagnosticId: report.diagnosticId,
+    ...(report.systemCode ? { systemCode: report.systemCode } : {}),
+  });
+}
+
+function startUpdaterSafely(target: BrowserWindow): void {
+  try {
+    startUpdater(target);
+  } catch (error) {
+    try { stopUpdater(); } catch { /* updater initialization was incomplete */ }
+    logStartupRecoveryFailure('updater-start', startupFailureReport(error));
+  }
+}
+
+function recoveryProfileRoot(): string {
+  const userDataRoot = app.getPath('userData');
+  const explicitDataDir = String(process.env.IDACC_DATA_DIR || '').trim();
+  if (explicitDataDir && isAbsolute(explicitDataDir)) return explicitDataDir;
+  let preference: AppProfilePreference | null = null;
+  try {
+    preference = readAppProfilePreference(userDataRoot);
+  } catch {
+    // The failure that opened recovery already contains the safe diagnostic.
+    // Fall back to the application data root so the user can repair the pointer.
+    return userDataRoot;
+  }
+  if (preference?.dataDir) return preference.dataDir;
+  const requestedName = String(process.env.IDACC_PROFILE || preference?.profile || 'default');
+  let profileName = 'default';
+  try {
+    profileName = normalizeAppProfileName(requestedName);
+  } catch {
+    // An invalid selector is itself recoverable; open the neutral profiles root.
+  }
+  return join(userDataRoot, 'profiles', profileName);
+}
+
+function recoveryFolderToOpen(): string {
+  const profileRoot = recoveryProfileRoot();
+  if (existsSync(profileRoot)) return profileRoot;
+  const parent = dirname(profileRoot);
+  if (existsSync(parent)) return parent;
+  return app.getPath('userData');
+}
+
+async function rememberRecoveryProfile(preference: AppProfilePreference): Promise<void> {
+  if (preference.dataDir) {
+    process.env.IDACC_DATA_DIR = preference.dataDir;
+    delete process.env.IDACC_PROFILE;
+  } else {
+    delete process.env.IDACC_DATA_DIR;
+    process.env.IDACC_PROFILE = preference.profile;
+  }
+  try {
+    writeAppProfilePreference(app.getPath('userData'), preference);
+  } catch (error) {
+    const report = startupFailureReport(error);
+    logStartupRecoveryFailure('startup-profile-preference', report);
+    await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Profile selected for this launch',
+      message: 'IDACC could not remember this profile selection yet.',
+      detail: `The selected profile will still be tried now. You may need to select it again next time.\n\nDiagnostic ID: ${report.diagnosticId}`,
+      buttons: ['Continue'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+  }
+}
+
+async function cleanupFailedConsumerStartup(): Promise<void> {
+  try { stopUpdater(); } catch { /* updater may not have started */ }
+  try { stopBroker(); } catch { /* no broker may have started */ }
+  try { globalShortcut.unregisterAll(); } catch { /* shortcuts may be unavailable */ }
+  const stops = [
+    stopGoalDriver,
+    stopLearnQueueRunner,
+    stopLearnBrainBackfillRunner,
+    stopMaterialChangeBridge,
+    stopBrainApprovalAutomation,
+    stopDraftDispatcher,
+    stopScheduledDreamArchive,
+  ];
+  stopGoalDriver = null;
+  stopLearnQueueRunner = null;
+  stopLearnBrainBackfillRunner = null;
+  stopMaterialChangeBridge = null;
+  stopBrainApprovalAutomation = null;
+  stopDraftDispatcher = null;
+  stopScheduledDreamArchive = null;
+  kickLearnQueueRunner = null;
+  kickLearnBrainBackfillRunner = null;
+  for (const stop of stops) {
+    try { stop?.(); } catch { /* best-effort optional background service */ }
+  }
+  try {
+    if (brainDashboardWin && !brainDashboardWin.isDestroyed()) brainDashboardWin.destroy();
+  } catch { /* recovery can continue without the optional dashboard window */ }
+  brainDashboardWin = null;
+  try {
+    if (win && !win.isDestroyed()) win.destroy();
+  } catch { /* recovery dialog does not depend on the renderer window */ }
+  win = null;
+  try {
+    await stopUnifiedStack();
+  } catch (error) {
+    logStartupRecoveryFailure('startup-cleanup', startupFailureReport(error));
+  }
+}
+
+async function promptForStartupRecovery(report: StartupFailureReport): Promise<StartupRecoveryDecision> {
+  for (;;) {
+    const choice = await dialog.showMessageBox({
+      type: 'error',
+      title: report.title,
+      message: report.title,
+      detail: `${report.detail}\n\n“Start Fresh Profile” creates a separate profile and keeps the current profile untouched.\n\nDiagnostic ID: ${report.diagnosticId}`,
+      buttons: [
+        'Try Again',
+        'Open Profile Folder',
+        'Choose Another Profile…',
+        'Start Fresh Profile',
+        'Quit',
+      ],
+      defaultId: 0,
+      cancelId: 4,
+      noLink: true,
+    });
+    if (choice.response === 0) return 'retry';
+    if (choice.response === 1) {
+      const openError = await shell.openPath(recoveryFolderToOpen());
+      if (openError) {
+        const openReport = startupFailureReport(new Error(openError));
+        logStartupRecoveryFailure('startup-open-profile', openReport);
+        await dialog.showMessageBox({
+          type: 'warning',
+          title: 'Profile folder could not be opened',
+          message: 'IDACC could not open the profile folder in the system file browser.',
+          detail: `Your data remains untouched. You can still choose another profile or retry.\n\nDiagnostic ID: ${openReport.diagnosticId}`,
+          buttons: ['Continue'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        });
+      }
+      continue;
+    }
+    if (choice.response === 2) {
+      const selected = await dialog.showOpenDialog({
+        title: 'Choose an IDACC profile folder',
+        message: 'Choose an existing IDACC profile folder or create an empty folder.',
+        buttonLabel: 'Use This Profile',
+        properties: ['openDirectory', 'createDirectory', 'promptToCreate'],
+      });
+      const selectedPath = selected.filePaths[0];
+      if (!selected.canceled && selectedPath) {
+        try {
+          const profileFolder = validateRecoveryProfileFolder(
+            selectedPath,
+            app.getPath('userData'),
+            [app.getPath('home')],
+            [app.getAppPath(), process.resourcesPath],
+          );
+          await rememberRecoveryProfile({ dataDir: profileFolder });
+          return 'retry';
+        } catch (error) {
+          const folderReport = startupFailureReport(error);
+          logStartupRecoveryFailure('startup-profile-folder', folderReport);
+          await dialog.showMessageBox({
+            type: 'warning',
+            title: 'Choose a dedicated IDACC profile folder',
+            message: 'That folder cannot safely be used as an IDACC profile.',
+            detail: `Choose an empty folder or an existing IDACC profile folder. Broad folders such as your home, application, or app-data folder are not changed.\n\nDiagnostic ID: ${folderReport.diagnosticId}`,
+            buttons: ['Choose Again'],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true,
+          });
+        }
+      }
+      continue;
+    }
+    if (choice.response === 3) {
+      await rememberRecoveryProfile({ profile: freshRecoveryProfileName() });
+      return 'retry';
+    }
+    return 'quit';
+  }
+}
+
+async function handleConsumerStartupFailure(
+  report: StartupFailureReport,
+): Promise<StartupRecoveryDecision> {
+  startupRecoveryActive = true;
+  logStartupRecoveryFailure('startup', report);
+  await cleanupFailedConsumerStartup();
+  const decision = await promptForStartupRecovery(report);
+  if (decision === 'quit') startupRecoveryActive = false;
+  return decision;
+}
+
+async function handleUnrecoverableStartupFailure(error: unknown): Promise<void> {
+  startupRecoveryActive = true;
+  const report = startupFailureReport(error);
+  logStartupRecoveryFailure('startup-recovery', report);
+  await cleanupFailedConsumerStartup();
+  try {
+    dialog.showErrorBox(
+      'IDACC could not open recovery',
+      `IDACC stopped its local services safely and did not reset your profile. Close the app, then reopen it to try again.\n\nDiagnostic ID: ${report.diagnosticId}`,
+    );
+  } catch {
+    // The safe report above is still available in the process log.
+  }
+  app.exit(1);
 }
 
 configureChromiumStability();
@@ -1528,7 +1771,7 @@ function isOnScreen(s: WinState): boolean {
   });
 }
 
-function createWindow() {
+async function createWindow(): Promise<void> {
   const st = loadWinState();
   const placeAt = isOnScreen(st) && typeof st.x === 'number' && typeof st.y === 'number';
   win = new BrowserWindow({
@@ -1608,7 +1851,7 @@ function createWindow() {
     if (menu.items.length > 0) menu.popup({ window: win ?? undefined });
   });
 
-  loadRendererApp(win);
+  const initialRendererLoad = loadRendererApp(win);
 
   // Verification hook: with IDCTL_SHOT=<path>, capture the rendered window once
   // data has loaded, write a PNG, and quit. Lets the build be proven headlessly.
@@ -1662,6 +1905,7 @@ function createWindow() {
       }, 3500);
     });
   }
+  await initialRendererLoad;
 }
 
 async function archiveScheduledDreams(team: string): Promise<{ archived: number; discovered: number }> {
@@ -2354,97 +2598,109 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     app.exit(status.ready && authPassed && !selftestError && resultPublished ? 0 : 1);
   });
 } else {
-  app.whenReady().then(async () => {
-    const profile = initializeAppProfile();
-    configureSecureSettings();
-    const startedStack = await startUnifiedStack(profile);
-    const managerUrl = startedStack.services.find((service) => service.name === 'manager')?.url;
-    if (managerUrl) updateManagedManagerProfileUrl(profile.config, managerUrl);
-    const activeManagerUrl = managerUrl || process.env.MANAGER_URL || 'http://127.0.0.1:4110';
-    const adminToken = unifiedStackAdminToken();
-    configureManagedManager(activeManagerUrl, adminToken);
-    configureComputerUseAuditManager(activeManagerUrl, adminToken);
-    configureKeyProviderFromSettings();
-    createWindow();
-    if (win) startUpdater(win);
-    // Persist window geometry on EVERY quit path (Cmd-Q, menu, and the self-update relaunch,
-    // which calls app.quit()) before the window is destroyed — registered once, app-wide.
-    app.on('before-quit', () => { if (win && !win.isDestroyed()) saveWinState(win); });
-    let stackShutdownStarted = false;
-    let stackShutdownComplete = false;
-    app.on('before-quit', (event) => {
-      if (stackShutdownComplete) return;
-      event.preventDefault();
-      if (stackShutdownStarted) return;
-      stackShutdownStarted = true;
-      void stopUnifiedStack().finally(() => {
-        stackShutdownComplete = true;
-        app.quit();
-      });
-    });
-    // Reactive org-sync: keep every agent's goals & instructions file composed from the lead
-    // hierarchy + brain team-instructions (first pass ~15s after boot, then every 5 min).
-    try { startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }
-    // Keep model lanes current and notify mounted pickers after each bounded refresh pass.
-    try { startModelRefreshLoop(() => publishStoreChange('runtime:probe')); } catch (e) { console.warn('[model-refresh] failed to start:', e); }
-    // Globally available by default, but only active goals whose own Autopilot
-    // switch is enabled can gap-fill fleet tasks.
-    try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
-    // Medium-risk, non-authority Brain skill proposals are reviewed by two
-    // independent fleet agents. Only genuine disagreement or privileged/sensitive
-    // scope is allowed to reach the operator Inbox; unavailable reviewers wait.
-    try {
-      configureAutomaticBrainApprovalReview();
-      stopBrainApprovalAutomation = startBrainApprovalAutomationLoop((result) => {
-        void syncBrainApprovalInbox({ force: true }).finally(() => {
-          publishStoreChange('brainApproval:autoReview');
-          recordControlAction('brainApproval:autoReview', ['background'], result);
+  void app.whenReady()
+    .then(() => runStartupRecoveryLoop(async () => {
+      startupRecoveryActive = true;
+      const profile = initializeAppProfile();
+      configureSecureSettings();
+      const startedStack = await startUnifiedStack(profile);
+      const managerUrl = startedStack.services.find((service) => service.name === 'manager')?.url;
+      if (managerUrl) updateManagedManagerProfileUrl(profile.config, managerUrl);
+      const activeManagerUrl = managerUrl || process.env.MANAGER_URL || 'http://127.0.0.1:4110';
+      const adminToken = unifiedStackAdminToken();
+      configureManagedManager(activeManagerUrl, adminToken);
+      configureComputerUseAuditManager(activeManagerUrl, adminToken);
+      configureKeyProviderFromSettings();
+      await createWindow();
+      // Treat the app-owned Computer Use controller as part of startup. If its
+      // private loopback listener cannot bind, recovery closes the new window
+      // and stops the unified stack before any long-lived handlers are added.
+      await startBroker(
+        (frame) => { try { win?.webContents.send('computeruse:frame', frame); } catch { /* window gone */ } },
+        (evt) => { try { win?.webContents.send('computeruse:pending', evt); } catch { /* window gone */ } },
+      );
+      // Persist window geometry on EVERY quit path (Cmd-Q, menu, and the self-update relaunch,
+      // which calls app.quit()) before the window is destroyed — registered once, app-wide.
+      app.on('before-quit', () => { if (win && !win.isDestroyed()) saveWinState(win); });
+      let stackShutdownStarted = false;
+      let stackShutdownComplete = false;
+      app.on('before-quit', (event) => {
+        if (stackShutdownComplete) return;
+        event.preventDefault();
+        if (stackShutdownStarted) return;
+        stackShutdownStarted = true;
+        void stopUnifiedStack().finally(() => {
+          stackShutdownComplete = true;
+          app.quit();
         });
       });
-      void runBrainApprovalAutomationOnce();
-    } catch (e) { console.warn('[brain-approval-review] failed to start:', e); }
-    // Work > Learn queue: process newly-added materials even when the Learn tab is not mounted.
-    try {
-      stopMaterialChangeBridge = subscribeMaterialChanges((reason, material) => {
-        publishStoreChange(reason === 'tasks' ? 'materials:tasks' : 'materials:changed');
-        if (reason === 'write' && 'status' in material && material.status === 'queued') {
-          kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.queuedWriteKickMs);
-        }
-        if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked' || material.status === 'failed')) {
-          kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.terminalWriteKickMs);
-        }
-        if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked')) {
-          kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialWriteKickMs);
-        }
+      // Reactive org-sync: keep every agent's goals & instructions file composed from the lead
+      // hierarchy + brain team-instructions (first pass ~15s after boot, then every 5 min).
+      try { startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }
+      // Keep model lanes current and notify mounted pickers after each bounded refresh pass.
+      try { startModelRefreshLoop(() => publishStoreChange('runtime:probe')); } catch (e) { console.warn('[model-refresh] failed to start:', e); }
+      // Globally available by default, but only active goals whose own Autopilot
+      // switch is enabled can gap-fill fleet tasks.
+      try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
+      // Medium-risk, non-authority Brain skill proposals are reviewed by two
+      // independent fleet agents. Only genuine disagreement or privileged/sensitive
+      // scope is allowed to reach the operator Inbox; unavailable reviewers wait.
+      try {
+        configureAutomaticBrainApprovalReview();
+        stopBrainApprovalAutomation = startBrainApprovalAutomationLoop((result) => {
+          void syncBrainApprovalInbox({ force: true }).finally(() => {
+            publishStoreChange('brainApproval:autoReview');
+            recordControlAction('brainApproval:autoReview', ['background'], result);
+          });
+        });
+        void runBrainApprovalAutomationOnce();
+      } catch (e) { console.warn('[brain-approval-review] failed to start:', e); }
+      // Work > Learn queue: process newly-added materials even when the Learn tab is not mounted.
+      try {
+        stopMaterialChangeBridge = subscribeMaterialChanges((reason, material) => {
+          publishStoreChange(reason === 'tasks' ? 'materials:tasks' : 'materials:changed');
+          if (reason === 'write' && 'status' in material && material.status === 'queued') {
+            kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.queuedWriteKickMs);
+          }
+          if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked' || material.status === 'failed')) {
+            kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.terminalWriteKickMs);
+          }
+          if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked')) {
+            kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialWriteKickMs);
+          }
+        });
+      } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }
+      try { stopLearnQueueRunner = startLearnQueueRunner(); } catch (e) { console.warn('[learn] failed to start queue runner:', e); }
+      try { stopLearnBrainBackfillRunner = startLearnBrainBackfillRunner(); } catch (e) { console.warn('[learn] failed to start brain backfill runner:', e); }
+      // Draft dispatcher: opt-in only. Draft/proposal rows are review-only unless
+      // the operator explicitly enables this bridge in settings.
+      try { stopDraftDispatcher = startDraftDispatcher(); } catch (e) { console.warn('[draft-dispatcher] failed to start:', e); }
+      // Reconcile completed scheduled Dream queries into the profile-owned Dream
+      // archive. Agent news is durable, so runs completed while IDACC was closed
+      // are imported idempotently after the unified stack comes back.
+      try { stopScheduledDreamArchive = startScheduledDreamArchiveLoop(); } catch (e) { console.warn('[dream-archive] failed to start:', e); }
+      // Global PANIC hotkey: instant stop from anywhere, even when the app isn't focused.
+      try {
+        const ok = globalShortcut.register('CommandOrControl+Alt+Shift+P', () => {
+          panicBroker();
+          try { win?.webContents.send('computeruse:panic', { ts: Date.now() }); } catch { /* */ }
+        });
+        setPanicHotkey(ok);
+        if (!ok) console.warn('[cu] PANIC hotkey not registered (already taken); use the on-screen button');
+      } catch { /* the on-screen PANIC button is the fallback */ }
+      app.on('activate', () => {
+        if (BrowserWindow.getAllWindows().length !== 0) return;
+        void createWindow()
+          .then(() => { if (win && !win.isDestroyed()) startUpdaterSafely(win); })
+          .catch((error) => handleUnrecoverableStartupFailure(error));
       });
-    } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }
-    try { stopLearnQueueRunner = startLearnQueueRunner(); } catch (e) { console.warn('[learn] failed to start queue runner:', e); }
-    try { stopLearnBrainBackfillRunner = startLearnBrainBackfillRunner(); } catch (e) { console.warn('[learn] failed to start brain backfill runner:', e); }
-    // Draft dispatcher: opt-in only. Draft/proposal rows are review-only unless
-    // the operator explicitly enables this bridge in settings.
-    try { stopDraftDispatcher = startDraftDispatcher(); } catch (e) { console.warn('[draft-dispatcher] failed to start:', e); }
-    // Reconcile completed scheduled Dream queries into the profile-owned Dream
-    // archive. Agent news is durable, so runs completed while IDACC was closed
-    // are imported idempotently after the unified stack comes back.
-    try { stopScheduledDreamArchive = startScheduledDreamArchiveLoop(); } catch (e) { console.warn('[dream-archive] failed to start:', e); }
-    // Computer Use broker: loopback controller + live frame pump + approval prompts → the renderer.
-    void startBroker(
-      (frame) => { try { win?.webContents.send('computeruse:frame', frame); } catch { /* window gone */ } },
-      (evt) => { try { win?.webContents.send('computeruse:pending', evt); } catch { /* window gone */ } },
-    );
-    // Global PANIC hotkey: instant stop from anywhere, even when the app isn't focused.
-    try {
-      const ok = globalShortcut.register('CommandOrControl+Alt+Shift+P', () => {
-        panicBroker();
-        try { win?.webContents.send('computeruse:panic', { ts: Date.now() }); } catch { /* */ }
-      });
-      setPanicHotkey(ok);
-      if (!ok) console.warn('[cu] PANIC hotkey not registered (already taken); use the on-screen button');
-    } catch { /* the on-screen PANIC button is the fallback */ }
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    });
-  });
+      if (win && !win.isDestroyed()) startUpdaterSafely(win);
+      startupRecoveryActive = false;
+    }, handleConsumerStartupFailure))
+    .then((started) => {
+      if (!started) app.quit();
+    })
+    .catch((error) => handleUnrecoverableStartupFailure(error));
 }
 
 app.on('will-quit', stopUpdater);
@@ -2462,5 +2718,6 @@ app.on('child-process-gone', (_event, details) => {
 });
 
 app.on('window-all-closed', () => {
+  if (startupRecoveryActive || BrowserWindow.getAllWindows().length > 0) return;
   if (process.platform !== 'darwin') app.quit();
 });

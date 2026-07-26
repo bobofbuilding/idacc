@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -24,7 +25,9 @@ assert.equal(existsSync(builtMain), true, 'build the desktop app before running 
 assert.equal(existsSync(electron), true, 'Electron is not installed');
 
 // Spaces are intentional: staged MCP argv must remain one absolute argument.
-const scratch = mkdtempSync(join(tmpdir(), 'idacc supervisor integration '));
+const scratch = realpathSync.native(
+  mkdtempSync(join(tmpdir(), 'idacc supervisor integration ')),
+);
 const runtime = join(scratch, 'runtime');
 const profile = join(scratch, 'profile');
 const registeredProject = join(profile, 'workspace', 'projects', 'consumer project, one');
@@ -36,6 +39,19 @@ const brainListenerEntry = join(runtime, 'brain', 'brain-listener.mjs');
 const brainCycleEntry = join(runtime, 'brain', 'brain-cycle.mjs');
 const brainSkillEntry = join(runtime, 'manager', 'skills', 'brain', 'SKILL.md');
 const managerConfigEntry = join(runtime, 'manager', 'configs', 'default.yaml');
+
+function writeProfileMarker(root, profileName) {
+  const now = new Date().toISOString();
+  writeFileSync(join(root, 'profile.json'), JSON.stringify({
+    schemaVersion: 0,
+    profile: profileName,
+    createdAt: now,
+    updatedAt: now,
+    migratedFrom: null,
+    appliedMigrations: [],
+  }, null, 2), { mode: 0o600 });
+}
+
 mkdirSync(dirname(managerEntry), { recursive: true });
 mkdirSync(dirname(brainEntry), { recursive: true });
 mkdirSync(dirname(brainSkillEntry), { recursive: true });
@@ -43,6 +59,7 @@ mkdirSync(dirname(managerConfigEntry), { recursive: true });
 mkdirSync(join(profile, 'config'), { recursive: true });
 mkdirSync(registeredProject, { recursive: true });
 mkdirSync(profile, { recursive: true });
+writeProfileMarker(profile, 'supervisor-integration');
 writeFileSync(join(profile, 'config', 'config.json'), JSON.stringify({
   version: 1,
   managers: [],
@@ -878,6 +895,7 @@ try {
     const negativeProfile = join(scratch, `profile-${mode}`);
     const negativeResultFile = join(negativeProfile, 'stack-selftest-result.json');
     mkdirSync(join(negativeProfile, 'config'), { recursive: true });
+    writeProfileMarker(negativeProfile, `listener-readiness-${mode}`);
     writeFileSync(join(negativeProfile, 'config', 'config.json'), JSON.stringify({
       version: 1,
       managers: [],

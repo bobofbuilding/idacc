@@ -96,7 +96,19 @@ const ACTIVE_ORG_POLICY_PATTERNS = [
   },
   {
     label: 'organization-specific default team policy',
-    re: /\b(?:default(?:Team|_team)?|team|owner_route|assignee)\s*[:=]\s*["'`](?:bittrees|skillmesh)(?:[-_][^"'`]*)?["'`]/i,
+    re: /\b(?:default(?:Team|_team)?|team|owner_route|assignee)\s*[:=]\s*["'`]?(?:bittrees|skillmesh)(?:[-_][a-z0-9.-]+)?["'`]?(?=\s*(?:[,;#}\r\n]|$))/i,
+  },
+];
+
+const EXECUTABLE_ORG_BRANDING_PATTERNS = [
+  {
+    label: 'organization-specific executable branding',
+    paths: /^(?:brain\/.+\.mjs|manager\/dist\/.+\.js)$/i,
+    // Named optional providers and projects are valid integration metadata.
+    // Brain's MJS and Manager's TypeScript-emitted dist JS preserve source
+    // literals, so these tokens identify active special cases. Legal/package
+    // metadata and optional provider names are intentionally outside this rule.
+    re: /bittrees|bobofbuilding/i,
   },
 ];
 
@@ -234,12 +246,17 @@ export function inspectConsumerTextEntry(relativePath, content, options = {}) {
     if (match) errors.push(`${label} in ${relativePath}`);
   }
   if (runtimePolicy && isConsumerAsset(relativePath)) {
-    const match = text.match(/\b(?:bittrees|skillmesh)\b/i);
+    const match = text.match(/\bbittrees\b/i);
     if (match) {
       errors.push(`organization-specific consumer asset content in ${relativePath}: ${match[0]}`);
     }
   }
   if (runtimePolicy) {
+    for (const { label, paths, re } of EXECUTABLE_ORG_BRANDING_PATTERNS) {
+      if (!paths.test(relativePath)) continue;
+      const match = text.match(re);
+      if (match) errors.push(`${label} in ${relativePath}: ${contentPreview(match[0])}`);
+    }
     for (const { label, paths, re } of CONSUMER_CORE_SKILL_PATTERNS) {
       if (!paths.test(relativePath)) continue;
       const match = text.match(re);

@@ -1,5 +1,16 @@
 import assert from 'node:assert/strict';
-import { buildProviderModelLanes, buildRuntimeCatalog, managedRuntimeHasEvidence, offerableRuntimes, runtimeSupports } from './runtimeCatalog.ts';
+import {
+  CLAUDE_FAST_MODE_NOTICE,
+  buildProviderModelLanes,
+  buildRuntimeCatalog,
+  managedRuntimeHasEvidence,
+  normalizeSpeedPreference,
+  offerableRuntimes,
+  runtimeHasSpeed,
+  runtimeSupports,
+  speedOptionLabel,
+  speedOptions,
+} from './runtimeCatalog.ts';
 import type { ProviderProfile } from './schema.ts';
 
 const providers = [
@@ -111,6 +122,22 @@ assert.deepEqual(
   ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
   'Codex curated fallback should include current GPT-5.6 choices before older GPT models when the local Codex cache has not caught up',
 );
+
+assert.deepEqual(speedOptions('claude-code-cli'), ['default', 'fast']);
+assert.deepEqual(speedOptions('claude-code-local'), ['default', 'fast']);
+assert.deepEqual(speedOptions('codex'), [], 'Codex must not advertise an unsupported output-speed control');
+assert.equal(runtimeHasSpeed('claude-code-cli'), true);
+assert.equal(runtimeHasSpeed('codex'), false);
+assert.equal(normalizeSpeedPreference('fast'), 'fast');
+assert.equal(normalizeSpeedPreference('default'), 'default');
+assert.equal(normalizeSpeedPreference('turbo'), 'default', 'untrusted speed metadata must fail safe to standard');
+assert.equal(speedOptionLabel('fast'), 'Fast (Opus · usage credits)');
+assert.equal(speedOptionLabel('default'), 'Standard');
+assert.match(CLAUDE_FAST_MODE_NOTICE, /costs more per token/);
+assert.match(CLAUDE_FAST_MODE_NOTICE, /supported Claude Opus model’s quality and capabilities/);
+assert.match(CLAUDE_FAST_MODE_NOTICE, /does not lower Effort/);
+assert.match(CLAUDE_FAST_MODE_NOTICE, /replace another selected model/);
+assert.match(CLAUDE_FAST_MODE_NOTICE, /extra usage/);
 
 const selectedProviderCatalog = buildRuntimeCatalog([
   {

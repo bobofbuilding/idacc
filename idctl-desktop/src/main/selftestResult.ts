@@ -6,10 +6,11 @@ import {
   linkSync,
   lstatSync,
   openSync,
+  realpathSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 const MAX_SELFTEST_RESULT_BYTES = 1024 * 1024;
 
@@ -38,11 +39,22 @@ export function writeStackSelftestResultFile(
     throw new Error('IDACC_STACK_SELFTEST_RESULT_FILE must be an absolute file path');
   }
 
-  const root = resolve(profileRoot);
-  const target = resolve(requestedPath);
-  if (dirname(target) !== root) {
+  const root = resolve(realpathSync.native(profileRoot));
+  const requestedTarget = resolve(requestedPath);
+  let requestedParent: string;
+  try {
+    requestedParent = resolve(realpathSync.native(dirname(requestedTarget)));
+  } catch {
     throw new Error('IDACC_STACK_SELFTEST_RESULT_FILE must be directly inside the active self-test profile');
   }
+  if (requestedParent !== root) {
+    throw new Error('IDACC_STACK_SELFTEST_RESULT_FILE must be directly inside the active self-test profile');
+  }
+  // Use the already-canonical private root for every filesystem operation. A
+  // caller may spell the same directory through an operating-system alias
+  // (for example /var versus /private/var on macOS); never keep using that
+  // independently replaceable alias after proving where it resolves.
+  const target = join(root, basename(requestedTarget));
 
   const rootStat = lstatSync(root);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
@@ -84,7 +96,7 @@ export function writeStackSelftestResultFile(
     // result, including if another same-user process races the final check.
     linkSync(temporary, target);
     unlinkSync(temporary);
-    return target;
+    return requestedTarget;
   } catch (error) {
     if (descriptor !== undefined) {
       try { closeSync(descriptor); } catch { /* already closed */ }

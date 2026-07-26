@@ -31,6 +31,13 @@ to install or update either service separately.
   release sources as consumer memory. The Brain event listener is supervised
   alongside the two services. The mutation-capable bounded maintenance cycle
   defaults off and starts only after explicit Settings opt-in.
+- **Profile privacy boundary:** app-owned config, goals, plans, Manager and
+  Brain databases, generated state, credentials, logs, and caches are private
+  to the active OS user. `workspace/` is an explicit user-content boundary:
+  its root is private and new direct children inherit that protection, but
+  IDACC does not traverse or rewrite ACLs inside an existing repository.
+  Existing repository descendants retain their user-managed permissions, so
+  their confidentiality remains the user's responsibility on every platform.
 - **Renderer** (`src/renderer/*`) is the React UI. `store.ts` (`useFleet`) polls the manager every
   ~3s (agents/teams/inbox snapshot) plus a long-poll event cursor, exposing `store.{agents, teams,
   team, coordinator, events, inbox, connection, …}`. Expensive catalog and observability reads
@@ -367,6 +374,15 @@ unsynced API lanes stay visible but disabled until **Connect & sync** succeeds. 
 dropdown follows the effective staged Harness catalog: changing Harness
 resets the staged model to a valid option for that harness, and stale saved cross-harness model values
 show as drift instead of selectable options.
+The per-agent **Speed** picker appears only for Claude Code runtimes. **Standard** explicitly disables
+Claude Code fast mode for that managed agent; **Fast (Opus · usage credits)** requests Claude Code's
+supported fast service tier after the reviewed rebuild. Fast retains the supported Opus model's
+quality and capabilities and does not lower the separately selected reasoning effort, but Claude Code
+can switch a different configured model to a supported Opus model. Fast costs more per token, requires
+a compatible Claude Code release, billed usage credits (extra usage), and any organization approval,
+and can fall back to standard speed when unavailable or rate-limited. Those model, billing,
+eligibility, and fallback effects are stated in the picker and again in the apply confirmation before
+IDACC writes the preference.
 Roster color and Probe-all eligibility use exact Manager lifecycle states plus structured health.
 Explicit unhealthy evidence wins over an optimistic lifecycle label; PID alone is never liveness
 proof, and the remote fallback requires both a recent last-seen timestamp and a recent successful

@@ -1,9 +1,13 @@
 import {
   chmodSync,
+  closeSync,
   constants,
   copyFileSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
+  readSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -11,8 +15,11 @@ import {
 } from 'node:fs';
 import type { Stats } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import { TextDecoder } from 'node:util';
+import { secureWindowsProfileRoot } from './profilePrivacy.ts';
 
 export const PROFILE_SCHEMA_VERSION = 5;
+const PROFILE_MARKER_COMPATIBILITY_LIMIT_BYTES = 1024 * 1024;
 
 export interface ProfileMigrationPaths {
   root: string;
@@ -63,6 +70,110 @@ function lstatIfPresent(path: string): Stats | null {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
+  }
+}
+
+function profileCompatibilityError(): Error {
+  return new Error(
+    'Cannot safely open IDACC profile metadata before compatibility verification.',
+  );
+}
+
+function sameFileSnapshot(left: Stats, right: Stats): boolean {
+  return left.isFile()
+    && right.isFile()
+    && left.dev === right.dev
+    && left.ino === right.ino
+    && left.nlink === right.nlink
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+/**
+ * profile.json is the only object read before privacy conversion. This bounded,
+ * link-safe compatibility preflight prevents an older build from changing a
+ * newer profile. Windows repeats the check with native reparse/link inspection
+ * inside the ACL helper immediately before any security descriptor mutation.
+ */
+function assertCompatibleProfileBeforeMutation(root: string): void {
+  const rootEntry = lstatIfPresent(root);
+  if (!rootEntry) return;
+  if (rootEntry.isSymbolicLink() || !rootEntry.isDirectory()) {
+    throw profileCompatibilityError();
+  }
+
+  const marker = join(root, 'profile.json');
+  const markerEntry = lstatIfPresent(marker);
+  if (!markerEntry) return;
+  if (
+    markerEntry.isSymbolicLink()
+    || !markerEntry.isFile()
+    || markerEntry.nlink !== 1
+    || markerEntry.size > PROFILE_MARKER_COMPATIBILITY_LIMIT_BYTES
+  ) {
+    throw profileCompatibilityError();
+  }
+
+  let descriptor: number;
+  try {
+    const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
+    descriptor = openSync(marker, constants.O_RDONLY | noFollow);
+  } catch {
+    throw profileCompatibilityError();
+  }
+
+  let parsed: unknown;
+  try {
+    const opened = fstatSync(descriptor);
+    if (!sameFileSnapshot(markerEntry, opened) || opened.nlink !== 1) {
+      throw profileCompatibilityError();
+    }
+    const bytes = Buffer.alloc(PROFILE_MARKER_COMPATIBILITY_LIMIT_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync(
+        descriptor,
+        bytes,
+        length,
+        bytes.length - length,
+        length,
+      );
+      if (count === 0) break;
+      length += count;
+    }
+    const afterRead = fstatSync(descriptor);
+    if (
+      length > PROFILE_MARKER_COMPATIBILITY_LIMIT_BYTES
+      || length !== afterRead.size
+      || !sameFileSnapshot(opened, afterRead)
+      || afterRead.nlink !== 1
+    ) {
+      throw profileCompatibilityError();
+    }
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(
+      bytes.subarray(0, length),
+    );
+    parsed = JSON.parse(text);
+  } catch {
+    throw profileCompatibilityError();
+  } finally {
+    closeSync(descriptor);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw profileCompatibilityError();
+  }
+  const schemaVersion = (parsed as { schemaVersion?: unknown }).schemaVersion;
+  if (
+    typeof schemaVersion !== 'number'
+    || !Number.isInteger(schemaVersion)
+    || schemaVersion < 0
+  ) {
+    throw profileCompatibilityError();
+  }
+  if (schemaVersion > PROFILE_SCHEMA_VERSION) {
+    throw new Error('This IDACC profile was created by a newer application version.');
   }
 }
 
@@ -324,6 +435,14 @@ export function migrateAppProfile(
     allowLegacyImport?: boolean;
   },
 ): ProfileMetadata {
+  assertCompatibleProfileBeforeMutation(paths.root);
+  // Windows does not implement owner/group/other isolation through chmod.
+  // After the bounded compatibility-only marker preflight above, establish and
+  // verify the real recursive DACL before every other profile-state access.
+  // This also runs on every initialization, not only creation.
+  secureWindowsProfileRoot(paths.root, {
+    maximumSchemaVersion: PROFILE_SCHEMA_VERSION,
+  });
   const profileName = options.profileName?.trim() || 'default';
   const importLegacy = profileName === 'default' && options.allowLegacyImport !== false;
   const context: ProfileMigrationContext = {

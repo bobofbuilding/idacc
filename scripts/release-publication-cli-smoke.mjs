@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
@@ -85,26 +86,47 @@ const server = http.createServer((request, response) => {
 try {
   command('git', ['clone', '--quiet', '--bare', root, origin]);
   command('git', ['clone', '--quiet', origin, checkout]);
+  const fixtureCommit = command('git', ['rev-parse', 'HEAD'], { cwd: checkout }).stdout.trim();
   const fixtureTags = command('git', ['tag', '--list'], { cwd: checkout })
     .stdout.trim().split(/\r?\n/).filter(Boolean);
-  const fixtureKeepTags = new Set([
-    marker.baselinePublishedTag,
-    ...marker.legacyTags.map(({ tag }) => tag),
-  ]);
   for (const tag of fixtureTags) {
-    if (/^v\d+\.\d+\.\d+$/.test(tag) && !fixtureKeepTags.has(tag)) {
+    if (/^v\d+\.\d+\.\d+$/.test(tag)) {
       command('git', ['tag', '--delete', tag], { cwd: checkout });
       command('git', ['push', '--quiet', 'origin', `:refs/tags/${tag}`], { cwd: checkout });
     }
   }
+  // The caller may be a depth-one, tagless CI checkout. Build the historical
+  // cutover entirely inside this disposable fixture so the smoke never gains
+  // hidden dependencies on the caller's clone depth or local tag cache.
+  const fixtureMarker = {
+    ...marker,
+    legacyTags: marker.legacyTags.map((entry) => ({
+      ...entry,
+      targetCommit: fixtureCommit,
+    })),
+  };
+  const cutoverTags = [
+    marker.baselinePublishedTag,
+    ...marker.legacyTags.map(({ tag }) => tag),
+  ];
+  for (const tag of cutoverTags) {
+    command('git', ['tag', tag, fixtureCommit], { cwd: checkout });
+  }
+  command(
+    'git',
+    ['push', '--quiet', 'origin', ...cutoverTags.map((tag) => `refs/tags/${tag}`)],
+    { cwd: checkout },
+  );
   for (const relativePath of [
-    'release/legacy-release-cutover.json',
     'scripts/check-release-publication.mjs',
     'scripts/lib/legacy-release-cutover.mjs',
     'scripts/lib/release-publication.mjs',
   ]) {
     copyIntoCheckout(relativePath);
   }
+  const fixtureMarkerPath = join(checkout, 'release', 'legacy-release-cutover.json');
+  mkdirSync(dirname(fixtureMarkerPath), { recursive: true });
+  writeFileSync(fixtureMarkerPath, `${JSON.stringify(fixtureMarker, null, 2)}\n`);
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();

@@ -257,9 +257,11 @@ jobs:
           npm run test:secure-settings-vault --prefix idctl-desktop
           npm run test:agent-signer-vault --prefix idctl-desktop
           npm run test:provider-transport --prefix idctl
+          node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl/src/settings/runtimeCatalog.test.ts
           npm run test:capability-worker-scope --prefix idctl-desktop
           npm run test:secret-redaction --prefix idctl-desktop
           npm run test:profile-migrations --prefix idctl-desktop
+          npm run test:startup-recovery --prefix idctl-desktop
           npm run test:runtime-profile-isolation --prefix idctl-desktop
           npm run test:context-budget-retention --prefix idctl-desktop
           npm run test:computer-use-retention --prefix idctl-desktop
@@ -529,6 +531,11 @@ jobs:
         run: |
           npm ci --prefix idctl
           npm ci --prefix idctl-desktop
+
+      - name: Verify real Windows profile ACL hardening
+        if: matrix.platform == 'win'
+        shell: bash
+        run: npm run test:profile-migrations --prefix idctl-desktop
 
       - name: Install Linux clean-profile display support
         if: matrix.platform == 'linux'

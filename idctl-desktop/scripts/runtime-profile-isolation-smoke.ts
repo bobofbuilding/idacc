@@ -44,9 +44,13 @@ try {
   assert.equal(readFileSync(join(prepared.pluginsRoot, 'starter', 'plugin.json'), 'utf8'), '{}\n');
   assert.equal(prepared.agentLogDir, join(paths.logs, 'agents'));
   assert.equal(statSync(prepared.agentLogDir).isDirectory(), true);
-  assert.equal(statSync(prepared.agentLogDir).mode & 0o777, 0o700);
-  assert.equal(statSync(join(paths.manager, 'library')).mode & 0o777, 0o700);
-  assert.equal(statSync(statePath).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') {
+    // Windows privacy is enforced by the profile root ACL; POSIX mode bits
+    // are not a meaningful ownership boundary there.
+    assert.equal(statSync(prepared.agentLogDir).mode & 0o777, 0o700);
+    assert.equal(statSync(join(paths.manager, 'library')).mode & 0o777, 0o700);
+    assert.equal(statSync(statePath).mode & 0o777, 0o600);
+  }
 
   // Unmodified managed seeds advance with a new application release.
   writeFileSync(join(runtime, 'configs', 'agents', 'seed.md'), 'seed-agent-v2\n');

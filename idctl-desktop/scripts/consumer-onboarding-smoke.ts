@@ -43,8 +43,12 @@ async function main(): Promise<void> {
   // normalization and never become part of the profile-backed setup record.
   saveOnboardingState({ ...persisted, apiKey: 'must-not-persist' } as typeof persisted);
   assert.doesNotMatch(readFileSync(statePath, 'utf8'), /must-not-persist|apiKey/);
-  assert.equal(statSync(statePath).mode & 0o777, 0o600, 'onboarding state must be private to the profile owner');
-  assert.equal(statSync(join(temporary, 'profile', 'onboarding')).mode & 0o777, 0o700);
+  if (process.platform !== 'win32') {
+    // Windows privacy is enforced by the profile root ACL; POSIX mode bits
+    // are not a meaningful ownership boundary there.
+    assert.equal(statSync(statePath).mode & 0o777, 0o600, 'onboarding state must be private to the profile owner');
+    assert.equal(statSync(join(temporary, 'profile', 'onboarding')).mode & 0o777, 0o700);
+  }
   assert.equal(deferOnboarding().mode, 'limited', 'deferral must be explicit and durable');
   assert.equal(loadOnboardingState().mode, 'limited');
 

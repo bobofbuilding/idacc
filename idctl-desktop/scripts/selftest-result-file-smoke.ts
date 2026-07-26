@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -44,6 +45,21 @@ try {
   );
 
   if (process.platform !== 'win32') {
+    const aliasRoot = `${scratch}-alias`;
+    symlinkSync(scratch, aliasRoot, 'dir');
+    try {
+      const aliasResult = join(aliasRoot, 'alias-result.json');
+      const canonicalResult = join(scratch, 'alias-result.json');
+      assert.equal(
+        writeStackSelftestResultFile(aliasResult, scratch, expected),
+        aliasResult,
+        'an operating-system path alias must resolve back to the active private profile',
+      );
+      assert.deepEqual(JSON.parse(readFileSync(canonicalResult, 'utf8')), expected);
+    } finally {
+      unlinkSync(aliasRoot);
+    }
+
     const symlinkPath = join(scratch, 'symlink-result.json');
     symlinkSync(resultPath, symlinkPath);
     assert.throws(

@@ -3,6 +3,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { selectAppProfile } from './appProfileSelection.ts';
+import {
+  readAppProfilePreferenceForSelection,
+  validateExplicitProfileDataDir,
+} from './appProfilePreference.ts';
 import { migrateAppProfile, PROFILE_SCHEMA_VERSION } from './profileMigrations.ts';
 
 export { PROFILE_SCHEMA_VERSION } from './profileMigrations.ts';
@@ -30,9 +34,31 @@ function profilePaths(root: string): AppProfilePaths {
 }
 
 function appProfileSelection() {
-  return selectAppProfile(app.getPath('userData'), {
-    dataDir: process.env.IDACC_DATA_DIR,
-    profile: process.env.IDACC_PROFILE,
+  const userDataRoot = app.getPath('userData');
+  const environment = {
+    dataDir: process.env.IDACC_DATA_DIR?.trim(),
+    profile: process.env.IDACC_PROFILE?.trim(),
+  };
+  const preference = readAppProfilePreferenceForSelection(userDataRoot, environment);
+  const requestedDataDir = environment.dataDir || preference?.dataDir;
+  const dataDir = requestedDataDir
+    ? validateExplicitProfileDataDir(requestedDataDir, userDataRoot, {
+      // An environment override is also the supported headless way to create a
+      // new dedicated profile. Persisted pointers must still resolve so a stale
+      // or moved profile cannot silently become a new empty one.
+      allowMissing: Boolean(environment.dataDir),
+      protectedRoots: [
+        app.getPath('home'),
+      ],
+      protectedTrees: [
+        app.getAppPath(),
+        process.resourcesPath,
+      ],
+    })
+    : undefined;
+  return selectAppProfile(userDataRoot, {
+    dataDir,
+    profile: environment.profile || preference?.profile,
   });
 }
 

@@ -3,7 +3,7 @@ import { call, agentsLeadFirst, useSyncVersion, type FleetStore, type TeamAgent 
 import { statusClass } from '../agentStatus.ts';
 import type { RuntimeCooldown } from '../../../../idctl/src/api/client.ts';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
-import { RUNTIMES, offerableRuntimes, effortOptions, runtimeHasEffort, speedOptions, runtimeHasSpeed, runtimeDisplayLabel, runtimePickerGroup, runtimeHasManagerHarness, managedRuntimeHasEvidence, type RuntimeModelLaneKind } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import { CLAUDE_FAST_MODE_NOTICE, RUNTIMES, offerableRuntimes, effortOptions, normalizeSpeedPreference, runtimeHasEffort, speedOptionLabel, speedOptions, runtimeHasSpeed, runtimeDisplayLabel, runtimePickerGroup, runtimeHasManagerHarness, managedRuntimeHasEvidence, type RuntimeModelLaneKind } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 import { recommendAgentModel } from '../../../../idctl/src/settings/agentModelPolicy.ts';
 import {
   getRuntimeCatalogSnapshot,
@@ -106,8 +106,7 @@ function effortOf(a: Agent): string {
   return typeof e === 'string' ? e : '';
 }
 function speedOf(a: Agent): string {
-  const s = a.metadata?.speed;
-  return typeof s === 'string' && s ? s : 'default';
+  return normalizeSpeedPreference(a.metadata?.speed);
 }
 function runtimeOf(a: Agent): string | undefined {
   return a.runtime ?? (typeof a.metadata?.runtime === 'string' ? a.metadata.runtime : undefined);
@@ -533,11 +532,13 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
       setConfigDrafts({});
       return;
     }
+    const usesFastMode = drafts.some((d) => d.next.speed === 'fast');
     if (!window.confirm([
       'Apply staged Health config changes?',
       '',
       ...summaries.slice(0, 14).map((row) => `- ${row}`),
       summaries.length > 14 ? `- +${summaries.length - 14} more` : '',
+      ...(usesFastMode ? ['', `Fast mode notice: ${CLAUDE_FAST_MODE_NOTICE}`] : []),
       '',
       'This writes manager config and rebuilds each touched agent once so the new runtime settings are picked up.',
     ].filter(Boolean).join('\n'))) return;
@@ -821,8 +822,8 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         <td onClick={(e) => e.stopPropagation()}>
           {runtimeHasSpeed(displayRuntime) ? (
             <select className="cell-select" value={displaySpeed} onChange={(e) => stageConfig(a, { speed: e.target.value })}
-              title={`Output speed for the ${runtimeLabel(displayRuntime ?? '')} runtime`}>
-              {speedOptions(displayRuntime).map((speed) => <option key={speed} value={speed}>{speed}</option>)}
+              title={`Output speed for the ${runtimeLabel(displayRuntime ?? '')} runtime. ${CLAUDE_FAST_MODE_NOTICE} Changes apply after rebuild.`}>
+              {speedOptions(displayRuntime).map((speed) => <option key={speed} value={speed}>{speedOptionLabel(speed)}</option>)}
             </select>
           ) : (
             <span className="muted" title="this runtime has no output-speed setting">—</span>
@@ -921,7 +922,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         ) : null}
         <table className="grid">
           <thead>
-            <tr><th>Agent</th><th>Status</th><th title="Settings-available manager execution harness or synced API provider lane. API keys are resolved by IDACC and passed process-local during rebuild.">Harness</th><th>Model</th><th title="Reasoning effort — lower spends fewer subscription tokens (codex & Claude CLI only)">Effort</th><th title="Output speed — Claude Code runtimes only">Speed</th><th>Port</th><th>Actions</th>{onProbe ? <th>Probe</th> : null}</tr>
+            <tr><th>Agent</th><th>Status</th><th title="Settings-available manager execution harness or synced API provider lane. API keys are resolved by IDACC and passed process-local during rebuild.">Harness</th><th>Model</th><th title="Reasoning effort — lower spends fewer subscription tokens (codex & Claude CLI only)">Effort</th><th title={`Output speed — Claude Code runtimes only. ${CLAUDE_FAST_MODE_NOTICE}`}>Speed</th><th>Port</th><th>Actions</th>{onProbe ? <th>Probe</th> : null}</tr>
           </thead>
           <tbody>
             {groups.flatMap((g) => {
@@ -972,7 +973,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
             ) : null}
             <span>model</span><b>{sel.model ?? '—'}</b>
             {sel.health ? (<><span>health</span><b>{sel.health}</b></>) : null}
-            <span>speed</span><b>{runtimeHasSpeed(runtimeOf(sel)) ? speedOf(sel) : '—'}</b>
+            <span>output speed</span><b>{runtimeHasSpeed(runtimeOf(sel)) ? speedOptionLabel(speedOf(sel)) : '—'}</b>
             <span>port</span><b>{sel.port || '—'}</b>
             {descriptionOf(sel) ? (<><span>description</span><b>{descriptionOf(sel)}</b></>) : null}
             <span>skills</span>

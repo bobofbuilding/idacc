@@ -233,6 +233,7 @@ try {
 
   const legacyFallback = startMcp({
     HOME: legacyHome,
+    USERPROFILE: legacyHome,
     ID_CU_TOKEN: legacyToken,
   });
   result = await callScreenshot(legacyFallback);

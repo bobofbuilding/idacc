@@ -126,8 +126,52 @@ try {
 
   const neutralRuntime = join(dir, 'neutral-runtime');
   write(join(neutralRuntime, 'manager', 'configs', 'default.yaml'), 'version: 1\nteam: default\n');
-  write(join(neutralRuntime, 'brain', 'config.mjs'), 'export const stateRoot = process.env.IDACC_PROFILE_ROOT;\n');
+  write(
+    join(neutralRuntime, 'manager', 'dist', 'optional-provider.js'),
+    'export const optionalProviderName = "SkillMesh";\n',
+  );
+  write(
+    join(neutralRuntime, 'manager', 'package.json'),
+    '{"name":"id-agents","repository":"https://github.com/bobofbuilding/id-agents.git"}\n',
+  );
+  write(join(neutralRuntime, 'manager', 'NOTICE'), 'IDACC Contributors\n');
+  write(
+    join(neutralRuntime, 'brain', 'config.mjs'),
+    'export const stateRoot = process.env.IDACC_PROFILE_ROOT;\nexport const optionalProviderName = "SkillMesh";\n',
+  );
+  write(
+    join(neutralRuntime, 'brain', 'package.json'),
+    '{"name":"@idagents/brain","repository":"https://github.com/bobofbuilding/brain.git"}\n',
+  );
   assert.equal(run(neutralRuntime).status, 0, 'consumer-neutral first-party runtime content should pass');
+
+  const brandedExecutable = join(dir, 'branded-executable');
+  write(join(brandedExecutable, 'manager', 'configs', 'default.yaml'), 'version: 1\nteam: default\n');
+  write(join(brandedExecutable, 'brain', 'db.mjs'), 'export const organization = "Bittrees";\n');
+  const brandedExecutableResult = run(brandedExecutable);
+  assert.notEqual(brandedExecutableResult.status, 0, 'organization branding in shipped executable modules should fail');
+  assert.match(
+    `${brandedExecutableResult.stdout}\n${brandedExecutableResult.stderr}`,
+    /organization-specific executable branding/i,
+  );
+
+  const brandedManagerExecutable = join(dir, 'branded-manager-executable');
+  write(join(brandedManagerExecutable, 'manager', 'configs', 'default.yaml'), 'version: 1\nteam: default\n');
+  write(
+    join(brandedManagerExecutable, 'manager', 'dist', 'agent-manager-db.js'),
+    'export const bittrees_relevance = "high";\n',
+  );
+  write(join(brandedManagerExecutable, 'brain', 'config.mjs'), 'export const enabled = false;\n');
+  const brandedManagerResult = run(brandedManagerExecutable);
+  assert.notEqual(
+    brandedManagerResult.status,
+    0,
+    'organization branding in shipped Manager JavaScript should fail',
+  );
+  assert.match(
+    `${brandedManagerResult.stdout}\n${brandedManagerResult.stderr}`,
+    /organization-specific executable branding/i,
+  );
 
   const orgPolicy = join(dir, 'org-policy');
   write(join(orgPolicy, 'manager', 'configs', 'default.yaml'), 'version: 1\nteam: skillmesh\n');

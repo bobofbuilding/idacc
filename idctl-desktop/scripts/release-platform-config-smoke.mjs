@@ -29,6 +29,39 @@ assert.match(
 );
 const stageSource = readFileSync(join(desktop, 'scripts', 'stage-unified-runtime.mjs'), 'utf8');
 assert.match(pkg.scripts?.['build:release'] || '', /--require-runtime/);
+const tsxPackageScripts = Object.entries(pkg.scripts || {})
+  .filter(([, command]) => String(command).includes('tsx/dist/cli.mjs'));
+assert.deepEqual(
+  tsxPackageScripts.map(([name]) => name).sort(),
+  [
+    'test:brain-plans-profile',
+    'test:computer-use-policy',
+    'test:computer-use-retention',
+    'test:consumer-onboarding',
+    'test:context-budget-retention',
+    'test:health-classification',
+    'test:identity-verification',
+    'test:learn-brain-sync',
+    'test:learn-queue',
+    'test:runtime-profile-isolation',
+    'test:secret-redaction',
+    'test:startup-recovery',
+    'test:subscription-portability',
+  ],
+  'every TypeScript smoke using tsx must remain covered',
+);
+for (const [name, command] of tsxPackageScripts) {
+  assert.match(
+    String(command),
+    /^node \.\.\/idctl\/node_modules\/tsx\/dist\/cli\.mjs scripts\/[a-z0-9-]+\.ts$/,
+    `${name} must invoke the cross-platform tsx JavaScript entrypoint through Node`,
+  );
+}
+assert.doesNotMatch(
+  Object.values(pkg.scripts || {}).join('\n'),
+  /node_modules\/\.bin\/tsx/,
+  'desktop scripts must not invoke the POSIX-only tsx shim path',
+);
 for (const script of ['dist', 'release:mac', 'release:win', 'release:linux']) {
   assert.match(pkg.scripts?.[script] || '', /npm run build:release/, `${script} must pin the staged runtime into the build`);
 }
@@ -281,12 +314,60 @@ assert.match(String(liveNpmResult.stdout).trim(), /^\d+\.\d+\.\d+(?:[-+].*)?$/);
 const workflow = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
 assert.match(workflow, /windows-(?:latest|2025|2022)/, 'CI must exercise Windows packaging');
 assert.match(workflow, /ubuntu-(?:latest|24\.04|22\.04)/, 'CI must exercise Linux packaging');
+const crossPlatformStaticJob = workflow.slice(
+  workflow.indexOf('  cross-platform-static:'),
+  workflow.indexOf('\n  reproducible-macos-runtime:'),
+);
+assert.match(
+  crossPlatformStaticJob,
+  /\n    defaults:\n      run:\n        shell: bash\n/,
+  'cross-platform static commands must use the GitHub bash fail-fast/pipefail runner on Windows too',
+);
 assert.match(workflow, /RUNTIME_SOURCE_TOKEN/, 'CI must use the scoped runtime source token');
 assert.doesNotMatch(workflow, /RUNTIME_READ_TOKEN|--allow-dirty-application/);
 assert.equal(
   (workflow.match(/uses: actions\/checkout@/g) || []).length,
   (workflow.match(/persist-credentials: false/g) || []).length,
   'every CI checkout must remove its token before lifecycle scripts execute',
+);
+
+for (const smokePath of [
+  'dashboard-command-surface-smoke.mjs',
+  'dashboard-activity-filter-smoke.mjs',
+]) {
+  const smokeSource = readFileSync(join(desktop, 'scripts', smokePath), 'utf8');
+  assert.match(smokeSource, /fileURLToPath\(new URL\(/, `${smokePath} must decode file URLs as platform paths`);
+  assert.doesNotMatch(smokeSource, /\.pathname\b/, `${smokePath} must not pass URL pathnames to Windows tools`);
+  assert.match(smokeSource, /pathToFileURL\(outfile\)\.href/, `${smokePath} must encode output paths as canonical file URLs`);
+  assert.doesNotMatch(smokeSource, /file:\/\/\$\{outfile\}/, `${smokePath} must not interpolate Windows paths into file URLs`);
+}
+const computerUseSessionSmoke = readFileSync(
+  join(desktop, 'scripts', 'computer-use-session-discovery-smoke.mjs'),
+  'utf8',
+);
+assert.match(
+  computerUseSessionSmoke,
+  /const legacyFallback = startMcp\(\{\s*HOME: legacyHome,\s*USERPROFILE: legacyHome,/,
+  'the legacy Computer Use fallback fixture must select the same synthetic home on Windows',
+);
+const releasePublicationCliSmoke = readFileSync(
+  join(root, 'scripts', 'release-publication-cli-smoke.mjs'),
+  'utf8',
+);
+assert.match(
+  releasePublicationCliSmoke,
+  /const fixtureCommit = command\('git', \['rev-parse', 'HEAD'\]/,
+  'the publication CLI smoke must derive its own disposable fixture commit',
+);
+assert.match(
+  releasePublicationCliSmoke,
+  /targetCommit: fixtureCommit/,
+  'the publication CLI smoke must not depend on historical commits existing in a shallow caller',
+);
+assert.match(
+  releasePublicationCliSmoke,
+  /marker\.baselinePublishedTag,\s*\.\.\.marker\.legacyTags\.map/,
+  'the publication CLI smoke must synthesize its complete baseline and legacy tag fixture',
 );
 
 const releaseWorkflow = readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf8');
@@ -335,6 +416,15 @@ for (const [name, source] of [
 for (const target of ['darwin-arm64', 'darwin-x64', 'win32-x64', 'linux-x64']) {
   assert.match(releaseWorkflow, new RegExp(target), `production release is missing ${target}`);
 }
+const nativeReleaseBuildJob = releaseWorkflow.slice(
+  releaseWorkflow.indexOf('  native-build:'),
+  releaseWorkflow.indexOf('\n  attest-native:'),
+);
+assert.match(
+  nativeReleaseBuildJob,
+  /- name: Verify real Windows profile ACL hardening\s+if: matrix\.platform == 'win'\s+shell: bash\s+run: npm run test:profile-migrations --prefix idctl-desktop/,
+  'the exact signed Windows release commit must pass the real ACL migration smoke before packaging',
+);
 assert.match(releaseWorkflow, /WINDOWS_CODESIGN_P12/);
 assert.match(releaseWorkflow, /MACOS_DEVELOPER_ID_P12/);
 assert.match(releaseWorkflow, /MACOS_EXPECTED_TEAM_ID/);
@@ -400,6 +490,9 @@ for (const source of [workflow, releaseWorkflow]) {
     'computer-use-policy-smoke.ts',
     'consumer-design-gaps-smoke.ts',
     'test:subscription-portability',
+    'test:startup-recovery',
+    'test:release-payload',
+    'runtimeCatalog.test.ts',
   ]) {
     assert.match(source, new RegExp(focusedSmoke.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }

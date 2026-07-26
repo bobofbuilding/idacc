@@ -41,7 +41,10 @@ let status: UpdateStatus = {
   verification: 'electron-builder-sha512-and-platform-signature-where-supported',
 };
 let timer: ReturnType<typeof setInterval> | null = null;
+let initialCheckTimer: ReturnType<typeof setTimeout> | null = null;
 let mainWindow: BrowserWindow | null = null;
+let focusWindow: BrowserWindow | null = null;
+let focusHandler: (() => void) | null = null;
 let eventsBound = false;
 let lastFocusCheck = 0;
 let lastNotifiedVersion: string | null = null;
@@ -309,6 +312,7 @@ export function applyStagedAndRelaunch(): boolean {
 }
 
 export function startUpdater(win: BrowserWindow): void {
+  stopUpdater();
   mainWindow = win;
   const readiness = updateTargetReadiness();
   if (!readiness.ok) {
@@ -318,18 +322,31 @@ export function startUpdater(win: BrowserWindow): void {
   bindUpdaterEvents();
   if (process.env.IDCTL_SHOT || /^(1|true|yes|on)$/i.test(String(process.env.DISABLE_AUTO_UPDATE || ''))) return;
   const hours = settings().checkIntervalHours || 4;
-  setTimeout(() => void checkForUpdate(), 2_500).unref?.();
+  initialCheckTimer = setTimeout(() => {
+    initialCheckTimer = null;
+    void checkForUpdate();
+  }, 2_500);
+  initialCheckTimer.unref?.();
   timer = setInterval(() => void checkForUpdate(), Math.max(1, hours) * 3_600_000);
   timer.unref?.();
-  win.on('focus', () => {
+  focusWindow = win;
+  focusHandler = () => {
     if (Date.now() - lastFocusCheck < 60_000) return;
     lastFocusCheck = Date.now();
     void checkForUpdate();
-  });
+  };
+  win.on('focus', focusHandler);
 }
 
 export function stopUpdater(): void {
+  if (initialCheckTimer) clearTimeout(initialCheckTimer);
+  initialCheckTimer = null;
   if (timer) clearInterval(timer);
   timer = null;
+  if (focusWindow && focusHandler) {
+    focusWindow.removeListener('focus', focusHandler);
+  }
+  focusWindow = null;
+  focusHandler = null;
   mainWindow = null;
 }

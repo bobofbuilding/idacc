@@ -427,7 +427,11 @@ try {
   assert.equal(readFileSync(log, 'utf8'), '');
   assert.equal(readFileSync(`${log}.1`, 'utf8'), 'a'.repeat(12));
   assert.equal(readFileSync(`${log}.2`, 'utf8'), 'previous');
-  assert.equal(statSync(`${log}.1`).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') {
+    // Windows privacy is enforced by the profile root ACL; POSIX mode bits
+    // are not a meaningful ownership boundary there.
+    assert.equal(statSync(`${log}.1`).mode & 0o777, 0o600);
+  }
 
   writeFileSync(log, 'b'.repeat(12), { mode: 0o600 });
   assert.equal(rotateServiceLog(log, policy, 10_100).rotated, true);

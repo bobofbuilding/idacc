@@ -45,8 +45,12 @@ try {
   const today = new Date(now);
   const stamp = `${today.getUTCFullYear()}${String(today.getUTCMonth() + 1).padStart(2, '0')}${String(today.getUTCDate()).padStart(2, '0')}`;
   const active = join(dir, `${stamp}.jsonl`);
-  assert.equal(statSync(active).mode & 0o777, 0o600);
-  assert.equal(statSync(join(scratch, 'computeruse')).mode & 0o777, 0o700);
+  if (process.platform !== 'win32') {
+    // Windows privacy is enforced by the profile root ACL; POSIX mode bits
+    // are not a meaningful ownership boundary there.
+    assert.equal(statSync(active).mode & 0o777, 0o600);
+    assert.equal(statSync(join(scratch, 'computeruse')).mode & 0o777, 0o700);
+  }
 } finally {
   if (previousRoot === undefined) delete process.env.IDACC_DATA_DIR;
   else process.env.IDACC_DATA_DIR = previousRoot;

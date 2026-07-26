@@ -943,7 +943,9 @@ export class ManagerClient {
 
   /**
    * Set an agent's output speed (default|fast, '' = default) via metadata. Only
-   * Claude Code runtimes currently expose this knob. Needs a rebuild to apply.
+   * Claude Code runtimes expose this knob. Fast uses Claude Code fast mode,
+   * which can switch to an eligible Opus model and incur higher extra-usage
+   * pricing. Needs a rebuild to apply.
    */
   async setAgentSpeed(agentId: string, speed: string, signal?: AbortSignal): Promise<{ metadata?: Record<string, unknown> }> {
     return this.post(`/agents/${encodeURIComponent(agentId)}/metadata`, { metadata: { speed } }, signal);
