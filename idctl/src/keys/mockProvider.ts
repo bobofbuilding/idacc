@@ -13,7 +13,6 @@ import { join } from 'node:path';
 import crypto from 'node:crypto';
 import { configDir, resolveConfigPath } from '../settings/paths.ts';
 import {
-  ROOT_AGENT_SAFE_ADDRESS,
   agentEnsName,
   type AssetGuardReport,
   type AgentAccount,
@@ -27,7 +26,6 @@ import {
 } from './types.ts';
 
 const MOCK_CHAIN_ID = 84532; // Base Sepolia (target for the real wiring later)
-const MOCK_OWNER = ROOT_AGENT_SAFE_ADDRESS;
 
 function statePath(): string {
   return join(configDir(resolveConfigPath()), 'keys-mock.json');
@@ -37,6 +35,8 @@ function statePath(): string {
 function mockAddr(seed: string): string {
   return '0x' + crypto.createHash('sha256').update(seed).digest('hex').slice(0, 40);
 }
+
+const MOCK_OWNER = mockAddr('idacc:local-mock-root');
 
 interface MockState {
   accounts: Record<string, Omit<AgentAccount, 'sessions'>>;
@@ -107,7 +107,18 @@ export class MockKeyProvider implements KeyProvider {
 
   private load(): void {
     try {
-      if (existsSync(statePath())) this.state = JSON.parse(readFileSync(statePath(), 'utf8')) as MockState;
+      if (existsSync(statePath())) {
+        this.state = JSON.parse(readFileSync(statePath(), 'utf8')) as MockState;
+        for (const [agent, account] of Object.entries(this.state.accounts ?? {})) {
+          this.state.accounts[agent] = {
+            ...account,
+            agent,
+            ensName: agentEnsName(agent),
+            owner: MOCK_OWNER,
+            chainId: MOCK_CHAIN_ID,
+          };
+        }
+      }
     } catch {
       this.state = { accounts: {}, sessions: {} };
     }
@@ -144,7 +155,9 @@ export class MockKeyProvider implements KeyProvider {
     return {
       ...fallback,
       ...base,
-      ensName: base.ensName || fallback.ensName,
+      ensName: fallback.ensName,
+      owner: MOCK_OWNER,
+      chainId: MOCK_CHAIN_ID,
       status: base.status ?? (base.deployed ? 'active' : 'draft'),
       sessions,
     };

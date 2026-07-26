@@ -7,8 +7,13 @@ if command -v idctl >/dev/null 2>&1; then
 elif [ -x "$HOME/.local/bin/idctl" ]; then
   exec "$HOME/.local/bin/idctl"
 else
-  echo "idctl is not installed yet. Install it with:"
-  echo "  curl -fsSL https://github.com/bobofbuilding/idacc/releases/latest/download/install.sh | sh"
+  echo "idctl is a source-only developer terminal client and is not published as"
+  echo "a standalone consumer download."
+  echo
+  echo "Download the unified IDACC desktop application (including Manager and Brain):"
+  echo "  https://github.com/bobofbuilding/idacc/releases/latest"
+  echo
+  echo "To run idctl for development, follow idctl/README.md in the source checkout."
   echo
   printf "Press Return to close… "; read _
 fi

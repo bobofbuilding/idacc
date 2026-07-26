@@ -9,7 +9,6 @@ import { Box, Text, useApp, useInput } from 'ink';
 import type { Config } from '../config.ts';
 import { ManagerClient } from '../api/client.ts';
 import { useManager } from '../store/useManager.ts';
-import { useUpdate } from '../update/useUpdate.ts';
 import { loadSettings, addKnownTeam } from '../settings/store.ts';
 import { resolveConfigPath } from '../settings/paths.ts';
 import { AppContext } from './context.ts';
@@ -54,23 +53,6 @@ export function App({ config }: { config: Config }) {
     () => ({ store, setCapture, flash: doFlash, goto: setView, exit }),
     [store, doFlash, exit],
   );
-
-  // Background self-update check → status-bar banner + one-shot toast.
-  const updateCfg = useMemo(() => loadSettings(resolveConfigPath()).update, []);
-  const upd = useUpdate({
-    repo: updateCfg?.updateRepo,
-    manifestUrl: updateCfg?.updateManifestUrl,
-    intervalHours: updateCfg?.checkIntervalHours ?? 12,
-    autoStage: updateCfg?.autoUpgrade ?? true,
-    enabled: true,
-  });
-  const announced = useRef(false);
-  useEffect(() => {
-    if (upd.available && !announced.current) {
-      announced.current = true;
-      doFlash(`update available: v${upd.available.version} — see status bar`, 'info');
-    }
-  }, [upd.available, doFlash]);
 
   // Global keys. Disabled while a text field is capturing input or an overlay
   // is up (overlays handle their own keys).
@@ -162,7 +144,6 @@ export function App({ config }: { config: Config }) {
           lastUpdated={store.lastUpdated}
           error={store.lastError}
           hint={flashHint}
-          update={upd.available ? { version: upd.available.version, staged: upd.staged } : undefined}
         />
 
         {overlay === 'help' ? <HelpOverlay onClose={() => setOverlay('none')} /> : null}

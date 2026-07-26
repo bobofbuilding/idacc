@@ -184,6 +184,7 @@ export interface ChatPatch {
   unread?: boolean;
   inflight?: { queryId: string; replyId: number; target: string; startedAt: number; plan?: { request: boolean; text: string } } | null; // set to null to clear
   appendMessage?: ChatMessage;
+  appendMessages?: ChatMessage[];
   patchMessage?: { id: number; patch: Partial<ChatMessage> };
   touch?: boolean;          // bump updatedAt (default true; false = don't reorder)
 }
@@ -201,6 +202,7 @@ export function patchChat(id: string, p: ChatPatch): { ok: boolean; session?: Ch
     if (p.inflight !== undefined) s.inflight = p.inflight; // {…} to set, null to clear
     if (Array.isArray(s.messages) === false) s.messages = [];
     if (p.appendMessage) s.messages = [...s.messages, stripPending(p.appendMessage)];
+    if (p.appendMessages?.length) s.messages = [...s.messages, ...p.appendMessages.map(stripPending)];
     if (p.patchMessage) s.messages = s.messages.map((m) => (m.id === p.patchMessage!.id ? stripPending({ ...m, ...p.patchMessage!.patch }) : m));
     if (p.touch !== false) s.updatedAt = Date.now();
     writeSession(f, s);

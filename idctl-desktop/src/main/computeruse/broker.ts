@@ -17,23 +17,33 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync, chmod
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { app } from 'electron';
-import { capturePrimary, primaryDisplayInfo, type Frame } from './capture.ts';
+import { captureDisplay, displayInfos, selectedDisplayInfo, type Frame } from './capture.ts';
 import { accessibilityGranted } from './permissions.ts';
 import * as driver from './driver.mac.ts';
 import { audit, recentAudit, type AuditEntry } from './audit.ts';
+import {
+  mapComputerUsePoint,
+  validateComputerUseFrame,
+  type ComputerUseFrame,
+} from '../../shared/computerUsePolicy.ts';
 
 const PORT_RANGE = [4180, 4181, 4182, 4183, 4184, 4185];
 const PUMP_MS = 450;          // ~2.2 fps live pane (cheap, smooth enough to supervise)
 const PUMP_MAX_WIDTH = 1280;  // downscale the pane stream; agent screenshots stay full-res
 const PUMP_QUALITY = 55;
+const ACTION_FRAME_MAX_AGE_MS = 60_000;
 
 function cuDir(): string {
-  const d = join(homedir(), '.config', 'idctl', 'computeruse');
+  const d = process.env.IDACC_DATA_DIR?.trim()
+    ? join(process.env.IDACC_DATA_DIR.trim(), 'computeruse')
+    : join(homedir(), '.config', 'idctl', 'computeruse');
   mkdirSync(d, { recursive: true, mode: 0o700 }); // 0700: the dir holds the broker token
   try { chmodSync(d, 0o700); } catch { /* tighten even if it pre-existed at a looser mode */ }
   return d;
 }
 function sessionFile(): string { return join(cuDir(), 'session.json'); }
+/** Exact profile-owned discovery file injected into every attached MCP process. */
+export function brokerSessionPath(): string { return sessionFile(); }
 /** Stable absolute path the attached MCP server is run from (copied from the bundle on launch). */
 export function brokerServerPath(): string { return join(cuDir(), 'server.mjs'); }
 
@@ -49,9 +59,10 @@ interface BrokerState {
   lastAgent: string;          // most recent caller (for the pane label)
   actions: number;            // lifetime action count
   captureFailing: boolean;    // last pump capture returned null while armed (permission/relaunch hint)
+  displayId: number | null;   // operator-selected capture/control display; null follows primary
   blessed: Set<string>;       // scoped agent authorities allowed to act this armed session (synced at arm)
   team: string;               // most recent caller's team (for the audit→Chat mirror)
-  lastShot: { w: number; h: number; bounds: { x: number; y: number; width: number; height: number } } | null; // for click coord mapping
+  lastShot: ComputerUseFrame | null; // agent/display-bound coordinate evidence
   supervised: boolean;        // HOLD every input action for the user's approval (default on)
   paused: boolean;            // block input without disarming (user is taking over)
   pending: Map<string, { resolve: (allow: boolean) => void; timer: ReturnType<typeof setTimeout>; entry: PendingAction }>;
@@ -66,7 +77,7 @@ export interface LegacyComputerUseAuthority {
   source: 'computer-use-agent-tokens';
   note: string;
 }
-const S: BrokerState = { server: null, port: 0, token: '', armed: false, watching: false, onFrame: null, pump: null, lastSig: 0, lastAgent: '', actions: 0, captureFailing: false, blessed: new Set(), team: '', lastShot: null, supervised: true, paused: false, pending: new Map(), onPending: null };
+const S: BrokerState = { server: null, port: 0, token: '', armed: false, watching: false, onFrame: null, pump: null, lastSig: 0, lastAgent: '', actions: 0, captureFailing: false, displayId: null, blessed: new Set(), team: '', lastShot: null, supervised: true, paused: false, pending: new Map(), onPending: null };
 
 const CONFIRM_TIMEOUT_MS = 60 * 1000; // auto-decline a held action if the user doesn't answer
 
@@ -150,13 +161,20 @@ export function setPaused(on: boolean): { ok: boolean; paused: boolean } { S.pau
 
 const INPUT_VERBS = new Set(['mouse_move', 'left_click', 'right_click', 'middle_click', 'double_click', 'left_click_drag', 'type', 'key', 'scroll']);
 
-/** Map a point in the agent's screenshot-PIXEL space to GLOBAL desktop POINTS for libnut. */
-function mapPoint(x: number, y: number): { gx: number; gy: number; ok: boolean } {
-  let w: number, h: number, bounds: { x: number; y: number; width: number; height: number };
-  if (S.lastShot) { w = S.lastShot.w; h = S.lastShot.h; bounds = S.lastShot.bounds; }
-  else { const d = primaryDisplayInfo(); bounds = d.bounds; w = bounds.width * d.scaleFactor; h = bounds.height * d.scaleFactor; }
-  if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > w || y > h) return { gx: 0, gy: 0, ok: false };
-  return { gx: bounds.x + (x / w) * bounds.width, gy: bounds.y + (y / h) * bounds.height, ok: true };
+/** Map screenshot pixels only through the exact frame reviewed by the caller. */
+function mapPoint(frame: ComputerUseFrame, x: number, y: number): { gx: number; gy: number; ok: boolean } {
+  const point = mapComputerUsePoint(frame, x, y);
+  return point.ok ? { ...point, ok: true } : { gx: 0, gy: 0, ok: false };
+}
+
+function currentFrameState(frame: ComputerUseFrame | null, agent: string) {
+  return validateComputerUseFrame(
+    frame,
+    agent,
+    selectedDisplayInfo(S.displayId),
+    Date.now(),
+    ACTION_FRAME_MAX_AGE_MS,
+  );
 }
 
 const TOKEN_RE = /^[0-9a-f]{48}$/; // randomBytes(24).toString('hex')
@@ -306,9 +324,17 @@ async function handleAction(body: Record<string, unknown>): Promise<{ status: nu
   if (!S.blessed.has(agent)) return blk('agent_not_blessed', `"${agent || 'this agent'}" isn't blessed for Computer Use. Bless it in the app, then it must be re-armed.`);
 
   if (type === 'screenshot') {
-    const f = await capturePrimary({ format: 'png' });
+    const f = await captureDisplay(S.displayId, { format: 'png' });
     if (!f) return blk('screen_recording_permission', 'Screen Recording permission is not granted to ID Agents Control Center.');
-    S.lastShot = { w: f.width, h: f.height, bounds: f.display.bounds };
+    S.lastShot = {
+      agent,
+      displayId: f.display.id,
+      width: f.width,
+      height: f.height,
+      bounds: { ...f.display.bounds },
+      scaleFactor: f.display.scaleFactor,
+      capturedAt: f.ts,
+    };
     S.actions++;
     return { status: 200, json: { ok: true, image: f.buf.toString('base64'), mimeType: 'image/png', width: f.width, height: f.height, display: f.display } };
   }
@@ -319,7 +345,23 @@ async function handleAction(body: Record<string, unknown>): Promise<{ status: nu
     if (!accessibilityGranted()) { rec(agent, type, '', 'blocked', 'accessibility_permission'); return blk('accessibility_permission', 'Accessibility permission is not granted to ID Agents Control Center — input is blocked. Grant it in System Settings → Privacy & Security → Accessibility, then relaunch.'); }
     // Require a screenshot first: it anchors the coordinate frame AND keeps input
     // tied to something the agent (and the watching user) actually saw.
-    if (!S.lastShot) { rec(agent, type, '', 'blocked', 'no_screenshot'); return blk('no_screenshot', 'Call computer_screenshot first — coordinates are relative to the latest screenshot.'); }
+    const actionShot = S.lastShot;
+    if (!actionShot) {
+      rec(agent, type, '', 'blocked', 'no_screenshot');
+      return blk('no_screenshot', 'Call computer_screenshot first — actions are tied to the latest selected-display frame.');
+    }
+    const initialFrame = currentFrameState(actionShot, agent);
+    if (!initialFrame.ok) {
+      rec(agent, type, '', 'blocked', initialFrame.reason);
+      const message = initialFrame.reason === 'wrong_agent'
+        ? 'This screenshot belongs to another Agent. Call computer_screenshot before acting.'
+        : initialFrame.reason === 'display_changed'
+          ? 'The selected display or its geometry changed. Call computer_screenshot again before acting.'
+          : initialFrame.reason === 'stale_screenshot'
+            ? 'The screenshot is stale. Call computer_screenshot again before acting.'
+            : 'Call computer_screenshot first — actions are tied to the latest selected-display frame.';
+      return blk(initialFrame.reason, message);
+    }
     // You can pause the agent (block input) without disarming.
     if (S.paused) { rec(agent, type, previewAction(type, body), 'blocked', 'paused'); return blk('paused', 'You paused Computer Use — resume it in the app to continue.'); }
     // Decide whether to HOLD this action for approval: supervised holds EVERY action;
@@ -334,17 +376,26 @@ async function handleAction(body: Record<string, unknown>): Promise<{ status: nu
       // user clicking Allow and now — a just-approved action must NOT run post-stop.
       if (!S.armed || S.paused || !S.blessed.has(agent)) { rec(agent, type, label, 'blocked', 'stopped'); return blk('stopped', 'Computer Use was stopped before this action ran.'); }
     }
+    const finalFrame = currentFrameState(actionShot, agent);
+    if (S.lastShot !== actionShot) {
+      rec(agent, type, previewAction(type, body), 'blocked', 'screenshot_changed');
+      return blk('screenshot_changed', 'The screenshot changed while this action was pending. Review the fresh screenshot and try again.');
+    }
+    if (!finalFrame.ok) {
+      rec(agent, type, previewAction(type, body), 'blocked', finalFrame.reason);
+      return blk(finalFrame.reason, 'The selected display changed while this action was pending. Review a fresh screenshot and try again.');
+    }
     const n = (k: string): number => { const v = Number((body as Record<string, unknown>)[k]); return Number.isFinite(v) ? v : NaN; };
     let ok = false; let detail = '';
     if (type === 'mouse_move') {
-      const p = mapPoint(n('x'), n('y')); if (!p.ok) { rec(agent, type, `${n('x')},${n('y')}`, 'blocked', 'out_of_bounds'); return blk('out_of_bounds', 'Coordinates are outside the captured screen.'); }
+      const p = mapPoint(actionShot, n('x'), n('y')); if (!p.ok) { rec(agent, type, `${n('x')},${n('y')}`, 'blocked', 'out_of_bounds'); return blk('out_of_bounds', 'Coordinates are outside the captured screen.'); }
       ok = driver.moveMouse(p.gx, p.gy); detail = `→ ${Math.round(n('x'))},${Math.round(n('y'))}`;
     } else if (type === 'left_click' || type === 'right_click' || type === 'middle_click' || type === 'double_click') {
-      const p = mapPoint(n('x'), n('y')); if (!p.ok) { rec(agent, type, `${n('x')},${n('y')}`, 'blocked', 'out_of_bounds'); return blk('out_of_bounds', 'Coordinates are outside the captured screen.'); }
+      const p = mapPoint(actionShot, n('x'), n('y')); if (!p.ok) { rec(agent, type, `${n('x')},${n('y')}`, 'blocked', 'out_of_bounds'); return blk('out_of_bounds', 'Coordinates are outside the captured screen.'); }
       const button = type === 'right_click' ? 'right' : type === 'middle_click' ? 'middle' : 'left';
       ok = driver.click(p.gx, p.gy, button, type === 'double_click'); detail = `${button}${type === 'double_click' ? '×2' : ''} @ ${Math.round(n('x'))},${Math.round(n('y'))}`;
     } else if (type === 'left_click_drag') {
-      const a = mapPoint(n('fromX'), n('fromY')); const b = mapPoint(n('toX'), n('toY'));
+      const a = mapPoint(actionShot, n('fromX'), n('fromY')); const b = mapPoint(actionShot, n('toX'), n('toY'));
       if (!a.ok || !b.ok) { rec(agent, type, 'drag', 'blocked', 'out_of_bounds'); return blk('out_of_bounds', 'Drag coordinates are outside the captured screen.'); }
       ok = driver.drag(a.gx, a.gy, b.gx, b.gy); detail = `drag ${Math.round(n('fromX'))},${Math.round(n('fromY'))} → ${Math.round(n('toX'))},${Math.round(n('toY'))}`;
     } else if (type === 'type') {
@@ -359,7 +410,23 @@ async function handleAction(body: Record<string, unknown>): Promise<{ status: nu
       const amt = Math.max(1, Math.min(20, Number((body as Record<string, unknown>).amount) || 3));
       const dx = dir === 'left' ? -amt : dir === 'right' ? amt : 0;
       const dy = dir === 'up' ? amt : dir === 'down' ? -amt : 0;
-      if (Number.isFinite(n('x')) && Number.isFinite(n('y'))) { const p = mapPoint(n('x'), n('y')); if (p.ok) driver.moveMouse(p.gx, p.gy); }
+      const hasX = body.x !== undefined;
+      const hasY = body.y !== undefined;
+      if (hasX !== hasY) {
+        rec(agent, type, 'scroll', 'blocked', 'invalid_coordinates');
+        return blk('invalid_coordinates', 'Scroll coordinates must include both x and y, or neither.');
+      }
+      const p = hasX
+        ? mapPoint(actionShot, n('x'), n('y'))
+        : mapPoint(actionShot, actionShot.width / 2, actionShot.height / 2);
+      if (!p.ok) {
+        rec(agent, type, 'scroll', 'blocked', 'out_of_bounds');
+        return blk('out_of_bounds', 'Scroll coordinates are outside the captured screen.');
+      }
+      if (!driver.moveMouse(p.gx, p.gy)) {
+        rec(agent, type, 'scroll', 'blocked', 'driver_failed');
+        return blk('driver_failed', 'The pointer could not be moved onto the selected captured display.');
+      }
       ok = driver.scroll(dx, dy); detail = `scroll ${dir} ${amt}`;
     }
     S.actions++;
@@ -420,7 +487,7 @@ function hashBuf(b: Buffer): number {
 
 async function pumpOnce(): Promise<void> {
   if (!S.armed || !S.watching || !S.onFrame) return;
-  const f = await capturePrimary({ maxWidth: PUMP_MAX_WIDTH, format: 'jpeg', quality: PUMP_QUALITY });
+  const f = await captureDisplay(S.displayId, { maxWidth: PUMP_MAX_WIDTH, format: 'jpeg', quality: PUMP_QUALITY });
   if (!f) { S.captureFailing = true; return; } // permission/relaunch — the view surfaces a hint
   S.captureFailing = false;
   if (!S.armed || !S.watching) return;
@@ -473,8 +540,29 @@ export function setWatching(on: boolean): { ok: boolean } {
   return { ok: true };
 }
 
+export function setBrokerDisplay(displayId: number): { ok: boolean; display: Frame['display'] } {
+  const displays = displayInfos();
+  const selected = displays.find((display) => display.id === Number(displayId));
+  if (!selected) throw new Error('The selected display is no longer connected.');
+  flushPending(false);
+  S.displayId = selected.id;
+  S.lastShot = null;
+  S.lastSig = 0;
+  S.captureFailing = false;
+  if (S.armed && S.watching) void pumpOnce();
+  return { ok: true, display: selected };
+}
+
 export function brokerStatus() {
-  return { armed: S.armed, watching: S.watching, port: S.port, url: S.port ? `http://127.0.0.1:${S.port}` : '', lastAgent: S.lastAgent, actions: S.actions, serverStaged: existsSync(brokerServerPath()), captureFailing: S.captureFailing, blessed: [...S.blessed], driverOk: driver.driverCapability().ok, accessibility: accessibilityGranted(), supervised: S.supervised, paused: S.paused, pending: pendingList(), panicHotkey: panicHotkeyOk };
+  const displays = displayInfos();
+  const display = selectedDisplayInfo(S.displayId);
+  if (!displays.some((row) => row.id === S.displayId)) {
+    flushPending(false);
+    S.displayId = display.id;
+    S.lastShot = null;
+    S.lastSig = 0;
+  }
+  return { armed: S.armed, watching: S.watching, port: S.port, url: S.port ? `http://127.0.0.1:${S.port}` : '', lastAgent: S.lastAgent, actions: S.actions, serverStaged: existsSync(brokerServerPath()), captureFailing: S.captureFailing, display, displays, blessed: [...S.blessed], driverOk: driver.driverCapability().ok, accessibility: accessibilityGranted(), supervised: S.supervised, paused: S.paused, pending: pendingList(), panicHotkey: panicHotkeyOk };
 }
 
 export function stopBroker(): void {
@@ -483,5 +571,5 @@ export function stopBroker(): void {
   S.server = null;
 }
 
-/** Display geometry for the pane's coordinate overlay (Phase 0: informational). */
-export function brokerDisplay() { return primaryDisplayInfo(); }
+/** Current display geometry for the pane's coordinate overlay. */
+export function brokerDisplay() { return selectedDisplayInfo(S.displayId); }

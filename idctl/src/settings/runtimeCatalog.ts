@@ -39,9 +39,9 @@ export const RUNTIMES = [
 
 /**
  * Concrete runtime ids the current bundled id-agents manager can execute as
- * agent harnesses. Subscription CLIs can still be linked in Settings and shown
- * as model lanes, but they must not become assignable until the manager ships a
- * matching harness/adapter.
+ * agent harnesses. Legacy/current-only CLIs can still be linked in Settings and
+ * shown as model lanes, but they must not become assignable without a matching
+ * entry here and verified readiness evidence.
  */
 export const MANAGER_EXECUTION_RUNTIMES = [
   'claude-agent-sdk',
@@ -136,11 +136,11 @@ export type RuntimeCapability = 'mcp' | 'plugins' | 'portablePlugins' | 'skills'
  * codex received `-c mcp_servers.*` config injection (2026-06), and ollama now
  * ships the agentic tool-calling loop (id-agents OllamaHarness.runWithTools +
  * McpToolHub) so local models with tool support can call MCP tools. A non-tool
- * ollama model degrades gracefully to plain text. Grok Build, GitHub Copilot
- * CLI, Kiro CLI, and the legacy Amazon Q CLI are listed as
- * managed CLI runtimes with MCP-capable vendor surfaces, but manager execution
- * still depends on a matching harness/adapter. cursor-cli and the remote runtime
- * still don't consume our McpServerSpec.
+ * ollama model degrades gracefully to plain text. The bundled Grok, Copilot,
+ * and Kiro harnesses integrate their vendor MCP surfaces. Legacy Amazon Q is a
+ * linked/current-only lane without a bundled Manager harness. cursor-cli,
+ * Antigravity, Kimi, and the remote runtime still do not consume our
+ * McpServerSpec directly.
  *
  * skills — the manager deploys SKILL.md files to a runtime-aware dir for every
  * LOCAL runtime (`.claude/skills`, `.agents/skills` for codex/grok/antigravity/

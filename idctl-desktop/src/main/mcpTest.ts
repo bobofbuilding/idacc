@@ -8,9 +8,15 @@
  * supported (the common case); http does a best-effort initialize POST.
  */
 
-import { spawn } from 'node:child_process';
+import crossSpawn from 'cross-spawn';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { delimiter, isAbsolute, join } from 'node:path';
 import type { McpServerSpec } from '../../../idctl/src/api/client.ts';
+import {
+  executableCandidatePaths,
+  executableRequiresShell,
+} from '../shared/subscriptionPortability.ts';
 
 export interface McpTestResult {
   ok: boolean;
@@ -19,11 +25,82 @@ export interface McpTestResult {
   error?: string;
 }
 
-function cliPath(): string {
-  const home = homedir();
-  const dirs = ['/opt/homebrew/bin', `${home}/.local/bin`, '/usr/local/bin', '/usr/bin', '/bin'];
-  const existing = process.env.PATH ? process.env.PATH.split(':') : [];
-  return [...dirs, ...existing].join(':');
+export interface McpStdioLaunchOptions {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  home?: string;
+  pathDelimiter?: string;
+}
+
+export interface McpStdioLaunch {
+  command: string;
+  env: NodeJS.ProcessEnv;
+  shell: boolean;
+}
+
+function mcpCliDirectories(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  home: string,
+  pathDelimiter: string,
+): string[] {
+  const platformDirs = platform === 'win32'
+    ? [
+        env.APPDATA ? join(env.APPDATA, 'npm') : undefined,
+        env.LOCALAPPDATA ? join(env.LOCALAPPDATA, 'Programs', 'nodejs') : undefined,
+        env.ProgramFiles ? join(env.ProgramFiles, 'nodejs') : undefined,
+        env['ProgramFiles(x86)'] ? join(env['ProgramFiles(x86)'], 'nodejs') : undefined,
+        env.NVM_HOME,
+        env.NVM_SYMLINK,
+      ]
+    : ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
+  return Array.from(new Set([
+    ...platformDirs,
+    join(home, '.local', 'bin'),
+    join(home, '.npm-global', 'bin'),
+    env.PNPM_HOME,
+    env.VOLTA_HOME ? join(env.VOLTA_HOME, 'bin') : join(home, '.volta', 'bin'),
+    ...(env.PATH ? env.PATH.split(pathDelimiter) : []),
+  ].filter((value): value is string => Boolean(value))));
+}
+
+function resolveMcpExecutable(
+  command: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  directories: string[],
+): string {
+  if (isAbsolute(command) || command.includes('/') || command.includes('\\')) {
+    return command;
+  }
+  for (const directory of directories) {
+    const found = executableCandidatePaths(directory, command, {
+      platform,
+      pathExt: env.PATHEXT,
+    }).find((candidate) => existsSync(candidate));
+    if (found) return found;
+  }
+  return command;
+}
+
+/** Resolve stdio MCP commands using the host PATH/PATHEXT before spawning. */
+export function resolveMcpStdioLaunch(
+  command: string,
+  specEnv: Record<string, string> = {},
+  options: McpStdioLaunchOptions = {},
+): McpStdioLaunch {
+  const platform = options.platform ?? process.platform;
+  const home = options.home ?? homedir();
+  const pathDelimiter = options.pathDelimiter ?? delimiter;
+  const env = { ...(options.env ?? process.env), ...specEnv };
+  const directories = mcpCliDirectories(env, platform, home, pathDelimiter);
+  env.PATH = directories.join(pathDelimiter);
+  const executable = resolveMcpExecutable(command, env, platform, directories);
+  return {
+    command: executable,
+    env,
+    shell: executableRequiresShell(executable, platform),
+  };
 }
 
 function testStdio(spec: McpServerSpec, timeoutMs: number): Promise<McpTestResult> {
@@ -31,8 +108,9 @@ function testStdio(spec: McpServerSpec, timeoutMs: number): Promise<McpTestResul
     if (!spec.command) return resolve({ ok: false, error: 'stdio server needs a command' });
     let child;
     try {
-      child = spawn(spec.command, spec.args ?? [], {
-        env: { ...process.env, ...(spec.env ?? {}), PATH: cliPath() },
+      const launch = resolveMcpStdioLaunch(spec.command, spec.env);
+      child = crossSpawn(launch.command, spec.args ?? [], {
+        env: launch.env,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (e) {

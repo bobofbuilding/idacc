@@ -8,14 +8,14 @@ process.env.XDG_CONFIG_HOME = root;
 
 try {
   const {
-    ROOT_AGENT_SAFE_ADDRESS,
     agentEnsLabel,
     agentEnsName,
   } = await import('../../idctl/src/keys/types.ts');
+  const { LOCAL_AGENT_IDENTITY_ROOT } = await import('../../idctl/src/settings/schema.ts');
   const { MockKeyProvider } = await import('../../idctl/src/keys/mockProvider.ts');
 
   assert.equal(agentEnsLabel('default:Research Lead'), 'research-lead');
-  assert.equal(agentEnsName('default:Research Lead'), 'research-lead.agent.bittrees.eth');
+  assert.equal(agentEnsName('default:Research Lead'), `research-lead.${LOCAL_AGENT_IDENTITY_ROOT}`);
 
   const provider = new MockKeyProvider();
   await assert.rejects(
@@ -53,8 +53,8 @@ try {
   assert.equal(assets.source, 'mock');
 
   const draft = await provider.ensureAccount('default:coder');
-  assert.equal(draft.ensName, 'coder.agent.bittrees.eth');
-  assert.equal(draft.owner, ROOT_AGENT_SAFE_ADDRESS);
+  assert.equal(draft.ensName, `coder.${LOCAL_AGENT_IDENTITY_ROOT}`);
+  assert.match(draft.owner, /^0x[0-9a-f]{40}$/);
   assert.equal(draft.status, 'draft');
   assert.equal(draft.deployed, false);
   await assert.rejects(
@@ -83,8 +83,8 @@ try {
   assert.equal(restored.smartAccount, draft.smartAccount);
 
   const persisted = JSON.parse(readFileSync(join(root, 'idctl', 'keys-mock.json'), 'utf8'));
-  assert.equal(persisted.accounts['default:coder'].ensName, 'coder.agent.bittrees.eth');
-  assert.equal(persisted.accounts['default:coder'].owner, ROOT_AGENT_SAFE_ADDRESS);
+  assert.equal(persisted.accounts['default:coder'].ensName, `coder.${LOCAL_AGENT_IDENTITY_ROOT}`);
+  assert.equal(persisted.accounts['default:coder'].owner, draft.owner);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

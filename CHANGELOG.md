@@ -14,7 +14,10 @@ subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 
 ## [0.1.683] — 2026-07-24
 ### What changed
-- Automate evidence-based Brain proposal review through manager agents while preserving human review for unresolved or high-risk changes.\nHarden Learn processing and recursive goal comparison with idempotent task creation, source-level perspective tracking, and bounded retries.\nUnify goal cadence state between IDACC and the manager, deduplicate active-goal instructions, and expose clear cadence and fan-out controls.\nDiscover Claude CLI models from live local configuration and caches, preserve exact canonical model choices, and improve subscription and runtime catalog refresh behavior.
+- Automate evidence-based Brain proposal review through manager agents while preserving human review for unresolved or high-risk changes.
+- Harden Learn processing and recursive goal comparison with idempotent task creation, source-level perspective tracking, and bounded retries.
+- Unify goal cadence state between IDACC and the manager, deduplicate active-goal instructions, and expose clear cadence and fan-out controls.
+- Discover Claude CLI models from live local configuration and caches, preserve exact canonical model choices, and improve subscription and runtime catalog refresh behavior.
 
 ## [0.1.682] — 2026-07-24
 ### What changed
@@ -1698,8 +1701,9 @@ subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 - **New loop = agent chains, merged.** The old single-agent **New loop** and the separate **Agent chains**
   builder are now one **New loop**: describe a goal → AI-draft an ordered multi-agent sequence → edit the
   steps → **Run now** (in-app, precise per-step routing, passing each step's output to the next) **or**
-  **Schedule loop** to run it on a cadence 24/7 (a multi-step chain is handed to the first agent as a
-  checklist). Single-step loops behave exactly as before.
+  **Schedule loop** to run it on a recurring Manager cadence (a multi-step chain
+  is handed to the first agent as a checklist). Single-step loops behave
+  exactly as before.
 - **Dream: AI drafting assist.** A **✦ Suggest focus** button asks the agent to propose the highest-value
   thing to reflect on (grounded in its recent work + the brain) and fills the focus field — edit it, then Dream.
 - **Per-runtime model freshness + auto-refresh.** HR Manager → Fleet has a **Models** panel showing each
@@ -2895,8 +2899,8 @@ subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 - **Tasks page is now tabbed: Tasks · Schedule · Loops.** The Schedule page is
   folded in as a tab (no more separate nav item; heartbeats + supervision live
   there). **New Loops tab** — build a recurring *objective* for an agent
-  (objective + cadence) that the manager runs on a schedule (24/7, even when the
-  app is closed), with a tracker (status, last run, Run-now, pause/resume).
+  (objective + cadence) that the Manager runs on a recurring schedule, with a
+  tracker (status, last run, Run-now, pause/resume).
 - **Health page now lists the whole fleet, grouped by team**, with running
   agents at the top of each group and the active team first (e.g. "41 agents ·
   41 running"). Probe stays scoped to the active team.

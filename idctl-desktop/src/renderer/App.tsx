@@ -1,8 +1,9 @@
-import { Component, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useFleet, call, useSyncVersion } from './store.ts';
 import { PromptProvider } from './components/prompt.tsx';
 import { ToastProvider } from './components/toast.tsx';
 import { WalletConnectPrompt } from './components/WalletConnectPrompt.tsx';
+import { FirstRunWizard } from './components/FirstRunWizard.tsx';
 import { Dashboard } from './views/Dashboard.tsx';
 import { Teams } from './views/Teams.tsx';
 import { Inbox } from './views/Inbox.tsx';
@@ -14,6 +15,17 @@ import { ComputerUse } from './views/ComputerUse.tsx';
 import { Settings } from './views/Settings.tsx';
 import { CommandPalette } from './views/dashboard/CommandPalette.tsx';
 import { ControlDrawer } from './views/dashboard/ControlDrawer.tsx';
+import { CommandReceipts } from './views/dashboard/CommandReceipts.tsx';
+import type { CommandEnvironment } from './dashboard/commandRuntime.ts';
+import type { ConsumerOnboardingStatus } from '../shared/consumerOnboarding.ts';
+import {
+  CONTROL_CENTER_API_VERSION,
+  CONTROL_CENTER_EXTENSION,
+  CONTROL_CENTER_REQUIRED_ROUTES,
+  controlCenterRouteKey,
+  evaluateControlCenterCapabilities,
+  type ControlCenterCapabilities,
+} from '../../../idctl/src/api/controlCenterContract.ts';
 
 type ViewId = 'dashboard' | 'inbox' | 'tasks' | 'projects' | 'health' | 'identity' | 'schedule' | 'teams' | 'modules' | 'computer' | 'settings';
 type TeamsFocus = 'route-hierarchy' | 'health';
@@ -72,12 +84,6 @@ interface UpdateStatus {
   error?: string;
 }
 
-interface UnifiedStackStatus {
-  ready: boolean;
-  profileRoot?: string;
-  services: Array<{ name: 'manager' | 'brain'; bundled: boolean; running: boolean; healthy: boolean; error?: string }>;
-}
-
 export function App() {
   const [initialTarget] = useState<string | null>(() => {
     const v = new URLSearchParams(window.location.search).get('view');
@@ -98,15 +104,19 @@ export function App() {
   const [applying, setApplying] = useState(false);
   const [dismissed, setDismissed] = useState<string>(''); // latest version the user said "Later" to
   const [questionCount, setQuestionCount] = useState(0);
-  const [stack, setStack] = useState<UnifiedStackStatus | null>(null);
-  const [welcome, setWelcome] = useState(() => {
-    try { return localStorage.getItem('idacc.consumer-welcome.v1') !== 'done'; } catch { return true; }
-  });
+  const [onboarding, setOnboarding] = useState<ConsumerOnboardingStatus | null>(null);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
   const inboxSyncVersion = useSyncVersion(['questions', 'inbox']);
   const nav = DEFAULT_NAV;
   // ⌘K command palette + right-side control drawer — the "drive everything" surface.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerPanel, setDrawerPanel] = useState<string | null>(null);
+  const drawerReturnFocusRef = useRef<HTMLElement | null>(null);
+  const [commandFeatures, setCommandFeatures] = useState<readonly string[] | null | undefined>(undefined);
+  const commandEnvironment = useMemo<CommandEnvironment>(() => ({
+    online: store.connection === 'online',
+    features: commandFeatures,
+  }), [commandFeatures, store.connection]);
   const navigateTo = useCallback((target: string) => {
     if (target === 'teams:route') {
       setTeamsFocus('route-hierarchy');
@@ -133,20 +143,59 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (store.connection !== 'online') {
+      setCommandFeatures(null);
+      return undefined;
+    }
     let live = true;
-    const refresh = () => call<UnifiedStackStatus>('unifiedStack:status')
-      .then((status) => { if (live) setStack(status); })
-      .catch(() => { if (live) setStack(null); });
-    void refresh();
-    const timer = window.setInterval(refresh, 2000);
-    return () => { live = false; window.clearInterval(timer); };
-  }, []);
+    let timer = 0;
+    setCommandFeatures(undefined);
+    const checkCompatibility = () => {
+      void call<ControlCenterCapabilities>('manager:capabilities')
+        .then((manifest) => {
+          if (!live) return;
+          const compatibility = evaluateControlCenterCapabilities(manifest);
+          const identityCompatible = compatibility.extension === CONTROL_CENTER_EXTENSION
+            && compatibility.apiVersion >= CONTROL_CENTER_API_VERSION;
+          const routes = new Set((manifest?.routes ?? []).map(controlCenterRouteKey));
+          const verifiedFeatures = (manifest?.features ?? []).filter((feature) => {
+            const requiredRoutes = CONTROL_CENTER_REQUIRED_ROUTES.filter((route) => route.group === feature);
+            return requiredRoutes.every((route) => routes.has(controlCenterRouteKey(route)));
+          });
+          setCommandFeatures(identityCompatible && Array.isArray(manifest?.routes) ? verifiedFeatures : null);
+          timer = window.setTimeout(checkCompatibility, compatibility.ready ? 60_000 : 10_000);
+        })
+        .catch(() => {
+          if (!live) return;
+          setCommandFeatures(null);
+          timer = window.setTimeout(checkCompatibility, 10_000);
+        });
+    };
+    checkCompatibility();
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [store.connection, store.managerUrl]);
 
-  function finishWelcome(target?: ViewId) {
-    try { localStorage.setItem('idacc.consumer-welcome.v1', 'done'); } catch { /* best effort */ }
-    setWelcome(false);
-    if (target) setView(target);
-  }
+  useEffect(() => {
+    let live = true;
+    let timer = 0;
+    const refresh = () => call<ConsumerOnboardingStatus>('onboarding:status')
+      .then((status) => {
+        if (!live) return;
+        setOnboarding(status);
+        timer = window.setTimeout(
+          refresh,
+          status.phase === 'preparing' ? 2_000 : status.phase === 'ready' ? 30_000 : 6_000,
+        );
+      })
+      .catch(() => {
+        if (live) timer = window.setTimeout(refresh, 6_000);
+      });
+    void refresh();
+    return () => { live = false; window.clearTimeout(timer); };
+  }, []);
 
   useEffect(() => {
     call<string>('app:version').then(setVersion).catch(() => {});
@@ -197,6 +246,15 @@ export function App() {
               ) : null}
             </button>
           ))}
+          {onboarding?.phase === 'limited' || onboarding?.phase === 'degraded' ? (
+            <button
+              className={`nav-item onboarding-resume${onboarding.phase === 'degraded' ? ' attention' : ''}`}
+              onClick={() => setOnboardingOpen(true)}
+            >
+              <span className="nav-icon">{onboarding.phase === 'degraded' ? '!' : '○'}</span>
+              <span className="nav-label">{onboarding.phase === 'degraded' ? 'Setup needs attention' : 'Finish setup'}</span>
+            </button>
+          ) : null}
           {update?.available && update.staged && dismissed !== update.latest ? (
             <div className="sb-update" title={`Update downloaded — restart to apply v${update.latest}`}>
               <div className="uv-line">⬆ <span className="uv-from">v{update.current}</span> → <span className="uv-to">v{update.latest}</span></div>
@@ -216,6 +274,7 @@ export function App() {
               navigate={navigateTo}
               teamsFocus={teamsFocus}
               onTeamsFocusHandled={clearTeamsFocus}
+              commandEnvironment={commandEnvironment}
             />
           </CrashBoundary>
           <StatusBar store={store} />
@@ -226,53 +285,48 @@ export function App() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         navigate={navigateTo}
-        openDrawer={(id) => setDrawerPanel(id)}
+        openDrawer={(id) => {
+          drawerReturnFocusRef.current = document.querySelector<HTMLElement>('.cmdk-trigger');
+          setDrawerPanel(id);
+        }}
+        commandEnvironment={commandEnvironment}
       />
-      <ControlDrawer store={store} panel={drawerPanel} onClose={() => setDrawerPanel(null)} navigate={navigateTo} />
+      <ControlDrawer
+        store={store}
+        panel={drawerPanel}
+        onClose={() => setDrawerPanel(null)}
+        navigate={navigateTo}
+        commandEnvironment={commandEnvironment}
+        returnFocusTarget={drawerReturnFocusRef.current}
+      />
+      <CommandReceipts store={store} navigate={navigateTo} />
       <WalletConnectPrompt />
-      {stack && (!stack.ready || welcome) ? (
-        <div className="modal-overlay">
-          <div className="modal onboard-modal unified-stack-welcome">
-            <div className="modal-title">{stack.ready ? 'Welcome to IDACC' : 'Preparing your private agent workspace'}</div>
-            <p className="muted">
-              IDACC now includes its manager and Brain. Goals, memory, projects, credentials, and agent work remain in your private local profile and are never part of an app update.
-            </p>
-            <div className="unified-stack-services">
-              {stack.services.map((service) => (
-                <div className="unified-stack-service" key={service.name}>
-                  <span className={service.healthy ? 'dot live' : service.bundled ? 'dot busy' : 'dot dead'} />
-                  <strong>{service.name === 'brain' ? 'Brain' : 'Agent manager'}</strong>
-                  <span className="muted">{service.healthy ? 'ready' : service.bundled ? 'starting…' : service.error || 'not included'}</span>
-                </div>
-              ))}
-            </div>
-            {stack.ready ? (
-              <div className="row end gap">
-                <button className="btn" onClick={() => finishWelcome('settings')}>Configure models</button>
-                <button className="btn primary" onClick={() => finishWelcome('dashboard')}>Enter IDACC</button>
-              </div>
-            ) : (
-              <p className="muted small">The app will continue automatically when both local services are healthy.</p>
-            )}
-          </div>
-        </div>
-      ) : null}
+      <FirstRunWizard
+        status={onboarding}
+        open={Boolean(onboarding && (onboardingOpen || onboarding.phase === 'preparing' || onboarding.needsOnboarding))}
+        onStatus={(next) => {
+          setOnboarding(next);
+          if (next.phase === 'ready') setOnboardingOpen(true);
+        }}
+        onClose={() => setOnboardingOpen(false)}
+      />
     </div>
     </PromptProvider>
     </ToastProvider>
   );
 }
 
-function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled }: {
+function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled, commandEnvironment }: {
   view: ViewId;
   store: ReturnType<typeof useFleet>;
   navigate: (target: string) => void;
   teamsFocus?: TeamsFocus;
   onTeamsFocusHandled: () => void;
+  commandEnvironment: CommandEnvironment;
 }) {
   switch (view) {
     case 'dashboard':
-      return <Dashboard store={store} navigate={navigate} />;
+      return <Dashboard store={store} navigate={navigate} commandEnvironment={commandEnvironment} />;
     case 'teams':
       return <Teams store={store} focus={teamsFocus} onFocusHandled={onTeamsFocusHandled} navigate={navigate} />;
     case 'inbox':
@@ -294,7 +348,7 @@ function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled }: {
     case 'settings':
       return <Settings store={store} navigate={navigate} />;
     default:
-      return <Dashboard store={store} navigate={navigate} />;
+      return <Dashboard store={store} navigate={navigate} commandEnvironment={commandEnvironment} />;
   }
 }
 

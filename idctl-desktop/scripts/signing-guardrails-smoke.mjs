@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import {
-  AGENT_BITTREES_SAFE_ADDRESS,
   buildWalletSafeTransaction,
   contractValidationErrors,
   contributorSigningPolicyErrors,
@@ -11,6 +10,14 @@ import {
   ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA,
 } from '../src/shared/signingGuardrails.ts';
 
+const rootSafe = '0x4444444444444444444444444444444444444444';
+const rootIdentity = {
+  enabled: true,
+  ensRoot: 'agents.example.eth',
+  safeAddress: rootSafe,
+  chainId: 1,
+};
+
 assert.equal(normalizeChainHex(1), '0x1');
 assert.equal(normalizeChainHex(8453n), '0x2105');
 assert.equal(normalizeChainHex('11155111'), '0xaa36a7');
@@ -20,23 +27,26 @@ assert.equal(normalizeChainHex(0), '');
 assert.equal(normalizeChainHex('not-a-chain'), '');
 
 const valid = {
-  account: AGENT_BITTREES_SAFE_ADDRESS,
-  providerChain: '0x2105',
-  requiredChain: '0x2105',
+  rootIdentity,
+  account: rootSafe,
+  providerChain: '0x1',
+  requiredChain: '0x1',
   to: '0x1111111111111111111111111111111111111111',
   data: '0x1234',
   valueWei: '0',
 };
 
 assert.equal(isRootSafeThresholdRepair(
+  rootIdentity,
   '0x1',
-  AGENT_BITTREES_SAFE_ADDRESS,
+  rootSafe,
   ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA,
   '0',
 ), true, 'the exact root Safe threshold repair must be recognized');
 assert.equal(isRootSafeThresholdRepair(
+  rootIdentity,
   '0x1',
-  AGENT_BITTREES_SAFE_ADDRESS,
+  rootSafe,
   `${ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA.slice(0, -1)}3`,
   '0',
 ), false, 'modified threshold calldata must not use the repair exception');
@@ -45,13 +55,18 @@ function simulation(overrides = {}) {
   const input = { ...valid, ...overrides };
   return {
     ok: true,
-    stamp: executionStamp(input.requiredChain, input.account, input.to, input.data, input.valueWei),
+    stamp: executionStamp(input.rootIdentity, input.requiredChain, input.account, input.to, input.data, input.valueWei),
     message: 'Simulation passed.',
     preview: 'preview',
   };
 }
 
 const negativeValidationCases = [
+  {
+    name: 'no configured root identity',
+    input: { ...valid, rootIdentity: null },
+    expected: /Configure and explicitly enable a root ENS identity/,
+  },
   {
     name: 'no connected wallet',
     input: { ...valid, account: '' },
@@ -60,7 +75,7 @@ const negativeValidationCases = [
   {
     name: 'connected wallet is not the required Safe',
     input: { ...valid, account: '0x2222222222222222222222222222222222222222' },
-    expected: /Connected account must be agent\.bittrees\.eth/,
+    expected: /Connected account must be agents\.example\.eth/,
   },
   {
     name: 'unsupported chain',
@@ -75,7 +90,7 @@ const negativeValidationCases = [
   {
     name: 'wallet chain mismatch',
     input: { ...valid, providerChain: '0xaa36a7' },
-    expected: /Wallet chain must match Base/,
+    expected: /Wallet chain must match Ethereum mainnet/,
   },
   {
     name: 'invalid target',
@@ -96,6 +111,7 @@ const negativeValidationCases = [
 
 for (const tc of negativeValidationCases) {
   const errors = contractValidationErrors(
+    tc.input.rootIdentity,
     tc.input.account,
     tc.input.providerChain,
     tc.input.requiredChain,
@@ -182,9 +198,9 @@ for (const tc of policyCases) {
   assert.equal(readiness.reason, 'policy_denied', `${tc.name} should fail before wallet/Safe transaction construction`);
 }
 
-const tx = buildWalletSafeTransaction(valid.to, ' ', '123');
+const tx = buildWalletSafeTransaction(rootIdentity, valid.to, ' ', '123');
 assert.deepEqual(tx, {
-  from: AGENT_BITTREES_SAFE_ADDRESS,
+  from: rootSafe,
   to: valid.to,
   data: '0x',
   value: '0x7b',
@@ -196,7 +212,7 @@ const ready = guardedExecutionReady({
   confirmed: true,
 });
 assert.equal(ready.ok, true);
-assert.equal(ready.tx.from, AGENT_BITTREES_SAFE_ADDRESS);
+assert.equal(ready.tx.from, rootSafe);
 assert.equal(ready.tx.to, valid.to);
 assert.equal(ready.tx.data, valid.data);
 assert.equal(ready.tx.value, '0x0');

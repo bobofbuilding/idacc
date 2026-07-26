@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AbiCoder, Interface, getBytes, getCreate2Address, id, keccak256, solidityPacked } from 'ethers';
@@ -7,13 +7,22 @@ import { AbiCoder, Interface, getBytes, getCreate2Address, id, keccak256, solidi
 const root = mkdtempSync(join(tmpdir(), 'idacc-safe-roles-'));
 const signer = '0x1111111111111111111111111111111111111111';
 const target = '0x2222222222222222222222222222222222222222';
+const rootSafe = '0x4444444444444444444444444444444444444444';
+const rootIdentity = {
+  enabled: true,
+  ensRoot: 'agents.example.eth',
+  safeAddress: rootSafe,
+  chainId: 1,
+};
 const txHash = `0x${'ab'.repeat(32)}`;
 
 try {
   const { SafeRolesKeyProvider } = await import('../src/main/safeRolesProvider.ts');
   let expectedSafe = '';
-  const provider = new SafeRolesKeyProvider({
-    statePath: () => join(root, 'safe-roles-state.json'),
+  const stateFile = join(root, 'safe-roles-state.json');
+  const providerOptions = {
+    rootIdentity,
+    statePath: () => stateFile,
     rpcRead: async (_chainId, method, params) => {
       if (method === 'eth_getTransactionReceipt') return JSON.stringify({ status: '0x1' });
       if (method === 'eth_getCode') return '0x6001600055';
@@ -40,7 +49,8 @@ try {
       source: 'rpc',
       message: 'clear',
     }),
-  });
+  };
+  const provider = new SafeRolesKeyProvider(providerOptions);
 
   assert.equal(provider.capabilities().provider, 'safe-roles');
   assert.equal(provider.capabilities().live, true);
@@ -65,6 +75,8 @@ try {
   expectedSafe = operation.smartAccount;
   assert.equal(operation.status, 'prepared');
   assert.equal(operation.kind, 'provision');
+  assert.equal(operation.rootSafe, rootSafe);
+  assert.equal((await provider.listAccounts(['default:lead']))[0].ensName, 'lead.agents.example.eth');
   assert.ok(operation.calls.length >= 6, 'deployment and scoped authority must be one atomic call set');
   assert.ok(operation.calls.every((call) => call.value === '0x0'));
   assert.ok(operation.calls.slice(1).every((call) => call.to === operation.authorityModule));
@@ -103,6 +115,42 @@ try {
   assert.equal(account.sessions.length, 1);
   assert.equal(account.sessions[0].address, signer);
   assert.equal(account.pendingOperation, undefined);
+
+  const persisted = JSON.parse(readFileSync(stateFile, 'utf8'));
+  assert.equal(persisted.schemaVersion, 2);
+  assert.deepEqual(persisted.rootIdentity, {
+    ensRoot: rootIdentity.ensRoot,
+    safeAddress: rootSafe.toLowerCase(),
+    chainId: 1,
+  });
+
+  for (const [label, override] of [
+    ['Safe', { safeAddress: '0x5555555555555555555555555555555555555555' }],
+    ['ENS root', { ensRoot: 'agents.other.eth' }],
+    ['chain', { chainId: 11155111 }],
+  ]) {
+    assert.throws(
+      () => new SafeRolesKeyProvider({
+        ...providerOptions,
+        rootIdentity: { ...rootIdentity, ...override },
+      }),
+      /different root identity/,
+      `identity-bound state must not load under a different ${label}`,
+    );
+  }
+
+  const legacyFile = join(root, 'legacy-safe-roles-state.json');
+  writeFileSync(legacyFile, JSON.stringify({ schemaVersion: 1, accounts: {}, operations: {} }));
+  assert.throws(
+    () => new SafeRolesKeyProvider({ ...providerOptions, statePath: () => legacyFile }),
+    /legacy or identity-unbound/,
+    'legacy state must require an explicit reviewed import',
+  );
+  assert.equal(
+    JSON.parse(readFileSync(legacyFile, 'utf8')).schemaVersion,
+    1,
+    'rejected legacy state must be preserved in place for an optional reviewed import',
+  );
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

@@ -12,6 +12,13 @@ import {
 } from '../activityFeed.ts';
 import { Chat } from './Chat.tsx';
 import { parseChatControlIntent, type ControlIntentProposal } from '../dashboard/chatIntents.ts';
+import {
+  createCommandIdempotencyKey,
+  evaluateCommandGate,
+  executeGatedCommand,
+  recordDeclinedCommand,
+  type CommandEnvironment,
+} from '../dashboard/commandRuntime.ts';
 import { isDashboardRelevantEvent } from '../../shared/dashboardEvents.ts';
 import type { InboxItem, NewsItem, Task } from '../../../../idctl/src/api/types.ts';
 
@@ -457,36 +464,91 @@ function CoordinationTree({
   );
 }
 
-export function Dashboard({ store, navigate }: { store: FleetStore; navigate?: (target: string) => void }) {
+export function Dashboard({
+  store,
+  navigate,
+  commandEnvironment,
+}: {
+  store: FleetStore;
+  navigate?: (target: string) => void;
+  commandEnvironment: CommandEnvironment;
+}) {
   const activitySyncVersion = useSyncVersion(['dashboard', 'tasks', 'work', 'inbox', 'chats']);
   const hierarchySyncVersion = useSyncVersion(['org', 'agents', 'dashboard']);
   const [hier, setHier] = useState<OrgHier>(DEFAULT_ORG_HIERARCHY);
   const [hierarchyWarning, setHierarchyWarning] = useState('');
   const [controlIntent, setControlIntent] = useState<ControlIntentProposal | null>(null);
+  const [controlIntentKey, setControlIntentKey] = useState('');
   const [controlIntentBusy, setControlIntentBusy] = useState(false);
+  const controlIntentBusyRef = useRef(false);
   const [controlIntentStatus, setControlIntentStatus] = useState('');
   const proposeControlIntent = useCallback((input: string): boolean => {
     const proposal = parseChatControlIntent(input, store);
     if (!proposal) return false;
+    if (controlIntent || controlIntentBusyRef.current) {
+      setControlIntentStatus('Confirm or decline the pending command before proposing another.');
+      return true;
+    }
+    const idempotencyKey = createCommandIdempotencyKey(proposal.commandId);
+    const gate = evaluateCommandGate(proposal, commandEnvironment);
+    if (gate.state === 'blocked') {
+      void executeGatedCommand({
+        metadata: proposal,
+        environment: commandEnvironment,
+        idempotencyKey,
+        resourceRefs: proposal.resourceRefs,
+        operation: proposal.execute,
+      }).then(({ receipt }) => {
+        setControlIntentStatus(receipt.error || 'Command is unavailable.');
+      });
+      return true;
+    }
     setControlIntent(proposal);
-    setControlIntentStatus('');
+    setControlIntentKey(idempotencyKey);
+    setControlIntentStatus(`Review this ${proposal.risk}-risk command before it is sent.`);
     return true;
-  }, [store]);
+  }, [commandEnvironment, controlIntent, store]);
   const executeControlIntent = useCallback(async () => {
-    if (!controlIntent || controlIntentBusy) return;
+    if (!controlIntent || !controlIntentKey || controlIntentBusyRef.current) return;
+    controlIntentBusyRef.current = true;
     setControlIntentBusy(true);
-    setControlIntentStatus('Manager accepted the command; starting work…');
+    setControlIntentStatus('Sending the confirmed command to Manager…');
     try {
-      const result = await controlIntent.execute();
-      setControlIntentStatus(result);
-      setControlIntent(null);
-      store.refresh();
+      const result = await executeGatedCommand({
+        metadata: controlIntent,
+        environment: commandEnvironment,
+        confirmed: true,
+        idempotencyKey: controlIntentKey,
+        resourceRefs: controlIntent.resourceRefs,
+        operation: controlIntent.execute,
+        classifyOutcome: (value) => value.outcome ?? { state: 'succeeded' },
+      });
+      if (result.receipt.state === 'succeeded' || result.receipt.state === 'deferred') {
+        setControlIntentStatus(result.value?.message ?? `Command ${result.receipt.state}.`);
+        setControlIntent(null);
+        setControlIntentKey('');
+        store.refresh();
+      } else {
+        setControlIntentStatus(result.receipt.error || `Command ${result.receipt.state}.`);
+      }
     } catch (error) {
       setControlIntentStatus(error instanceof Error ? error.message : String(error));
     } finally {
+      controlIntentBusyRef.current = false;
       setControlIntentBusy(false);
     }
-  }, [controlIntent, controlIntentBusy, store]);
+  }, [commandEnvironment, controlIntent, controlIntentKey, store]);
+  const declineControlIntent = useCallback(() => {
+    if (!controlIntent || controlIntentBusyRef.current) return;
+    recordDeclinedCommand({
+      metadata: controlIntent,
+      idempotencyKey: controlIntentKey || undefined,
+      resourceRefs: controlIntent.resourceRefs,
+    });
+    setControlIntent(null);
+    setControlIntentKey('');
+    setControlIntentStatus('Command declined; nothing was changed.');
+  }, [controlIntent, controlIntentKey]);
   const hierarchyLiveRef = useRef(true);
   useEffect(() => () => { hierarchyLiveRef.current = false; }, []);
   const loadHierarchy = useCallback(() => {
@@ -752,13 +814,17 @@ export function Dashboard({ store, navigate }: { store: FleetStore; navigate?: (
         {/* Primary lead chat: locked to default/lead (no team or agent picker). */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           {controlIntent ? (
-            <section className="control-intent-proposal" aria-live="polite">
+            <section className="control-intent-proposal" role="alertdialog" aria-label={`Confirm ${controlIntent.title}`}>
               <div className="control-intent-copy">
                 <strong>{controlIntent.title}</strong>
                 <span>{controlIntent.summary}</span>
+                <span className="small">
+                  {controlIntent.risk} risk · owner {controlIntent.ownerView}
+                  {controlIntent.requiredFeatures.length ? ` · requires ${controlIntent.requiredFeatures.join(', ')}` : ''}
+                </span>
               </div>
               <div className="row-actions">
-                <button className="btn" disabled={controlIntentBusy} onClick={() => { setControlIntent(null); setControlIntentStatus('Command declined; nothing was changed.'); }}>Cancel</button>
+                <button className="btn" disabled={controlIntentBusy} onClick={declineControlIntent}>Decline</button>
                 <button className="btn primary" disabled={controlIntentBusy} onClick={() => void executeControlIntent()}>{controlIntentBusy ? 'Starting…' : 'Confirm'}</button>
               </div>
             </section>

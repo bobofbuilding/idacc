@@ -1,6 +1,6 @@
 # Headroom Backend Contract Candidate
 
-IDACC now has a core deterministic context-budget layer. Headroom remains a candidate core compression engine until a runtime-neutral retrieval contract is proven without making the base id-agents manager harder to install or narrowing the platform to one runtime family.
+IDACC now has a core deterministic context-budget layer. Headroom remains a candidate core compression engine until a runtime-neutral retrieval contract is proven without enlarging the unified runtime unnecessarily or narrowing the platform to one runtime family.
 
 ## Minimal-Change Path
 
@@ -27,7 +27,7 @@ IDACC now has a core deterministic context-budget layer. Headroom remains a cand
 - `idacc-context-retrieval` native plugin adapter: valid as a Claude-family pilot resolver.
 - `idacc-context-retrieval` MCP: the same guarded resolver exposed through a runtime-neutral tool boundary for Claude, Codex, and Ollama.
 - Headroom MCP: a separate compression-engine candidate surface when the Headroom CLI/proxy is installed and smoke-tested.
-- Manager retrieval contract: required before core activation because it lets IDACC feature-detect support and keep stock/stale managers on direct routing.
+- Manager retrieval contract: required before core activation because it lets IDACC feature-detect bundled support and keep explicit developer connections to older external Managers on direct routing.
 - Direct deterministic fallback: remains universal for all runtimes and protected content.
 
 Native-plugin-only routing is not core-ready because it would exclude Codex, cursor-cli, Ollama, and future runtimes. MCP closes much of that gap for Claude, Codex, and Ollama, while Skill/direct fallback covers cursor-cli and unsupported future runtimes. The bundled portable plugin validates the shape of a guarded retrieval contract; it is not the final platform-wide dependency by itself.

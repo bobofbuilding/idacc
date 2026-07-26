@@ -1,8 +1,5 @@
-import { ROOT_AGENT_SAFE_ADDRESS, ROOT_AGENT_SAFE_ENS } from '../../../idctl/src/keys/types.ts';
+import type { ConfiguredRootIdentity } from '../../../idctl/src/settings/schema.ts';
 
-export const AGENT_BITTREES_SAFE_ENS = ROOT_AGENT_SAFE_ENS;
-export const AGENT_BITTREES_SAFE_ADDRESS = ROOT_AGENT_SAFE_ADDRESS;
-export const ROOT_SAFE_THRESHOLD_REPAIR_CHAIN = '0x1';
 export const ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA = '0x694e80c30000000000000000000000000000000000000000000000000000000000000002';
 
 export const EXECUTION_CHAINS = [
@@ -22,6 +19,7 @@ export interface ContractSimulation {
 }
 
 export interface GuardedExecutionInput {
+  rootIdentity: ConfiguredRootIdentity | null;
   account: string;
   providerChain: string;
   requiredChain: string;
@@ -49,7 +47,7 @@ export interface ContributorSigningPolicy {
 }
 
 export interface GuardedExecutionTx {
-  from: typeof AGENT_BITTREES_SAFE_ADDRESS;
+  from: string;
   to: string;
   data: string;
   value: string;
@@ -97,9 +95,16 @@ export function normalizeChainHex(value: unknown): string {
 }
 
 /** The only pre-readiness transaction IDACC allows: root Safe 2-of-2 repair. */
-export function isRootSafeThresholdRepair(chain: string, to: string, data: string, valueWei: string): boolean {
-  return chain.trim().toLowerCase() === ROOT_SAFE_THRESHOLD_REPAIR_CHAIN
-    && sameAddress(to, AGENT_BITTREES_SAFE_ADDRESS)
+export function isRootSafeThresholdRepair(
+  rootIdentity: ConfiguredRootIdentity | null,
+  chain: string,
+  to: string,
+  data: string,
+  valueWei: string,
+): boolean {
+  return Boolean(rootIdentity)
+    && chain.trim().toLowerCase() === rootIdentityChainHex(rootIdentity!)
+    && sameAddress(to, rootIdentity!.safeAddress)
     && normalizeTxData(data).toLowerCase() === ROOT_SAFE_THRESHOLD_REPAIR_CALLDATA
     && parseWei(valueWei) === 0n;
 }
@@ -132,24 +137,43 @@ export function chainByHex(hex: string): ExecutionChain | undefined {
   return EXECUTION_CHAINS.find((chain) => chain.hex.toLowerCase() === hex.trim().toLowerCase());
 }
 
-export function executionStamp(chainHex: string, account: string, to: string, data: string, valueWei: string): string {
+export function rootIdentityChainHex(rootIdentity: ConfiguredRootIdentity): string {
+  return `0x${rootIdentity.chainId.toString(16)}`;
+}
+
+export function executionStamp(
+  rootIdentity: ConfiguredRootIdentity | null,
+  chainHex: string,
+  account: string,
+  to: string,
+  data: string,
+  valueWei: string,
+): string {
   return JSON.stringify({
     chainHex: chainHex.toLowerCase(),
     from: account.toLowerCase(),
-    safe: AGENT_BITTREES_SAFE_ADDRESS.toLowerCase(),
+    safe: rootIdentity?.safeAddress.toLowerCase() ?? '',
+    ensRoot: rootIdentity?.ensRoot.toLowerCase() ?? '',
     to: to.trim().toLowerCase(),
     data: normalizeTxData(data).toLowerCase(),
     valueWei: valueWei.trim(),
   });
 }
 
-export function formatExecutionPreview(chainHex: string, account: string, to: string, data: string, valueWei: string): string {
+export function formatExecutionPreview(
+  rootIdentity: ConfiguredRootIdentity | null,
+  chainHex: string,
+  account: string,
+  to: string,
+  data: string,
+  valueWei: string,
+): string {
   const chain = chainByHex(chainHex);
   return JSON.stringify({
     chain: chain ? `${chain.name} (${chain.hex})` : chainHex,
-    safeEns: AGENT_BITTREES_SAFE_ENS,
+    safeEns: rootIdentity?.ensRoot ?? 'not configured',
     from: account || 'not connected',
-    requiredSafe: AGENT_BITTREES_SAFE_ADDRESS,
+    requiredSafe: rootIdentity?.safeAddress ?? 'not configured',
     to: to.trim() || 'not set',
     valueWei: valueWei.trim() || '0',
     data: normalizeTxData(data),
@@ -157,6 +181,7 @@ export function formatExecutionPreview(chainHex: string, account: string, to: st
 }
 
 export function contractValidationErrors(
+  rootIdentity: ConfiguredRootIdentity | null,
   account: string,
   providerChain: string,
   requiredChain: string,
@@ -166,9 +191,15 @@ export function contractValidationErrors(
 ): string[] {
   const errors: string[] = [];
   const normalizedData = normalizeTxData(data);
+  if (!rootIdentity) errors.push('Configure and explicitly enable a root ENS identity and Safe address in Settings first.');
   if (!account) errors.push('Connect wallet/Safe first.');
-  else if (!sameAddress(account, AGENT_BITTREES_SAFE_ADDRESS)) errors.push(`Connected account must be ${AGENT_BITTREES_SAFE_ENS} (${AGENT_BITTREES_SAFE_ADDRESS}).`);
+  else if (rootIdentity && !sameAddress(account, rootIdentity.safeAddress)) {
+    errors.push(`Connected account must be ${rootIdentity.ensRoot} (${rootIdentity.safeAddress}).`);
+  }
   if (!chainByHex(requiredChain)) errors.push('Choose a supported chain.');
+  else if (rootIdentity && requiredChain.toLowerCase() !== rootIdentityChainHex(rootIdentity)) {
+    errors.push(`Transaction chain must match configured root identity chain ${rootIdentity.chainId}.`);
+  }
   if (!providerChain) errors.push('Wallet chain is not available.');
   else if (providerChain.toLowerCase() !== requiredChain.toLowerCase()) errors.push(`Wallet chain must match ${chainByHex(requiredChain)?.name ?? requiredChain}.`);
   if (!isEthAddress(to)) errors.push('Contract target must be a 20-byte 0x address.');
@@ -177,11 +208,17 @@ export function contractValidationErrors(
   return errors;
 }
 
-export function buildWalletSafeTransaction(to: string, data: string, valueWei: string): GuardedExecutionTx | null {
+export function buildWalletSafeTransaction(
+  rootIdentity: ConfiguredRootIdentity | null,
+  to: string,
+  data: string,
+  valueWei: string,
+): GuardedExecutionTx | null {
+  if (!rootIdentity) return null;
   const value = weiToHex(valueWei);
   if (value == null) return null;
   return {
-    from: AGENT_BITTREES_SAFE_ADDRESS,
+    from: rootIdentity.safeAddress,
     to: to.trim(),
     data: normalizeTxData(data),
     value,
@@ -219,6 +256,7 @@ export function contributorSigningPolicyErrors(policy: ContributorSigningPolicy 
 
 export function guardedExecutionReady(input: GuardedExecutionInput): GuardedExecutionResult {
   const errors = contractValidationErrors(
+    input.rootIdentity,
     input.account,
     input.providerChain,
     input.requiredChain,
@@ -235,7 +273,7 @@ export function guardedExecutionReady(input: GuardedExecutionInput): GuardedExec
     return { ok: false, reason: 'policy_denied', errors: policyErrors };
   }
 
-  const stamp = executionStamp(input.requiredChain, input.account, input.to, input.data, input.valueWei);
+  const stamp = executionStamp(input.rootIdentity, input.requiredChain, input.account, input.to, input.data, input.valueWei);
   if (!input.simulation?.ok || input.simulation.stamp !== stamp) {
     return {
       ok: false,
@@ -252,7 +290,7 @@ export function guardedExecutionReady(input: GuardedExecutionInput): GuardedExec
     };
   }
 
-  const tx = buildWalletSafeTransaction(input.to, input.data, input.valueWei);
+  const tx = buildWalletSafeTransaction(input.rootIdentity, input.to, input.data, input.valueWei);
   if (!tx) {
     return {
       ok: false,
@@ -265,6 +303,6 @@ export function guardedExecutionReady(input: GuardedExecutionInput): GuardedExec
     ok: true,
     stamp,
     tx,
-    preview: formatExecutionPreview(input.requiredChain, input.account, input.to, input.data, input.valueWei),
+    preview: formatExecutionPreview(input.rootIdentity, input.requiredChain, input.account, input.to, input.data, input.valueWei),
   };
 }

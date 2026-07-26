@@ -43,13 +43,13 @@ assert.deepEqual(parsed, {
 const reviewers = selectBrainApprovalReviewers([
   { team: 'default', agent: 'coder', specialty: 'implementation' },
   { team: 'research', agent: 'research-lead', specialty: 'evidence' },
-  { team: 'skillmesh-ops', agent: 'skillmesh-ops-lead', specialty: 'skill-domain' },
+  { team: 'capabilities', agent: 'skills-lead', specialty: 'skill-domain' },
   { team: 'default', agent: 'researcher', specialty: 'evidence' },
 ]);
 assert.deepEqual(reviewers.slice(0, 3).map((row) => `${row.team}/${row.agent}`), [
-  'skillmesh-ops/skillmesh-ops-lead',
   'default/researcher',
   'default/coder',
+  'capabilities/skills-lead',
 ]);
 
 const approve = { decision: 'approve', confidence: 0.9, reason: 'valid', evidenceIds: ['source:12'] };

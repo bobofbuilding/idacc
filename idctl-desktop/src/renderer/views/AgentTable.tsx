@@ -256,12 +256,12 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
           return acc;
         }, {}),
       ).sort((x, y) => {
-        const xa = x.agents.some((a) => statusClass(a.status) === 'ok');
-        const ya = y.agents.some((a) => statusClass(a.status) === 'ok');
+        const xa = x.agents.some((a) => statusClass(a) === 'ok');
+        const ya = y.agents.some((a) => statusClass(a) === 'ok');
         return xa !== ya ? (xa ? -1 : 1) : x.team.localeCompare(y.team);
       })
     : [], [viewAll, store.allAgents]);
-  const isActive = (a: TeamAgent) => statusClass(a.status) === 'ok';
+  const isActive = (a: TeamAgent) => statusClass(a) === 'ok';
   const activeCount = useMemo(() => shown.filter(isActive).length, [shown]);
   const stoppedCount = shown.length - activeCount;
   const coolingRows = activeCooldowns(runtimeCooldowns);
@@ -743,7 +743,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
           </span>
           {a.name}
         </td>
-        <td><span className={`dot ${statusClass(a.status)}`} /> {a.status}</td>
+        <td><span className={`dot ${statusClass(a)}`} /> {a.status}</td>
         <td onClick={(e) => e.stopPropagation()}>
           {isLocal ? (
             <select className="cell-select" value={displayRuntime ?? ''} onFocus={requestRuntimeDetails} onChange={(e) => stageRuntime(a, e.target.value)}
@@ -932,7 +932,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
               return [
                 <tr key={`hdr-${g.team}`} className="group-row">
                   <td colSpan={cols} className="muted small b" style={{ background: 'var(--panel, #1b1b1b)', padding: '4px 8px' }}>
-                    {g.team} · {g.agents.filter((x) => statusClass(x.status) === 'ok').length}/{g.agents.length} running
+                    {g.team} · {g.agents.filter((x) => statusClass(x) === 'ok').length}/{g.agents.length} running
                   </td>
                 </tr>,
                 ...rows.map((a) => renderRow(a as TeamAgent)),
@@ -949,7 +949,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         <section className="card detail">
           <h3>{sel.name}</h3>
           <div className="kv">
-            <span>status</span><b><span className={`dot ${statusClass(sel.status)}`} /> {sel.status}</b>
+            <span>status</span><b><span className={`dot ${statusClass(sel)}`} /> {sel.status}</b>
             {agentHint(sel) ? (<><span>hint</span><b className="warn-text">{agentHint(sel)}</b></>) : null}
             {viewAll ? (<><span>team</span><b>{sel.team ?? '—'}</b></>) : null}
             <span>runtime</span><b>{runtimeOf(sel) ?? sel.type ?? '—'}</b>

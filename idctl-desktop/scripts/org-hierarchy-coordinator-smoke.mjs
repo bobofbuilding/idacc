@@ -40,13 +40,26 @@ assert.ok(
   'hierarchy controls should distinguish manager-owned state from the legacy local cache',
 );
 assert.ok(
-  teamsSource.includes('Install & connect manager')
-    && teamsSource.includes("'managerUpdate:bootstrap'"),
-  'fresh installs should offer manager recovery directly from the hierarchy panel',
+  teamsSource.includes('Check unified update')
+    && teamsSource.includes("'update:check'"),
+  'manager compatibility recovery must use the unified application update path',
 );
 assert.ok(
-  teamsSource.includes("disabled={busy || managerRepairBusy || hier.controlStateSource === 'local-compat'"),
+  teamsSource.includes("disabled={busy || unifiedUpdateCheckBusy || hier.controlStateSource === 'local-compat'"),
   'coordinator controls should not imply that legacy local-only assignments can be persisted',
+);
+assert.ok(
+  teamsSource.includes('Routing is configured in one place')
+    && teamsSource.includes('use <b>Manage &gt; Hierarchy</b>')
+    && !teamsSource.includes('name="builder-relay"')
+    && !teamsSource.includes('Wire agentic routing'),
+  'team building should preserve routing and hand off to the one authoritative hierarchy editor',
+);
+assert.ok(
+  teamsSource.includes('Inherit team policy')
+    && teamsSource.includes('effective: ${describeRelay(teamPolicy)}')
+    && teamsSource.includes('Blocked override: no cross-team delegation'),
+  'per-agent routing copy should distinguish inheritance, its effective policy, and a blocked override',
 );
 
 console.log('org hierarchy coordinator smoke: ok');

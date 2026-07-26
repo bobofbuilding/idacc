@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { call, useSyncVersion, type FleetStore } from '../store.ts';
 import type { CheckIn, ScheduleEntry } from '../../../../idctl/src/api/client.ts';
+import { reconcileScheduleSnapshot } from '../../shared/scheduleSnapshot.ts';
 
 /** Schedule panel (a tab under Tasks): heartbeats + supervision check-ins.
  *  Recurring objective check-ins live in the Loops tab. */
@@ -52,8 +53,9 @@ const isTerminalTask = (s?: string): boolean => !!s && /done|complete|closed|can
 /** A heartbeat is "missed" when active but its last run is older than ~2 intervals. */
 function isMissed(s: ScheduleEntry): boolean {
   if (s.kind !== 'heartbeat' || !s.active || !s.intervalSeconds) return false;
-  if (!s.lastRunAt) return false;
-  return Date.now() / 1000 - s.lastRunAt > s.intervalSeconds * 2;
+  const lastEvidence = s.lastRunAt || s.createdAt;
+  if (!lastEvidence) return false;
+  return Date.now() / 1000 - lastEvidence > s.intervalSeconds * 2;
 }
 
 type TeamSchedule = ScheduleEntry & { team?: string };
@@ -91,40 +93,71 @@ export function Schedule({ store }: { store: FleetStore }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [hbInterval, setHbInterval] = useState<Record<string, number>>({});
+  const [hbMessage, setHbMessage] = useState<Record<string, string>>({});
   const [showClosed, setShowClosed] = useState(false);
+  const reloadEpochRef = useRef(0);
+  const mutationRef = useRef(false);
 
   async function reload() {
-    setSchedules(await call<ScheduleEntry[]>('schedules').catch(() => []));
-    setAllSchedules(await call<TeamSchedule[]>('schedules:allTeams').catch(() => []));
-    setCheckins(await call<CheckIn[]>('checkins').catch(() => []));
+    const epoch = ++reloadEpochRef.current;
+    const team = store.team ?? 'default';
+    const [aggregateResult, localResult, checkinsResult] = await Promise.allSettled([
+      call<TeamSchedule[]>('schedules:allTeams'),
+      call<ScheduleEntry[]>('schedules'),
+      call<CheckIn[]>('checkins'),
+    ]);
+    if (epoch !== reloadEpochRef.current) return;
+    const snapshot = reconcileScheduleSnapshot(
+      aggregateResult.status === 'fulfilled' ? aggregateResult.value : null,
+      localResult.status === 'fulfilled' ? localResult.value : null,
+      team,
+    );
+    // If both schedule reads fail, retain the last verified view. A transient
+    // Manager outage must not look like the user deleted every schedule.
+    if (snapshot) {
+      setSchedules(snapshot.local);
+      setAllSchedules((previous) => reconcileScheduleSnapshot(
+        aggregateResult.status === 'fulfilled' ? aggregateResult.value : null,
+        localResult.status === 'fulfilled' ? localResult.value : null,
+        team,
+        previous,
+      )?.all ?? previous);
+    }
+    if (checkinsResult.status === 'fulfilled') setCheckins(checkinsResult.value);
   }
   useEffect(() => {
-    reload();
+    void reload();
+    return () => { reloadEpochRef.current += 1; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store.team, store.lastUpdated, syncVersion]);
 
-  async function act(label: string, fn: () => Promise<unknown>) {
+  async function act(label: string, fn: () => Promise<unknown>, lockHeld = false) {
+    if (!lockHeld && mutationRef.current) return;
+    if (!lockHeld) mutationRef.current = true;
     setBusy(true);
     setMsg(label + '…');
     try {
       await fn();
-      await reload();
       setMsg(label + ' ✓');
     } catch (err) {
       setMsg(`${label} failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      await reload();
       setBusy(false);
+      mutationRef.current = false;
     }
   }
-  async function guardedScheduleAct(label: string, detail: string, fn: () => Promise<unknown>) {
-    if (!window.confirm(`${label}?\n\n${detail}`)) return;
-    await act(label, fn);
-  }
-  async function freshSchedules(): Promise<TeamSchedule[]> {
-    const all = await call<TeamSchedule[]>('schedules:allTeams').catch(() => [] as TeamSchedule[]);
-    if (all.length) return all;
-    const local = await call<ScheduleEntry[]>('schedules').catch(() => [] as ScheduleEntry[]);
-    return local.map((s) => ({ ...s, team: store.team ?? 'default' }));
+  async function freshSchedules(): Promise<TeamSchedule[] | null> {
+    const team = store.team ?? 'default';
+    const [aggregateResult, localResult] = await Promise.allSettled([
+      call<TeamSchedule[]>('schedules:allTeams'),
+      call<ScheduleEntry[]>('schedules'),
+    ]);
+    return reconcileScheduleSnapshot(
+      aggregateResult.status === 'fulfilled' ? aggregateResult.value : null,
+      localResult.status === 'fulfilled' ? localResult.value : null,
+      team,
+    )?.all ?? null;
   }
   function schedulesForAgent(list: TeamSchedule[], agent: string, team?: string): TeamSchedule[] {
     return list.filter((s) => s.kind === 'heartbeat' && s.targets.includes(agent) && (!team || s.team === team));
@@ -133,7 +166,12 @@ export function Schedule({ store }: { store: FleetStore }) {
     return list.map((s) => `${s.team ?? 'default'}:${s.id}:${scheduleStamp(s)}`).sort().join('|');
   }
   async function ensureHeartbeatFresh(agent: string, team: string | undefined, rendered: TeamSchedule[], action: string): Promise<TeamSchedule[] | null> {
-    const fresh = schedulesForAgent(await freshSchedules(), agent, team);
+    const current = await freshSchedules();
+    if (!current) {
+      window.alert(`${action} blocked: current Manager schedule state could not be verified.`);
+      return null;
+    }
+    const fresh = schedulesForAgent(current, agent, team);
     if (scheduleIds(rendered) !== scheduleIds(fresh)) {
       window.alert([
         `${action} blocked: the heartbeat for ${team ? `${team}/` : ''}${agent} changed since this row rendered.`,
@@ -149,7 +187,12 @@ export function Schedule({ store }: { store: FleetStore }) {
     return fresh;
   }
   async function ensureScheduleFresh(s: TeamSchedule, action: string): Promise<TeamSchedule | null> {
-    const fresh = (await freshSchedules()).find((x) => x.id === s.id && (s.team ? x.team === s.team : true)) ?? null;
+    const current = await freshSchedules();
+    if (!current) {
+      window.alert(`${action} blocked: current Manager schedule state could not be verified.`);
+      return null;
+    }
+    const fresh = current.find((x) => x.id === s.id && (s.team ? x.team === s.team : true)) ?? null;
     if (!fresh) {
       window.alert(`${action} blocked: this schedule no longer exists.`);
       await reload();
@@ -171,31 +214,60 @@ export function Schedule({ store }: { store: FleetStore }) {
   }
   async function closeCheckinFresh(c: CheckIn, label = 'closing check-in'): Promise<void> {
     const id = checkinId(c);
-    if (!id) return;
-    const fresh = (await call<CheckIn[]>('checkins').catch(() => [] as CheckIn[])).find((x) => checkinId(x) === id) ?? null;
-    if (!fresh) {
-      window.alert('Close blocked: this check-in no longer exists.');
-      await reload();
-      return;
+    if (!id || mutationRef.current) return;
+    mutationRef.current = true;
+    try {
+      let current: CheckIn[];
+      try {
+        current = await call<CheckIn[]>('checkins');
+      } catch (error) {
+        window.alert(`Close blocked: current check-in state could not be verified.\n\n${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+      const fresh = current.find((x) => checkinId(x) === id) ?? null;
+      if (!fresh) {
+        window.alert('Close blocked: this check-in no longer exists.');
+        await reload();
+        return;
+      }
+      if (checkinStamp(c) !== checkinStamp(fresh)) {
+        window.alert([
+          'Close blocked: this check-in changed since the row rendered.',
+          '',
+          `Shown: ${String(c.status ?? 'unknown')} / task ${linkedTaskState(c)}`,
+          `Current: ${String(fresh.status ?? 'unknown')} / task ${linkedTaskState(fresh)}`,
+          '',
+          'The check-in list will refresh; review the current row before closing it.',
+        ].join('\n'));
+        await reload();
+        return;
+      }
+      if (!/(active|snoozed)/i.test(String(fresh.status))) {
+        window.alert('Close blocked: this check-in is no longer active.');
+        await reload();
+        return;
+      }
+      if (!window.confirm(`Close this supervision check-in?\n\nWatching: ${fresh.linkedTask?.title || fresh.linkedTask?.name || id}\nClosing stops future supervision pings; it does not delete the linked task.`)) return;
+      let confirmed: CheckIn[];
+      try {
+        confirmed = await call<CheckIn[]>('checkins');
+      } catch (error) {
+        window.alert(`Close blocked: current check-in state could not be re-verified.\n\n${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+      const finalRow = confirmed.find((x) => checkinId(x) === id);
+      if (!finalRow || checkinStamp(finalRow) !== checkinStamp(fresh)) {
+        window.alert('Close blocked: this check-in changed while confirmation was open. Review the refreshed row before trying again.');
+        await reload();
+        return;
+      }
+      await act(label, async () => {
+        const result = await call<{ ok?: boolean }>('checkins:close', id);
+        if (!result?.ok) throw new Error('the Manager did not confirm the check-in was closed');
+      }, true);
+    } finally {
+      mutationRef.current = false;
     }
-    if (checkinStamp(c) !== checkinStamp(fresh)) {
-      window.alert([
-        'Close blocked: this check-in changed since the row rendered.',
-        '',
-        `Shown: ${String(c.status ?? 'unknown')} / task ${linkedTaskState(c)}`,
-        `Current: ${String(fresh.status ?? 'unknown')} / task ${linkedTaskState(fresh)}`,
-        '',
-        'The check-in list will refresh; review the current row before closing it.',
-      ].join('\n'));
-      await reload();
-      return;
-    }
-    if (!/(active|snoozed)/i.test(String(fresh.status))) {
-      window.alert('Close blocked: this check-in is no longer active.');
-      await reload();
-      return;
-    }
-    await act(label, () => call('checkins:close', id));
   }
 
   const fleetAgents = store.allAgents.length ? store.allAgents : store.agents.map((a) => ({ ...a, team: store.team ?? 'default' }));
@@ -205,9 +277,8 @@ export function Schedule({ store }: { store: FleetStore }) {
     return heartbeats.find((s) => s.targets.includes(agent) && (!team || s.team === team));
   }
 
-  // Heartbeats whose target ISN'T an agent in the current team's roster — they'd otherwise be
-  // invisible (the per-agent table only iterates this team's agents), so a cross-team or
-  // manager-level heartbeat (e.g. a "task-master") never showed up. Surface them all here.
+  // Heartbeats whose target is absent from the current all-team fleet roster
+  // would otherwise be invisible. Surface those orphaned definitions explicitly.
   const rosterKeys = new Set(fleetAgents.map((a) => targetKey(a.name, a.team)));
   const otherHeartbeats = allSchedules.filter(
     (s) => s.kind === 'heartbeat' && (Array.isArray(s.targets) ? s.targets : []).some((t) => !rosterKeys.has(targetKey(t, s.team))),
@@ -219,42 +290,105 @@ export function Schedule({ store }: { store: FleetStore }) {
   );
   async function cleanUp() {
     if (!staleCheckins.length) return;
-    const fresh = await call<CheckIn[]>('checkins').catch(() => [] as CheckIn[]);
-    const freshStale = fresh.filter(
-      (c) => /(active|snoozed)/i.test(String(c.status)) && (isTerminalTask(c.linkedTask?.status) || c.linkedTask?.gone),
-    );
-    const renderedIds = staleCheckins.map(checkinId).filter(Boolean).sort().join('|');
-    const freshIds = freshStale.map(checkinId).filter(Boolean).sort().join('|');
-    if (renderedIds !== freshIds) {
-      window.alert(`Clean up blocked: the stale check-in set changed from ${staleCheckins.length} to ${freshStale.length} item${freshStale.length === 1 ? '' : 's'}.\n\nThe list will refresh; review the current stale check-ins before closing them.`);
-      await reload();
-      return;
+    if (mutationRef.current) return;
+    mutationRef.current = true;
+    try {
+      let fresh: CheckIn[];
+      try {
+        fresh = await call<CheckIn[]>('checkins');
+      } catch (error) {
+        window.alert(`Clean up blocked: current check-in state could not be verified.\n\n${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+      const freshStale = fresh.filter(
+        (c) => /(active|snoozed)/i.test(String(c.status)) && (isTerminalTask(c.linkedTask?.status) || c.linkedTask?.gone),
+      );
+      const renderedIds = staleCheckins.map(checkinId).filter(Boolean).sort().join('|');
+      const freshIds = freshStale.map(checkinId).filter(Boolean).sort().join('|');
+      if (renderedIds !== freshIds) {
+        window.alert(`Clean up blocked: the stale check-in set changed from ${staleCheckins.length} to ${freshStale.length} item${freshStale.length === 1 ? '' : 's'}.\n\nThe list will refresh; review the current stale check-ins before closing them.`);
+        await reload();
+        return;
+      }
+      if (!window.confirm(`Close ${freshStale.length} stale check-in${freshStale.length === 1 ? '' : 's'}?\n\nThis bulk-closes check-ins linked to finished or removed tasks.`)) return;
+      let confirmed: CheckIn[];
+      try {
+        confirmed = await call<CheckIn[]>('checkins');
+      } catch (error) {
+        window.alert(`Clean up blocked: current check-in state could not be re-verified.\n\n${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+      const confirmedStale = confirmed.filter(
+        (c) => /(active|snoozed)/i.test(String(c.status)) && (isTerminalTask(c.linkedTask?.status) || c.linkedTask?.gone),
+      );
+      const confirmedIds = confirmedStale.map(checkinId).filter(Boolean).sort().join('|');
+      if (confirmedIds !== freshIds) {
+        window.alert('Clean up blocked: the stale check-in set changed while confirmation was open. Review the refreshed list before trying again.');
+        await reload();
+        return;
+      }
+      await act(`cleaning up ${confirmedStale.length} stale check-in${confirmedStale.length === 1 ? '' : 's'}`, async () => {
+        for (const c of confirmedStale) {
+          const result = await call<{ ok?: boolean }>('checkins:close', checkinId(c));
+          if (!result?.ok) throw new Error(`the Manager did not confirm check-in ${checkinId(c)} was closed`);
+        }
+      }, true);
+    } finally {
+      mutationRef.current = false;
     }
-    if (!window.confirm(`Close ${freshStale.length} stale check-in${freshStale.length === 1 ? '' : 's'}?\n\nThis bulk-closes check-ins linked to finished or removed tasks.`)) return;
-    await act(`cleaning up ${freshStale.length} stale check-in${freshStale.length === 1 ? '' : 's'}`, async () => {
-      for (const c of freshStale) await call('checkins:close', checkinId(c));
-    });
   }
 
   async function setHeartbeat(agent: string, team?: string) {
     const key = targetKey(agent, team);
     const seconds = hbInterval[key] ?? hbFor(agent, team)?.intervalSeconds ?? 3600;
-    const existing = heartbeats.filter((h) => h.targets.includes(agent) && (!team || h.team === team));
-    const freshExisting = await ensureHeartbeatFresh(agent, team, existing, `${existing.length ? 'Update' : 'Enable'} heartbeat`);
-    if (!freshExisting) return;
-    if (!window.confirm(`${freshExisting.length ? 'Update' : 'Enable'} heartbeat for ${team ? `${team}/` : ''}${agent}?\n\nThis creates or replaces a recurring internal manager check-in.`)) return;
-    // ADD-then-PRUNE: create the new heartbeat before removing the old, so a
-    // failed add never leaves the agent unmonitored.
-    await act(`heartbeat ${agent}`, async () => {
-      await call('addHeartbeat', agent, seconds, HEARTBEAT_MSG, 'internal', team);
-      for (const s of freshExisting) await call('removeSchedule', s.id, s.team);
-      setHbInterval((m) => { const next = { ...m }; delete next[key]; return next; });
-    });
+    const objective = (hbMessage[key] ?? hbFor(agent, team)?.message ?? HEARTBEAT_MSG).trim();
+    if (!objective) {
+      setMsg(`heartbeat ${agent} blocked: enter a self-check objective`);
+      return;
+    }
+    if (mutationRef.current) return;
+    mutationRef.current = true;
+    try {
+      const existing = heartbeats.filter((h) => h.targets.includes(agent) && (!team || h.team === team));
+      const freshExisting = await ensureHeartbeatFresh(agent, team, existing, `${existing.length ? 'Update' : 'Enable'} heartbeat`);
+      if (!freshExisting) return;
+      if (!window.confirm(
+        `${freshExisting.length ? 'Update' : 'Enable'} heartbeat for ${team ? `${team}/` : ''}${agent}?\n\n`
+        + `Every ${fmtInterval(seconds)} · internal objective:\n${objective}\n\n`
+        + 'This creates or replaces a recurring internal Manager check-in while IDACC is running; its definition resumes after restart.',
+      )) return;
+      const confirmedExisting = await ensureHeartbeatFresh(
+        agent,
+        team,
+        freshExisting,
+        `${freshExisting.length ? 'Update' : 'Enable'} heartbeat`,
+      );
+      if (!confirmedExisting) return;
+      // ADD-then-PRUNE: create the new heartbeat before removing the old, so a
+      // failed add never leaves the agent unmonitored.
+      await act(`heartbeat ${agent}`, async () => {
+        await call('addHeartbeat', agent, seconds, objective, 'internal', team);
+        for (const s of confirmedExisting) await call('removeSchedule', s.id, s.team);
+        setHbInterval((m) => { const next = { ...m }; delete next[key]; return next; });
+        setHbMessage((m) => { const next = { ...m }; delete next[key]; return next; });
+      }, true);
+    } finally {
+      mutationRef.current = false;
+    }
   }
   async function mutateSchedule(s: TeamSchedule, label: string, detail: string, op: 'pauseSchedule' | 'resumeSchedule' | 'removeSchedule') {
+    if (mutationRef.current) return;
+    mutationRef.current = true;
+    if (!window.confirm(`${label}?\n\n${detail}`)) {
+      mutationRef.current = false;
+      return;
+    }
     const fresh = await ensureScheduleFresh(s, label);
-    if (!fresh) return;
-    await guardedScheduleAct(label, detail, () => call(op, fresh.id, fresh.team));
+    if (!fresh) {
+      mutationRef.current = false;
+      return;
+    }
+    await act(label, () => call(op, fresh.id, fresh.team), true);
   }
 
   return (
@@ -264,8 +398,11 @@ export function Schedule({ store }: { store: FleetStore }) {
       <section className="card">
         <h3 style={{ marginBottom: 2 }}>Heartbeats — periodic agent self-checks</h3>
         <p className="muted small" style={{ marginTop: 0 }}>
-          On its interval, a heartbeat delivers the agent an internal nudge — <i>“review your checklist and act on anything that needs attention”</i> —
-          so it wakes up, re-checks its open tasks &amp; supervision check-ins, and acts even when nothing new was dispatched. It’s a keep-alive + self-audit, not a health ping. <b>Missed</b> = no run in ~2 intervals; <b>last run failed</b> = the agent errored on its last nudge.
+          On its interval, a heartbeat delivers the configured internal self-check objective so the
+          agent can review its work even when nothing new was dispatched. It is a work self-audit,
+          not a health ping. The unified Manager runs it while IDACC is open and resumes its saved
+          definition after restart. <b>Missed</b> = no run in ~2 intervals; <b>last run failed</b> =
+          the agent errored on its last self-check.
         </p>
         <table className="grid">
           <thead>
@@ -274,7 +411,7 @@ export function Schedule({ store }: { store: FleetStore }) {
               <th>Interval</th>
               <th>Status</th>
               <th>Last run</th>
-              <th>Set interval</th>
+              <th>Configure heartbeat</th>
               <th></th>
             </tr>
           </thead>
@@ -293,15 +430,26 @@ export function Schedule({ store }: { store: FleetStore }) {
                   </td>
                   <td className="muted small">{hb ? relTime(hb.lastRunAt) : ''}</td>
                   <td onClick={(e) => e.stopPropagation()}>
-                    <select
-                      className="cell-select"
-                      disabled={busy}
-                      value={hbInterval[key] ?? hb?.intervalSeconds ?? 3600}
-                      onChange={(e) => setHbInterval((m) => ({ ...m, [key]: Number(e.target.value) }))}
-                    >
-                      {INTERVALS.map((iv) => <option key={iv.s} value={iv.s}>{iv.label}</option>)}
-                    </select>{' '}
-                    <button className="btn" disabled={busy} onClick={() => void setHeartbeat(a.name, a.team)}>{hb ? 'Update' : 'Enable'}</button>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <select
+                        className="cell-select"
+                        aria-label={`Heartbeat interval for ${a.team ?? store.team ?? 'default'}/${a.name}`}
+                        disabled={busy}
+                        value={hbInterval[key] ?? hb?.intervalSeconds ?? 3600}
+                        onChange={(e) => setHbInterval((m) => ({ ...m, [key]: Number(e.target.value) }))}
+                      >
+                        {INTERVALS.map((iv) => <option key={iv.s} value={iv.s}>{iv.label}</option>)}
+                      </select>
+                      <input
+                        aria-label={`Heartbeat objective for ${a.team ?? store.team ?? 'default'}/${a.name}`}
+                        disabled={busy}
+                        value={hbMessage[key] ?? hb?.message ?? HEARTBEAT_MSG}
+                        onChange={(e) => setHbMessage((m) => ({ ...m, [key]: e.target.value }))}
+                        placeholder="self-check objective"
+                        style={{ minWidth: 260, flex: '1 1 300px' }}
+                      />
+                      <button className="btn" disabled={busy} onClick={() => void setHeartbeat(a.name, a.team)}>{hb ? 'Update' : 'Enable'}</button>
+                    </div>
                   </td>
                   <td className="row-actions">
                     {hb ? (
@@ -325,7 +473,7 @@ export function Schedule({ store }: { store: FleetStore }) {
         {otherHeartbeats.length ? (
           <div style={{ marginTop: 12 }}>
             <div className="muted small b" style={{ marginBottom: 4 }}>
-              Other heartbeats <span className="muted small">· {otherHeartbeats.length} on other teams / agents not in “{store.team}” (shown so none are hidden)</span>
+              Orphaned heartbeats <span className="muted small">· {otherHeartbeats.length} definition{otherHeartbeats.length === 1 ? '' : 's'} with a target missing from the current fleet roster</span>
             </div>
             <table className="grid">
               <thead>
@@ -390,7 +538,7 @@ export function Schedule({ store }: { store: FleetStore }) {
                 ) : stale > 0 ? <span className="warn-text small">⚠ {stale} watching finished work</span> : null}
               </div>
               <p className="muted small" style={{ marginTop: 0 }}>
-                A check-in watches a delegated task and pings the agent that delegated it on a cadence, auto-closing when the task is done.
+                A check-in watches delegated work and pings the delegating agent on a cadence. The Manager may close it when completion is observed; any stale open check-in remains visible here for reviewed cleanup.
               </p>
               {ranked.length === 0 ? (
                 <p className="muted center pad">No supervision check-ins — these appear when an agent delegates tracked work to a teammate.</p>

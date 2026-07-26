@@ -17,36 +17,21 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, readFileSync, writeFileSync, readdirSync, realpathSync, statSync, rmSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { homedir } from 'node:os';
 import { loadSettings } from '../../../idctl/src/settings/store.ts';
 
 const execFileP = promisify(execFile);
-
-const MANAGER_PLIST = join(homedir(), 'Library/LaunchAgents/io.bittrees.idagents-manager.plist');
 
 /**
  * The folder whose subdirectories are tracked as projects. Resolution order:
  *   1. an explicitly configured root (the saved projectsRoot),
  *   2. $ID_WORKSPACE_DIR/projects (the manager's own env, if the app inherits it),
- *   3. ID_WORKSPACE_DIR from the manager's launchd plist + /projects (standard install),
- *   4. a few well-known relative candidates.
+ *   3. a few well-known relative candidates.
  * Returns the first one that exists, else null.
  */
 export function detectProjectsRoot(configured?: string): string | null {
   const candidates: string[] = [];
   if (configured && configured.trim()) candidates.push(configured.trim());
   if (process.env.ID_WORKSPACE_DIR) candidates.push(join(process.env.ID_WORKSPACE_DIR, 'projects'));
-  // ID_WORKSPACE_DIR declared in the manager's launchd plist (the canonical
-  // source on a standard install — the GUI rarely inherits the env itself).
-  try {
-    if (existsSync(MANAGER_PLIST)) {
-      const xml = readFileSync(MANAGER_PLIST, 'utf8');
-      const m = xml.match(/<key>\s*ID_WORKSPACE_DIR\s*<\/key>\s*<string>([^<]+)<\/string>/);
-      if (m) candidates.push(join(m[1].trim(), 'projects'));
-    }
-  } catch {
-    /* plist unreadable */
-  }
   for (const rel of ['id-agents/workspace/projects', '../id-agents/workspace/projects', 'workspace/projects']) {
     candidates.push(join(process.cwd(), rel));
   }

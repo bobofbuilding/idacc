@@ -1,256 +1,198 @@
 # ID Agents Control Center
 
-A standalone **control center** for an [id-agents](https://github.com/idchain-world/id-agents)
-manager — the multi‑agent orchestration platform that runs a team of AI coding
-agents (Claude Code CLI, OpenAI Codex, Cursor CLI, …) as real processes behind a
-daemon on `:4100`.
+ID Agents Control Center (IDACC) is a unified desktop workspace for running and
+coordinating private AI-agent teams. The consumer application includes the
+desktop interface, Agent manager, and Brain together; a new user does not need a
+separate manager or Brain checkout.
 
-This repo ships **two front‑ends over the same backend**, so you can drive a
-running fleet visually instead of by chat command:
+## What ships
 
-| Package | What it is | Build target |
+| Component | Responsibility | Distribution |
 |---|---|---|
-| [`idctl-desktop/`](idctl-desktop) | A **desktop GUI** — a real mouse‑and‑keyboard window (Electron + React). | `ID Agents Control Center.app` |
-| [`idctl/`](idctl) | A **terminal app** — a reactive full‑screen TUI (no browser, single binary). | `idctl` (bun‑compiled) |
+| IDACC desktop | Dashboard, chat, teams, tasks, goals, plans, settings, onboarding, and updates | Electron application |
+| Agent manager | Runs agents, work, schedules, teams, and the control API | Immutable bundled runtime |
+| Brain | Memory, learning, graph, plans framework, and dashboards | Immutable bundled runtime |
 
-Both are **pure HTTP clients** of the manager daemon. They never edit the
-id-agents repo or touch its database directly, so they're safe to run alongside a
-live team. They share one backend layer (the manager API client, settings, and
-key management), so a feature added once shows up in both shells.
+The exact Manager and Brain source commits, dependency locks, entry points, and
+per-file hashes are recorded in `release/runtime-lock.json` and the generated
+runtime manifest. Release builds refuse dirty or mismatched runtime sources.
+The `v0.1.685` production candidate pins Manager `v0.1.145` and Brain `v0.1.2`.
 
----
+The `idctl/` terminal interface remains available for developers and advanced
+operators, but it is not required for the consumer desktop application.
 
-## How this relates to `id-agents` (the difference)
+## Private data is not part of the application
 
-**`id-agents` is the platform. This is the control surface for it.** The split is
-the same one you see between a server and its admin client:
+IDACC separates immutable application code from the active profile:
 
-> control‑center is to id-agents what `kubectl`/Lens is to Kubernetes, or
-> `psql`/a database GUI is to Postgres — a decoupled client you point at a
-> running instance, not the instance itself.
+- goals, plans, questions, chats, dreams, learning queues, and work records;
+- Brain databases, memory, living Brain Plans, and generated state;
+- Manager database, workspaces, installed skills, plugins, and configuration;
+- Computer Use sessions, tokens, audit history, logs, and caches; and
+- provider, RPC, MCP, and application settings.
 
-| | **[id-agents](https://github.com/idchain-world/id-agents)** (upstream) | **id-agent-control-center** (this repo) |
-|---|---|---|
-| **Role** | The orchestration **platform / server** | A **control client** for it |
-| **Runs the agents?** | Yes — spawns & supervises each agent as a real OS process (Claude Code / Codex / Cursor) | No — it only observes and commands a running manager |
-| **Owns state?** | Yes — the manager daemon (`:4100`), SQLite DB, agent workspaces, the task/scheduling engine, onchain identity & wallets | No — keeps only its own local UI config (`~/.config/idctl/config.json`); reads everything else live from the manager |
-| **Primary interface** | Headless: chat CLI, Telegram, SSH, `/remote` + `/tasks` REST | Visual: a clickable desktop window **and** a keyboard‑driven TUI |
-| **Talks to it via** | — | The manager's HTTP API (`/agents`, `/events`, `/remote`, `/query`, …) on `:4100` |
-| **Touches the id-agents repo?** | It *is* the repo | Never — read/command only, safe to run against a live fleet |
+These live under the operating system's IDACC user-data directory in
+`profiles/default` (or the selected profile). They are never staged into a
+release. Existing legacy `~/.config/idctl` data is copied once by versioned,
+rollback-safe migrations; the original data is retained as a backup.
 
-In short: install and run a team with **id-agents**, then open
-**id-agent-control-center** to watch and steer it.
+Release payload checks explicitly reject Brain databases, living plans, goals,
+sessions, Learn material, and Electron user data. Context and Computer Use
+history also have bounded age, file-count, and size retention.
 
-> **Manager compatibility.** The control center talks to the manager purely over
-> HTTP and never modifies it — but some panels call manager endpoints that a
-> **stock or older upstream id-agents may not expose yet**: skills
-> install/create/uninstall, plugins, MCP attach, per‑agent instructions, runtime
-> switch, cross‑team relay delegates, and local‑model usage/activity. Against a
-> manager without those routes, the affected actions report *"requires a newer
-> id-agents manager"* and the rest of the app keeps working — the live dashboard,
-> manager chat, teams, tasks, health, schedule, and identity panels run against
-> any current manager. Point it at a manager that includes those routes to use
-> the full feature set. Settings keeps manager connection, local runtime,
-> inference-backend, and compatibility checks in the relevant cards instead of a
-> separate first-run checkpoint; if a manager extension route is missing, use the
-> manager diagnostics exposed there to capture the manager URL, reported API
-> version, extension id, missing features, and missing routes before updating or
-> swapping the manager.
+## Install and first run
 
-### What the control center adds on top of the raw manager
+Use [Download the latest IDACC release](https://github.com/bobofbuilding/idacc/releases/latest)
+to open the verified public release and choose the installer for your platform.
 
-The manager exposes the capability; the control center makes it *operable* —
-discoverable, clickable, and validated — and layers on operator conveniences the
-headless platform doesn't ship a UI for:
+Production releases provide:
 
-- **Live fleet dashboard** — every agent's status / runtime / model, polled
-  continuously, with a live activity feed off the manager's `/events` stream.
-- **Manager chat** — a conversational pane that dispatches to the team's `lead`
-  agent and streams the reply (so it can fan work out to the workers).
-- **Teams** — switch teams, create a team from the default template, an
-  **add‑agent** form, and **cross‑team relay** policy (which teams an agent may
-  delegate to via `/ask <team>/<agent>`), with per‑agent overrides.
-- **Capabilities** — attach **MCP servers** (from a curated catalog, with a live
-  connection **Test**), install **skills**, and view **plugins**, assignable to
-  one or many agents/teams at once. *(Needs a manager exposing the library/MCP
-  endpoints — see Manager compatibility above.)*
-- **Inference backends** — connect Ollama, LM Studio, any OpenAI‑compatible
-  server, Anthropic, or OpenAI; **discover their models live**; validate runtime ↔
-  model pairings and switch a running agent's runtime/model from the dashboard.
-- **Subscriptions** — see and refresh the OAuth sign‑in state of the runtimes
-  that use your *subscription* (Claude / ChatGPT) rather than a metered API key.
-- **Inbox · Tasks · Health · Schedule · Identity & Keys** — answer questions the
-  manager is blocked on; create/claim/assign/complete tasks; probe agent health;
-  manage heartbeats and recurring calendar check‑ins; and per‑agent ENS / ID Chain
-  / OWS wallet, Safe smart account, and scoped (optionally non‑expiring) ERC‑4337
-  session keys. *(Identity & Keys runs on a simulated key provider today — the
-  real OWS / Safe‑4337 signing backend is the planned swap.)*
-- **Continuous-improvement workflow** — compatible managers attach complete
-  dispatch contracts, atomic assignment lineage, blocked/stalled recovery,
-  evidence-backed validation, and governed Brain promotion to tasks. Work keeps
-  its existing tabs and Kanban while showing lifecycle and outcome metrics.
-- **Self‑update** — the desktop app can check a release manifest, stage an update,
-  and relaunch into the new version.
+- macOS DMG and ZIP for Apple Silicon and Intel;
+- Windows x64 NSIS installer; and
+- Linux x64 AppImage and Debian package.
 
----
+Download the artifact for the current release, install it normally, and open
+IDACC. On first launch, IDACC:
 
-## Quick start
+1. verifies and starts its bundled Manager and Brain on private random loopback
+   ports;
+2. lets you connect an existing subscription CLI, a local model server, or an
+   API provider;
+3. validates the live model route before creating anything;
+4. preserves existing agents and creates only missing starter roles; and
+5. verifies the lead, coder, researcher, hierarchy, instructions, and health
+   gates before declaring the workspace ready.
 
-The supported macOS install builds IDACC, installs the app in `~/Applications`,
-installs and builds the compatible manager fork beside this checkout, and keeps
-that manager running as a per-user service:
+If a provider or service is unavailable, setup remains retryable and can enter
+limited mode so Settings and diagnostics stay accessible.
 
-```bash
-git clone https://github.com/bobofbuilding/idacc.git ~/Projects/idacc-stack/idacc
-cd ~/Projects/idacc-stack/idacc
-node scripts/install-idacc-stack.mjs
-```
+The bundled Manager, Brain, listener, agents, and scheduled workers are
+supervised children of IDACC and stop when the application exits. Recurring
+work resumes from profile-owned state on the next launch; IDACC does not install
+a background daemon or promise execution while the application is closed.
 
-The installer requires Node.js 20 or newer. It preserves existing IDACC
-settings, refuses tracked changes or foreign manager checkouts, performs only
-fast-forward manager updates, atomically replaces the app bundle, and refuses
-to take over an unknown process on the manager port. It also installs a manager
-release updater that checks every 30 minutes, accepts only tagged release-schema
-commits, builds before activation, and waits for active queries to drain before
-restarting. The same guarded manager check and update path is available from
-Settings → Self-update, alongside the separate IDACC app updater. Preview every action first with
-`node scripts/install-idacc-stack.mjs --dry-run`.
+Provider subscription CLIs are intentionally not bundled. IDACC can detect and
+open visible vendor install/sign-in flows, but provider credentials stay with
+the provider tooling. API secrets entered in IDACC are handled in the desktop
+main process and encrypted with secure operating-system credential storage;
+IDACC refuses Electron's weak Linux `basic_text` fallback.
 
-If IDACC was installed from the downloadable `.app` without running the stack
-installer, Settings → Self-update shows **Install current manager**. That action
-uses installer scripts bundled with the app to clone, validate, build, start,
-and enroll the compatible manager fork in background updates. It preserves the
-same dirty-worktree, foreign-remote, non-fast-forward, and unknown-service guards
-as the command-line installer.
+## One update authority
 
-By default the control center connects to `http://127.0.0.1:4100`; point it
-elsewhere with `MANAGER_URL`. After launch, open Settings and confirm the
-Connection, Local models & backends, and Inference backends cards. The app can
-observe a stock manager, but the full downloadable control-center experience
-needs a manager that advertises the Control Center extension contract via
-`GET /capabilities`. Some panels need those manager routes — see
-**[Manager compatibility](#how-this-relates-to-id-agents-the-difference)** above.
+IDACC, Manager, and Brain update together. There is no standalone Manager
+installer or background Manager updater in the application.
 
-Provider subscription CLIs are intentionally not bundled into the IDACC app.
-Settings → Managed subscription sign-ins detects existing installations and
-offers reviewed, visible Terminal installers for supported CLIs, including
-Claude Code and OpenAI Codex. Install and sign in only to the runtimes the team
-will use; IDACC never stores their provider credentials.
+The desktop updater:
 
-### Desktop GUI
+- reads only the compiled `bobofbuilding/idacc` GitHub release feed;
+- rejects downgrade and prerelease updates;
+- verifies electron-builder hashes and platform signatures where supported;
+- downloads only after an explicit check unless auto-download is enabled; and
+- installs only after the user chooses **Restart & update**.
+
+macOS and Windows production jobs require signing credentials and verify the
+resulting signatures. macOS additionally requires notarization, Gatekeeper
+acceptance, and staple validation. Linux artifacts ship with release checksums,
+SBOMs, and build-provenance attestations. Linux in-app replacement is available
+only for the AppImage build; Debian-package installs update through the system
+package manager or by installing the newer `.deb`.
+
+## Main features
+
+- live fleet health, activity, routing, and Manager chat;
+- team creation, hierarchy, delegation, and independent validation roles;
+- Inbox, Tasks, Work, schedules, recurring check-ins, goals, and Brain Plans;
+- Brain memory, learning, graph, dashboards, and governed promotion into work;
+- local, subscription, and API model routes with live assignment preflight;
+- skills, portable plugins, MCP servers, scoped keys, wallets, and chain RPCs;
+- macOS Computer Use with explicit authority, supervision, panic controls, and
+  retained local audit records; and
+- automatic crash recovery, bounded logs, limited mode, and clean-profile
+  diagnostics.
+
+Computer Use input control is currently macOS-only. Windows and Linux builds
+remain fully usable for the other features and report that capability as
+unavailable instead of failing startup.
+
+## Development
+
+The pinned toolchain is Node 22.17 and npm 10.9.
 
 ```bash
-cd idctl-desktop
-npm install        # first time
-npm start          # build + launch the window
-
-npm run dist       # → release/.../ID Agents Control Center.app  (double‑clickable)
+npm ci --prefix idctl
+npm ci --prefix idctl-desktop
+npm run typecheck --prefix idctl-desktop
+npm run build --prefix idctl-desktop
 ```
 
-### Terminal TUI
+The normal development build can run without staged runtimes. A distributable
+build must use clean Manager and Brain checkouts matching
+`release/runtime-lock.json`:
 
 ```bash
-cd idctl
-npm install        # first time
-npm start          # launch the TUI (needs a real terminal)
-npm run status     # one‑shot, scriptable snapshot (no TTY needed)
+node scripts/validate-runtime-lock.mjs \
+  --manager-source .runtime-sources/manager \
+  --brain-source .runtime-sources/brain
+
+IDACC_MANAGER_SOURCE="$PWD/.runtime-sources/manager" \
+IDACC_BRAIN_SOURCE="$PWD/.runtime-sources/brain" \
+npm run stage:runtimes --prefix idctl-desktop
+
+npm run build:release --prefix idctl-desktop
+npm run verify:runtimes --prefix idctl-desktop
 ```
 
-> The two packages live as **siblings** in this repo on purpose: `idctl-desktop`
-> imports the shared backend from `../idctl/src/…`. Keep them side‑by‑side.
+Native packages must be built on their target operating system because the
+Manager includes a native SQLite module. The production workflow rebuilds it for
+each Electron/OS/architecture combination before packaging.
 
-### Install or update the manager source alongside a project
-
-If you want a local manager checkout that matches the maintained IDACC-compatible
-fork, use the guarded installer:
+Useful release gates include:
 
 ```bash
-node scripts/install-id-agents-manager.mjs --project-dir ~/Projects/idacc-stack
+npm run test:release-provenance --prefix idctl-desktop
+npm run test:release-platform-config --prefix idctl-desktop
+npm run test:unified-stack-policy --prefix idctl-desktop
+npm run test:unified-stack-integration --prefix idctl-desktop
+npm run test:release-payload --prefix idctl-desktop
 ```
 
-This installs or fast-forwards `~/Projects/idacc-stack/id-agents` from
-`https://github.com/bobofbuilding/id-agents.git`. It refuses to overwrite a
-non-empty non-git folder, refuses dirty worktrees, refuses foreign remotes unless
-you pass `--allow-foreign`, and uses `git merge --ff-only` so local commits are
-not rewritten. This source-only command intentionally does not activate or
-restart the service; install and build the manager after a fresh clone or update:
-
-```bash
-cd ~/Projects/idacc-stack/id-agents
-npm ci
-npm run build
-node dist/start-agent-manager.js
-```
-
-Keep that process running while using IDACC. For an interactive manager terminal,
-use `npm run id-agents` instead; it builds the manager, starts the daemon when
-needed, and then opens the CLI. IDACC is a client of the manager and does not
-start the daemon itself.
-
-Preview the checkout operation first with:
-
-```bash
-node scripts/install-id-agents-manager.mjs --project-dir ~/Projects/idacc-stack --dry-run
-```
-
-### Configuration
-
-| Env var | Default | Purpose |
-|---|---|---|
-| `MANAGER_URL` | `http://127.0.0.1:4100` | manager daemon base URL |
-| `ID_TEAM` | *(manager default)* | active team (sent as `X-Id-Team`) |
-| `IDCTL_CONFIG` | `~/.config/idctl/config.json` | UI config file path |
-| `IDCTL_REFRESH_MS` | `3000` | fleet poll interval |
-
-No secrets are baked into the repo. Manager URLs, teams, and any API keys you
-enter are stored only in your local `~/.config/idctl/config.json` (file mode
-`0600`), never in the source tree.
-
----
+See `docs/RELEASE_PROVENANCE.md` for the immutable build, SBOM, checksum,
+attestation, signing, and publishing process.
 
 ## Architecture
 
-```
- Desktop GUI (Electron)              Terminal TUI (idctl)
- ┌──────────────────────┐           ┌──────────────────────┐
- │ React renderer (DOM)  │           │ Ink renderer (TTY)    │
- │   App · views/*       │           │   App · views/*       │
- └─────────┬────────────┘           └─────────┬────────────┘
-           │ IPC bridge                        │
- ┌─────────▼────────────┐           ┌─────────▼────────────┐
- │ Electron main (Node)  │           │ idctl process (Node)  │
- └─────────┬────────────┘           └─────────┬────────────┘
-           │                                   │
-           └───────────── shared backend ──────┘
-                  idctl/src: ManagerClient · settings · keys
-                                   │ HTTP
-                          ┌────────▼─────────┐
-                          │  id-agents        │
-                          │  manager  :4100   │   ← separate repo (upstream)
-                          └──────────────────┘
+```text
+┌──────────────── unified IDACC application ────────────────┐
+│ React renderer → narrow IPC bridge → Electron main       │
+│                                      │                    │
+│                   verified random loopback services       │
+│                         ├─ Agent manager                  │
+│                         ├─ Brain                          │
+│                         ├─ Brain event listener           │
+│                         └─ opt-in scheduled Brain cycle   │
+└───────────────────────────────────────────────────────────┘
+                         │
+             app-owned profile (outside the bundle)
+  goals · plans · memory · databases · skills · cursors · logs
 ```
 
-- `idctl/src/api`, `idctl/src/settings`, `idctl/src/keys` — the shared backend:
-  the manager HTTP client, inference‑backend/provider settings, and the pluggable
-  `KeyProvider`. Imported by **both** shells.
-- `idctl-desktop/src/{main,preload,renderer}` — Electron main + IPC bridge +
-  React UI. The backend runs in the main process (Node, no CORS, secrets off the
-  UI) and is exposed to the window over a small allow‑listed bridge.
-- `idctl/src/{app,components,views,cli.tsx}` — the Ink TUI.
-- `idctl-desktop/src-tauri` + `idctl-desktop/src/tauri` — an **experimental,
-  parked** Tauri shell (the renderer is transport‑pluggable). Electron is the
-  supported desktop build today.
+The renderer is sandboxed with Node integration disabled and a restrictive
+content-security policy. IPC accepts only the main trusted local document.
+Bundled runtime files are checked against the manifest digest compiled into the
+application and then re-hashed in full before either child process starts.
+Manager control routes also require an in-memory bearer credential in addition
+to loopback/admin checks; that credential is never passed to Brain, companions,
+or agents. A separate Brain credential is scoped to Manager's Brain transport,
+the app-owned Brain companions, and the curated MCP attachment for agents
+configured with the Brain skill.
 
-See each package's own README ([`idctl-desktop`](idctl-desktop/README.md) ·
-[`idctl`](idctl/README.md)) for keybindings, build details, and inference‑backend
-setup.
+IDACC is a single-user local application, not a sandbox against hostile
+software already running as the same operating-system user. Random loopback
+ports prevent accidental service collisions; they are not authentication.
+Normal agent-facing Manager operations and some Brain reads remain available to
+local agents. See the [local security model](docs/SECURITY_MODEL.md) for the
+precise trust boundary and guidance for isolating mutually untrusted workloads.
 
----
+## License
 
-## Acknowledgements & license
-
-Built for and against the [id-agents](https://github.com/idchain-world/id-agents)
-manager by [idchain-world](https://github.com/idchain-world). This is an
-independent client; it depends on a running manager but vendors none of its code.
-
-Licensed under the MIT License — see [LICENSE](LICENSE).
+Licensed under the MIT License. See `LICENSE`.

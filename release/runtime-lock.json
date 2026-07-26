@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "components": {
+    "manager": {
+      "repository": "https://github.com/bobofbuilding/id-agents.git",
+      "commit": "5c063f03b2d667837bd4404322255038dd5f909e",
+      "tree": "cd0e983283bde1234a8403cbf5bd3ce6c4c1a6d1",
+      "version": "0.1.145",
+      "packageLockSha256": "e3c511b3b17c03571f2cdeb5f496e6b20f4f05623af116eb512e600e92afc72a",
+      "entrypoint": "dist/start-agent-manager.js",
+      "serviceId": "idagents-manager"
+    },
+    "brain": {
+      "repository": "https://github.com/bobofbuilding/brain.git",
+      "commit": "504854b127b925f9701b1fcd6e7477bf064d1616",
+      "tree": "345a20f179153ce200b99e3f5755099e54f3b959",
+      "version": "0.1.2",
+      "packageLockSha256": "eaff75043d195e6cb8fd3fda83a647c9db7a43dc49fb803d13abd7e2cf836909",
+      "entrypoint": "brain.mjs",
+      "serviceId": "idagents-brain"
+    }
+  }
+}

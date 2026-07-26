@@ -2,6 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ProjectEntry, ProjectPolicy } from '../../../../../../idctl/src/settings/schema.ts';
 import type { Task } from '../../../../../../idctl/src/api/types.ts';
 import { call, type FleetStore } from '../../../store.ts';
+import { summarizeProjectProgress } from '../../../dashboard/projectProgress.ts';
+import type { CommandEnvironment } from '../../../dashboard/commandRuntime.ts';
+import {
+  DRAWER_COMMANDS,
+  drawerCommandStatus,
+  runDrawerCommand,
+} from '../../../dashboard/drawerCommands.ts';
+import { useDrawerGuard, type DrawerGuardReporter } from '../drawerGuard.ts';
 
 type SubTask = { title: string; description: string; agent: string; dependsOn: number[] };
 type CreatePlanResult = { created?: Array<{ ok?: boolean; ref?: string; title?: string; agent?: string; error?: string; deferred?: boolean }>; dispatched?: number; deferred?: number };
@@ -23,7 +31,29 @@ function newProject(name: string, team: string): ProjectEntry {
   };
 }
 
-export function ProjectDriverPanel({ store, onOpenWork }: { store: FleetStore; onOpenWork?: () => void }) {
+function routingSnapshot(project: ProjectEntry): string {
+  return JSON.stringify({
+    name: project.name.trim(),
+    path: project.path ?? '',
+    description: project.description ?? '',
+    team: project.team ?? '',
+    lead: project.lead ?? '',
+    policy: project.policy ?? 'balanced',
+    status: project.status,
+  });
+}
+
+export function ProjectDriverPanel({
+  store,
+  onOpenWork,
+  commandEnvironment,
+  onGuardChange,
+}: {
+  store: FleetStore;
+  onOpenWork?: () => void;
+  commandEnvironment: CommandEnvironment;
+  onGuardChange?: DrawerGuardReporter;
+}) {
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   const [projectId, setProjectId] = useState('');
   const [draft, setDraft] = useState<ProjectEntry>(() => newProject('', store.team || 'default'));
@@ -37,6 +67,24 @@ export function ProjectDriverPanel({ store, onOpenWork }: { store: FleetStore; o
   const leads = useMemo(
     () => store.allAgents.filter((agent) => teamOf(agent) === (draft.team || 'default')).map((agent) => agent.name),
     [store.allAgents, draft.team],
+  );
+  const persistedProject = projects.find((project) => project.id === projectId);
+  const routingDirty = persistedProject
+    ? routingSnapshot(draft) !== routingSnapshot(persistedProject)
+    : Boolean(
+      (draft.name.trim() && draft.name.trim() !== 'New project')
+      || draft.path
+      || draft.description
+      || draft.lead
+      || (draft.team || 'default') !== (store.team || 'default')
+      || (draft.policy ?? 'balanced') !== 'balanced',
+    );
+  const dirty = routingDirty || Boolean(objective.trim()) || proposal.length > 0;
+  useDrawerGuard(
+    onGuardChange,
+    dirty,
+    busy,
+    busy ? 'A project command is still running.' : 'Project routing, objective, or proposed task edits have not been saved or dispatched.',
   );
 
   const load = async () => {
@@ -54,6 +102,7 @@ export function ProjectDriverPanel({ store, onOpenWork }: { store: FleetStore; o
   useEffect(() => { void load(); }, []);
 
   const selectProject = (id: string) => {
+    if (dirty && !window.confirm('Discard the current project edits and load another project?')) return;
     setProjectId(id);
     const found = projects.find((project) => project.id === id);
     setDraft(found ? { ...found } : newProject('', store.team || 'default'));
@@ -79,49 +128,95 @@ export function ProjectDriverPanel({ store, onOpenWork }: { store: FleetStore; o
   const save = () => act('Saving project', async () => {
     if (!draft.name.trim()) throw new Error('Project name is required');
     const row = { ...draft, name: draft.name.trim(), updatedAt: Date.now() };
-    const list = await call<ProjectEntry[]>('projects:save', row);
-    setProjects(list);
-    setProjectId(row.id);
-    setDraft(row);
-    setStatus('Project saved and routed through Manager to Brain');
+    const result = await runDrawerCommand({
+      metadata: DRAWER_COMMANDS.projectSave,
+      environment: commandEnvironment,
+      label: 'Save project routing',
+      resourceRefs: [`project:${row.id}`, `team:${row.team || 'default'}`],
+      operation: () => call<ProjectEntry[]>('projects:save', row),
+    });
+    if (result.receipt.state === 'succeeded' && result.value) {
+      setProjects(result.value);
+      setProjectId(row.id);
+      setDraft(row);
+    }
+    setStatus(drawerCommandStatus('Save project routing', result, 'Project saved and routed through Manager to Brain.'));
   });
 
   const decompose = () => act('Decomposing objective', async () => {
     if (!projectId) throw new Error('Save the project before decomposing work');
     if (!objective.trim()) throw new Error('Objective is required');
-    const response = await call<{ ok?: boolean; subtasks?: SubTask[]; error?: string }>('work:decompose', objective.trim(), draft.lead || '', draft.team, projectId);
-    const rows = response.subtasks ?? [];
-    if (!response.ok || rows.length === 0) throw new Error(response.error || 'No dispatchable tasks were proposed');
-    setProposal(rows);
-    setStatus(`${rows.length} proposed task${rows.length === 1 ? '' : 's'} ready for review`);
+    const result = await runDrawerCommand({
+      metadata: DRAWER_COMMANDS.projectDecompose,
+      environment: commandEnvironment,
+      label: 'Decompose project objective',
+      resourceRefs: [`project:${projectId}`, `team:${draft.team || 'default'}`],
+      operation: async () => {
+        const response = await call<{ ok?: boolean; subtasks?: SubTask[]; error?: string }>('work:decompose', objective.trim(), draft.lead || '', draft.team, projectId);
+        const rows = response.subtasks ?? [];
+        if (!response.ok || rows.length === 0) throw new Error(response.error || 'No dispatchable tasks were proposed');
+        return rows;
+      },
+    });
+    if (result.receipt.state === 'succeeded' && result.value) {
+      setProposal(result.value);
+      setStatus(`${result.value.length} proposed task${result.value.length === 1 ? '' : 's'} ready for review`);
+    } else {
+      setStatus(drawerCommandStatus('Decompose project objective', result));
+    }
   });
 
   const dispatch = () => act('Dispatching reviewed work', async () => {
     if (!proposal.length) throw new Error('Decompose and review the proposal first');
-    const result = await call<CreatePlanResult>('work:createPlan', objective.trim(), proposal, {
-      dispatch: true,
-      lane: 'todo',
-      team: draft.team,
-      projectId,
-      planId: `dashboard-${projectId}-${Date.now().toString(36)}`,
-      coordinator: draft.lead,
-      respectOwners: true,
+    const tracked = await runDrawerCommand({
+      metadata: DRAWER_COMMANDS.projectDispatch,
+      environment: commandEnvironment,
+      label: 'Dispatch reviewed work',
+      resourceRefs: [`project:${projectId}`, `team:${draft.team || 'default'}`],
+      operation: ({ idempotencyKey }) => call<CreatePlanResult>('work:createPlan', objective.trim(), proposal, {
+        dispatch: true,
+        lane: 'todo',
+        team: draft.team,
+        projectId,
+        planId: `dashboard-${projectId}-${idempotencyKey.replace(/[^a-z0-9]+/gi, '-').slice(-24)}`,
+        coordinator: draft.lead,
+        respectOwners: true,
+        idempotencyKey,
+      }),
+      classifyOutcome: (value) => ({
+        state: (value.deferred ?? 0) > 0 ? 'deferred' : 'succeeded',
+        resourceRefs: (value.created ?? []).map((row) => row.ref ? `task:${row.ref}` : '').filter(Boolean),
+        recovery: (value.deferred ?? 0) > 0 ? 'Open Work to review deferred capacity or dependency gates.' : null,
+      }),
     });
-    await load();
-    const failed = (result.created ?? []).filter((row) => !row.ok);
-    setStatus(failed.length
-      ? `${result.dispatched ?? 0} dispatched; ${failed.length} deferred or blocked - review Work`
-      : `${result.dispatched ?? 0} task${result.dispatched === 1 ? '' : 's'} dispatched`);
+    if ((tracked.receipt.state === 'succeeded' || tracked.receipt.state === 'deferred') && tracked.value) {
+      await load();
+      const failed = (tracked.value.created ?? []).filter((row) => !row.ok);
+      setStatus(failed.length
+        ? `${tracked.value.dispatched ?? 0} dispatched; ${failed.length} deferred or blocked — review Work`
+        : `${tracked.value.dispatched ?? 0} task${tracked.value.dispatched === 1 ? '' : 's'} dispatched`);
+      setProposal([]);
+      setObjective('');
+    } else {
+      setStatus(drawerCommandStatus('Dispatch reviewed work', tracked));
+    }
   });
 
   const triage = () => act('Triaging project queue', async () => {
-    await call('work:triage', draft.lead || '', draft.team, projectId);
-    await load();
-    setStatus('Project queue triaged');
+    const result = await runDrawerCommand({
+      metadata: DRAWER_COMMANDS.projectTriage,
+      environment: commandEnvironment,
+      label: 'Triage project queue',
+      resourceRefs: [`project:${projectId}`, `team:${draft.team || 'default'}`],
+      operation: () => call('work:triage', draft.lead || '', draft.team, projectId),
+    });
+    if (result.receipt.state === 'succeeded') await load();
+    setStatus(drawerCommandStatus('Triage project queue', result, 'Project queue triaged.'));
   });
 
-  const projectTasks = tasks
-    .filter((task) => task.projectId === projectId)
+  const allProjectTasks = tasks.filter((task) => task.projectId === projectId);
+  const progress = summarizeProjectProgress(allProjectTasks);
+  const projectTasks = allProjectTasks
     .sort((a, b) => Number(b.updatedAt ?? b.createdAt ?? 0) - Number(a.updatedAt ?? a.createdAt ?? 0))
     .slice(0, 8);
 
@@ -155,7 +250,20 @@ export function ProjectDriverPanel({ store, onOpenWork }: { store: FleetStore; o
 
       {proposal.length ? <section className="driver-proposal"><h4>Review proposal</h4>{proposal.map((task, index) => <div className="driver-task" key={`${task.title}-${index}`}><input value={task.title} onChange={(event) => setProposal((rows) => rows.map((row, i) => i === index ? { ...row, title: event.target.value } : row))} /><select value={task.agent} onChange={(event) => setProposal((rows) => rows.map((row, i) => i === index ? { ...row, agent: event.target.value } : row))}>{store.allAgents.filter((agent) => teamOf(agent) === (draft.team || 'default')).map((agent) => <option key={agent.id || agent.name}>{agent.name}</option>)}</select><button className="btn icon-danger" title="Remove proposed task" onClick={() => setProposal((rows) => rows.filter((_, i) => i !== index))}>x</button></div>)}</section> : null}
 
-      <section className="driver-watch"><div className="driver-heading"><h4>Project activity</h4>{onOpenWork ? <button className="btn" onClick={onOpenWork}>Open Work</button> : null}</div>{projectTasks.length ? projectTasks.map((task) => <div className="driver-task-row" key={task.uuid || task.shortId || task.name}><span>{task.title}</span><span className="muted">{task.ownerName || 'needs assignment'} · {task.status}</span></div>) : <div className="muted">No team tasks yet.</div>}</section>
+      <section className="driver-watch">
+        <div className="driver-heading"><h4>Project progress</h4>{onOpenWork ? <button className="btn" onClick={onOpenWork}>Open Work</button> : null}</div>
+        {progress.total ? (
+          <div className="driver-progress" aria-label={`${progress.total} project tasks across ${progress.plans} plans`}>
+            <span className="ok-text">working {progress.working}</span>
+            <span>deferred {progress.deferred}</span>
+            <span className="warn-text">blocked {progress.blocked}</span>
+            <span className="status-error">failed {progress.failed}</span>
+            <span className="ok-text">complete {progress.complete}</span>
+            <span className="muted">{progress.plans} plan{progress.plans === 1 ? '' : 's'}</span>
+          </div>
+        ) : null}
+        {projectTasks.length ? projectTasks.map((task) => <div className="driver-task-row" key={task.uuid || task.shortId || task.name}><span>{task.title}</span><span className="muted">{task.ownerName || 'needs assignment'} · {task.workflowState || task.status}</span></div>) : <div className="muted">No team tasks yet.</div>}
+      </section>
       {status ? <div className="driver-status" aria-live="polite">{status}</div> : null}
     </div>
   );

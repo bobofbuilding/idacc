@@ -20,8 +20,14 @@ assert.ok(
     && subscriptions.includes("install: 'npm install -g @openai/codex'"),
   'primary Claude and Codex subscription runtimes should expose reviewed installers',
 );
-for (const path of ['.nvm/versions/node', '.volta/bin', '.asdf/shims', '.mise/shims', '.local/share/pnpm']) {
-  assert.ok(subscriptions.includes(path), `packaged CLI discovery should include ${path}`);
+for (const pathParts of [
+  ["'.nvm', 'versions', 'node'"],
+  ['VOLTA_HOME', "'.volta', 'bin'"],
+  ["'.asdf', 'shims'"],
+  ["'.mise', 'shims'"],
+  ["'.local', 'share', 'pnpm'"],
+]) {
+  assert.ok(pathParts.every((part) => subscriptions.includes(part)), `packaged CLI discovery should include ${pathParts.join(' / ')}`);
 }
 assert.ok(
   subscriptions.includes("localeCompare(a.name, undefined, { numeric: true })"),
@@ -56,6 +62,16 @@ assert.ok(
   'Settings should not report a sign-in state before the first provider probe',
 );
 assert.ok(
+  settings.includes('const [pendingSignin, setPendingSignin]')
+    && settings.includes('async function confirmSignin(provider: SubKey)')
+    && settings.includes('I’ve finished — re-check'),
+  'managed subscription sign-in should wait for explicit user completion before a forced status check',
+);
+assert.ok(
+  !settings.includes('setTimeout(() => void refreshManagedSubscriptions({ force: true }), 4000)'),
+  'managed subscription sign-in should not assume a fixed OAuth completion time',
+);
+assert.ok(
   teams.includes("'subs:assignmentStatus'") && teams.includes("'runtime:probeLocal'") && teams.includes('Refresh runtimes'),
   'Teams Build should refresh assignable subscription readiness and local liveness without probing unrelated backends',
 );
@@ -71,7 +87,7 @@ assert.ok(
 );
 assert.ok(
   bridge.includes('client.runtimePreflight(runtime, model || undefined)')
-    && bridge.includes('The connected ID Agents manager is outdated and cannot verify runtime assignments.'),
+    && bridge.includes('The bundled Agent manager cannot verify runtime assignments.'),
   'Team Builder must require manager-authoritative runtime/model preflight before spawn',
 );
 assert.ok(

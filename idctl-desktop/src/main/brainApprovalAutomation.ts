@@ -225,13 +225,12 @@ export function parseBrainApprovalReview(text: unknown): BrainApprovalReviewResu
 export function selectBrainApprovalReviewers(reviewers: BrainApprovalReviewer[]): BrainApprovalReviewer[] {
   const unique = [...new Map(reviewers.map((reviewer) => [`${reviewer.team}/${reviewer.agent}`, reviewer])).values()];
   const rank = (reviewer: BrainApprovalReviewer): number => {
-    if (reviewer.team === 'skillmesh-ops' && /lead/i.test(reviewer.agent)) return 0;
-    if (reviewer.team === 'default' && reviewer.agent === 'researcher') return 1;
-    if (reviewer.team === 'default' && reviewer.agent === 'coder') return 2;
-    if (reviewer.specialty === 'skill-domain') return 3;
-    if (reviewer.specialty === 'evidence') return 4;
-    if (reviewer.specialty === 'implementation') return 5;
-    return 6;
+    if (reviewer.team === 'default' && reviewer.agent === 'researcher') return 0;
+    if (reviewer.team === 'default' && reviewer.agent === 'coder') return 1;
+    if (reviewer.specialty === 'skill-domain') return 2;
+    if (reviewer.specialty === 'evidence') return 3;
+    if (reviewer.specialty === 'implementation') return 4;
+    return 5;
   };
   return unique.sort((a, b) => rank(a) - rank(b) || `${a.team}/${a.agent}`.localeCompare(`${b.team}/${b.agent}`));
 }
@@ -291,7 +290,7 @@ async function routeRepair(approval: AutomatableBrainApproval, reason: string, r
       kind: 'skill.evidence.repair',
       subject: approval.subject ?? '',
       approval_id: approval.id,
-      assignee: 'skillmesh-ops/skillmesh-ops-lead',
+      assignee: reviews.find((review) => review.reviewer)?.reviewer ?? 'default/lead',
       priority: Number(payload['demand'] ?? 1) || 1,
       evidence_ids: { source_ids: originalEvidenceIds(approval) },
       payload: {

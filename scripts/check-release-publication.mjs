@@ -1,18 +1,24 @@
 #!/usr/bin/env node
 /**
  * Stops release version drift: every pushed vX.Y.Z tag must have a published
- * GitHub Release.  It is deliberately independent of the publishing helper so
- * it can detect interrupted local release runs.
+ * GitHub Release. It is deliberately independent of the workflow dispatcher
+ * so it can detect interrupted or publish=false production runs.
  */
 import { spawnSync } from 'node:child_process';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  evaluateLegacyReleaseCutover,
+  readLegacyReleaseCutover,
+} from './lib/legacy-release-cutover.mjs';
 import { SEMVER_TAG, unpublishedFrontierTags } from './lib/release-publication.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const cutoverPath = join(root, 'release', 'legacy-release-cutover.json');
 const args = process.argv.slice(2);
 const allowTags = [];
 let requireTag = '';
+let jsonOutput = false;
 
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
@@ -24,8 +30,10 @@ for (let index = 0; index < args.length; index += 1) {
     const tag = args[++index];
     if (!SEMVER_TAG.test(tag || '')) fail(`--require-tag requires a semver tag, got ${tag || '(missing)'}`);
     requireTag = tag;
+  } else if (arg === '--json') {
+    jsonOutput = true;
   } else if (arg === '--help') {
-    console.log('usage: node scripts/check-release-publication.mjs [--allow-tag vX.Y.Z] [--require-tag vX.Y.Z]');
+    console.log('usage: node scripts/check-release-publication.mjs [--allow-tag vX.Y.Z] [--require-tag vX.Y.Z] [--json]');
     process.exit(0);
   } else {
     fail(`unknown argument: ${arg}`);
@@ -84,14 +92,40 @@ async function latestReleaseFor(repo) {
   return release ? [release] : [];
 }
 
-// A release checkout may be shallow or long-lived. Compare against origin's
-// current tags, not merely whichever tags happened to be present locally.
+function remoteTagRefs() {
+  const refs = new Map();
+  const peeled = new Set();
+  const output = git(['ls-remote', '--tags', 'origin']);
+  for (const line of output.split(/\r?\n/).filter(Boolean)) {
+    const match = line.match(/^([0-9a-f]+)\trefs\/tags\/(.+?)(\^\{\})?$/);
+    if (!match) continue;
+    const [, objectId, tag, peeledSuffix] = match;
+    if (peeledSuffix) peeled.add(tag);
+    else refs.set(tag, objectId);
+  }
+  return [...refs].map(([tag, objectId]) => ({
+    tag,
+    objectId,
+    objectType: peeled.has(tag) ? 'tag' : 'commit',
+  }));
+}
+
+// A release checkout may be shallow or long-lived. Fetch tag objects, then
+// compare against origin's current refs so a deleted or rewritten legacy tag
+// cannot be hidden by a stale local checkout.
 git(['fetch', '--quiet', 'origin', '--tags']);
-const tags = git(['tag', '--list']).split(/\r?\n/).filter(Boolean);
-if (requireTag && !tags.includes(requireTag)) fail(`${requireTag} does not exist locally`);
+const tagRefs = remoteTagRefs();
+const tags = tagRefs.map((entry) => entry.tag);
+if (requireTag && !tags.includes(requireTag)) fail(`${requireTag} does not exist on origin`);
 const repo = repository();
 const latestRelease = await latestReleaseFor(repo);
-const candidates = unpublishedFrontierTags(tags, latestRelease, { allowTags });
+const latestPublished = latestRelease.find((release) => release && !release.draft);
+const latestPublishedTag = latestPublished?.tag_name;
+if (latestPublishedTag && !tags.includes(latestPublishedTag)) {
+  fail(`GitHub latest ${latestPublishedTag} does not exist on origin`);
+}
+let cutover;
+let marker;
 const releasesByTag = new Map();
 async function releaseForTag(tag) {
   if (!releasesByTag.has(tag)) {
@@ -99,6 +133,24 @@ async function releaseForTag(tag) {
   }
   return releasesByTag.get(tag);
 }
+try {
+  marker = readLegacyReleaseCutover(cutoverPath);
+  const releaseRecords = await Promise.all(marker.legacyTags.map(async ({ tag }) => ({
+    tag,
+    release: await releaseForTag(tag),
+  })));
+  cutover = evaluateLegacyReleaseCutover(marker, {
+    repository: repo,
+    latestPublishedTag,
+    tagRefs,
+    releaseRecords,
+  });
+} catch (error) {
+  fail(error.message);
+}
+
+const effectiveAllowTags = [...new Set([...cutover.allowTags, ...allowTags])];
+const candidates = unpublishedFrontierTags(tags, latestRelease, { allowTags: effectiveAllowTags });
 
 const missing = [];
 if (latestRelease.length) {
@@ -117,4 +169,26 @@ if (missing.length) {
   fail(`pushed version tag(s) without a published GitHub Release: ${missing.join(', ')}. Repair the oldest gap with scripts/release.sh --resume <version> before cutting another version.`);
 }
 
-console.log(`✓ release publication parity verified for ${tags.filter((tag) => SEMVER_TAG.test(tag)).length} semver tag(s)`);
+const state = {
+  repository: repo,
+  latestPublishedTag,
+  changelogBaselineTag: cutover.changelogBaselineTag,
+  firstCanonicalVersionMustExceed: cutover.firstCanonicalVersionMustExceed,
+  semverTagCount: tags.filter((tag) => SEMVER_TAG.test(tag)).length,
+  cutover: {
+    active: cutover.active,
+    baselinePublishedTag: cutover.baselinePublishedTag,
+    legacyTagCount: cutover.legacyTagCount,
+    publishedNonLatestReleaseCount: cutover.publishedNonLatestReleaseCount,
+    absentReleaseCount: cutover.absentReleaseCount,
+  },
+};
+if (jsonOutput) {
+  console.log(JSON.stringify(state));
+} else {
+  if (cutover.active) {
+    console.log(`✓ audited legacy cutover allows ${cutover.legacyTagCount} exact historical ref(s) after ${cutover.baselinePublishedTag}`);
+  }
+  console.log(`✓ legacy release state verified: ${cutover.publishedNonLatestReleaseCount} published non-latest, ${cutover.absentReleaseCount} absent`);
+  console.log(`✓ release publication parity verified for ${state.semverTagCount} semver tag(s); changelog baseline ${state.changelogBaselineTag}`);
+}

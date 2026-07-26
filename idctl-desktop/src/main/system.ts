@@ -14,7 +14,8 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync } from 'node
 import { statfs } from 'node:fs/promises';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
+import { terminalAutomationSupported } from '../shared/subscriptionPortability.ts';
 
 const execFileP = promisify(execFile);
 const GB = 1024 ** 3;
@@ -34,8 +35,8 @@ const localStackInstallStatusCache = new Map<string, { at: number; rows: Record<
 /** GUI apps inherit a minimal PATH; include common package-manager locations. */
 function cliEnv(): NodeJS.ProcessEnv {
   const home = homedir();
-  const dirs = ['/opt/homebrew/bin', `${home}/.local/bin`, '/usr/local/bin', '/usr/bin', '/bin', ...(process.env.PATH ? process.env.PATH.split(':') : [])];
-  return { ...process.env, PATH: Array.from(new Set(dirs)).join(':') };
+  const dirs = ['/opt/homebrew/bin', `${home}/.local/bin`, '/usr/local/bin', '/usr/bin', '/bin', ...(process.env.PATH ? process.env.PATH.split(delimiter) : [])];
+  return { ...process.env, PATH: Array.from(new Set(dirs)).join(delimiter) };
 }
 
 export interface HardwareInfo {
@@ -302,13 +303,21 @@ export async function localStackInstallStatus(ids: string[], options: { force?: 
 
 /**
  * Open the user's Terminal and run a command there. Visible + abortable in their
- * own shell — we never run installers silently. macOS only (osascript); returns
- * the command either way so the UI can fall back to clipboard if Terminal
- * automation is blocked.
+ * own shell — we never run installers silently. Automatic launch is currently
+ * macOS-only; other platforms fail closed and return the untouched command so
+ * the UI can use its existing clipboard/manual-terminal fallback.
  */
 export async function runInTerminal(command: string): Promise<{ ok: boolean; ran: boolean; command: string; error?: string }> {
   const cmd = String(command || '').trim();
   if (!cmd) return { ok: false, ran: false, command: cmd, error: 'empty command' };
+  if (!terminalAutomationSupported(process.platform)) {
+    return {
+      ok: false,
+      ran: false,
+      command: cmd,
+      error: `Automatic terminal launch is not supported on ${process.platform}; the command was not executed.`,
+    };
+  }
   try {
     const osa = `tell application "Terminal"\n  activate\n  do script "${cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"\nend tell`;
     await execFileP('osascript', ['-e', osa], { timeout: 8000 });

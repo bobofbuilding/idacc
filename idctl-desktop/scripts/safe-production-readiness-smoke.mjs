@@ -27,6 +27,11 @@ for (const action of [
 }
 
 assert.match(main, /case 'keys:productionReadiness'/);
+assert.match(main, /case 'rootIdentity:get'/);
+assert.match(main, /case 'rootIdentity:set'/);
+assert.match(main, /function configureKeyProviderFromSettings/);
+assert.match(main, /configureKeyProvider\(new MockKeyProvider\(\)\)/);
+assert.match(main, /id: 'root-identity'/);
 assert.match(main, /eth_getCode/);
 assert.match(main, /0xa0e67e2b/); // Safe getOwners()
 assert.match(main, /0xe75235b8/); // Safe getThreshold()
@@ -55,6 +60,7 @@ assert.match(rehearsal, /safe-rehearsal\.json/);
 assert.match(tauri, /'keys:productionReadiness'/);
 assert.match(tauri, /simulation-only Tauri adapter/);
 assert.match(identity, /Production release gate/);
+assert.match(identity, /configuredRootIdentity\(rootIdentityStatus\.settings\)/);
 assert.match(identity, /const contractCanSubmit = \(productionReady \|\| thresholdRepairPrepared\)/);
 assert.match(identity, /Prepare threshold 2/);
 assert.match(identity, /!productionReady && !thresholdRepair/);

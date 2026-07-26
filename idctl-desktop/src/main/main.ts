@@ -5,11 +5,21 @@
 
 import { app, BrowserWindow, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage, clipboard } from 'electron';
 import { join } from 'node:path';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { call as bridgeCall, configureKeyProvider, configureManagedManager, startDraftDispatcher, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
+import { pathToFileURL } from 'node:url';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  call as bridgeCall,
+  configureKeyProvider,
+  configureManagedManager,
+  configureSettingsSecretCodec,
+  migrateSettingsSecrets,
+  startDraftDispatcher,
+  startGoalDriver,
+  startOrgSync,
+  startModelRefreshLoop,
+} from './bridge.ts';
 import { recordControlAction } from './controlLog.ts';
 import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
-import { applyManagerUpdate, bootstrapManagerInstall, checkManagerUpdate, getManagerUpdateStatus } from './managerUpdater.ts';
 import { assignmentSubsStatus, cachedSubsStatus, invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubsStatusOptions, type SubProvider } from './subscriptions.ts';
 import { ollamaTags, ollamaPull, ollamaRemove, ollamaCatalogCheck, catalogModelToLocalEntry, type InstalledModelInput } from './ollama.ts';
 import { backgroundStackStatus, dockerStatus, getHardware, localStackInstallStatus, runInTerminal, startBackgroundStack, stopBackgroundStack } from './system.ts';
@@ -31,20 +41,34 @@ import {
 } from './brainApprovalAutomation.ts';
 import { autoCreatePendingLearnTasks, getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, recoverStaleMaterials, removeMaterial, routePendingLearnMaterials, saveMaterial, subscribeMaterialChanges, syncUnsyncedMaterialsToBrain, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
 import { generateImage, readImage, imageModels, getImageServer, detectImageServer, probeImageServer } from './images.ts';
-import { listLocalModelCatalog, loadSettings, mergeLocalModelCatalog, removeEvmRpc, saveSettings, setUpdateSettings, setImageServer, setWalletConnectSettings, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
-import type { EvmRpcKeySource, EvmRpcProfile, EvmRpcRequest, ImageServerConfig } from '../../../idctl/src/settings/schema.ts';
+import { listLocalModelCatalog, loadSettings, mergeLocalModelCatalog, removeEvmRpc, saveSettings, setBrainAutomationSettings, setRootIdentitySettings, setUpdateSettings, setImageServer, setWalletConnectSettings, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
+import { configuredRootIdentity, defaultRootIdentitySettings, type BrainAutomationSettings, type EvmRpcKeySource, type EvmRpcProfile, type EvmRpcRequest, type ImageServerConfig, type RootIdentitySettings, type RootIdentityStatus } from '../../../idctl/src/settings/schema.ts';
+import { configDir, resolveConfigPath } from '../../../idctl/src/settings/paths.ts';
 import {
-  ROOT_AGENT_SAFE_ADDRESS,
   type KeyCapabilities,
   type KeyProductionReadiness,
   type KeyReadinessCheck,
 } from '../../../idctl/src/keys/types.ts';
-import { startBroker, armBroker, disarmBroker, setWatching, brokerStatus, auditTail, panicBroker, setSupervised, setPaused, confirmAction, pendingActions, setPanicHotkey, mintAgentToken, brokerUrl, stopBroker, legacyAgentTokenReport } from './computeruse/broker.ts';
+import { startBroker, armBroker, disarmBroker, setWatching, setBrokerDisplay, brokerStatus, auditTail, panicBroker, setSupervised, setPaused, confirmAction, pendingActions, setPanicHotkey, mintAgentToken, brokerUrl, stopBroker, legacyAgentTokenReport } from './computeruse/broker.ts';
+import { configureComputerUseAuditManager } from './computeruse/audit.ts';
 import { getPermissions, openPermissionSettings, relaunchApp, type CuPermissionPane } from './computeruse/permissions.ts';
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
-import { initializeAppProfile } from './appProfile.ts';
-import { startUnifiedStack, stopUnifiedStack, unifiedStackStatus } from './unifiedStack.ts';
+import { initializeAppProfile, updateManagedManagerProfileUrl } from './appProfile.ts';
+import {
+  configureUnifiedBrainAutomation,
+  startUnifiedStack,
+  stopUnifiedStack,
+  unifiedStackAdminToken,
+  unifiedStackStatus,
+} from './unifiedStack.ts';
+import {
+  configureOnboardingProvider,
+  consumerOnboardingStatus,
+  deferConsumerOnboarding,
+  resumeConsumerOnboarding,
+  runStarterFleetOnboarding,
+} from './consumerOnboarding.ts';
 import { buildLearnProcessContext } from '../shared/learnContext.ts';
 import { LEARN_BRAIN_BACKFILL_RUNNER_DELAYS, LEARN_QUEUE_RUNNER_DELAYS } from '../shared/backgroundPolicy.ts';
 import { buildPrimaryLeadPlanWork } from '../shared/planWork.ts';
@@ -53,8 +77,30 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { SAFE_MODULE_MANIFEST } from '../../../idctl/src/keys/safeManifest.ts';
 import { readSafeRehearsalRecord, SAFE_REHEARSAL_STEPS } from '../../../idctl/src/keys/safeRehearsal.ts';
 import { agentSignerVaultStatus, ensureAgentSigner, rotateAgentSigner } from './agentSignerVault.ts';
+import { secureStorageStatus } from './secureStoragePolicy.ts';
 import { inspectAlchemyAssets } from './alchemyAssetInspector.ts';
 import { SafeRolesKeyProvider } from './safeRolesProvider.ts';
+import { MockKeyProvider } from '../../../idctl/src/keys/mockProvider.ts';
+import { sanitizeSecretPayload } from './secretRedaction.ts';
+import { writeStackSelftestResultFile } from './selftestResult.ts';
+import {
+  ENS_ADDR_SELECTOR,
+  ENS_REGISTRY_ADDRESS,
+  ENS_RESOLVER_SELECTOR,
+  classifyEnsBinding,
+  decodeAbiAddress,
+  encodeEnsCall,
+  hasRuntimeCode,
+} from '../shared/identityVerification.ts';
+import {
+  scheduledDreamArchives,
+  type ScheduledDreamNewsItem,
+} from '../shared/dreamSchedule.ts';
+import type { ScheduleEntry } from '../../../idctl/src/api/client.ts';
+import {
+  runUnifiedRuntimeContractSelftest,
+  type UnifiedRuntimeContractSelftestResult,
+} from './unifiedRuntimeContractSelftest.ts';
 
 // Bundled as CommonJS → __dirname is the output dir (out/main/).
 declare const __dirname: string;
@@ -69,11 +115,13 @@ let kickLearnQueueRunner: ((delayMs?: number) => void) | null = null;
 let kickLearnBrainBackfillRunner: ((delayMs?: number) => void) | null = null;
 let stopDraftDispatcher: (() => void) | null = null;
 let stopBrainApprovalAutomation: (() => void) | null = null;
+let stopScheduledDreamArchive: (() => void) | null = null;
 let rendererSafeMode = false;
 let rendererRecoveryFirstAt = 0;
 let rendererRecoveryAttempts = 0;
 let rendererStableTimer: ReturnType<typeof setTimeout> | null = null;
 let storeChangeTimer: ReturnType<typeof setTimeout> | null = null;
+let keyProviderConfigurationError = '';
 const pendingStoreChangeDomains = new Set<string>();
 const pendingStoreChangeMethods = new Set<string>();
 
@@ -347,6 +395,37 @@ function rendererIndexFile(): string {
   return join(__dirname, '../renderer/index.html');
 }
 
+function isTrustedRendererUrl(value: string): boolean {
+  try {
+    const actual = new URL(value);
+    const expected = new URL(pathToFileURL(rendererIndexFile()).href);
+    return actual.protocol === 'file:'
+      && actual.host === expected.host
+      && actual.pathname === expected.pathname;
+  } catch {
+    return false;
+  }
+}
+
+function openExternalHttpUrl(value: string): void {
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'https:' || url.protocol === 'http:') void shell.openExternal(url.href);
+  } catch {
+    // Invalid and privileged schemes are ignored.
+  }
+}
+
+function requireTrustedIpcSender(event: Electron.IpcMainInvokeEvent): void {
+  if (
+    !event.senderFrame
+    || event.senderFrame !== event.sender.mainFrame
+    || !isTrustedRendererUrl(event.senderFrame.url)
+  ) {
+    throw new Error('IPC request rejected from an untrusted document.');
+  }
+}
+
 function loadRendererApp(target: BrowserWindow): void {
   const initialView = process.env.IDCTL_VIEW;
   void target.loadFile(rendererIndexFile(), initialView ? { search: `view=${initialView}` } : undefined);
@@ -500,7 +579,21 @@ async function openBrainDashboard(value: unknown): Promise<{ ok: true; tab: Brai
       title: cfg.title,
       webPreferences: {
         contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
       },
+    });
+    const allowedOrigin = new URL(url).origin;
+    brainDashboardWin.webContents.setWindowOpenHandler(({ url: target }) => {
+      openExternalHttpUrl(target);
+      return { action: 'deny' };
+    });
+    brainDashboardWin.webContents.on('will-navigate', (event, target) => {
+      try {
+        if (new URL(target).origin === allowedOrigin) return;
+      } catch { /* reject below */ }
+      event.preventDefault();
+      openExternalHttpUrl(target);
     });
     brainDashboardWin.on('closed', () => { brainDashboardWin = null; });
   }
@@ -530,9 +623,12 @@ function attachedComputerUseStamp(agents: ComputerUseAttachedAgent[], team: stri
 async function armComputerUseFromCurrentAttached(teamArg: unknown, expectedAttachedStampArg?: unknown) {
   const team = typeof teamArg === 'string' && teamArg.trim() ? teamArg.trim() : 'default';
   const attached = await bridgeCall('cu:attached', [team]) as ComputerUseAttachedAgent[];
-  const expected = typeof expectedAttachedStampArg === 'string' ? expectedAttachedStampArg : '';
+  if (typeof expectedAttachedStampArg !== 'string') {
+    throw new Error('Computer Use arming requires a reviewed attachment snapshot. Refresh Who can drive and try again.');
+  }
+  const expected = expectedAttachedStampArg;
   const actualStamp = attachedComputerUseStamp(attached ?? [], team);
-  if (expected && expected !== actualStamp) {
+  if (expected !== actualStamp) {
     throw new Error('Computer Use blessed agents changed before arming; refresh and review Who can drive.');
   }
   const status = brokerStatus();
@@ -630,7 +726,7 @@ function startLearnQueueRunner(): () => void {
 }
 
 function approvalReviewerSpecialty(team: string, agent: string): BrainApprovalReviewer['specialty'] {
-  if (team === 'skillmesh-ops' || /skill/i.test(agent)) return 'skill-domain';
+  if (/skill|capabilit|catalog|tool/i.test(agent)) return 'skill-domain';
   if (/research|fact-check/i.test(agent)) return 'evidence';
   if (/coder|architect|engineer|qa/i.test(agent)) return 'implementation';
   return 'coordination';
@@ -647,8 +743,7 @@ async function availableBrainApprovalReviewers(): Promise<BrainApprovalReviewer[
       const status = String(row.status || '').toLowerCase();
       if (!agent || !['running', 'active', 'working', 'idle'].includes(status)) continue;
       const candidate = (team === 'default' && ['coder', 'researcher', 'lead'].includes(agent))
-        || (team === 'skillmesh-ops' && /lead|discover|guardian|marketplace/i.test(agent))
-        || /(?:research|skillmesh|engineering)-lead$/i.test(agent);
+        || /(?:research|engineering|security|skills?|capabilities|catalog)-lead$/i.test(agent);
       if (!candidate) continue;
       reviewers.push({ team, agent, specialty: approvalReviewerSpecialty(team, agent) });
     }
@@ -724,16 +819,37 @@ function evmEnvKeyName(id: string): string {
   return `IDCTL_EVM_${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
 }
 
+function secureCredentialStorageAvailable(): boolean {
+  return secureStorageStatus(safeStorage).available;
+}
+
 function encryptSecret(secret: string): string {
+  if (!secureCredentialStorageAvailable()) {
+    throw new Error('Secure operating-system credential storage is unavailable. Unlock or configure your system credential store and retry.');
+  }
   return safeStorage.encryptString(secret).toString('base64');
 }
 
 function decryptSecret(encrypted?: string): string | undefined {
-  if (!encrypted) return undefined;
+  if (!encrypted || !secureCredentialStorageAvailable()) return undefined;
   try {
     return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
   } catch {
     return undefined;
+  }
+}
+
+function configureSecureSettings(): void {
+  configureSettingsSecretCodec({ encrypt: encryptSecret, decrypt: decryptSecret });
+  try {
+    const migrated = migrateSettingsSecrets();
+    if (migrated.providers || migrated.mcpServers) {
+      console.info(`[settings] encrypted ${migrated.providers} provider and ${migrated.mcpServers} MCP connection secret set(s)`);
+    }
+  } catch (error) {
+    // Linux keyrings can be temporarily unavailable before the desktop session
+    // unlocks. Existing data remains untouched and migration retries next boot.
+    console.warn('[settings] secure secret migration deferred:', error);
   }
 }
 
@@ -995,22 +1111,140 @@ async function guardedEvmRead(chainId: number, method: string, params: unknown[]
   return typeof result === 'string' ? result : JSON.stringify(result);
 }
 
-function configureLiveKeyProvider(): void {
-  configureKeyProvider(new SafeRolesKeyProvider({
-    statePath: () => join(app.getPath('userData'), 'keys', 'safe-roles-state.json'),
-    rpcRead: guardedEvmRead,
-    ensureSigner: ensureAgentSigner,
-    rotateSigner: rotateAgentSigner,
-    inspectAssets: async (chainId, safeAddress) => {
-      const rpc = evmRpcForChain(chainId);
-      if (!rpc) throw new Error(`No enabled RPC is configured for chain ${chainId}.`);
-      return inspectAlchemyAssets({
-        rpcUrl: rpcUrlForRequest(rpc.httpsUrl, resolveEvmRpcKey(rpc)),
-        safeAddress,
-        chainId,
-      });
-    },
+type IdentityVerificationRequest = {
+  domain?: string;
+  controllerWallet?: string;
+  smartAccount?: string;
+  chainId?: number;
+  contractAddresses?: string[];
+};
+
+async function verifyIdentityEvidence(input: IdentityVerificationRequest) {
+  const domain = String(input?.domain ?? '').trim().replace(/\.$/, '').toLowerCase();
+  const controllerWallet = String(input?.controllerWallet ?? '').trim().toLowerCase();
+  const smartAccount = String(input?.smartAccount ?? '').trim().toLowerCase();
+  const expectedAddresses = new Set([controllerWallet, smartAccount].filter((value) => /^0x[0-9a-f]{40}$/.test(value)));
+  const chainId = Number(input?.chainId ?? 1);
+  const contracts = [...new Set((input?.contractAddresses ?? [])
+    .map((value) => String(value).trim().toLowerCase())
+    .filter((value) => /^0x[0-9a-f]{40}$/.test(value)))]
+    .slice(0, 8);
+
+  const resolver = {
+    state: 'unavailable' as 'verified' | 'mismatch' | 'unbound' | 'missing' | 'unavailable',
+    address: '',
+    resolvedAddress: '',
+    detail: domain ? 'Resolver check has not completed.' : 'No public ENS identity is registered.',
+  };
+  if (domain && domain.endsWith('.eth')) {
+    try {
+      const resolverResult = await guardedEvmRead(1, 'eth_call', [{
+        to: ENS_REGISTRY_ADDRESS,
+        data: encodeEnsCall(ENS_RESOLVER_SELECTOR, domain),
+      }, 'latest']);
+      const resolverAddress = decodeAbiAddress(resolverResult);
+      if (!resolverAddress) {
+        resolver.state = 'missing';
+        resolver.detail = `${domain} has no resolver in the Ethereum ENS registry.`;
+      } else {
+        resolver.address = resolverAddress;
+        const resolverCode = await guardedEvmRead(1, 'eth_getCode', [resolverAddress, 'latest']);
+        if (!hasRuntimeCode(resolverCode)) {
+          resolver.state = 'missing';
+          resolver.detail = `ENS returned ${resolverAddress}, but no resolver bytecode was found.`;
+        } else {
+          const addrResult = await guardedEvmRead(1, 'eth_call', [{
+            to: resolverAddress,
+            data: encodeEnsCall(ENS_ADDR_SELECTOR, domain),
+          }, 'latest']);
+          const resolvedAddress = decodeAbiAddress(addrResult);
+          resolver.resolvedAddress = resolvedAddress ?? '';
+          const binding = classifyEnsBinding(resolvedAddress, expectedAddresses);
+          if (binding === 'missing') {
+            resolver.state = 'missing';
+            resolver.detail = `Resolver ${resolverAddress} is deployed, but ${domain} has no EVM address record.`;
+          } else if (binding === 'mismatch') {
+            resolver.state = 'mismatch';
+            resolver.detail = `${domain} resolves to ${resolvedAddress}, which does not match the selected controller or Agent Safe.`;
+          } else if (binding === 'unbound') {
+            resolver.state = 'unbound';
+            resolver.detail = `${domain} resolves to ${resolvedAddress}, but no selected controller or Agent Safe address is available to verify that binding.`;
+          } else {
+            resolver.state = 'verified';
+            resolver.detail = `${domain} resolves through deployed resolver ${resolverAddress} to ${resolvedAddress}.`;
+          }
+        }
+      }
+    } catch (error) {
+      resolver.state = 'unavailable';
+      resolver.detail = `Live ENS verification unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  } else if (domain) {
+    resolver.detail = `${domain} is not an Ethereum .eth name; no compatible live resolver contract is configured.`;
+  }
+
+  const contractEvidence = await Promise.all(contracts.map(async (address) => {
+    try {
+      const code = await guardedEvmRead(chainId, 'eth_getCode', [address, 'latest']);
+      const deployed = hasRuntimeCode(code);
+      return {
+        address,
+        state: deployed ? 'verified' as const : 'missing' as const,
+        deployed,
+        detail: deployed ? `Deployed runtime bytecode verified on chain ${chainId}.` : `No runtime bytecode on chain ${chainId}.`,
+      };
+    } catch (error) {
+      return {
+        address,
+        state: 'unavailable' as const,
+        deployed: false,
+        detail: `Contract check unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }));
+
+  return { checkedAt: Date.now(), chainId, resolver, contracts: contractEvidence };
+}
+
+function configureKeyProviderFromSettings(settings = loadSettings().rootIdentity ?? defaultRootIdentitySettings()): void {
+  const rootIdentity = configuredRootIdentity(settings);
+  keyProviderConfigurationError = '';
+  if (!rootIdentity) {
+    configureKeyProvider(new MockKeyProvider());
+    return;
+  }
+  try {
+    configureKeyProvider(new SafeRolesKeyProvider({
+      rootIdentity,
+      statePath: () => join(configDir(resolveConfigPath()), 'safe-roles-state.json'),
+      rpcRead: guardedEvmRead,
+      ensureSigner: ensureAgentSigner,
+      rotateSigner: rotateAgentSigner,
+      inspectAssets: async (chainId, safeAddress) => {
+        const rpc = evmRpcForChain(chainId);
+        if (!rpc) throw new Error(`No enabled RPC is configured for chain ${chainId}.`);
+        return inspectAlchemyAssets({
+          rpcUrl: rpcUrlForRequest(rpc.httpsUrl, resolveEvmRpcKey(rpc)),
+          safeAddress,
+          chainId,
+        });
+      },
+    }));
+  } catch (error) {
+    keyProviderConfigurationError = error instanceof Error ? error.message : String(error);
+    configureKeyProvider(new MockKeyProvider());
+    console.error(`[root-identity] live provider disabled: ${keyProviderConfigurationError}`);
+  }
+}
+
+function currentRootIdentityStatus(): RootIdentityStatus {
+  const settings = loadSettings().rootIdentity ?? defaultRootIdentitySettings();
+  const configured = configuredRootIdentity(settings);
+  return {
+    settings,
+    activeProvider: configured && !keyProviderConfigurationError ? 'safe-roles' : 'local',
+    ...(keyProviderConfigurationError ? { error: keyProviderConfigurationError } : {}),
+  };
 }
 
 function runtimeCodeHash(code: string): string {
@@ -1078,7 +1312,21 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
   const checkedAt = Date.now();
   const caps = await bridgeCall('keys:caps', []) as KeyCapabilities;
   const settings = loadSettings();
+  const rootStatus = currentRootIdentityStatus();
+  const rootIdentity = configuredRootIdentity(settings.rootIdentity);
   const checks: KeyReadinessCheck[] = [];
+  const rootIdentityActive = Boolean(rootIdentity && rootStatus.activeProvider === 'safe-roles');
+  checks.push({
+    id: 'root-identity',
+    label: 'Profile root identity',
+    status: rootIdentityActive ? 'pass' : 'block',
+    detail: rootIdentityActive
+      ? `${rootIdentity!.ensRoot} is explicitly bound to ${rootIdentity!.safeAddress} on chain ${rootIdentity!.chainId}.`
+      : rootStatus.error || 'This profile is local/mock; no live ENS root or Safe address is enabled.',
+    remediation: rootIdentityActive
+      ? undefined
+      : 'In Settings, manually enter and enable the ENS root and Safe address owned by this profile. No bundled identity is imported automatically.',
+  });
   checks.push({
     id: 'live-provider',
     label: 'Live Safe provider',
@@ -1096,7 +1344,7 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
     detail: signerVault.available
       ? `${signerVault.backend} is available; ${signerVault.signerCount} encrypted agent signer(s) are present.`
       : signerVault.error ?? 'Agent signer encryption is unavailable.',
-    remediation: signerVault.available ? undefined : 'Unlock macOS Keychain and retry. IDACC will not store plaintext agent keys.',
+    remediation: signerVault.available ? undefined : 'Unlock or configure secure operating-system credential storage and retry. IDACC will not store plaintext agent keys.',
   });
   const walletConnect = settings.walletConnect ?? { enabled: false, projectId: '' };
   const connectorReady = walletConnect.enabled && /^[a-f0-9]{32}$/i.test(walletConnect.projectId);
@@ -1108,21 +1356,23 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
     remediation: connectorReady ? undefined : 'Enable the root Safe connector in Settings and save a valid Reown project ID.',
   });
 
-  const rpc = ethereumMainnetRpc();
-  if (!rpc) {
+  const rpc = rootIdentity ? ethereumMainnetRpc() : undefined;
+  if (!rpc || !rootIdentity) {
     checks.push({
       id: 'asset-inspection',
       label: 'Asset revocation guard',
       status: 'block',
-      detail: 'Full asset inspection requires an enabled Ethereum mainnet Alchemy RPC.',
-      remediation: 'Configure the encrypted Alchemy RPC used for native, ERC-20, ERC-721, and ERC-1155 inspection.',
+      detail: rootIdentity
+        ? 'Full asset inspection requires an enabled Ethereum mainnet Alchemy RPC.'
+        : 'Asset inspection is unavailable until a profile root identity is explicitly enabled.',
+      remediation: rootIdentity ? 'Configure the encrypted Alchemy RPC used for native, ERC-20, ERC-721, and ERC-1155 inspection.' : 'Configure the profile root identity first.',
     });
     checks.push({
       id: 'ethereum-rpc',
       label: 'Ethereum mainnet RPC',
       status: 'block',
-      detail: 'No enabled Ethereum mainnet RPC is configured.',
-      remediation: 'Add and successfully check an Ethereum mainnet RPC in Settings.',
+      detail: rootIdentity ? 'No enabled Ethereum mainnet RPC is configured.' : 'No live root identity is enabled for an Ethereum RPC preflight.',
+      remediation: rootIdentity ? 'Add and successfully check an Ethereum mainnet RPC in Settings.' : 'Configure the profile root identity first.',
     });
     checks.push({
       id: 'module-attestation',
@@ -1154,8 +1404,8 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
     if (checks.at(-1)?.id === 'ethereum-rpc' && checks.at(-1)?.status === 'pass') {
       const assets = await inspectAlchemyAssets({
         rpcUrl: rpcUrlForRequest(rpc.httpsUrl, resolveEvmRpcKey(rpc)),
-        safeAddress: ROOT_AGENT_SAFE_ADDRESS,
-        chainId: 1,
+        safeAddress: rootIdentity.safeAddress,
+        chainId: rootIdentity.chainId,
       });
       checks.push({
         id: 'asset-inspection',
@@ -1173,16 +1423,16 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
         remediation: moduleEvidence.ok ? undefined : 'Do not use the module stack until every deployed runtime matches the pinned manifest.',
       });
       try {
-        const code = await evmJsonRpc(rpc, 'eth_getCode', [ROOT_AGENT_SAFE_ADDRESS, 'latest']);
+        const code = await evmJsonRpc(rpc, 'eth_getCode', [rootIdentity.safeAddress, 'latest']);
         if (!/^0x[0-9a-f]{40,}$/i.test(code)) throw new Error('root address has no verified contract bytecode');
-        const owners = decodeAbiAddressArray(await evmJsonRpc(rpc, 'eth_call', [{ to: ROOT_AGENT_SAFE_ADDRESS, data: '0xa0e67e2b' }, 'latest']));
-        const threshold = Number(decodeAbiUint(await evmJsonRpc(rpc, 'eth_call', [{ to: ROOT_AGENT_SAFE_ADDRESS, data: '0xe75235b8' }, 'latest'])));
+        const owners = decodeAbiAddressArray(await evmJsonRpc(rpc, 'eth_call', [{ to: rootIdentity.safeAddress, data: '0xa0e67e2b' }, 'latest']));
+        const threshold = Number(decodeAbiUint(await evmJsonRpc(rpc, 'eth_call', [{ to: rootIdentity.safeAddress, data: '0xe75235b8' }, 'latest'])));
         const hardened = owners.length >= 2 && threshold >= 2;
         checks.push({
           id: 'root-safe-contract',
           label: 'Root Safe contract',
           status: hardened ? 'pass' : 'block',
-          detail: `Verified Safe proxy at ${ROOT_AGENT_SAFE_ADDRESS}: ${owners.length} owners, threshold ${threshold}.`,
+          detail: `Verified Safe proxy at ${rootIdentity.safeAddress}: ${owners.length} owners, threshold ${threshold}.`,
           remediation: hardened ? undefined : 'Raise the root Safe threshold to at least 2 before it can authorize independent agent Safes.',
         });
       } catch (error) {
@@ -1237,8 +1487,8 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
   return {
     ready: checks.every((check) => check.status !== 'block'),
     checkedAt,
-    chainId: 1,
-    rootSafe: ROOT_AGENT_SAFE_ADDRESS,
+    chainId: rootIdentity?.chainId ?? 1,
+    rootSafe: rootIdentity?.safeAddress ?? '',
     provider: caps.provider,
     checks,
   };
@@ -1293,6 +1543,7 @@ function createWindow() {
     webPreferences: {
       preload: join(__dirname, '../preload/preload.cjs'),
       contextIsolation: true,
+      sandbox: true,
       nodeIntegration: false,
       spellcheck: !rendererSafeMode, // safe mode favors stability over text-service integrations
     },
@@ -1324,8 +1575,13 @@ function createWindow() {
 
   // Open external links in the system browser, never in-app.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalHttpUrl(url);
     return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (event, url) => {
+    if (isTrustedRendererUrl(url)) return;
+    event.preventDefault();
+    openExternalHttpUrl(url);
   });
 
   // Right-click menu: spelling corrections for a misspelled word, plus the
@@ -1408,6 +1664,54 @@ function createWindow() {
   }
 }
 
+async function archiveScheduledDreams(team: string): Promise<{ archived: number; discovered: number }> {
+  const feed = await bridgeCall('dreams:scheduledRuns', [team]) as {
+    schedules?: ScheduleEntry[];
+    newsByAgent?: Record<string, ScheduledDreamNewsItem[]>;
+  };
+  const candidates = scheduledDreamArchives(
+    Array.isArray(feed?.schedules) ? feed.schedules : [],
+    feed?.newsByAgent && typeof feed.newsByAgent === 'object' ? feed.newsByAgent : {},
+    team,
+  );
+  let archived = 0;
+  for (const candidate of candidates) {
+    if (getDream(candidate.id)) continue;
+    saveDream(candidate);
+    archived++;
+  }
+  return { archived, discovered: candidates.length };
+}
+
+async function archiveAllScheduledDreams(): Promise<number> {
+  const teams = await bridgeCall('teams', []).catch(() => []) as Array<{ name?: string }>;
+  const names = [...new Set((teams.length ? teams : [{ name: 'default' }])
+    .map((team) => String(team.name || '').trim())
+    .filter(Boolean))];
+  let archived = 0;
+  for (const team of names) {
+    archived += (await archiveScheduledDreams(team).catch(() => ({ archived: 0, discovered: 0 }))).archived;
+  }
+  if (archived > 0) publishStoreChange('dreams:archiveScheduled');
+  return archived;
+}
+
+function startScheduledDreamArchiveLoop(): () => void {
+  let running = false;
+  const run = async () => {
+    if (running) return;
+    running = true;
+    try { await archiveAllScheduledDreams(); }
+    finally { running = false; }
+  };
+  const initial = setTimeout(() => void run(), 5_000);
+  const interval = setInterval(() => void run(), 5 * 60 * 1000);
+  return () => {
+    clearTimeout(initial);
+    clearInterval(interval);
+  };
+}
+
 // App-level (main-process) methods that don't go through the manager bridge.
 async function appCall(method: string, args: unknown[]): Promise<unknown> {
   switch (method) {
@@ -1423,14 +1727,16 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return loadSettings().update ?? null;
     case 'update:setSettings':
       return setUpdateSettings((args[0] as Record<string, unknown>) ?? {}).update ?? null;
-    case 'managerUpdate:status':
-      return getManagerUpdateStatus();
-    case 'managerUpdate:check':
-      return checkManagerUpdate();
-    case 'managerUpdate:apply':
-      return applyManagerUpdate();
-    case 'managerUpdate:bootstrap':
-      return bootstrapManagerInstall();
+    case 'brainAutomation:getSettings':
+      return loadSettings().brainAutomation ?? null;
+    case 'brainAutomation:setSettings':
+      {
+        const next = setBrainAutomationSettings(
+          (args[0] as Partial<BrainAutomationSettings>) ?? {},
+        ).brainAutomation;
+        if (next) await configureUnifiedBrainAutomation(next);
+        return next ?? null;
+      }
     case 'evmRpc:list':
       return loadEvmRpcsMigratingSecrets().map(redactEvmRpc);
     case 'evmRpc:save':
@@ -1456,6 +1762,15 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return probeEvmRpc(String(args[0] ?? ''));
     case 'evmRpc:read':
       return guardedEvmRead(Number(args[0]), String(args[1] ?? ''), Array.isArray(args[2]) ? args[2] : []);
+    case 'identity:verifyEvidence':
+      return verifyIdentityEvidence((args[0] as IdentityVerificationRequest) ?? {});
+    case 'rootIdentity:get':
+      return currentRootIdentityStatus();
+    case 'rootIdentity:set': {
+      const cfg = setRootIdentitySettings((args[0] as Partial<RootIdentitySettings>) ?? {});
+      configureKeyProviderFromSettings(cfg.rootIdentity);
+      return currentRootIdentityStatus();
+    }
     case 'walletConnect:get':
       return loadSettings().walletConnect ?? { enabled: false, projectId: '' };
     case 'walletConnect:set':
@@ -1517,6 +1832,16 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return dockerStatus();
     case 'unifiedStack:status':
       return unifiedStackStatus();
+    case 'onboarding:status':
+      return consumerOnboardingStatus((args[0] as { force?: boolean } | undefined) ?? {});
+    case 'onboarding:configureProvider':
+      return configureOnboardingProvider(args[0] as Parameters<typeof configureOnboardingProvider>[0]);
+    case 'onboarding:runStarterFleet':
+      return runStarterFleetOnboarding(args[0]);
+    case 'onboarding:defer':
+      return deferConsumerOnboarding();
+    case 'onboarding:resume':
+      return resumeConsumerOnboarding();
     case 'brain:openDashboard':
       return openBrainDashboard(args[0]);
     case 'brain:openGraph':
@@ -1605,7 +1930,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       await syncGoalInstructionsAfterMutation('remove');
       return result;
     }
-    // Brain plans: read-only LIVE view of <projectsRoot>/brain/plans (README index + files).
+    // Brain Plans live in the active app profile. A legacy project checkout is
+    // consulted only by the one-time, read-only import in brainplans.ts.
     case 'brain:plans':
       return listBrainPlans(args[0] as string | undefined);
     case 'brain:plan':
@@ -1631,6 +1957,12 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     // Dreams: saved offline-reflection reports (consolidation/insights/ideas/simulations).
     case 'dreams:list':
       return listDreams(args[0] as string | undefined);
+    case 'dreams:archiveScheduled': {
+      const team = String(args[0] || 'default');
+      const result = await archiveScheduledDreams(team);
+      if (result.archived > 0) publishStoreChange('dreams:archiveScheduled');
+      return result;
+    }
     case 'dreams:get':
       return getDream(args[0] as string);
     case 'dreams:save':
@@ -1735,6 +2067,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return disarmBroker();
     case 'cu:watch':
       return setWatching(Boolean(args[0]));
+    case 'cu:setDisplay':
+      return setBrokerDisplay(Number(args[0]));
     case 'cu:audit':
       return auditTail(args[0] as number | undefined);
     case 'cu:panic':
@@ -1762,15 +2096,18 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
 }
 
 // Single IPC entry point → app methods + allowlisted bridge methods.
-ipcMain.handle('idagents:call', async (_e, method: string, args: unknown[]) => {
+ipcMain.handle('idagents:call', async (event, method: string, args: unknown[]) => {
   try {
+    requireTrustedIpcSender(event);
     const result = await appCall(method, args);
     // Mirror successful control actions to the self-learning brain (best-effort, fire-and-forget):
     // this is the single choke point every renderer mutation flows through, so the brain learns
     // config/org/project changes that never reach the manager. Never awaited — can't delay the reply.
-    recordControlAction(method, Array.isArray(args) ? args : [], result);
+    const safeArgs = sanitizeSecretPayload(Array.isArray(args) ? args : []);
+    const safeResult = sanitizeSecretPayload(result);
+    recordControlAction(method, safeArgs, safeResult);
     publishStoreChange(method);
-    return { ok: true, result };
+    return { ok: true, result: safeResult };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -1778,7 +2115,8 @@ ipcMain.handle('idagents:call', async (_e, method: string, args: unknown[]) => {
 
 // Write-only clipboard channel for user-invoked copy actions. Keep this separate
 // from idagents:call so copied communication text never enters the control log.
-ipcMain.handle('idagents:clipboardWrite', (_e, value: unknown) => {
+ipcMain.handle('idagents:clipboardWrite', (event, value: unknown) => {
+  requireTrustedIpcSender(event);
   clipboard.writeText(String(value ?? ''));
   return true;
 });
@@ -1857,30 +2195,187 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
 } else if (stackSelftest) {
   app.whenReady().then(async () => {
     const profile = initializeAppProfile();
-    configureManagedManager(process.env.MANAGER_URL || 'http://127.0.0.1:4110');
-    await startUnifiedStack(profile);
-    const deadline = Date.now() + 25_000;
-    let status = await unifiedStackStatus();
-    while (!status.ready && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    let status: Awaited<ReturnType<typeof unifiedStackStatus>> = {
+      managed: false,
+      services: [],
+      companions: [],
+      brainCatalog: {
+        healthy: false,
+        profileOwned: false,
+        skillCount: 0,
+        error: 'stack has not started',
+      },
+      managerCompatibility: {
+        ready: false,
+        apiVersion: 0,
+        missingFeatures: [],
+        missingRoutes: [],
+        unexpectedFeatures: [],
+        unexpectedRoutes: [],
+        issues: ['stack:not-started'],
+        error: 'stack has not started',
+      },
+      brainAutomation: loadSettings().brainAutomation ?? {
+        cycleEnabled: false,
+        cycleCadenceHours: 24,
+      },
+      ready: false,
+    };
+    let authPassed = true;
+    let adminToken: string | null = null;
+    let selftestError: string | undefined;
+    let brainCycleOptIn: {
+      initiallyDisabled: boolean;
+      initiallyRunning: boolean;
+      listenerRunningBeforeOptIn: boolean;
+      stateAbsentBeforeOptIn: boolean;
+      enabledAt: number;
+      persisted: boolean;
+    } | undefined;
+    let runtimeContract: UnifiedRuntimeContractSelftestResult | undefined;
+    try {
+      const startedStack = await startUnifiedStack(profile);
+      const managerUrl = startedStack.services.find((service) => service.name === 'manager')?.url;
+      if (managerUrl) updateManagedManagerProfileUrl(profile.config, managerUrl);
+      const activeManagerUrl = managerUrl || process.env.MANAGER_URL || 'http://127.0.0.1:4110';
+      adminToken = unifiedStackAdminToken();
+      configureManagedManager(activeManagerUrl, adminToken);
+      configureComputerUseAuditManager(activeManagerUrl, adminToken);
+      const deadline = Date.now() + 25_000;
       status = await unifiedStackStatus();
+      while (!status.ready && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        status = await unifiedStackStatus();
+      }
+      if (!status.ready) {
+        throw new Error(status.managerCompatibility.error || 'Unified runtime did not become ready');
+      }
+      // Test fixtures may opt out only in an unpackaged development build.
+      // A production artifact always executes the full behavioral contract.
+      if (app.isPackaged || process.env.IDACC_STACK_CONTRACT_SELFTEST !== '0') {
+        runtimeContract = await runUnifiedRuntimeContractSelftest(activeManagerUrl, adminToken);
+      }
+      if (process.env.IDACC_STACK_SELFTEST_ENABLE_BRAIN_CYCLE === '1') {
+        const initialCycle = status.companions.find((companion) => companion.name === 'brain-cycle');
+        const initialListener = status.companions.find((companion) => companion.name === 'brain-listener');
+        const stateAbsentBeforeOptIn = !existsSync(join(profile.brain, 'brain-cycle-state.json'));
+        const enabledAt = Date.now();
+        const saved = setBrainAutomationSettings({
+          cycleEnabled: true,
+          cycleCadenceHours: status.brainAutomation.cycleCadenceHours,
+        }, profile.config).brainAutomation;
+        if (!saved) throw new Error('Brain cycle opt-in did not persist');
+        await configureUnifiedBrainAutomation(saved);
+        const observeInput = Number(process.env.IDACC_STACK_SELFTEST_CYCLE_OBSERVE_MS || 1_200);
+        const observeMs = Number.isFinite(observeInput)
+          ? Math.min(5_000, Math.max(0, Math.floor(observeInput)))
+          : 1_200;
+        if (observeMs) await new Promise((resolve) => setTimeout(resolve, observeMs));
+        status = await unifiedStackStatus();
+        brainCycleOptIn = {
+          initiallyDisabled: initialCycle?.enabled === false && initialCycle.phase === 'disabled',
+          initiallyRunning: initialCycle?.running === true,
+          listenerRunningBeforeOptIn: initialListener?.running === true,
+          stateAbsentBeforeOptIn,
+          enabledAt,
+          persisted: loadSettings(profile.config).brainAutomation?.cycleEnabled === true,
+        };
+      }
+      if (process.env.IDACC_STACK_AUTH_SELFTEST === '1') {
+        let forgedStatus = 0;
+        let desktopAuthenticated = false;
+        try {
+          const forged = await fetch(new URL('/control/brain', activeManagerUrl), {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-id-admin': '1',
+            },
+            body: JSON.stringify({ method: 'GET', path: '/health' }),
+          });
+          forgedStatus = forged.status;
+          await forged.body?.cancel();
+          desktopAuthenticated = Boolean(await bridgeCall('brain:coreHealth', []));
+        } catch {
+          desktopAuthenticated = false;
+        }
+        authPassed = forgedStatus === 403 && desktopAuthenticated;
+        console.log('IDACC_STACK_AUTH_SELFTEST ' + JSON.stringify({ forgedStatus, desktopAuthenticated }));
+      }
+    } catch (error) {
+      authPassed = false;
+      selftestError = error instanceof Error ? error.message : String(error);
     }
-    console.log('IDACC_STACK_SELFTEST ' + JSON.stringify(status));
-    await stopUnifiedStack();
-    app.exit(status.ready ? 0 : 1);
+
+    let resultPublished = true;
+    const result = sanitizeSecretPayload({
+      ...status,
+      authPassed,
+      ...(runtimeContract ? { runtimeContract } : {}),
+      ...(brainCycleOptIn ? { brainCycleOptIn } : {}),
+      ...(selftestError ? { selftestError } : {}),
+    });
+    try {
+      const serialized = JSON.stringify(result);
+      const secretCandidates = [
+        adminToken,
+        process.env.BRAIN_TOKEN,
+        process.env.IDACC_ADMIN_TOKEN,
+      ].filter((value): value is string => Boolean(value && value.length >= 8));
+      if (secretCandidates.some((secret) => serialized.includes(secret))) {
+        throw new Error('stack self-test result contained a runtime credential');
+      }
+      const requestedResultFile = process.env.IDACC_STACK_SELFTEST_RESULT_FILE;
+      if (requestedResultFile) {
+        writeStackSelftestResultFile(requestedResultFile, profile.root, result);
+      }
+      console.log('IDACC_STACK_SELFTEST ' + serialized);
+    } catch (error) {
+      resultPublished = false;
+      console.error('IDACC_STACK_SELFTEST_RESULT_ERROR ' + (
+        error instanceof Error ? error.message : String(error)
+      ));
+    }
+
+    try {
+      await stopUnifiedStack();
+    } catch (error) {
+      resultPublished = false;
+      console.error('IDACC_STACK_SELFTEST_STOP_ERROR ' + (
+        error instanceof Error ? error.message : String(error)
+      ));
+    }
+    app.exit(status.ready && authPassed && !selftestError && resultPublished ? 0 : 1);
   });
 } else {
   app.whenReady().then(async () => {
     const profile = initializeAppProfile();
-    configureManagedManager(process.env.MANAGER_URL || 'http://127.0.0.1:4110');
-    await startUnifiedStack(profile);
-    configureLiveKeyProvider();
+    configureSecureSettings();
+    const startedStack = await startUnifiedStack(profile);
+    const managerUrl = startedStack.services.find((service) => service.name === 'manager')?.url;
+    if (managerUrl) updateManagedManagerProfileUrl(profile.config, managerUrl);
+    const activeManagerUrl = managerUrl || process.env.MANAGER_URL || 'http://127.0.0.1:4110';
+    const adminToken = unifiedStackAdminToken();
+    configureManagedManager(activeManagerUrl, adminToken);
+    configureComputerUseAuditManager(activeManagerUrl, adminToken);
+    configureKeyProviderFromSettings();
     createWindow();
     if (win) startUpdater(win);
     // Persist window geometry on EVERY quit path (Cmd-Q, menu, and the self-update relaunch,
     // which calls app.quit()) before the window is destroyed — registered once, app-wide.
     app.on('before-quit', () => { if (win && !win.isDestroyed()) saveWinState(win); });
-    app.on('before-quit', () => { void stopUnifiedStack(); });
+    let stackShutdownStarted = false;
+    let stackShutdownComplete = false;
+    app.on('before-quit', (event) => {
+      if (stackShutdownComplete) return;
+      event.preventDefault();
+      if (stackShutdownStarted) return;
+      stackShutdownStarted = true;
+      void stopUnifiedStack().finally(() => {
+        stackShutdownComplete = true;
+        app.quit();
+      });
+    });
     // Reactive org-sync: keep every agent's goals & instructions file composed from the lead
     // hierarchy + brain team-instructions (first pass ~15s after boot, then every 5 min).
     try { startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }
@@ -1921,6 +2416,10 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     // Draft dispatcher: opt-in only. Draft/proposal rows are review-only unless
     // the operator explicitly enables this bridge in settings.
     try { stopDraftDispatcher = startDraftDispatcher(); } catch (e) { console.warn('[draft-dispatcher] failed to start:', e); }
+    // Reconcile completed scheduled Dream queries into the profile-owned Dream
+    // archive. Agent news is durable, so runs completed while IDACC was closed
+    // are imported idempotently after the unified stack comes back.
+    try { stopScheduledDreamArchive = startScheduledDreamArchiveLoop(); } catch (e) { console.warn('[dream-archive] failed to start:', e); }
     // Computer Use broker: loopback controller + live frame pump + approval prompts → the renderer.
     void startBroker(
       (frame) => { try { win?.webContents.send('computeruse:frame', frame); } catch { /* window gone */ } },
@@ -1949,6 +2448,7 @@ app.on('will-quit', () => { try { stopLearnBrainBackfillRunner?.(); } catch { /*
 app.on('will-quit', () => { try { stopMaterialChangeBridge?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopBrainApprovalAutomation?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { stopDraftDispatcher?.(); } catch { /* */ } });
+app.on('will-quit', () => { try { stopScheduledDreamArchive?.(); } catch { /* */ } });
 app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* */ } });
 app.on('child-process-gone', (_event, details) => {
   logProcessExit('child-process', details as unknown as Record<string, unknown>);

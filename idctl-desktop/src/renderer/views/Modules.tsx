@@ -478,7 +478,17 @@ function BrainDashboardLauncher({ compact = false, reviewTabs = {} }: { compact?
 
 /** Strip the registry-only `enabled` flag to get the on-the-wire spec. */
 function toSpec(p: McpServerProfile): McpServerSpec {
-  const { enabled: _enabled, ...spec } = p;
+  const {
+    enabled: _enabled,
+    hasStoredConnection: _hasStoredConnection,
+    registryRevision: _registryRevision,
+    connectionEncrypted: _connectionEncrypted,
+    ...spec
+  } = p;
+  void _enabled;
+  void _hasStoredConnection;
+  void _registryRevision;
+  void _connectionEncrypted;
   return spec;
 }
 /** Render a compact test result (✓ N tools / ✕ error / testing…). */
@@ -645,6 +655,7 @@ function mcpProfileStamp(p: McpServerProfile): string {
     env: p.env ?? {},
     headers: p.headers ?? {},
     enabled: p.enabled !== false,
+    registryRevision: p.registryRevision ?? '',
   });
 }
 function sortedKey(values: string[]): string {
@@ -671,11 +682,14 @@ function brainSkillSummaryStamp(report: BrainSkillSummary): string {
     gaps: brainSkillContractGaps(report).sort(),
   });
 }
-function mcpKey(a: { metadata?: unknown }): string {
-  const servers = (((a.metadata as any)?.mcpServers ?? []) as McpServerSpec[])
+function mcpServersKey(input: McpServerSpec[]): string {
+  const servers = (input ?? [])
     .map((s) => JSON.stringify({ name: s.name, transport: s.transport, command: s.command, args: s.args ?? [], url: s.url ?? '', env: s.env ?? {}, headers: s.headers ?? {} }))
     .sort();
   return servers.join('|');
+}
+function mcpKey(a: { metadata?: unknown }): string {
+  return mcpServersKey((((a.metadata as any)?.mcpServers ?? []) as McpServerSpec[]));
 }
 function skillsKey(a: { metadata?: unknown }): string {
   return sortedKey((((a.metadata as any)?.skills ?? []) as string[]).map(String));
@@ -947,8 +961,8 @@ export function Modules({ store }: { store: FleetStore }) {
   }
 
   // Auto-categorize on load: any skill with neither frontmatter tags nor a cached
-  // overlay gets tagged via one batch AI call (heuristic fallback), cached so it
-  // only runs once per new skill. `needs` flips false afterward, so this settles.
+  // overlay gets deterministic offline tags, cached once per new skill. AI
+  // refinement is reserved for the separately confirmed action below.
   useEffect(() => {
     if (categorizing) return;
     const needs = skills.some((s) => !(s.tags && s.tags.length) && !(autoTags[s.name] && autoTags[s.name].length));
@@ -965,6 +979,7 @@ export function Modules({ store }: { store: FleetStore }) {
 
   // Re-run AI categorization for all untagged skills (ignores the cache).
   async function recategorize() {
+    if (!window.confirm('Use a running agent to refine categories for untagged skills?\n\nThis is an explicit model request and may use metered or billable provider capacity. Cancel keeps the current offline categories.')) return;
     setCategorizing(true);
     try {
       setAutoTags(await call<Record<string, string[]>>('skills:categorize', true));
@@ -1098,7 +1113,7 @@ export function Modules({ store }: { store: FleetStore }) {
           return;
         }
       }
-      setMcp(await call<McpServerProfile[]>('mcp:add', profile));
+      setMcp(await call<McpServerProfile[]>('mcp:add', profile, existing ?? null));
       setNote(existing ? `replaced MCP server ${profile.name} ✓` : `added MCP server ${profile.name} ✓`);
       after();
     } finally {
@@ -1107,7 +1122,7 @@ export function Modules({ store }: { store: FleetStore }) {
   }
 
   async function freshGroups(): Promise<TeamAgentsGroup[]> {
-    return call<TeamAgentsGroup[]>('agents:allTeams', { force: true }).catch(() => []);
+    return call<TeamAgentsGroup[]>('agents:allTeams', { force: true, requireComplete: true }).catch(() => []);
   }
   async function refreshAgentGroupsSnapshot(): Promise<TeamAgentsGroup[]> {
     const groups = await freshGroups();
@@ -1214,38 +1229,234 @@ export function Modules({ store }: { store: FleetStore }) {
   function curMcp(a: { metadata?: unknown }): McpServerSpec[] {
     return ((a.metadata as any)?.mcpServers ?? []) as McpServerSpec[];
   }
+  async function applyMcpToTargets(
+    label: string,
+    transform: (servers: McpServerSpec[]) => McpServerSpec[],
+  ) {
+    if (targetCount === 0) {
+      setNote('select at least one agent above');
+      return;
+    }
+    setBusy(true);
+    setNote(`checking ${label} targets…`);
+    try {
+      const freshTargets = await freshCapabilityTargets(label);
+      if (!freshTargets) return;
+      const scopeLabel = scope === 'team'
+        ? `team ${activeTeam}`
+        : scope === 'leads'
+          ? 'all team leads'
+          : scope === 'workers'
+            ? 'all non-default workers'
+            : 'all teams';
+      if (!window.confirm(`Apply "${label}" to ${freshTargets.length} current target${freshTargets.length === 1 ? '' : 's'}?\n\nScope: ${scopeLabel}\nTargets: ${describeTargets(freshTargets)}\n\nEvery MCP write is compare-and-set. If a later target fails, completed writes are restored when their exact result is still current.`)) return;
+
+      setNote(`rechecking ${label} targets…`);
+      const latestTargets = await freshCapabilityTargets(label);
+      if (!latestTargets) return;
+      const plans = latestTargets.map((agent) => {
+        const before = curMcp(agent);
+        return {
+          agent,
+          team: targetTeamOf(agent),
+          before,
+          desired: transform(before),
+        };
+      });
+      const completed: Array<(typeof plans)[number] & { after: McpServerSpec[] }> = [];
+      try {
+        for (const plan of plans) {
+          const result = await call<SetMcpResult>(
+            'setAgentMcp',
+            plan.agent.id,
+            plan.desired,
+            plan.team,
+            plan.before,
+          );
+          completed.push({ ...plan, after: result.mcpServers ?? plan.desired });
+        }
+      } catch (operationError) {
+        const groups = await call<TeamAgentsGroup[]>(
+          'agents:allTeams',
+          { force: true, requireComplete: true },
+        ).catch(() => null);
+        const rollbackErrors: string[] = [];
+        let restored = 0;
+        if (!groups) {
+          rollbackErrors.push('the complete fleet could not be re-read, so completed targets need Repair');
+        } else {
+          for (const change of [...completed].reverse()) {
+            const current = groups
+              .find((group) => group.team === change.team)
+              ?.agents.find((agent) => agent.id === change.agent.id);
+            if (!current) {
+              rollbackErrors.push(`${change.team}/${change.agent.name}: no longer in the roster`);
+              continue;
+            }
+            const currentServers = curMcp(current);
+            if (mcpServersKey(currentServers) === mcpServersKey(change.before)) continue;
+            if (mcpServersKey(currentServers) !== mcpServersKey(change.after)) {
+              rollbackErrors.push(`${change.team}/${change.agent.name}: capabilities changed again; left untouched`);
+              continue;
+            }
+            try {
+              await call<SetMcpResult>(
+                'setAgentMcp',
+                change.agent.id,
+                change.before,
+                change.team,
+                currentServers,
+              );
+              restored++;
+            } catch (rollbackError) {
+              rollbackErrors.push(`${change.team}/${change.agent.name}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+            }
+          }
+        }
+        const cause = operationError instanceof Error ? operationError.message : String(operationError);
+        if (rollbackErrors.length) {
+          throw new Error(`${cause}. Restored ${restored}/${completed.length} confirmed earlier write${completed.length === 1 ? '' : 's'}; ${rollbackErrors.join('; ')}. The failed target may also need review if its response was interrupted.`);
+        }
+        throw new Error(`${cause}. Restored all ${completed.length} confirmed earlier write${completed.length === 1 ? '' : 's'}. Review the failed target before retrying because its response may have been interrupted.`);
+      }
+      setNote(`${label} ✓ (${plans.length})`);
+      store.refresh();
+    } catch (err) {
+      setNote(`${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function attachServer(p: McpServerProfile) {
-    await applyToTargets(`attach ${p.name}`, async (a) => {
-      const next = [...curMcp(a).filter((s) => s.name !== p.name), toSpec(p)];
-      await call<SetMcpResult>('setAgentMcp', a.id, next, targetTeamOf(a));
-    }, { strictCapabilities: false });
+    await applyMcpToTargets(
+      `attach ${p.name}`,
+      (current) => [...current.filter((server) => server.name !== p.name), toSpec(p)],
+    );
   }
   async function detachServer(p: McpServerProfile) {
-    await applyToTargets(`detach ${p.name}`, async (a) => {
-      await call<SetMcpResult>('setAgentMcp', a.id, curMcp(a).filter((s) => s.name !== p.name), targetTeamOf(a));
-    }, { strictCapabilities: false });
+    await applyMcpToTargets(
+      `detach ${p.name}`,
+      (current) => current.filter((server) => server.name !== p.name),
+    );
   }
   async function removeMcpProfile(name: string) {
     setBusy(true);
     setNote(`checking MCP registry for ${name}…`);
     try {
-      const latest = await call<McpServerProfile[]>('mcp:list').catch(() => []);
+      const latest = await call<McpServerProfile[]>('mcp:list').catch(() => null);
+      if (!latest) {
+        setNote(`remove blocked: could not verify the current MCP registry for "${name}". Refresh and try again.`);
+        return;
+      }
       const existing = latest.find((p) => p.name === name);
       if (!existing) {
         setNote(`remove blocked: MCP server "${name}" is no longer in the registry.`);
         setMcp(latest);
         return;
       }
-      if (!window.confirm(`Remove MCP server "${name}" from the current registry?\n\nThis does not detach it from agents that already have it, but it will no longer be available to attach from this catalog.`)) return;
-      const afterConfirm = await call<McpServerProfile[]>('mcp:list').catch(() => latest);
+      const groups = await call<TeamAgentsGroup[]>('agents:allTeams', { force: true, requireComplete: true }).catch(() => null);
+      if (!groups) {
+        setNote(`remove blocked: could not verify current agent attachments for "${name}". Refresh and try again.`);
+        return;
+      }
+      const attachedAgents = groups.flatMap((group) => group.agents
+        .filter((agent) => curMcp(agent).some((server) => server.name === name))
+        .map((agent) => ({ ...agent, team: group.team })));
+      const attachedStamp = sortedKey(attachedAgents.map((agent) => (
+        `${targetTeamOf(agent)}:${agent.id}:${mcpKey(agent)}`
+      )));
+      const impact = attachedAgents.length
+        ? `It will first detach the server from ${attachedAgents.length} agent${attachedAgents.length === 1 ? '' : 's'} across ${new Set(attachedAgents.map((agent) => targetTeamOf(agent))).size} team(s) and rebuild them. The registry entry is removed only after every detach and rebuild succeeds.`
+        : 'No current agent copy is attached, so only the registry entry will be removed.';
+      if (!window.confirm(`Remove MCP server "${name}" everywhere?\n\n${impact}`)) return;
+      const [afterConfirm, afterGroups] = await Promise.all([
+        call<McpServerProfile[]>('mcp:list').catch(() => null),
+        call<TeamAgentsGroup[]>('agents:allTeams', { force: true, requireComplete: true }).catch(() => null),
+      ]);
+      if (!afterConfirm) {
+        setNote(`remove blocked: could not re-check the MCP registry for "${name}". Refresh and try again.`);
+        return;
+      }
       const still = afterConfirm.find((p) => p.name === name);
       if (!still || mcpProfileStamp(still) !== mcpProfileStamp(existing)) {
         setMcp(afterConfirm);
         setNote(`remove blocked: MCP server "${name}" changed during confirmation. Review the current registry and try again.`);
         return;
       }
-      setMcp(await call<McpServerProfile[]>('mcp:remove', name));
-      setNote(`removed MCP server ${name} ✓`);
+      if (!afterGroups) {
+        setNote(`remove blocked: could not re-check current agent attachments for "${name}". Refresh and try again.`);
+        return;
+      }
+      const currentAttached = afterGroups.flatMap((group) => group.agents
+        .filter((agent) => curMcp(agent).some((server) => server.name === name))
+        .map((agent) => ({ ...agent, team: group.team })));
+      const currentStamp = sortedKey(currentAttached.map((agent) => (
+        `${targetTeamOf(agent)}:${agent.id}:${mcpKey(agent)}`
+      )));
+      if (currentStamp !== attachedStamp) {
+        setAgentGroupsSnapshot(afterGroups);
+        setNote(`remove blocked: attachments for "${name}" changed during confirmation. Review the refreshed agents and try again.`);
+        return;
+      }
+      const detached: Array<{
+        agent: TargetAgent;
+        team: string;
+        before: McpServerSpec[];
+        after: McpServerSpec[];
+      }> = [];
+      try {
+        for (const agent of currentAttached) {
+          const team = targetTeamOf(agent);
+          const current = curMcp(agent);
+          const next = current.filter((server) => server.name !== name);
+          await call<SetMcpResult>('setAgentMcp', agent.id, next, team, current);
+          detached.push({ agent, team, before: current, after: next });
+          await call('rebuildAgent', agent.name, team);
+        }
+
+        // Re-read the complete fleet immediately before catalog deletion. The
+        // main-process remove handler repeats this check, closing the renderer
+        // race as far as the Manager's compare-and-swap boundary permits.
+        const finalGroups = await call<TeamAgentsGroup[]>(
+          'agents:allTeams',
+          { force: true, requireComplete: true },
+        ).catch(() => null);
+        if (!finalGroups) throw new Error(`could not complete the final fleet attachment check for "${name}"`);
+        const remaining = finalGroups.flatMap((group) => group.agents
+          .filter((agent) => curMcp(agent).some((server) => server.name === name))
+          .map((agent) => `${group.team}/${agent.name}`));
+        if (remaining.length) {
+          throw new Error(`new or changed attachments appeared during removal: ${remaining.join(', ')}`);
+        }
+        setAgentGroupsSnapshot(finalGroups);
+        setMcp(await call<McpServerProfile[]>('mcp:remove', name, still));
+      } catch (operationError) {
+        const rollbackErrors: string[] = [];
+        for (const change of [...detached].reverse()) {
+          try {
+            await call<SetMcpResult>(
+              'setAgentMcp',
+              change.agent.id,
+              change.before,
+              change.team,
+              change.after,
+            );
+            await call('rebuildAgent', change.agent.name, change.team);
+          } catch (rollbackError) {
+            rollbackErrors.push(`${change.team}/${change.agent.name}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+          }
+        }
+        const cause = operationError instanceof Error ? operationError.message : String(operationError);
+        if (!detached.length) throw operationError;
+        if (rollbackErrors.length) {
+          throw new Error(`${cause}. The registry entry was kept, but automatic rollback needs Repair for ${rollbackErrors.join('; ')}`);
+        }
+        throw new Error(`${cause}. The registry entry was kept and ${detached.length} earlier attachment change${detached.length === 1 ? '' : 's'} were restored and rebuilt.`);
+      }
+      setNote(`removed MCP server ${name} and detached ${currentAttached.length} agent${currentAttached.length === 1 ? '' : 's'} ✓`);
+      store.refresh();
+    } catch (err) {
+      setNote(`remove failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy(false);
     }
@@ -1954,12 +2165,14 @@ export function Modules({ store }: { store: FleetStore }) {
           </tbody>
         </table>
 
-        {anyAttached ? (
-          <div className="row-actions" style={{ marginTop: 10 }}>
-            <span className="muted small grow">attach/detach updates take effect on rebuild</span>
-            <button className="btn" disabled={busy || targetCount === 0} onClick={() => void rebuildTargets()}>Rebuild {targetLabel}</button>
-          </div>
-        ) : null}
+        <div className="row-actions" style={{ marginTop: 10 }}>
+          <span className="muted small grow">
+            {anyAttached
+              ? 'attach/detach updates take effect on rebuild'
+              : 'rebuild remains available after detaching the final server'}
+          </span>
+          <button className="btn" disabled={busy || targetCount === 0} onClick={() => void rebuildTargets()}>Rebuild {targetLabel}</button>
+        </div>
 
         {showAddMcp || mcp.length === 0 ? (
         <>
@@ -2155,7 +2368,7 @@ export function Modules({ store }: { store: FleetStore }) {
             {tagFilter.size > 0 ? <button className="btn small" onClick={() => setTagFilter(new Set())}>Clear</button> : null}
             {categorizing
               ? <span className="muted small">categorizing...</span>
-              : <button className="btn small" disabled={busy} title="Re-run AI auto-categorization for untagged skills" onClick={() => void recategorize()}>Re-tag</button>}
+              : <button className="btn small" disabled={busy} title="Explicitly use a running agent to refine offline categories (may be billable)" onClick={() => void recategorize()}>AI re-tag…</button>}
           </div>
           {(brainDomainFacets.length || brainTagFacets.length) ? (
             <div className="skill-toolbar-brain">

@@ -18,7 +18,6 @@ import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
-  ROOT_AGENT_SAFE_ADDRESS,
   agentEnsName,
   type AgentAccount,
   type AssetGuardReport,
@@ -31,9 +30,9 @@ import {
   type SessionScope,
 } from '../../../idctl/src/keys/types.ts';
 import { SAFE_MODULE_MANIFEST } from '../../../idctl/src/keys/safeManifest.ts';
+import type { ConfiguredRootIdentity } from '../../../idctl/src/settings/schema.ts';
 
 const PROVIDER_REVISION = 'safe-roles-walletconnect-v1';
-const MAINNET_CHAIN_ID = 1;
 const OPERATION_TTL_MS = 15 * 60_000;
 
 function manifestAddress(name: string): string {
@@ -95,12 +94,18 @@ interface LiveAccountRecord {
 }
 
 interface ProviderState {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  rootIdentity: {
+    ensRoot: string;
+    safeAddress: string;
+    chainId: number;
+  };
   accounts: Record<string, LiveAccountRecord>;
   operations: Record<string, PreparedKeyOperation>;
 }
 
 export interface SafeRolesProviderOptions {
+  rootIdentity: ConfiguredRootIdentity;
   statePath: () => string;
   rpcRead: (chainId: number, method: string, params: unknown[]) => Promise<string>;
   ensureSigner: (agent: string) => SignerMetadata;
@@ -108,8 +113,16 @@ export interface SafeRolesProviderOptions {
   inspectAssets: (chainId: number, safeAddress: string) => Promise<AssetGuardReport>;
 }
 
-function emptyState(): ProviderState {
-  return { schemaVersion: 1, accounts: {}, operations: {} };
+function stateIdentity(identity: ConfiguredRootIdentity): ProviderState['rootIdentity'] {
+  return {
+    ensRoot: identity.ensRoot.toLowerCase(),
+    safeAddress: getAddress(identity.safeAddress).toLowerCase(),
+    chainId: identity.chainId,
+  };
+}
+
+function emptyState(identity: ConfiguredRootIdentity): ProviderState {
+  return { schemaVersion: 2, rootIdentity: stateIdentity(identity), accounts: {}, operations: {} };
 }
 
 function operationId(agent: string, kind: KeyOperationKind): string {
@@ -203,16 +216,23 @@ function sessionActive(session: SessionKey): boolean {
 export class SafeRolesKeyProvider implements KeyProvider {
   private state: ProviderState;
   private readonly options: SafeRolesProviderOptions;
+  private readonly rootIdentity: ConfiguredRootIdentity;
 
   constructor(options: SafeRolesProviderOptions) {
     this.options = options;
+    this.rootIdentity = {
+      ...options.rootIdentity,
+      ensRoot: options.rootIdentity.ensRoot.toLowerCase(),
+      safeAddress: getAddress(options.rootIdentity.safeAddress),
+      enabled: true,
+    };
     this.state = this.load();
   }
 
   capabilities(): KeyCapabilities {
     return {
       provider: 'safe-roles',
-      chainId: MAINNET_CHAIN_ID,
+      chainId: this.rootIdentity.chainId,
       chainLabel: 'Ethereum mainnet',
       live: true,
       providerRevision: PROVIDER_REVISION,
@@ -230,19 +250,65 @@ export class SafeRolesKeyProvider implements KeyProvider {
 
   private load(): ProviderState {
     const file = this.options.statePath();
+    if (!existsSync(file)) return emptyState(this.rootIdentity);
+    let parsed: Partial<ProviderState>;
     try {
-      if (!existsSync(file)) return emptyState();
-      const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<ProviderState>;
-      if (parsed.schemaVersion !== 1 || !parsed.accounts || !parsed.operations) throw new Error('unsupported schema');
-      return parsed as ProviderState;
+      parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<ProviderState>;
     } catch (error) {
-      if (existsSync(file)) {
-        const backup = `${file}.corrupt-${Date.now()}`;
-        renameSync(file, backup);
-        console.error(`[safe-roles] malformed state preserved at ${backup}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      return emptyState();
+      throw new Error(
+        `Safe/Zodiac state is unreadable and was preserved at ${file}. Live signing remains disabled: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
+    if (parsed.schemaVersion !== 2 || !parsed.rootIdentity || !parsed.accounts || !parsed.operations) {
+      throw new Error(
+        `Safe/Zodiac state at ${file} is legacy or identity-unbound. Live signing remains disabled. `
+        + 'Use an explicit profile import after reviewing its ENS root, Safe address, and chain.',
+      );
+    }
+    const expected = stateIdentity(this.rootIdentity);
+    let actual: ProviderState['rootIdentity'];
+    try {
+      actual = {
+        ensRoot: String(parsed.rootIdentity.ensRoot ?? '').toLowerCase(),
+        safeAddress: getAddress(String(parsed.rootIdentity.safeAddress ?? '')).toLowerCase(),
+        chainId: Number(parsed.rootIdentity.chainId),
+      };
+    } catch {
+      throw new Error(`Safe/Zodiac state at ${file} has an invalid root-identity binding. Live signing remains disabled.`);
+    }
+    if (
+      actual.ensRoot !== expected.ensRoot
+      || actual.safeAddress !== expected.safeAddress
+      || actual.chainId !== expected.chainId
+    ) {
+      throw new Error(
+        `Safe/Zodiac state at ${file} belongs to a different root identity. Live signing remains disabled; `
+        + 'select the matching profile or explicitly import reviewed state.',
+      );
+    }
+    const state = parsed as ProviderState;
+    for (const [agent, account] of Object.entries(state.accounts)) {
+      if (
+        account.agent !== agent
+        || account.ensName.toLowerCase() !== agentEnsName(agent, this.rootIdentity.ensRoot).toLowerCase()
+        || getAddress(account.owner) !== this.rootIdentity.safeAddress
+        || account.chainId !== this.rootIdentity.chainId
+      ) {
+        throw new Error(`Safe/Zodiac account state for ${agent} does not match the configured root identity. Live signing remains disabled.`);
+      }
+    }
+    for (const operation of Object.values(state.operations)) {
+      if (
+        getAddress(operation.rootSafe) !== this.rootIdentity.safeAddress
+        || operation.chainId !== this.rootIdentity.chainId
+        || operation.agent.trim() === ''
+      ) {
+        throw new Error(`Safe/Zodiac operation ${operation.id || '(unknown)'} does not match the configured root identity. Live signing remains disabled.`);
+      }
+    }
+    return state;
   }
 
   private save(): void {
@@ -267,11 +333,11 @@ export class SafeRolesKeyProvider implements KeyProvider {
     if (!record) {
       return {
         agent,
-        ensName: agentEnsName(agent),
+        ensName: agentEnsName(agent, this.rootIdentity.ensRoot),
         smartAccount: pending?.smartAccount ?? ZeroAddress,
-        owner: ROOT_AGENT_SAFE_ADDRESS,
+        owner: this.rootIdentity.safeAddress,
         deployed: false,
-        chainId: pending?.chainId ?? MAINNET_CHAIN_ID,
+        chainId: pending?.chainId ?? this.rootIdentity.chainId,
         status: 'draft',
         sessions: [],
         pendingOperation: pending,
@@ -292,18 +358,18 @@ export class SafeRolesKeyProvider implements KeyProvider {
     return agents.map((agent) => this.assemble(agent));
   }
 
-  async ensureAccount(agent: string, owner = ROOT_AGENT_SAFE_ADDRESS): Promise<AgentAccount> {
-    if (owner.toLowerCase() !== ROOT_AGENT_SAFE_ADDRESS.toLowerCase()) throw new Error('Agent Safes must remain root-Safe controlled.');
+  async ensureAccount(agent: string, owner = this.rootIdentity.safeAddress): Promise<AgentAccount> {
+    if (getAddress(owner) !== this.rootIdentity.safeAddress) throw new Error('Agent Safes must remain controlled by the configured root Safe.');
     const existing = this.state.accounts[agent];
     if (existing) return this.assemble(agent);
-    const predicted = await this.prepareDeployment(agent, MAINNET_CHAIN_ID);
+    const predicted = await this.prepareDeployment(agent, this.rootIdentity.chainId);
     this.state.accounts[agent] = {
       agent,
-      ensName: agentEnsName(agent),
+      ensName: agentEnsName(agent, this.rootIdentity.ensRoot),
       smartAccount: predicted.smartAccount,
       authorityModule: predicted.authorityModule,
-      owner: ROOT_AGENT_SAFE_ADDRESS,
-      chainId: MAINNET_CHAIN_ID,
+      owner: this.rootIdentity.safeAddress,
+      chainId: this.rootIdentity.chainId,
       deployed: false,
       status: 'draft',
       sessions: [],
@@ -320,7 +386,7 @@ export class SafeRolesKeyProvider implements KeyProvider {
     const rolesSalt = stableNonce(agent, 'roles', chainId);
     const roleSetup = {
       types: ['address', 'address', 'address'],
-      values: [ROOT_AGENT_SAFE_ADDRESS, ZeroAddress, ZeroAddress],
+      values: [this.rootIdentity.safeAddress, ZeroAddress, ZeroAddress],
     };
     const rolesDeploymentData = encodeRolesDeployment(roleSetup, rolesSalt);
     const rolesDeploymentBytes = getBytes(rolesDeploymentData);
@@ -331,7 +397,7 @@ export class SafeRolesKeyProvider implements KeyProvider {
     ]);
     const safeSalt = stableNonce(agent, 'safe', chainId);
     const initializer = SAFE_SETUP_INTERFACE.encodeFunctionData('setup', [
-      [ROOT_AGENT_SAFE_ADDRESS],
+      [this.rootIdentity.safeAddress],
       1,
       SAFE_MODULE_SETUP,
       SAFE_MODULE_SETUP_INTERFACE.encodeFunctionData('createAndAddModules', [ROLES_FACTORY, moduleSetupData]),
@@ -412,13 +478,13 @@ export class SafeRolesKeyProvider implements KeyProvider {
   async deployAccount(agent: string): Promise<PreparedKeyOperation> {
     const existing = this.assemble(agent);
     if (existing.deployed) throw new Error('Agent Safe is already deployed.');
-    const deployment = await this.prepareDeployment(agent, MAINNET_CHAIN_ID);
+    const deployment = await this.prepareDeployment(agent, this.rootIdentity.chainId);
     return this.persistOperation({
       id: operationId(agent, 'deploy'),
       kind: 'deploy',
       agent,
-      chainId: MAINNET_CHAIN_ID,
-      rootSafe: ROOT_AGENT_SAFE_ADDRESS,
+      chainId: this.rootIdentity.chainId,
+      rootSafe: this.rootIdentity.safeAddress,
       smartAccount: deployment.smartAccount,
       authorityModule: deployment.authorityModule,
       calls: deployment.calls,
@@ -433,15 +499,15 @@ export class SafeRolesKeyProvider implements KeyProvider {
     const boundedScope = normalizeScope(scope);
     const current = this.assemble(agent);
     if (current.deployed && current.sessions.some(sessionActive)) throw new Error('Agent Safe already has active authority.');
-    const deployment = await this.prepareDeployment(agent, MAINNET_CHAIN_ID);
+    const deployment = await this.prepareDeployment(agent, this.rootIdentity.chainId);
     const signer = this.options.ensureSigner(agent);
     const authority = this.authorityCalls(agent, deployment.authorityModule, signer.address, boundedScope, true);
     return this.persistOperation({
       id: operationId(agent, 'provision'),
       kind: 'provision',
       agent,
-      chainId: MAINNET_CHAIN_ID,
-      rootSafe: ROOT_AGENT_SAFE_ADDRESS,
+      chainId: this.rootIdentity.chainId,
+      rootSafe: this.rootIdentity.safeAddress,
       smartAccount: deployment.smartAccount,
       authorityModule: deployment.authorityModule,
       signerAddress: signer.address,
@@ -468,7 +534,7 @@ export class SafeRolesKeyProvider implements KeyProvider {
       kind: 'issue',
       agent,
       chainId: account.chainId,
-      rootSafe: ROOT_AGENT_SAFE_ADDRESS,
+      rootSafe: this.rootIdentity.safeAddress,
       smartAccount: account.smartAccount,
       authorityModule: account.authorityModule,
       signerAddress: signer.address,
@@ -496,7 +562,7 @@ export class SafeRolesKeyProvider implements KeyProvider {
       kind: 'rotate',
       agent,
       chainId: account.chainId,
-      rootSafe: ROOT_AGENT_SAFE_ADDRESS,
+      rootSafe: this.rootIdentity.safeAddress,
       smartAccount: account.smartAccount,
       authorityModule: account.authorityModule,
       signerAddress: signer.address,
@@ -522,7 +588,7 @@ export class SafeRolesKeyProvider implements KeyProvider {
       kind: 'revoke',
       agent,
       chainId: account.chainId,
-      rootSafe: ROOT_AGENT_SAFE_ADDRESS,
+      rootSafe: this.rootIdentity.safeAddress,
       smartAccount: account.smartAccount,
       authorityModule: account.authorityModule,
       signerAddress: session.address,
@@ -564,7 +630,7 @@ export class SafeRolesKeyProvider implements KeyProvider {
       kind: 'revoke-account',
       agent,
       chainId: account.chainId,
-      rootSafe: ROOT_AGENT_SAFE_ADDRESS,
+      rootSafe: this.rootIdentity.safeAddress,
       smartAccount: account.smartAccount,
       authorityModule: account.authorityModule,
       calls,
@@ -590,8 +656,15 @@ export class SafeRolesKeyProvider implements KeyProvider {
       this.save();
       throw new Error('Prepared key operation expired; prepare a fresh proposal.');
     }
-    if (operation.chainId !== chainId) throw new Error('Connected chain does not match the prepared key operation.');
-    if (getAddress(rootSafe) !== getAddress(operation.rootSafe)) throw new Error('Connected account is not the configured root Safe.');
+    if (operation.chainId !== this.rootIdentity.chainId || chainId !== this.rootIdentity.chainId) {
+      throw new Error('Connected chain does not match the configured root identity.');
+    }
+    if (
+      getAddress(operation.rootSafe) !== this.rootIdentity.safeAddress
+      || getAddress(rootSafe) !== this.rootIdentity.safeAddress
+    ) {
+      throw new Error('Connected account is not the configured root Safe.');
+    }
     if (!submissionId.trim()) throw new Error('Wallet did not return a submission identifier.');
     operation.status = 'submitted';
     operation.submissionId = submissionId.trim();
@@ -603,6 +676,12 @@ export class SafeRolesKeyProvider implements KeyProvider {
   async finalizeOperation(operationIdInput: string, txHashes: string[]): Promise<AgentAccount> {
     const operation = this.state.operations[operationIdInput];
     if (!operation || operation.status !== 'submitted') throw new Error('A submitted key operation is required.');
+    if (
+      operation.chainId !== this.rootIdentity.chainId
+      || getAddress(operation.rootSafe) !== this.rootIdentity.safeAddress
+    ) {
+      throw new Error('Prepared operation is not bound to the active root identity.');
+    }
     const hashes = Array.from(new Set(txHashes.map((hash) => hash.trim()).filter((hash) => /^0x[0-9a-f]{64}$/i.test(hash))));
     if (!hashes.length) throw new Error('Wallet call status did not include a transaction receipt yet.');
     for (const hash of hashes) {
@@ -650,7 +729,7 @@ export class SafeRolesKeyProvider implements KeyProvider {
     }
     const account = this.state.accounts[operation.agent] ?? {
       agent: operation.agent,
-      ensName: agentEnsName(operation.agent),
+      ensName: agentEnsName(operation.agent, this.rootIdentity.ensRoot),
       smartAccount: operation.smartAccount,
       authorityModule: operation.authorityModule,
       owner: operation.rootSafe,

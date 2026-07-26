@@ -2,13 +2,15 @@
 
 ## Status
 
-The six-phase command-surface refactor is released and in service.
+The six-phase command-surface refactor is implemented and verified in the unified
+`v0.1.685` production candidate. It becomes the in-service baseline when that signed
+candidate is promoted.
 
 | Component | Baseline | Role |
 |---|---:|---|
-| IDACC | `v0.1.648` | Dashboard commands, control panels, chat intents, local cache, and compatibility UI |
-| Compatible Manager | `bobofbuilding/id-agents` `v0.1.111` | Fleet mutations, durable control state/events, Brain relay, and task execution |
-| Brain | `d51f88e740e465b1865eba10fc980d31637f0c82` | Manager-event learning, task lineage, durable memory, and duplicate/no-op suppression |
+| Unified IDACC application | `v0.1.685` production candidate | Dashboard commands, control panels, chat intents, local cache, and compatibility UI |
+| Bundled Manager | `bobofbuilding/id-agents` `v0.1.145` | Fleet mutations, durable control state/events, Brain relay, and task execution |
+| Bundled Brain | `v0.1.2` | Manager-event learning, task lineage, durable memory, and duplicate/no-op suppression |
 
 This document is the maintained operating contract. The original pre-refactor audit has
 been condensed because its claims about a read-only Dashboard, missing Manager routes,
@@ -32,7 +34,7 @@ This boundary keeps the Dashboard responsive while preserving full workflows els
 ## Architecture Invariants
 
 1. **Manager owns operational mutations.** Fleet, project, organization, task-overlay,
-   plan, and Brain-control writes go through the compatible Manager.
+   plan, and Brain-control writes go through the bundled Manager.
 2. **Brain traffic is Manager-mediated.** The desktop does not make direct operational
    writes to Brain. `BrainClient` uses the Manager relay.
 3. **Manager is authoritative for shared control state.** Local `config.json` data is a
@@ -46,8 +48,8 @@ This boundary keeps the Dashboard responsive while preserving full workflows els
 6. **Learning is selective.** Brain retains cited decisions, commitments, outcomes, and
    useful learned artifacts. Raw transcripts, secrets, duplicate retries, and no-op churn
    are not promoted into durable memory.
-7. **Compatibility is explicit.** IDACC checks the Manager capability manifest and shows a
-   degraded-state warning instead of silently rendering an empty fleet.
+7. **Compatibility is explicit.** IDACC checks the bundled Manager capability manifest and
+   shows a degraded-state warning instead of silently rendering an empty fleet.
 
 ## Runtime Flow
 
@@ -55,7 +57,7 @@ This boundary keeps the Dashboard responsive while preserving full workflows els
 Dashboard command (palette, drawer, or confirmed chat intent)
   -> desktop IPC
     -> ManagerClient
-      -> compatible Manager :4100
+      -> bundled Manager on its authenticated private random loopback endpoint
         -> operational mutation and/or versioned control-state write
         -> durable control/config/task event
           -> Manager event stream
@@ -63,7 +65,7 @@ Dashboard command (palette, drawer, or confirmed chat intent)
               -> timeline, entities, facts, text units, and lineage
 ```
 
-The Manager contract is versioned by `CC_API_VERSION = 4` and advertises:
+The Manager contract is versioned by `CC_API_VERSION = 5` and advertises:
 
 - `POST /control/brain`
 - `POST /control-event`
@@ -73,6 +75,9 @@ The Manager contract is versioned by `CC_API_VERSION = 4` and advertises:
 
 IDACC must gate dependent controls on these advertised capabilities. Legacy fallback is
 read-only or explicitly degraded; it must not silently invent authoritative state.
+Consumer recovery stays within the unified IDACC repair/update path and never installs or
+updates Manager independently. Explicit developer connections to an external Manager are
+the only supported exception.
 
 ## Implemented Surface
 
@@ -128,43 +133,50 @@ mutation.
 | Provider, runtime, MCP, and concurrency changes | Manager or recorded control mutation | Redacted config/control event; no secret values |
 | Window and transient UI preferences | Desktop only | Not learned |
 
-All retryable writes use stable idempotency keys. Versioned control-state writes reject
-stale updates; the desktop refreshes before retrying instead of overwriting concurrent work.
+Every Dashboard invocation receives a stable idempotency key before confirmation or
+execution. The key remains attached to its bounded receipt and is forwarded to operation
+routes that accept invocation metadata. Versioned control-state writes reject stale
+updates; the desktop refreshes before retrying instead of overwriting concurrent work.
 
 ## Reliability Contract
 
 - A button shows a pending state immediately and remains scoped to that invocation.
 - Concurrent commands do not share a single global busy flag unless they mutate the same
   versioned resource.
-- A Manager timeout is not success. The client reconciles by idempotency key before retrying.
+- A Manager timeout is not success. Its receipt remains visible and cannot be dismissed
+  while the original request can still reconcile. A late result updates that same receipt;
+  after an application interruption, the receipt requires owner-page verification before
+  a new command is issued.
 - A rate-limit or provider-capacity failure keeps the task alive and uses the runtime
   fallback policy; it does not create a duplicate task.
 - Deferred capacity is represented as deferred work, not a human blocker, unless a real
   authorization or missing-input decision is required.
 - A failed Brain write does not erase a successful Manager mutation. It is retried from the
   durable event stream.
-- Missing or incompatible Manager capabilities produce a visible compatibility notice with
-  the required Manager version and recovery action.
+- Missing or incompatible bundled Manager capabilities produce a visible compatibility
+  notice with the required unified IDACC version and repair/update action.
 - Duplicate and no-op control events are suppressed before durable learning.
 
 ## Verification Matrix
 
 | Gate | Current coverage | Required result |
 |---|---|---|
-| Command discovery and chat parsing | `npm run test:dashboard-command-surface` | Core commands rank correctly; supported intents parse; ordinary chat is not promoted |
+| Command registry, receipts, and chat parsing | `npm run test:dashboard-command-surface` | Metadata validates; commands rank; intents parse; confirmation, compatibility, isolation, bounded durability, deferred outcomes, and timeout recovery hold |
+| Rendered command interaction | `npm run test:dashboard-rendered` | Real React palette/drawer renders preserve focus, confirm or decline explicitly, protect dirty/running work, and expose terminal receipts |
 | Dashboard hierarchy compatibility | `npm run test:dashboard-coordination` | Current and legacy hierarchy data render without hiding an active fleet |
 | Manager Brain transport | `idctl` `brainTransport.test.ts` | Relay is installed, direct desktop transport is absent, retries preserve idempotency |
-| Manager control contract | Manager relay/control-state tests | API v4 routes validate input, redact secrets, enforce versions, and persist state |
+| Manager control contract | Manager relay/control-state tests | API v5 routes validate input, redact secrets, enforce versions, and persist state |
 | Brain learning | Brain listener tests | Control/task events create bounded, cited, deduplicated learning artifacts |
 | Desktop integrity | `npm run typecheck && npm run build` | Renderer and main process compile and package cleanly |
 
-## Remaining Gaps
+## Completed Design Gaps
 
-These are follow-up improvements, not blockers to the released command surface.
+The following items were previously tracked as partial or missing. They are now part of
+the production command-surface contract and its focused verification gates.
 
 ## Continuous-Improvement Workflow
 
-The compatible manager now exposes a versioned `task-workflow.v1` contract while retaining the legacy `todo`, `doing`, and `done` wire statuses. IDACC reads the richer lifecycle directly and maps `triage_required` and `validation_pending` to Under Review, `blocked`, `stalled`, and `failed` to Holding, and validated terminal states to Done.
+The bundled Manager now exposes a versioned `task-workflow.v1` contract while retaining the legacy `todo`, `doing`, and `done` wire statuses. IDACC reads the richer lifecycle directly and maps `triage_required` and `validation_pending` to Under Review, `blocked`, `stalled`, and `failed` to Holding, and validated terminal states to Done.
 
 The Work task board now provides:
 
@@ -175,58 +187,52 @@ The Work task board now provides:
 
 New dispatches must preserve goal, owner, expected output, acceptance, provenance, validation, scope, timing, and fallback data. Incomplete contracts enter triage instead of starting. Brain outputs remain private promotion candidates until evidence, reviewer, confidence, expiry, and validation requirements pass.
 
-### P1 - End-to-end compatibility gate
+### Completed - End-to-end compatibility gate
 
-IDACC tests its client and the Manager tests its routes, but the release process does not yet
-boot the exact packaged IDACC/Manager/Brain trio and execute a complete command-to-learning
-journey. Add a release smoke that creates a temporary project, dispatches one task, observes
-the control event, verifies Brain lineage, then cleans up by idempotency key.
+The release process now stages the exact pinned IDACC/Manager/Brain trio,
+verifies the immutable runtime manifest, boots it against a clean temporary
+profile, exercises Manager-to-Brain MCP and listener learning, and fails before
+publication when a service identity, version, route, cursor, or runtime file is
+wrong.
 
-**Done when:** a version mismatch or missing route fails release validation before an app is
-published.
+### Completed - Command completion receipts
 
-### P1 - Command completion receipts
+Palette, confirmed Dashboard chat, and drawer mutations now use the shared, bounded,
+durable receipt shape `{ commandId, idempotencyKey, state, resourceRefs, startedAt,
+finishedAt, error, recovery }`. Receipts are globally rendered outside individual views,
+survive navigation and application restart through a bounded local cache, classify
+deferred work separately, retain unknown timeout outcomes for late reconciliation, and
+link failures or recovery states to the owning page.
 
-The activity feed acknowledges operations, but commands do not share one durable receipt
-shape across palette, drawer, chat, and owner-page handoffs.
+### Completed - Drawer interruption safety
 
-**Fix:** standardize `{ commandId, idempotencyKey, state, resourceRefs, startedAt,
-finishedAt, error, recovery }` and render it consistently.
+Every panel reports dirty and in-flight state to one drawer lifecycle guard. Escape,
+backdrop, close button, and owner-page handoffs all use the same guarded path. Dirty work
+requires an explicit **Discard changes** or **Keep working** choice; running work cannot be
+discarded until it settles. Focus is trapped while open and restored to a stable trigger,
+including drawers launched from the command palette.
 
-**Done when:** an operator can move between Dashboard and Work and still identify the same
-in-flight or failed operation without relying on message text.
+### Completed - Project progress summary
 
-### P1 - Drawer interruption safety
+Project driver derives a normalized rollup from Manager task lineage and shows working,
+deferred, blocked, failed, complete, and plan counts with a direct Work handoff.
 
-The drawer now traps focus, closes on Escape, restores focus to its trigger, and exposes
-modal semantics. It still needs a shared unsaved-change and in-flight-mutation dismissal
-guard across its independently owned panels.
+### Completed - Rendered interaction coverage
 
-**Done when:** a drawer cannot be dismissed silently while it has unsaved edits or an
-in-flight mutation; the operator can explicitly discard or keep working.
+A dependency-free hidden Electron smoke renders the real React command palette, control
+drawer, panels, and global receipts. It verifies palette focus, confirm/decline, exactly-once
+invocation, focus containment/restoration, dirty Escape and close-button protection, and
+in-flight backdrop protection. The focused command-surface smoke separately exercises
+concurrent receipt isolation, same-key deduplication, compatibility gating, deferred
+outcomes, bounded persistence, timeout recovery, and late reconciliation.
 
-### P2 - Project progress summary
+### Completed - Command registry metadata
 
-Project driver shows recent tasks but not a normalized plan/objective progress rollup.
-
-**Fix:** derive counts from Manager lineage (`project -> plan -> task`) and show working,
-deferred, blocked, failed, and complete states with a direct Work handoff.
-
-### P2 - Full browser-level interaction coverage
-
-The current command-surface smoke validates registry and parser behavior, not rendered focus,
-confirmation, concurrency, or recovery states.
-
-**Fix:** add Playwright coverage for `Cmd-K`, drawer lifecycle, confirm/decline, concurrent
-commands, Manager timeout reconciliation, and legacy compatibility notices.
-
-### P2 - Command registry metadata
-
-Command handlers are shared by palette and drawers, but ownership, required Manager features,
-risk level, confirmation policy, and expected receipt type are not represented uniformly.
-
-**Fix:** extend command descriptors with `ownerView`, `requiredFeatures`, `risk`,
-`confirmation`, and `receiptKind`; use the metadata for gating and documentation checks.
+Every palette descriptor, Dashboard chat proposal, and drawer mutation descriptor declares
+`ownerView`, `requiredFeatures`, `risk`, `confirmation`, and `receiptKind`. The shared
+executor validates known owners and Manager features, blocks offline or incompatible
+operations before their handler runs, and requires confirmation for medium/high-risk
+commands. Harmless drawer-opening commands remain distinct from the mutations inside them.
 
 ## Definition Of Done For Future Commands
 

@@ -1,6 +1,6 @@
 {
   "name": "idacc-context-retrieval",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "IDACC retrieval-handle resolver for future Headroom-backed context compression pilots.",
   "type": "local",
   "entrypoint": "SKILL.md",
@@ -10,7 +10,7 @@
     "adapters": {
       "skill": {
         "entrypoint": "SKILL.md",
-        "runtimes": ["claude-agent-sdk", "claude-code-cli", "claude-code-local", "codex", "cursor-cli", "grok", "antigravity", "gemini", "copilot", "kiro-cli", "q", "ollama"]
+        "runtimes": ["claude-agent-sdk", "claude-code-cli", "claude-code-local", "codex", "cursor-cli", "grok", "antigravity", "gemini", "copilot", "kiro-cli", "kimi-cli", "q", "ollama"]
       },
       "mcp": {
         "command": "node",
@@ -22,7 +22,7 @@
         "runtimes": ["claude-agent-sdk", "claude-code-cli", "claude-code-local"]
       },
       "directFallback": {
-        "runtimes": ["claude-agent-sdk", "claude-code-cli", "claude-code-local", "codex", "cursor-cli", "grok", "antigravity", "gemini", "copilot", "kiro-cli", "q", "ollama"],
+        "runtimes": ["claude-agent-sdk", "claude-code-cli", "claude-code-local", "codex", "cursor-cli", "grok", "antigravity", "gemini", "copilot", "kiro-cli", "kimi-cli", "q", "ollama"],
         "mode": "send-original-context"
       }
     },

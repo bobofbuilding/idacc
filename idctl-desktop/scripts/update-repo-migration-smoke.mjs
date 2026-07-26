@@ -26,7 +26,11 @@ try {
 
   assert.equal(
     setUpdateSettings({ updateRepo: 'example/custom-releases' }, config).update?.updateRepo,
-    'example/custom-releases',
+    DEFAULT_UPDATE_REPO,
+  );
+  assert.equal(
+    setUpdateSettings({ updateManifestUrl: 'https://example.invalid/version.json' }, config).update?.updateManifestUrl,
+    undefined,
   );
 
   console.log('update repo migration smoke: ok');

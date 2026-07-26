@@ -16,6 +16,12 @@ import {
   type ManagedRuntimeStatus,
   type RuntimeCatalogProvider as ProviderRow,
 } from '../runtimeCatalogCache.ts';
+import {
+  STARTER_AGENT_NAMES,
+  STARTER_LEAD,
+  STARTER_TEAM,
+  STARTER_VALIDATORS,
+} from '../../shared/starterFleet.ts';
 
 type RuntimeVerificationRow = {
   name: string;
@@ -53,8 +59,6 @@ type Goal = GoalSummary & {
   createdAt: number;
 };
 type RelayMode = 'permissive' | 'all' | 'select' | 'none';
-/** Status of a post-build wiring step (coordinator/relay) in the Team Builder. */
-type PostStat = 'running' | 'ok' | 'failed';
 type TeamSource =
   | { kind: 'default'; name: 'default' }
   | { kind: 'template'; name: string }
@@ -72,15 +76,6 @@ type HrHierarchy = {
   controlStateSource?: 'manager' | 'local-compat';
   controlStateWarning?: string;
 };
-type ManagerRepairStatus = {
-  configured: boolean;
-  bootstrapAvailable?: boolean;
-  busy?: boolean;
-  installedVersion?: string;
-  status?: string;
-  detail?: string;
-  error?: string;
-};
 type TeamBlueprint = { id: string; team: string; label: string; description: string; spec: string };
 type BlueprintCoverage = TeamBlueprint & { present: number; total: number; missing: string[]; complete: boolean };
 type HrFocus = 'route-hierarchy' | 'health';
@@ -93,10 +88,10 @@ type LeadershipBackbone = {
   coordinatorLabel: string;
 };
 
-const PRIMARY_TEAM = 'default';
-const DEFAULT_LEAD = 'lead';
-const DEFAULT_VALIDATORS = ['coder', 'researcher'];
-const DEFAULT_BACKBONE_AGENTS = [DEFAULT_LEAD, ...DEFAULT_VALIDATORS];
+const PRIMARY_TEAM = STARTER_TEAM;
+const DEFAULT_LEAD = STARTER_LEAD;
+const DEFAULT_VALIDATORS: string[] = [...STARTER_VALIDATORS];
+const DEFAULT_BACKBONE_AGENTS: string[] = [...STARTER_AGENT_NAMES];
 const GOAL_PRIORITIES: GoalPriority[] = ['primary', 'secondary', 'general'];
 const GOAL_PRIORITY_LABEL: Record<GoalPriority, string> = { primary: 'Primary', secondary: 'Secondary', general: 'General' };
 function goalPriority(input?: GoalPriority): GoalPriority {
@@ -402,14 +397,14 @@ function relayBlocksAll(d: string[] | null): boolean {
 
 // Human-readable summary of a persisted delegates_to value.
 function describeRelay(d: string[] | null): string {
-  if (d === null) return 'permissive — any team';
-  if (d.includes('*')) return 'all teams';
-  if (d.length === 0) return 'blocked — no teams';
+  if (d === null) return 'automatic default — any team';
+  if (d.includes('*')) return 'explicit — all teams';
+  if (d.length === 0) return 'blocked — no cross-team delegation';
   return d.join(', ');
 }
 
 function describeAgentRelay(d: string[] | null, teamPolicy: string[] | null): string {
-  return d === null ? `inherit team (${describeRelay(teamPolicy)})` : describeRelay(d);
+  return d === null ? `inherits team — effective: ${describeRelay(teamPolicy)}` : describeRelay(d);
 }
 
 function currentAgentDelegates(a: { metadata?: unknown }): string[] | null {
@@ -418,101 +413,6 @@ function currentAgentDelegates(a: { metadata?: unknown }): string[] | null {
 
 function primaryLabel(primary: { team: string; agent: string } | null): string {
   return primary ? `${primary.team}/${primary.agent}` : '(none)';
-}
-
-/**
- * Shared delegation guidance appended to every coordinator directive (the generic preset and
- * the roster-aware one the builder generates).
- *
- * GUARD — PARALLEL-FIRST, DO NOT REVERT TO SEQUENTIAL. An earlier version told the lead to
- * "STRONGLY PREFER synchronous /talk-to" and "prefer a few sequential /talk-to calls over a
- * fragile async fan-out". Because /talk-to BLOCKS until each reply, that serialized the
- * teammates — two subscription agents could never run at the same time through the lead, even
- * though the manager + the harness fully support concurrent subscription processes. The fix is
- * to fan INDEPENDENT work out in parallel (async /news-to --trigger to all owners at once) and
- * reserve /talk-to only for genuinely DEPENDENT chains. Keep it this way.
- */
-const COORDINATION_TAIL = `PARALLELISM — fire INDEPENDENT work off at the SAME TIME (this is the default):
-- When sub-tasks DON'T depend on each other, dispatch them to their owners IN PARALLEL with async **/news-to <agent> "<task>" (trigger:true)** — send ALL of them first, back-to-back, so the teammates run concurrently on their own processes/subscriptions. Do NOT /talk-to independent tasks one-by-one — that blocks and forces them to run sequentially.
-- Then COLLECT: check **/news** on a cadence (every ~20-30s) up to a sensible deadline, summarizing each reply the moment it lands. Attach a tracked task to each async hand-off and mark it done when you collect the reply. If a teammate hasn't answered by the deadline, re-send ONCE or report it blocked — never loop on /news forever.
-- Use synchronous **/talk-to** ONLY for a DEPENDENT step (you need one teammate's OUTPUT before the next can start) or a single quick hand-off — it blocks until the reply, which is right for a chain but WRONG for parallel work. For a one-off /talk-to, omit the tracked \`task\` field (the reply is inline).
-- For a sub-task in ANOTHER team's domain, hand it to that team's lead with **/ask <team>/<lead>** (subject to your team's relay policy); fire those in parallel too. If a team isn't reachable, say so — don't silently absorb its work.
-
-Compressing, decomposing, delegating INDEPENDENT work IN PARALLEL, and summarizing — NOT doing the work yourself — is your primary job as the lead. Do the work yourself only for trivial one-liners, or when delegation would clearly be slower with no benefit (and say so in one line).`;
-
-const VALIDATION_RETURN_PATH = `RETURN PATH — substantial completed work should flow through the default-team validators before it is treated as final:
-- Send a concise completed-work packet to **default/coder** and **default/researcher** with \`/ask default/coder "<completed work + summary>"\` and \`/ask default/researcher "<completed work + summary>"\`.
-- Ask coder to validate implementation, operations, code quality, and reproducibility. Ask researcher to validate evidence, reasoning, sourcing, policy fit, and completeness.
-- Validators judge the accomplishments against the active primary goal first, then secondary goals, then the original objective.
-- If either validator bounces the work back, refine with the responsible teammate or team lead and repeat the validation pass. Do not dump unvalidated raw work straight to **default/lead** unless the operator explicitly asks for an unvalidated fast path.`;
-
-const FIRST_RUN_LEAD_TARGETS = ['engineering-team/engineering-lead', 'ops-team/ops-lead', 'research/research-lead', 'onchain-execution/onchain-lead'];
-const OPTIONAL_LEAD_TARGETS = ['legal/general-counsel', 'technology-security/security-router'];
-
-/** Ready-made "act as the team coordinator" directive with generic coder/researcher
- *  teammates — used as the Team Builder fallback when no explicit teammates exist. */
-const COORDINATOR_PRESET = `## Team coordination (you are the lead)
-
-You are this team's COORDINATOR. Your job is NOT to do the work yourself — it is to COMPRESS, BREAK UP, DELEGATE, and SUMMARIZE. You have specialist teammates — by default **coder** (implementation, code, file changes, running commands) and **researcher** (research, analysis, documentation, investigation) — and you can hand work to OTHER teams' leads too.
-
-For any NON-TRIVIAL request, work in this order, and narrate each step as you go:
-
-1. **Compress** — distill the request to its essential intent, deliverable, and hard constraints; strip the noise. State it back in 1-2 lines so the scope is unambiguous before any work starts.
-2. **Break it up** — decompose the compressed request into the smallest independent sub-tasks. For each, name the ONE owner best suited to it, and keep it self-contained (include only the context that owner needs).
-3. **Delegate** — hand each sub-task to its owner: a teammate on your team (implementation/code → **coder**, research/analysis/docs → **researcher**) via the **inter-agent** skill, or another team's lead via **/ask <team>/<lead>** when the work is in that team's domain. **Fan INDEPENDENT sub-tasks out IN PARALLEL** (async /news-to --trigger to each owner at once, so they run concurrently); chain with synchronous /talk-to ONLY the ones that need another's output.
-4. **Summarize step by step** — as EACH delegate replies, compress its result to 1-3 lines and post that running update immediately; don't wait for everything to finish. Keep a visible tally of what's done, what's pending, and any blockers.
-5. **Close out** — assemble the step summaries into one coherent answer, stating who did what.
-
-${VALIDATION_RETURN_PATH}
-
-${COORDINATION_TAIL}`;
-
-function defaultPrimaryPreset(existingTeams: string[]): string {
-  const operationsTeam = matchingExistingTeamName('ops-team', existingTeams) ?? 'ops-team';
-  const leadTargets = FIRST_RUN_LEAD_TARGETS.map((target) => target === 'ops-team/ops-lead' ? `${operationsTeam}/ops-lead` : target);
-  return `## Default primary lead coordination
-
-You are the PRIMARY LEAD for the whole fleet. The operator talks to you first; your job is to compress intent into an objective, compare it to the active primary goal first and secondary goals second, then route scoped execution work to the correct team lead.
-
-Default-team **coder** and **researcher** are your validation pair — NOT execution workers. Do not hand them implementation or research tasks to perform. Use them only after a team lead returns completed work.
-
-For any NON-TRIVIAL request:
-
-1. **Compress** — restate the objective, success criteria, and hard constraints in 1-2 lines.
-2. **Route objectives** — choose an existing corresponding team lead. First-run starter leads are ${leadTargets.map((target) => `**${target}**`).join(', ')}. Optional leads such as ${OPTIONAL_LEAD_TARGETS.map((target) => `**${target}**`).join(', ')} are valid only after those teams exist and are current in HR Manager. Hand each lead a scoped objective with \`/ask <team>/<lead> "<objective>"\`.
-3. **Decompose at the edge** — each team lead owns breaking its objective into member-owned tasks, delegating independent work in parallel, collecting member summaries, and refining the result.
-4. **Validate on return** — when completed work comes back, send the completed-work packet to both default-team validators and wait for their findings before treating it as final.
-5. **Bounce or close** — if either validator rejects the work, return the concrete feedback to the responsible team lead for another refinement cycle. If both validate it, consolidate the findings for the operator.
-
-${VALIDATION_RETURN_PATH}
-
-${COORDINATION_TAIL}`;
-}
-
-/** Roster-aware coordinator directive — names the ACTUAL teammates created in the
- *  batch so the lead delegates to agents that exist (falls back to the generic
- *  coder/researcher preset when there are no teammates). */
-function coordinatorPresetFor(team: string, teammates: { name: string; role: string }[], existingTeams: string[]): string {
-  if (team === PRIMARY_TEAM) return defaultPrimaryPreset(existingTeams);
-  if (!teammates.length) return COORDINATOR_PRESET;
-  const inline = teammates.map((t) => `**${t.name}**${t.role ? ` (${t.role})` : ''}`).join(', ');
-  const bullets = teammates.map((t) => `   - **${t.name}**${t.role ? ` — ${t.role}` : ''}`).join('\n');
-  return `## Team coordination (you are the lead)
-
-You are this team's COORDINATOR. Your job is NOT to do the work yourself — it is to COMPRESS, BREAK UP, DELEGATE, and SUMMARIZE. Your specialist teammates are: ${inline}. You can also hand work to OTHER teams' leads when it belongs to their domain.
-
-For any NON-TRIVIAL request, work in this order, and narrate each step as you go:
-
-1. **Compress** — distill the request to its essential intent, deliverable, and hard constraints; strip the noise. State it back in 1-2 lines so the scope is unambiguous before any work starts.
-2. **Break it up** — decompose into the smallest independent sub-tasks; for each, pick the ONE owner best suited to it and keep it self-contained.
-3. **Delegate** — hand each sub-task to its owner via the **inter-agent** skill (or **/ask <team>/<lead>** for another team's domain). **Fan INDEPENDENT sub-tasks out IN PARALLEL** (async /news-to --trigger to each at once, so they run concurrently); use synchronous /talk-to only for steps that depend on another's output:
-${bullets}
-4. **Summarize step by step** — as EACH delegate replies, compress its result to 1-3 lines and post that running update immediately; don't wait for everything to finish. Track what's done, pending, and blocked.
-5. **Close out** — assemble the step summaries into one coherent answer, stating who did what.
-
-${VALIDATION_RETURN_PATH}
-
-${COORDINATION_TAIL}`;
 }
 
 export function Teams({ store, focus, onFocusHandled, navigate }: { store: FleetStore; focus?: HrFocus; onFocusHandled?: () => void; navigate?: (target: string) => void }) {
@@ -1305,7 +1205,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   }
   // Lead hierarchy (#10): the primary coordinator across teams.
   const [hier, setHier] = useState<HrHierarchy>({ primary: null, coordinators: {} });
-  const [managerRepairBusy, setManagerRepairBusy] = useState(false);
+  const [unifiedUpdateCheckBusy, setUnifiedUpdateCheckBusy] = useState(false);
   const graphLeadOf = useCallback(
     (t: string, ag: Agent[]) => hier.coordinators[t] ?? resolveCoordinator(ag, undefined) ?? ag[0]?.name,
     [hier.coordinators],
@@ -1391,27 +1291,19 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       setBusy(false);
     }
   }
-  async function repairHierarchyManager() {
-    setManagerRepairBusy(true);
-    setMsg('installing and connecting the compatible ID Agents manager…');
+  async function checkUnifiedUpdateFromHierarchy() {
+    setUnifiedUpdateCheckBusy(true);
+    setMsg('checking for a verified unified IDACC update…');
     try {
-      const status = await call<ManagerRepairStatus>('managerUpdate:status');
-      if (!status.configured && !status.bootstrapAvailable) {
-        throw new Error('The manager installer is unavailable in this build. Update IDACC, then retry.');
-      }
-      const next = await call<ManagerRepairStatus>(status.configured ? 'managerUpdate:apply' : 'managerUpdate:bootstrap');
+      const next = await call<{ available?: boolean; latest?: string; staged?: boolean; error?: string }>('update:check');
       if (next.error) throw new Error(next.error);
-      if (!next.configured) throw new Error(next.detail || 'The compatible manager did not finish installing.');
-      const refreshed = await loadHier();
-      store.refresh();
-      if (refreshed.controlStateSource === 'local-compat') {
-        throw new Error('The manager installed, but organization control is not reachable yet. Wait a moment and retry.');
-      }
-      setMsg(`compatible manager ${next.installedVersion ? `v${next.installedVersion} ` : ''}connected; coordinator assignments are ready ✓`);
+      setMsg(next.available
+        ? `Unified IDACC update v${next.latest || 'latest'} is available${next.staged ? ' and ready to install from the update banner' : '; open Settings to download it'}.`
+        : 'IDACC is current. Restart the app to retry the bundled Manager and Brain; use Settings diagnostics if the issue remains.');
     } catch (error) {
-      setMsg(`Manager repair failed: ${error instanceof Error ? error.message : String(error)}`);
+      setMsg(`Unified update check failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setManagerRepairBusy(false);
+      setUnifiedUpdateCheckBusy(false);
     }
   }
   /** Promote a specific team's coordinator to the primary cross-team lead. */
@@ -2005,7 +1897,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
         <h4 style={{ margin: 0 }}>Cross-team relay — {activeTeam}</h4>
         <p className="muted small" style={{ marginTop: 4 }}>
           Which teams <b>{activeTeam}</b>'s agents may delegate to (relay work via <span className="mono">/ask &lt;team&gt;/&lt;agent&gt;</span>).
-          Unset = permissive (any team).
+          Automatic means any current or future team; explicit policies stay fixed until edited here.
         </p>
         {activeTeam === PRIMARY_TEAM ? (
           <p className={`small ${defaultRelayBlocked ? 'warn-text' : 'muted'}`} style={{ marginTop: -2 }}>
@@ -2014,10 +1906,10 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
         ) : null}
         <div className="relay-modes">
           {([
-            ['permissive', 'Any team (default)'],
-            ['all', 'All teams (*)'],
+            ['permissive', 'Any team (automatic default)'],
+            ['all', 'All teams (explicit *)'],
             ['select', 'Only selected teams'],
-            ['none', 'Blocked (none)'],
+            ['none', 'Blocked — no cross-team delegation'],
           ] as [RelayMode, string][]).map(([m, label]) => (
             <label key={m} className={`relay-mode${mode === m ? ' active' : ''}`} title={activeTeam === PRIMARY_TEAM && m === 'none' ? 'Default leadership needs at least one relay path' : undefined}>
               <input type="radio" name="relay-mode" checked={mode === m} disabled={activeTeam === PRIMARY_TEAM && m === 'none'} onChange={() => pickMode(m)} /> {label}
@@ -2068,17 +1960,23 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             const roleLocked = isDefaultBackboneAgent(activeTeam, a.name);
             const m = agentEditing === a.id ? 'select' : modeOf(Array.isArray(pol) ? (pol as string[]) : null);
             const label =
-              m === 'permissive' ? 'inherits team' : m === 'all' ? 'any team' : m === 'none' ? 'blocked' : Array.isArray(pol) ? pol.join(', ') : '';
+              m === 'permissive'
+                ? describeAgentRelay(null, savedDelegates)
+                : m === 'all'
+                  ? 'explicit override — all teams'
+                  : m === 'none'
+                    ? 'blocked override — no cross-team delegation'
+                    : Array.isArray(pol) ? `explicit override — ${pol.join(', ')}` : '';
             const selectedOverrideWouldBlock = roleLocked && agentEditing === a.id && agentSel.length === 0;
             return (
               <div key={a.id} className="kv" style={{ gridTemplateColumns: '130px 1fr', gap: '4px 12px', marginBottom: 10 }}>
                 <span className="b">{a.name}</span>
                 <span>
                   <select className="cell-select" disabled={busy} value={m} onChange={(e) => pickAgentMode(a, e.target.value as RelayMode)}>
-                    <option value="permissive">Inherit team</option>
-                    <option value="all">Any team (*)</option>
-                    <option value="select">Selected teams...</option>
-                    <option value="none" disabled={roleLocked}>Blocked (none)</option>
+                    <option value="permissive">Inherit team policy</option>
+                    <option value="all">Explicit: all teams (*)</option>
+                    <option value="select">Explicit: selected teams…</option>
+                    <option value="none" disabled={roleLocked}>Blocked override: no cross-team delegation</option>
                   </select>
                   <span className={roleLocked && m === 'none' ? 'warn-text small' : 'muted small'} style={{ marginLeft: 8 }}>{label}</span>
                   {roleLocked ? <span className="muted small" style={{ marginLeft: 8 }}>default backbone</span> : null}
@@ -2413,6 +2311,11 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             onBusy={setBusy}
             onMessage={setMsg}
             onDone={(createdTeam) => { if (createdTeam) void store.setTeam(createdTeam); store.refresh(); }}
+            onConfigureRouting={(createdTeam) => {
+              void store.setTeam(createdTeam);
+              setTab('route');
+              setRoutePane('hierarchy');
+            }}
           />
         </>
       ) : null}
@@ -2465,13 +2368,13 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           <div style={{ margin: '10px 0 12px', padding: 12, border: '1px solid var(--warning, #d79a22)', borderRadius: 6 }}>
             <div className="row-actions" style={{ alignItems: 'center', gap: 10 }}>
               <div className="grow">
-                <b className="warn-text">Compatible manager required</b>
+                <b className="warn-text">Bundled Agent manager needs attention</b>
                 <div className="muted small" style={{ marginTop: 3 }}>
-                  This roster came from a legacy manager. IDACC can display it, but team-lead assignments cannot be saved until the current manager control plane is installed and connected.
+                  IDACC can display this compatibility roster, but team-lead assignments need the Manager shipped with the current unified application.
                 </div>
               </div>
-              <button className="btn primary" disabled={busy || managerRepairBusy} onClick={() => void repairHierarchyManager()}>
-                {managerRepairBusy ? 'Installing manager…' : 'Install & connect manager'}
+              <button className="btn primary" disabled={busy || unifiedUpdateCheckBusy} onClick={() => void checkUnifiedUpdateFromHierarchy()}>
+                {unifiedUpdateCheckBusy ? 'Checking IDACC…' : 'Check unified update'}
               </button>
             </div>
           </div>
@@ -2498,8 +2401,8 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
                   {missingCoord ? <span className="warn-text small" title={`${t.name}/${coord} is no longer in the current roster`}> · coordinator missing</span> : null}
                   {stoppedCoord ? <span className="warn-text small" title={`${t.name}/${coord} remains the coordinator but cannot receive work until it is running`}> · coordinator not running</span> : null}
                 </span>
-                <select className="cell-select" disabled={busy || managerRepairBusy || hier.controlStateSource === 'local-compat' || coordChoices.length === 0}
-                  title={hier.controlStateSource === 'local-compat' ? 'Install and connect the compatible manager before assigning team leads' : `Set the coordinator for ${t.name}`}
+                <select className="cell-select" disabled={busy || unifiedUpdateCheckBusy || hier.controlStateSource === 'local-compat' || coordChoices.length === 0}
+                  title={hier.controlStateSource === 'local-compat' ? 'Restore the bundled Manager before assigning team leads' : `Set the coordinator for ${t.name}`}
                   value={coordChoices.some((a) => a.name === coord) ? coord : ''}
                   onChange={(e) => void setTeamCoordinator(t.name, e.target.value)}>
                   <option value="">{coordChoices.length ? (missingCoord ? `${coord} missing — choose roster member…` : t.name === PRIMARY_TEAM ? 'default/lead only' : 'no coordinator — choose…') : 'no agents in roster'}</option>
@@ -2603,9 +2506,8 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
  * and "Onboard agents" modals. Describe a team in plain English (or paste a spec),
  * let AI (or a deterministic parse) draft the roster with a per-agent runtime,
  * model and skills, review/edit it, then build every agent in one pass via
- * `onboard:run` (which carries each agent's persona). After the agents land it can
- * auto-wire coordination (make the ★ lead the team coordinator + apply the
- * delegate-to-teammates preset) and the new team's cross-team relay policy.
+ * `onboard:run` (which carries each agent's persona). Persistent coordinator and
+ * relay policy stays in the single authoritative Manage > Hierarchy editor.
  */
 function TeamBuilder({
   team,
@@ -2628,6 +2530,7 @@ function TeamBuilder({
   onBusy,
   onMessage,
   onDone,
+  onConfigureRouting,
 }: {
   team: string;
   existingTeams: string[];
@@ -2653,6 +2556,7 @@ function TeamBuilder({
   onBusy: (b: boolean) => void;
   onMessage: (m: string) => void;
   onDone: (createdTeam?: string) => void;
+  onConfigureRouting: (createdTeam: string) => void;
 }) {
   const harnessRuntimes = useMemo(
     () => offerableRuntimes(providers, undefined, managedRuntimes)
@@ -2772,13 +2676,6 @@ function TeamBuilder({
   const [wallet, setWallet] = useState(false);
   const [probeAfter, setProbeAfter] = useState(true);
 
-  // ---- coordination + relay ----
-  const [coordinate, setCoordinate] = useState(false);
-  const coordinateTargetRef = useRef(targetTeam);
-  const [relayMode, setRelayMode] = useState<RelayMode>('permissive');
-  const [relaySel, setRelaySel] = useState<string[]>([]);
-  const relayTargets = existingTeams.filter((n) => n !== targetTeam);
-
   // ---- build progress ----
   type ResultEntry = { name: string; team: string; plan: OnboardPlan; result?: OnboardResult; error?: string; running?: boolean; skipped?: boolean; merged?: boolean };
   const [building, setBuilding] = useState(false);
@@ -2786,7 +2683,6 @@ function TeamBuilder({
   const [verifyMsg, setVerifyMsg] = useState('');
   const [error, setError] = useState('');
   const [results, setResults] = useState<ResultEntry[]>([]);
-  const [post, setPost] = useState<{ coord?: PostStat; coordErr?: string; leadName?: string; relay?: PostStat; relayErr?: string }>({});
 
   const mcpChoices = MCP_CATALOG.filter((entry) => !(entry.inputs ?? []).some((input) => input.required && !input.default));
   const availableMcpChoices = mcpChoices.filter((entry) => !mcpIds.includes(entry.id));
@@ -2799,34 +2695,12 @@ function TeamBuilder({
   const alreadyThere = named.filter((r) => existingInTeam.has(r.slug));
   const toCreate = named.filter((r) => !existingInTeam.has(r.slug));
   const missingRuntime = toCreate.some((r) => !r.runtime || !runtimes.includes(r.runtime));
-  const relayPayload: string[] | null =
-    relayMode === 'all' ? ['*'] : relayMode === 'none' ? [] : relayMode === 'select' ? relaySel : null;
-  const builderRelayBlocksDefault = targetTeam === PRIMARY_TEAM && relayBlocksAll(relayPayload);
-  const defaultLeadAvailableForWire = targetTeam !== PRIMARY_TEAM || existingInTeam.has(DEFAULT_LEAD) || named.some((r) => r.slug === DEFAULT_LEAD);
-  const defaultLeadMissingForWire = coordinate && targetTeam === PRIMARY_TEAM && !defaultLeadAvailableForWire;
   const locked = building || aiBusy || verifying;
-  const canBuild = !locked && !runtimeCatalogChecking && Boolean(targetTeam) && !isReservedName(targetTeam) && toCreate.length > 0 && reserved.length === 0 && dupes.length === 0 && !builderRelayBlocksDefault && !defaultLeadMissingForWire && !missingRuntime;
+  const canBuild = !locked && !runtimeCatalogChecking && Boolean(targetTeam) && !isReservedName(targetTeam) && toCreate.length > 0 && reserved.length === 0 && dupes.length === 0 && !missingRuntime;
   const leadershipBackbone = useMemo(() => assessLeadershipBackbone(fleetAgents, hierarchy), [fleetAgents, hierarchy]);
   const leadershipIssues = leadershipBackboneIssues(leadershipBackbone);
   const blueprintCoverages = useMemo(() => RECOMMENDED_TEAM_BLUEPRINTS.map((bp) => blueprintCoverage(fleetAgents, bp)), [fleetAgents]);
   const targetNeedsBackbone = Boolean(targetTeam) && targetTeam !== PRIMARY_TEAM && !leadershipBackbone.ready;
-
-  useEffect(() => {
-    if (coordinateTargetRef.current === targetTeam) return;
-    coordinateTargetRef.current = targetTeam;
-    setCoordinate(false);
-  }, [targetTeam]);
-
-  function toggleCoordinate(next: boolean) {
-    if (!next) { setCoordinate(false); return; }
-    const leadRow = named.find((r) => r.lead) ?? named[0];
-    const leadName = targetTeam === PRIMARY_TEAM ? DEFAULT_LEAD : leadRow?.slug || 'the starred lead';
-    const message = targetTeam === PRIMARY_TEAM
-      ? `Enable primary routing wiring for ${PRIMARY_TEAM}?\n\nThis can change the fleet primary route by setting ${PRIMARY_TEAM}/${DEFAULT_LEAD} as primary, writing the default-primary validation preset, and rebuilding ${PRIMARY_TEAM}/${DEFAULT_LEAD} after the build.\n\nUse this only when you are intentionally repairing or installing the default leadership backbone.`
-      : `Enable coordinator routing wiring for ${targetTeam || 'this team'}?\n\nThis will make ${targetTeam || 'team'}/${leadName} the team coordinator, write the delegate-to-teammates preset, and rebuild that lead after the build.\n\nUse this only when the lead and roster have been reviewed.`;
-    if (!window.confirm(message)) return;
-    setCoordinate(true);
-  }
 
   // Live deterministic parse as the user types a spec — until they hand-edit or AI runs.
   useEffect(() => {
@@ -2912,7 +2786,6 @@ function TeamBuilder({
     setSpec('');
     setAiSuggestions(undefined);
     setResults([]);
-    setPost({});
     setError('');
   }
   function removeRow(i: number) { setRowsDirty(true); setRows((rs) => (rs.length <= 1 ? rs : rs.filter((_, j) => j !== i))); }
@@ -2988,12 +2861,8 @@ function TeamBuilder({
   }
 
   type BuilderPreflight = {
-    targetTeam: string;
     teamExists: boolean;
     existingAgentCount: number;
-    hierarchy: HrHierarchy;
-    hierarchyStamp: string;
-    relayStamp: string;
     leadershipBackbone: LeadershipBackbone;
   };
   async function preflightBuildTarget(): Promise<BuilderPreflight | null> {
@@ -3021,20 +2890,10 @@ function TeamBuilder({
       onDone();
       return null;
     }
-    let relayBefore: string[] | null = null;
-    if (freshTeamExists) {
-      relayBefore = await call<{ delegates_to: string[] | null }>('teamConfig', targetTeam)
-        .then((r) => r.delegates_to)
-        .catch(() => null);
-    }
     const freshFleetAgents = groupsNow.flatMap((g) => g.agents.map((a) => ({ ...a, team: g.team })));
     return {
-      targetTeam,
       teamExists: freshTeamExists,
       existingAgentCount: freshRoster.length,
-      hierarchy: hierarchyNow,
-      hierarchyStamp: hierarchyStamp(hierarchyNow),
-      relayStamp: relayKey(relayBefore),
       leadershipBackbone: assessLeadershipBackbone(freshFleetAgents, hierarchyNow),
     };
   }
@@ -3094,8 +2953,6 @@ function TeamBuilder({
     if (reserved.length) { setError(`Reserved agent name(s): ${reserved.join(', ')} — rename.`); return; }
     if (dupes.length) { setError(`Duplicate agent name(s): ${dupes.join(', ')}.`); return; }
     if (missingRuntime) { setError('Choose an available Settings runtime for every new agent.'); return; }
-    if (builderRelayBlocksDefault) { setError(`The ${PRIMARY_TEAM} team needs at least one outbound relay path for ${DEFAULT_LEAD} delegation and validator bounce-backs.`); return; }
-    if (defaultLeadMissingForWire) { setError(`Default-team routing is locked to ${PRIMARY_TEAM}/${DEFAULT_LEAD}. Add a lead row, restore default/lead, or turn off Wire agentic routing for this build.`); return; }
     // Build only the agents that DON'T already exist in the team; the rest are shown as
     // "already in <team>" (informational), not errors. No-op if everything already exists.
     const batch = toCreate;
@@ -3103,12 +2960,6 @@ function TeamBuilder({
       setError(alreadyThere.length ? `All ${alreadyThere.length} agent${alreadyThere.length === 1 ? '' : 's'} already in ${targetTeam} — use One new agent to add a single agent row.` : 'Add at least one named agent.');
       return;
     }
-    const postSteps = [
-      coordinate ? (targetTeam === PRIMARY_TEAM
-        ? 'wire default/lead as the default primary, write the default-primary validation preset, and rebuild it'
-        : "make the starred lead this team's coordinator, write the delegate-to-teammates preset, and rebuild that lead") : '',
-      relayMode !== 'permissive' ? `set cross-team relay to ${describeRelay(relayPayload)}` : '',
-    ].filter(Boolean);
     const preflight = await preflightBuildTarget();
     if (!preflight) return;
     const verification = await verifyBuildRuntimes(batch);
@@ -3120,12 +2971,9 @@ function TeamBuilder({
     const mergeNote = mergeIntoExisting
       ? `\n\nExisting ${targetTeam} roster stays in place (${preflight.existingAgentCount} current). Duplicate names are skipped before build${alreadyThere.length ? ` (${alreadyThere.length} already there)` : ''}.`
       : '';
-    const primaryBefore = preflight.hierarchy.primary ? `${preflight.hierarchy.primary.team}/${preflight.hierarchy.primary.agent}` : 'unset';
-    const primaryGuard = coordinate && targetTeam === PRIMARY_TEAM
-      ? `\n\nPrimary-route guard:\n- Current primary: ${primaryBefore}\n- Requested primary: ${PRIMARY_TEAM}/${DEFAULT_LEAD}\n- The primary write still rechecks hierarchy and roster after onboarding before it applies.`
-      : '';
-    if (!window.confirm(`${mergeIntoExisting ? 'Build + merge' : 'Build'} ${batch.length} agent${batch.length === 1 ? '' : 's'} ${mergeIntoExisting ? `into existing ${targetTeam}` : `in ${targetTeam}`}?\n\nThis onboards and starts new agents${heartbeat ? ', adds heartbeats' : ''}${probeAfter ? ', and probes them' : ''}.${mergeNote}\n\n${verificationSummary(verification)}${postSteps.length ? `\n\nAfter build it will also ${postSteps.join('; ')}.` : ''}${primaryGuard}${backboneWarning}`)) return;
-    setBuilding(true); onBusy(true); setError(''); setPost({});
+    const routingNote = `\n\nCoordinator and cross-team relay policy will remain unchanged. Configure them once in Manage > Hierarchy after the roster is built.`;
+    if (!window.confirm(`${mergeIntoExisting ? 'Build + merge' : 'Build'} ${batch.length} agent${batch.length === 1 ? '' : 's'} ${mergeIntoExisting ? `into existing ${targetTeam}` : `in ${targetTeam}`}?\n\nThis onboards and starts new agents${heartbeat ? ', adds heartbeats' : ''}${probeAfter ? ', and probes them' : ''}.${mergeNote}\n\n${verificationSummary(verification)}${routingNote}${backboneWarning}`)) return;
+    setBuilding(true); onBusy(true); setError('');
     onMessage(`${mergeIntoExisting ? 'merging' : 'adding'} ${batch.length} new agent(s) ${mergeIntoExisting ? 'into' : 'to'} ${targetTeam}${alreadyThere.length ? ` (${alreadyThere.length} already there)` : ''}…`);
     // Freeze a plan per agent so a later "retry" re-runs the exact same spec.
     const plans = batch.map(planFor);
@@ -3148,47 +2996,6 @@ function TeamBuilder({
       } catch (err) {
         setResults((rs) => rs.map((x) => (x.name === nm ? { ...x, running: false, error: err instanceof Error ? err.message : String(err) } : x)));
       }
-    }
-    // Auto-coordination: set the ★ lead as this team's coordinator + apply the preset. Resolve
-    // the lead from the FULL roster (it may be an agent that already existed).
-    const leadRow = named.find((r) => r.lead) ?? named[0];
-    const leadName = targetTeam === PRIMARY_TEAM ? DEFAULT_LEAD : leadRow?.slug;
-    if (anyOk && coordinate && leadName) {
-      // Tell the lead to delegate to ALL its teammates in the roster (existing + newly added).
-      const teammates = named.filter((r) => r.slug !== leadName).map((r) => ({ name: r.slug, role: r.role.trim() }));
-      const preset = coordinatorPresetFor(targetTeam, teammates, existingTeams);
-      setPost((p) => ({ ...p, coord: 'running', leadName }));
-      try {
-        const [hierNow, groupsNow] = await Promise.all([
-          call<HrHierarchy>('org:hierarchy').catch(() => preflight.hierarchy),
-          freshHrGroups(),
-        ]);
-        if (hierarchyStamp(hierNow) !== preflight.hierarchyStamp) {
-          throw new Error('lead hierarchy changed after build confirmation; review Manage before auto-wiring');
-        }
-        if (!findHrAgent(groupsNow, preflight.targetTeam, { name: leadName })) {
-          throw new Error(`${preflight.targetTeam}/${leadName} is not in the current roster after build`);
-        }
-        await call('coordinator:set', targetTeam, leadName);
-        if (targetTeam === PRIMARY_TEAM) await call('coordinator:setPrimary', targetTeam, leadName);
-        await call('agent:setInstructions', leadName, preset, targetTeam);
-        await call('rebuildAgent', leadName, targetTeam).catch(() => {});
-        setPost((p) => ({ ...p, coord: 'ok', leadName }));
-      } catch (e) { setPost((p) => ({ ...p, coord: 'failed', coordErr: e instanceof Error ? e.message : String(e) })); }
-    }
-    // Cross-team relay policy — only when the user changed it away from permissive.
-    if (anyOk && relayMode !== 'permissive') {
-      setPost((p) => ({ ...p, relay: 'running' }));
-      try {
-        const relayNow = await call<{ delegates_to: string[] | null }>('teamConfig', targetTeam)
-          .then((r) => r.delegates_to)
-          .catch(() => null);
-        if (relayKey(relayNow) !== preflight.relayStamp) {
-          throw new Error(`${targetTeam} relay policy changed after build confirmation; review Manage before applying builder relay`);
-        }
-        await call('setTeamDelegates', targetTeam, relayPayload);
-        setPost((p) => ({ ...p, relay: 'ok' }));
-      } catch (e) { setPost((p) => ({ ...p, relay: 'failed', relayErr: e instanceof Error ? e.message : String(e) })); }
     }
     setBuilding(false); onBusy(false);
     if (anyOk) { onMessage(`${mergeIntoExisting ? 'merged into' : 'built into'} ${targetTeam} ✓`); onDone(targetTeam); }
@@ -3218,15 +3025,12 @@ function TeamBuilder({
   }
   const failedCount = results.filter(isFailed).length;
 
-  const postMark = (s?: PostStat) => (s === 'ok' ? '✓' : s === 'failed' ? '✗' : '…');
-  const postCls = (s?: PostStat) => (s === 'ok' ? 'ok' : s === 'failed' ? 'failed' : 'running');
-
   return (
     <div className={inline ? 'card' : 'modal-overlay'} onMouseDown={inline ? undefined : () => (locked ? undefined : onClose())}>
       <div className={inline ? '' : 'modal onboard-modal create-team-modal'} onMouseDown={inline ? undefined : (e) => e.stopPropagation()}>
         <div className="modal-title">{inline ? 'Build a team — or merge agents into an existing one' : 'Build a team'}</div>
         <div className="create-team-layout">
-          {/* LEFT: describe + batch options + coordination/relay */}
+          {/* LEFT: describe + batch options. Routing policy has one owner: Manage > Hierarchy. */}
           <div>
             <div className="preflight-box" style={{ marginTop: 0, marginBottom: 12, padding: '10px 12px' }}>
               <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>
@@ -3339,48 +3143,14 @@ function TeamBuilder({
               </span>
             </div>
 
-            <div className="muted small" style={{ margin: '14px 0 4px' }}>coordination &amp; routing</div>
-            <label className="muted small" style={{ display: 'block' }}>
-              <input type="checkbox" checked={coordinate} disabled={locked} onChange={(e) => toggleCoordinate(e.target.checked)} />{' '}
-              Wire agentic routing — {targetTeam === PRIMARY_TEAM ? `make ${PRIMARY_TEAM}/${DEFAULT_LEAD} the default primary` : "make the ★ lead this team's coordinator"} and apply the {targetTeam === PRIMARY_TEAM ? 'default-primary validation preset' : 'delegate-to-teammates preset'}
-            </label>
-            <p className="muted small" style={{ marginTop: 4, marginBottom: 0 }}>
-              Off by default. Turn this on only after reviewing the lead/roster. With it on, new work is handed to the <b>lead</b>, which checks what's already done, decomposes only the
-              <b> remaining</b> work, and delegates to its teammates (and other teams via the relay below) — rather than every
-              agent acting on its own.
-            </p>
-
-            <div className="muted small" style={{ margin: '14px 0 4px' }}>cross-team relay for <span className="mono">{targetTeam || '…'}</span></div>
-            <div className="relay-modes">
-              {([
-                ['permissive', 'Any team'],
-                ['all', 'All (*)'],
-                ['select', 'Selected'],
-                ['none', 'None'],
-              ] as [RelayMode, string][]).map(([m, label]) => (
-                <label key={m} className={`relay-mode${relayMode === m ? ' active' : ''}`} title={targetTeam === PRIMARY_TEAM && m === 'none' ? 'Default leadership needs at least one relay path' : undefined}>
-                  <input type="radio" name="builder-relay" checked={relayMode === m} disabled={locked || (targetTeam === PRIMARY_TEAM && m === 'none')} onChange={() => setRelayMode(m)} /> {label}
-                </label>
-              ))}
-            </div>
-            {builderRelayBlocksDefault ? (
-              <p className="warn-text small" style={{ marginTop: 6 }}>
-                Default leadership needs at least one outbound relay path; choose Any, All, or Selected with at least one team.
+            <div className="preflight-box" style={{ marginTop: 14, padding: '10px 12px' }}>
+              <b className="small">Routing is configured in one place</b>
+              <p className="muted small" style={{ margin: '4px 0 0' }}>
+                Building changes only the reviewed roster. It does not silently replace a coordinator,
+                lead instructions, or cross-team relay policy. After the build, use <b>Manage &gt; Hierarchy</b>
+                to review and apply those settings.
               </p>
-            ) : null}
-            {relayMode === 'select' ? (
-              <div className="chips" style={{ marginTop: 8 }}>
-                {relayTargets.length === 0 ? <span className="muted small">No other teams.</span> :
-                  relayTargets.map((n) => {
-                    const on = relaySel.includes(n);
-                    return (
-                      <button key={n} className={`chip${on ? ' on' : ''}`} disabled={locked} onClick={() => setRelaySel((s) => s.includes(n) ? s.filter((x) => x !== n) : [...s, n])}>
-                        {on ? '✓ ' : ''}{n}
-                      </button>
-                    );
-                  })}
-              </div>
-            ) : null}
+            </div>
           </div>
 
           {/* RIGHT: target team + editable roster */}
@@ -3409,8 +3179,6 @@ function TeamBuilder({
             {usingNewTeam && teamExists ? <p className="warn-text small">Team <span className="mono">{targetTeam}</span> exists — Build + merge will add only new agent rows and leave existing names as-is.</p> : null}
             {!usingNewTeam && teamExists ? <p className="muted small">Build + merge adds these reviewed agent rows directly into <span className="mono">{targetTeam}</span>; no separate Team maintenance merge is needed.</p> : null}
             {targetNeedsBackbone ? <p className="warn-text small">Default return path incomplete — build will ask before adding <span className="mono">{targetTeam}</span>.</p> : null}
-            {defaultLeadMissingForWire ? <p className="warn-text small">Default-team routing is locked to <span className="mono">{PRIMARY_TEAM}/{DEFAULT_LEAD}</span>; add/restore that agent or turn off Wire agentic routing.</p> : null}
-
             <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', margin: '12px 0 6px' }}>
               <span className="muted small">
                 {runtimeCatalogChecking
@@ -3570,25 +3338,16 @@ function TeamBuilder({
                 </div>
               );
             })}
-            {post.coord ? (
-              <div className="onboard-step" style={{ gridTemplateColumns: '26px minmax(140px, 1fr) minmax(0, 2fr)' }}>
-                <span className={`step-dot ${postCls(post.coord)}`}>{postMark(post.coord)}</span>
-                <span className="step-label mono">coordinator</span>
-                <span className={`small ${post.coord === 'failed' ? 'status-error' : 'muted'}`}>{post.coord === 'failed' ? post.coordErr : targetTeam === PRIMARY_TEAM ? `${post.leadName ?? 'lead'} → default primary + preset` : `${post.leadName ?? 'lead'} → team coordinator + preset`}</span>
-              </div>
-            ) : null}
-            {post.relay ? (
-              <div className="onboard-step" style={{ gridTemplateColumns: '26px minmax(140px, 1fr) minmax(0, 2fr)' }}>
-                <span className={`step-dot ${postCls(post.relay)}`}>{postMark(post.relay)}</span>
-                <span className="step-label mono">relay</span>
-                <span className={`small ${post.relay === 'failed' ? 'status-error' : 'muted'}`}>{post.relay === 'failed' ? post.relayErr : describeRelay(relayPayload)}</span>
-              </div>
-            ) : null}
           </div>
         ) : null}
 
         <div className="row-actions" style={{ marginTop: 14 }}>
           <button className="btn" disabled={building} onClick={onClose}>Close</button>
+          {results.some((entry) => entry.skipped || entry.result?.ok) && targetTeam ? (
+            <button className="btn" disabled={building} onClick={() => onConfigureRouting(targetTeam)}>
+              Configure routing
+            </button>
+          ) : null}
           {failedCount > 0 ? (
             <button className="btn" disabled={building} onClick={() => void retryFailed()}>↻ Retry failed ({failedCount})</button>
           ) : null}

@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 /**
- * Release publish guard: a tag pushed to origin (and the CHANGELOG/commit that name it)
- * is a promise, not a release. scripts/release.sh pushes the tag (step 3) before it builds
- * and publishes the GitHub release (steps 4-5); if either of those later steps fails or is
- * skipped, the tag/commit/CHANGELOG can all agree on a version that has no matching GitHub
- * release (this is what happened to v0.1.637). This script checks the GitHub API for a
- * non-draft release matching a tag, so that gap can be caught automatically instead of
- * discovered later by hand.
+ * Release publish guard: a tag pushed to origin (and the CHANGELOG/commit that
+ * name it) is a promise, not a release. scripts/release.sh pushes the exact
+ * signed tag before it dispatches the Production release workflow; an
+ * interrupted or publish=false run can therefore leave an intentional draft.
+ * This script checks the GitHub API for a non-draft release matching a tag so
+ * the frontier cannot silently advance past that state.
  *
  *   node scripts/check-release-published.mjs <version-or-tag> [--repo owner/repo]
  *

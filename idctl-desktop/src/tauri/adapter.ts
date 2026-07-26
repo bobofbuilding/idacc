@@ -6,14 +6,19 @@
  * call via store.ts `call()`.
  */
 
-import { inspectLibraryPluginMetadata, ManagerClient } from '../../../idctl/src/api/client.ts';
+import { heuristicSkillTags, inspectLibraryPluginMetadata, ManagerClient } from '../../../idctl/src/api/client.ts';
 import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { ProviderClient } from '../../../idctl/src/settings/ProviderClient.ts';
+import {
+  normalizeProviderBaseUrl,
+  providerTransportDecision,
+} from '../../../idctl/src/settings/providerTransport.ts';
 import { discoverLocalServers, mergeLocalDiscoveryCandidates, type DiscoveredServer } from '../../../idctl/src/settings/localDiscovery.ts';
-import { ROOT_AGENT_SAFE_ADDRESS, SCOPE_PRESETS, TTL_PRESETS, agentEnsName } from '../../../idctl/src/keys/types.ts';
+import { SCOPE_PRESETS, TTL_PRESETS, agentEnsName } from '../../../idctl/src/keys/types.ts';
 import type { AgentAccount, AssetGuardReport, KeyAuthorityTarget, LegacyKeyAuthority, SessionKey } from '../../../idctl/src/keys/types.ts';
-import { defaultHeadroomPilotSettings, type HeadroomPilotSettings, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry, type WalletConnectSettings } from '../../../idctl/src/settings/schema.ts';
+import { defaultHeadroomPilotSettings, defaultRootIdentitySettings, type HeadroomPilotSettings, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry, type RootIdentityStatus, type WalletConnectSettings } from '../../../idctl/src/settings/schema.ts';
 import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts';
+import { filterParkedMcpServers } from '../../../idctl/src/settings/mcpCatalog.ts';
 import { buildProviderModelLanes, buildRuntimeCatalog, isLocalProvider, localProviderRouteIsLive, providerKindToRuntimes, RUNTIMES, settingsAvailableRuntimeSet } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import type { LibraryPluginInspection, LibrarySkillEntry, McpServerSpec, CreateSkillInput, ProjectPluginSkillResult } from '../../../idctl/src/api/client.ts';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
@@ -22,6 +27,8 @@ import { auditPreview, optimizeAskCommandCore, type ContextBudgetDecision } from
 import { syncDomainsForMethod } from '../shared/syncDomains.ts';
 import { COALESCED_READ_METHODS, ReadCallCache } from '../shared/readCallCache.ts';
 import { mapTeamAgentGroups } from '../shared/teamAgentGroups.ts';
+import { identityRegisterNoop } from '../shared/identityVerification.ts';
+import { sanitizeSecretPayload } from '../main/secretRedaction.ts';
 
 const MGR_DEFAULT = 'http://127.0.0.1:4100';
 let managerUrl = localStorage.getItem('idctl.managerUrl') || MGR_DEFAULT;
@@ -166,6 +173,7 @@ function providerLaneName(runtime: string): string | null {
 }
 
 function providerRouteReadyForAssignment(p: ProviderProfile): boolean {
+  if (!providerTransportDecision(p.baseUrl).ok) return false;
   const modelCount = p.lastSync?.models?.length ?? p.lastSync?.modelCount ?? 0;
   if (isLocalProvider(p)) return (!providerNeedsKey(p) || Boolean(p.apiKey)) && localProviderRouteIsLive(p);
   return p.enabled !== false && (!providerNeedsKey(p) || Boolean(p.apiKey)) && modelCount > 0 && (
@@ -257,7 +265,6 @@ function headroomPilotState(): HeadroomPilotSettings {
 
 // ---- mock keys (localStorage) ----------------------------------------------
 const CHAIN = 84532;
-const OWNER = ROOT_AGENT_SAFE_ADDRESS;
 function mockAddr(seed: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < seed.length; i++) {
@@ -272,6 +279,7 @@ function mockAddr(seed: string): string {
   }
   return '0x' + hex;
 }
+const OWNER = mockAddr('idacc:tauri-local-mock-root');
 interface KeysState {
   accounts: Record<string, Omit<AgentAccount, 'sessions'>>;
   sessions: Record<string, SessionKey[]>;
@@ -289,7 +297,7 @@ function assembleAccount(agent: string, st: KeysState): AgentAccount {
   const sessions = (st.sessions[agent] ?? []).map(withStatus);
   const fallback = { agent, ensName: agentEnsName(agent), smartAccount: mockAddr('safe:' + agent), owner: OWNER, deployed: false, chainId: CHAIN, status: 'draft' as const };
   return base
-    ? { ...fallback, ...base, ensName: base.ensName || fallback.ensName, status: base.status ?? (base.deployed ? 'active' : 'draft'), sessions }
+    ? { ...fallback, ...base, ensName: fallback.ensName, owner: OWNER, chainId: CHAIN, status: base.status ?? (base.deployed ? 'active' : 'draft'), sessions }
     : { ...fallback, sessions };
 }
 function sessionActive(s: SessionKey): boolean {
@@ -429,7 +437,7 @@ async function verifyControllerChallenge(agent: string, wallet: string, signatur
   const trimmed = signature.trim();
   const recovered = recoverPersonalSignAddress(record.message, trimmed);
   if (recovered.toLowerCase() !== wallet.toLowerCase()) throw new Error('Controller signature does not match the challenge wallet.');
-  const verified = { ...record, signature: trimmed, verifiedAt: Date.now() };
+  const verified = { ...record, signature: '', verifiedAt: Date.now() };
   controllerProofs.set(key, verified);
   return verified;
 }
@@ -773,16 +781,101 @@ async function projectPluginSkill(name: string): Promise<ProjectPluginSkillResul
   return { ok: true, plugin: pluginName, projected: true, entry, inspection };
 }
 
+async function strictAllTeamAgentGroups(): Promise<Array<{ team: string; agents: Agent[] }>> {
+  const teams = await client.teams();
+  const names = [...new Set(
+    (teams.length
+      ? [PRIMARY_TEAM, team || PRIMARY_TEAM, ...teams.map((row) => row.name)]
+      : [team || PRIMARY_TEAM])
+      .map((name) => String(name).trim())
+      .filter(Boolean),
+  )];
+  const groups: Array<{ team: string; agents: Agent[] }> = [];
+  for (const teamName of names) {
+    groups.push({ team: teamName, agents: await client.withTeam(teamName).agents() });
+  }
+  return groups;
+}
+
+function tauriMcpRevisionPayload(profile: McpServerProfile): string {
+  const sortedMap = (value: Record<string, string> | undefined) => Object.fromEntries(
+    Object.entries(value ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  return JSON.stringify({
+    name: profile.name,
+    transport: profile.transport,
+    command: profile.command ?? '',
+    args: profile.args ?? [],
+    env: sortedMap(profile.env),
+    url: profile.url ?? '',
+    headers: sortedMap(profile.headers),
+    enabled: profile.enabled !== false,
+  });
+}
+
+async function tauriMcpRegistryRevision(profile: McpServerProfile): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(tauriMcpRevisionPayload(profile)));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function tauriRendererMcpList(): Promise<McpServerProfile[]> {
+  return Promise.all(lsGet<McpServerProfile[]>('idctl.mcpServers', []).map(async (profile) => ({
+    name: profile.name,
+    transport: profile.transport,
+    command: profile.command,
+    enabled: profile.enabled !== false,
+    hasStoredConnection: Boolean(profile.args || profile.env || profile.url || profile.headers),
+    registryRevision: await tauriMcpRegistryRevision(profile),
+  })));
+}
+
+function canonicalTauriMcpValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalTauriMcpValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, canonicalTauriMcpValue(child)]),
+  );
+}
+
+function tauriRendererAgentMcpStamp(servers: McpServerSpec[]): string {
+  return JSON.stringify(canonicalTauriMcpValue(sanitizeSecretPayload(servers ?? [])));
+}
+
+let tauriMcpRegistryWriteTail: Promise<void> = Promise.resolve();
+
+function serializeTauriMcpRegistryWrite<T>(write: () => Promise<T>): Promise<T> {
+  const next = tauriMcpRegistryWriteTail.then(write, write);
+  tauriMcpRegistryWriteTail = next.then(() => undefined, () => undefined);
+  return next;
+}
+
 const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   info: async () => ({ managerUrl, team, coordinator: lsGet<Record<string, string>>('idctl.coordinators', {})[team] ?? null }),
   health: () => client.health(),
   agents: () => client.agents(),
   teams: () => client.teams(),
-  'agents:allTeams': async () => {
+  'agents:allTeams': async (options?: { requireComplete?: boolean }) => {
+    if (options?.requireComplete) return strictAllTeamAgentGroups();
     const teams = await client.teams().catch(() => []);
     const names = teams.length ? teams.map((t) => t.name) : [team || 'default'];
     const groups = await mapTeamAgentGroups<Agent>(names, (name) => client.withTeam(name).agents());
     return groups.filter((g) => g.agents.length > 0);
+  },
+  'rootIdentity:get': async (): Promise<RootIdentityStatus> => ({
+    settings: defaultRootIdentitySettings(),
+    activeProvider: 'local',
+    error: 'Live Safe identity is unavailable in the simulation-only Tauri adapter.',
+  }),
+  'rootIdentity:set': async (input: { enabled?: boolean }): Promise<RootIdentityStatus> => {
+    if (input?.enabled) {
+      throw new Error('Live Safe identity cannot be enabled in the simulation-only Tauri adapter.');
+    }
+    return {
+      settings: defaultRootIdentitySettings(),
+      activeProvider: 'local',
+    };
   },
   'walletConnect:get': async () => lsGet<WalletConnectSettings>('idctl.walletConnect', { enabled: false, projectId: '' }),
   'walletConnect:set': async (input: Partial<WalletConnectSettings>) => {
@@ -896,6 +989,22 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   setAgentEffort: (id: string, effort: string, selectedTeam?: string) => clientFor(selectedTeam).setAgentEffort(String(id), String(effort ?? '')),
   setAgentSpeed: (id: string, speed: string, selectedTeam?: string) => clientFor(selectedTeam).setAgentSpeed(String(id), String(speed ?? '')),
   spawnAgent: (spec: Parameters<ManagerClient['spawnAgent']>[0]) => client.spawnAgent(spec),
+  'identity:verifyEvidence': async (input?: { chainId?: number; contractAddresses?: string[] }) => ({
+    checkedAt: Date.now(),
+    chainId: Number(input?.chainId ?? 1),
+    resolver: {
+      state: 'unavailable',
+      address: '',
+      resolvedAddress: '',
+      detail: 'Live ENS and contract verification requires the Electron desktop secure-RPC bridge.',
+    },
+    contracts: [...new Set((input?.contractAddresses ?? []).map(String))].slice(0, 8).map((address) => ({
+      address,
+      state: 'unavailable',
+      deployed: false,
+      detail: 'Live contract verification requires the Electron desktop secure-RPC bridge.',
+    })),
+  }),
   'identity:controllerChallenge': async (agent: string, wallet: string, selectedTeam?: string) => startControllerChallenge(String(agent), String(wallet), selectedTeam ? String(selectedTeam) : undefined),
   'identity:controllerVerify': async (agent: string, wallet: string, signature: string, selectedTeam?: string) => verifyControllerChallengeForAgent(String(agent), String(wallet), String(signature), selectedTeam ? String(selectedTeam) : undefined),
   'identity:controllerStatus': async (agent: string, wallet: string, selectedTeam?: string) => controllerProofStatusForAgent(String(agent), String(wallet), selectedTeam ? String(selectedTeam) : undefined),
@@ -911,8 +1020,16 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   'identity:register': async (agent: string, selectedTeam?: string) => {
     const name = String(agent);
     const teamName = selectedTeam ? String(selectedTeam) : undefined;
+    const scopedClient = teamName ? client.withTeam(teamName) : client;
+    const current = (await scopedClient.agents()).find((row) => row.name === name || row.id === name);
+    if (!current) throw new Error(`Agent "${name}" is no longer in ${teamName ?? team}.`);
+    const registration = identityRegisterNoop(current);
+    if (registration.noop) {
+      return { ok: true, noop: true, changed: false, domain: registration.domain };
+    }
     await requireControllerProof(name, teamName);
-    return (teamName ? client.withTeam(teamName) : client).remote(`/register ${name}`);
+    const result = await scopedClient.remote(`/register ${name}`);
+    return { ok: true, noop: false, changed: true, result };
   },
   'wallet:provision': async (agent: string, selectedTeam?: string) => {
     const name = String(agent);
@@ -953,6 +1070,19 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   librarySkills: () => client.librarySkills(),
   libraryPlugins: () => client.libraryPlugins(),
   libraryPluginInspections: () => inspectLibraryPlugins(),
+  'skills:autoTags': async () => lsGet<Record<string, string[]>>('idctl.skillTags', {}),
+  'skills:categorize': async (force?: boolean) => {
+    const skills = await client.librarySkills();
+    const cached = lsGet<Record<string, string[]>>('idctl.skillTags', {});
+    const targets = skills.filter((skill) => !(skill.tags && skill.tags.length) && (force || !cached[skill.name]));
+    if (!targets.length) return cached;
+    const derived = force
+      ? await client.categorizeSkillsAI(targets.map((skill) => ({ name: skill.name, description: skill.description })))
+      : Object.fromEntries(targets.map((skill) => [skill.name, heuristicSkillTags(skill.name, skill.description)]));
+    const next = { ...cached, ...derived };
+    lsSet('idctl.skillTags', next);
+    return next;
+  },
   'skills:localCandidates': async () => [],
   'skills:importLocalCandidate': async () => {
     throw new Error('Local skill import requires the Electron build.');
@@ -963,22 +1093,102 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   deleteSkill: (name: string) => client.deleteSkill(String(name)),
   uninstallSkill: (skill: string, agent: string, team?: string) => (team ? client.withTeam(String(team)) : client).uninstallSkill(String(skill), String(agent)),
   usage: () => client.usage(),
-  setAgentMcp: (agentId: string, servers: McpServerSpec[], team?: string) => (team ? client.withTeam(String(team)) : client).setAgentMcp(String(agentId), servers ?? []),
+  setAgentMcp: (
+    agentId: string,
+    servers: McpServerSpec[],
+    team?: string,
+    expectedServers?: McpServerSpec[],
+  ) => serializeTauriMcpRegistryWrite(async () => {
+    if (!Array.isArray(expectedServers)) {
+      throw new Error('Agent MCP writes require a reviewed current attachment snapshot. Refresh capabilities and try again.');
+    }
+    const scopedClient = team ? client.withTeam(String(team)) : client;
+    return scopedClient.agents().then((agents) => {
+      const currentAgent = agents.find((agent) => agent.id === String(agentId));
+      if (!currentAgent) throw new Error(`Agent "${agentId}" is no longer in ${team ? String(team) : (client.team ?? 'default')}.`);
+      const currentExact = (((currentAgent.metadata as any)?.mcpServers) ?? []) as McpServerSpec[];
+      if (tauriRendererAgentMcpStamp(expectedServers) !== tauriRendererAgentMcpStamp(currentExact)) {
+        throw new Error('Agent MCP capabilities changed before this write. Refresh and review the current attachment list.');
+      }
+      const currentByName = new Map(currentExact.map((server) => [server.name, server]));
+      const registry = new Map(lsGet<McpServerProfile[]>('idctl.mcpServers', []).map((server) => [server.name, server]));
+      const desiredExact = filterParkedMcpServers((servers ?? []).map((server) => {
+        const current = currentByName.get(server.name);
+        if (current && tauriRendererAgentMcpStamp([server]) === tauriRendererAgentMcpStamp([current])) {
+          return current;
+        }
+        const registered = registry.get(server.name);
+        if (!registered) {
+          throw new Error(`MCP server "${server.name}" is no longer in the registry. Refresh capabilities and try again.`);
+        }
+        return registered as McpServerSpec;
+      }));
+      return scopedClient.setAgentMcp(String(agentId), desiredExact, currentExact);
+    });
+  }),
   rebuildAgent: (agent: string, team?: string) => (team ? client.withTeam(String(team)) : client).remote(`/agent ${agent} rebuild`),
-  'mcp:list': async () => lsGet<McpServerProfile[]>('idctl.mcpServers', []),
-  'mcp:add': async (p: McpServerProfile) => {
+  'mcp:list': async () => tauriRendererMcpList(),
+  'mcp:add': (p: McpServerProfile, expected?: McpServerProfile | null) => serializeTauriMcpRegistryWrite(async () => {
+    if (expected === undefined) {
+      throw new Error('MCP registry writes require a reviewed current snapshot. Refresh the registry and try again.');
+    }
     const list = lsGet<McpServerProfile[]>('idctl.mcpServers', []);
+    const current = list.find((x) => x.name === p.name);
+    if (expected === null && current) {
+      throw new Error(`MCP server "${p.name}" was added before this write. Refresh and review the current registry.`);
+    }
+    if (expected && (!current || expected.registryRevision !== await tauriMcpRegistryRevision(current))) {
+      throw new Error(`MCP server "${p.name}" changed before replacement. Refresh and review the current registry.`);
+    }
+    const hasIncomingConnection = p.args !== undefined || p.env !== undefined || p.url !== undefined || p.headers !== undefined;
+    const stored = {
+      ...(hasIncomingConnection ? {} : current ?? {}),
+      ...p,
+    };
+    delete stored.registryRevision;
+    delete stored.hasStoredConnection;
     const i = list.findIndex((x) => x.name === p.name);
-    if (i >= 0) list[i] = p;
-    else list.push(p);
+    if (i >= 0) list[i] = stored;
+    else list.push(stored);
     lsSet('idctl.mcpServers', list);
-    return list;
-  },
-  'mcp:remove': async (name: string) => {
-    const list = lsGet<McpServerProfile[]>('idctl.mcpServers', []).filter((x) => x.name !== name);
+    return tauriRendererMcpList();
+  }),
+  'mcp:remove': (name: string, expected?: McpServerProfile) => serializeTauriMcpRegistryWrite(async () => {
+    if (!expected) {
+      throw new Error('MCP registry removal requires a reviewed current snapshot. Refresh the registry and try again.');
+    }
+    const current = lsGet<McpServerProfile[]>('idctl.mcpServers', []);
+    const profile = current.find((x) => x.name === name);
+    if (!profile) throw new Error(`MCP server "${name}" is no longer registered.`);
+    if (expected && expected.registryRevision !== await tauriMcpRegistryRevision(profile)) {
+      throw new Error(`MCP server "${name}" changed before removal. Refresh and review the current registry.`);
+    }
+    const attached = (await strictAllTeamAgentGroups()).flatMap((group) => group.agents
+      .filter((agent) => (((agent.metadata as any)?.mcpServers ?? []) as Array<{ name?: string }>)
+        .some((server) => server.name === name))
+      .map((agent) => `${group.team}/${agent.name}`));
+    if (attached.length) {
+      throw new Error(`MCP server "${name}" is still attached to ${attached.slice(0, 8).join(', ')}${attached.length > 8 ? ` and ${attached.length - 8} more` : ''}. Registry removal was blocked.`);
+    }
+    const list = current.filter((x) => x.name !== name);
     lsSet('idctl.mcpServers', list);
-    return list;
-  },
+    try {
+      const appeared = (await strictAllTeamAgentGroups()).flatMap((group) => group.agents
+        .filter((agent) => (((agent.metadata as any)?.mcpServers ?? []) as Array<{ name?: string }>)
+          .some((server) => server.name === name))
+        .map((agent) => `${group.team}/${agent.name}`));
+      if (appeared.length) {
+        lsSet('idctl.mcpServers', current);
+        throw new Error(`MCP server "${name}" was re-attached during removal. Its registry entry was restored; review ${appeared.slice(0, 8).join(', ')}.`);
+      }
+    } catch (error) {
+      if (!lsGet<McpServerProfile[]>('idctl.mcpServers', []).some((server) => server.name === name)) {
+        lsSet('idctl.mcpServers', current);
+      }
+      throw error;
+    }
+    return tauriRendererMcpList();
+  }),
   'mcp:test': async () => ({ ok: false, error: 'Test requires the Electron build.' }),
 
   // projects (local tracker)
@@ -1005,9 +1215,10 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
       ready: false,
       checkedAt: Date.now(),
       chainId: 1,
-      rootSafe: OWNER,
+      rootSafe: '',
       provider: 'mock',
       checks: [
+        { id: 'root-identity', label: 'Profile root identity', status: 'block', detail: 'This profile is local/mock; no live root identity is enabled.' },
         { id: 'live-provider', label: 'Live Safe provider', status: 'block', detail: 'The Tauri adapter is simulation-only and cannot deploy Safes or change authority.', remediation: 'Use a build with the audited live Safe ERC-7579 provider.' },
         { id: 'module-attestation', label: 'Audited module set', status: 'block', detail: 'No pinned, verified Safe module deployment is active.' },
         { id: 'asset-inspection', label: 'Asset revocation guard', status: 'block', detail: 'The mock adapter cannot inspect native, token, or NFT holdings.' },
@@ -1057,9 +1268,10 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   'providers:list': async () => enrichProviders(lsGet<ProviderProfile[]>('idctl.providers', [])),
   'providers:add': async (p: ProviderProfile) => {
     const list = lsGet<ProviderProfile[]>('idctl.providers', []);
-    const i = list.findIndex((x) => x.name === p.name);
-    if (i >= 0) list[i] = p;
-    else list.push(p);
+    const normalized = { ...p, baseUrl: normalizeProviderBaseUrl(p.baseUrl) };
+    const i = list.findIndex((x) => x.name === normalized.name);
+    if (i >= 0) list[i] = normalized;
+    else list.push(normalized);
     lsSet('idctl.providers', list);
     return enrichProviders(list);
   },
@@ -1070,6 +1282,9 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   },
   'providers:setDefault': async (name: string) => {
     const list = lsGet<ProviderProfile[]>('idctl.providers', []);
+    const selected = list.find((p) => p.name === name);
+    if (!selected) throw new Error('provider not found');
+    normalizeProviderBaseUrl(selected.baseUrl);
     for (const p of list) p.default = p.name === name;
     lsSet('idctl.providers', list);
     return enrichProviders(list);
@@ -1085,7 +1300,10 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   'providers:toggle': async (name: string) => {
     const list = lsGet<ProviderProfile[]>('idctl.providers', []);
     const p = list.find((x) => x.name === name);
-    if (p) p.enabled = !p.enabled;
+    if (p) {
+      if (p.enabled === false) p.baseUrl = normalizeProviderBaseUrl(p.baseUrl);
+      p.enabled = !p.enabled;
+    }
     lsSet('idctl.providers', list);
     return enrichProviders(list);
   },
@@ -1126,6 +1344,7 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   'cu:panic': async () => ({ ok: false, unavailable: true, message: COMPUTER_USE_UNAVAILABLE }),
   'cu:setSupervised': async () => computerUseUnavailableStatus(),
   'cu:pause': async () => computerUseUnavailableStatus(),
+  'cu:setDisplay': async () => { throw new Error(COMPUTER_USE_UNAVAILABLE); },
   'cu:confirm': async () => ({ ok: false }),
   'cu:attach': async () => { throw new Error(COMPUTER_USE_UNAVAILABLE); },
   'cu:detach': async () => { throw new Error(COMPUTER_USE_UNAVAILABLE); },
@@ -1197,7 +1416,7 @@ export async function tauriCall(method: string, args: unknown[] = []): Promise<{
     if (!COALESCED_READ_METHODS.has(method) && syncDomainsForMethod(method).length > 0) {
       clearReadCache();
     }
-    return { ok: true, result };
+    return { ok: true, result: sanitizeSecretPayload(result) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

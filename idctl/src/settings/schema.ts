@@ -25,6 +25,12 @@ export interface IdctlConfig {
    */
   walletConnect?: WalletConnectSettings;
   /**
+   * Profile-owned root identity for live Safe/Zodiac authority. Fresh profiles
+   * stay local-only; live signing is enabled only after an operator explicitly
+   * saves a valid ENS root and Ethereum Safe address.
+   */
+  rootIdentity?: RootIdentitySettings;
+  /**
    * External MCP servers the operator has registered (the "Modules" catalog).
    * These are definitions; attaching one to an agent writes it to that agent's
    * metadata.mcpServers via the manager and takes effect on rebuild.
@@ -34,6 +40,11 @@ export interface IdctlConfig {
   defaultManager?: string;
   /** Self-update behaviour. */
   update?: UpdateSettings;
+  /**
+   * App-owned Brain maintenance. The event listener is always managed with the
+   * unified stack; this setting controls the bounded one-shot maintenance cycle.
+   */
+  brainAutomation?: BrainAutomationSettings;
   /**
    * Which agent is each team's coordinator ("lead"). team → agent name. The
    * coordinator is the default target when you "talk to the manager". Lets you
@@ -220,7 +231,7 @@ export interface ProjectEntry {
 }
 
 export interface UpdateSettings {
-  /** Auto-download and stage a found update. Restart still requires explicit user action. Default true. */
+  /** Auto-download and stage a verified update. Restart still requires explicit user action. Default false. */
   autoUpgrade: boolean;
   /** GitHub repo to poll, "owner/name". Default "bobofbuilding/idacc". */
   updateRepo?: string;
@@ -230,8 +241,14 @@ export interface UpdateSettings {
   checkIntervalHours: number;
 }
 
+export interface BrainAutomationSettings {
+  /** Explicit opt-in to the deterministic Brain maintenance cycle. Default false. */
+  cycleEnabled: boolean;
+  /** Hours between completed one-shot cycles. */
+  cycleCadenceHours: number;
+}
+
 export const DEFAULT_UPDATE_REPO = 'bobofbuilding/idacc';
-const LEGACY_UPDATE_REPOS = new Set(['bobofbuilding/id-agent-control-center']);
 
 export interface GoalDriverSettings {
   enabled?: boolean;
@@ -264,23 +281,38 @@ export interface HeadroomPilotSettings {
 }
 
 export function defaultUpdateSettings(): UpdateSettings {
-  return { autoUpgrade: true, updateRepo: DEFAULT_UPDATE_REPO, checkIntervalHours: 1 };
+  return { autoUpgrade: false, updateRepo: DEFAULT_UPDATE_REPO, checkIntervalHours: 4 };
+}
+
+export function defaultBrainAutomationSettings(): BrainAutomationSettings {
+  return {
+    cycleEnabled: false,
+    cycleCadenceHours: 24,
+  };
+}
+
+export function normalizeBrainAutomationSettings(
+  input?: Partial<BrainAutomationSettings>,
+): BrainAutomationSettings {
+  const defaults = defaultBrainAutomationSettings();
+  const cadence = Number(input?.cycleCadenceHours);
+  return {
+    cycleEnabled: input?.cycleEnabled === true,
+    cycleCadenceHours: Number.isFinite(cadence) && cadence >= 1 && cadence <= 24 * 30
+      ? Math.round(cadence * 100) / 100
+      : defaults.cycleCadenceHours,
+  };
 }
 
 export function normalizeUpdateSettings(input?: Partial<UpdateSettings>): UpdateSettings {
   const defaults = defaultUpdateSettings();
-  const configuredRepo = typeof input?.updateRepo === 'string' ? input.updateRepo.trim() : defaults.updateRepo;
-  const updateRepo = configuredRepo && LEGACY_UPDATE_REPOS.has(configuredRepo)
-    ? DEFAULT_UPDATE_REPO
-    : configuredRepo;
   const interval = Number(input?.checkIntervalHours);
-  const updateManifestUrl = typeof input?.updateManifestUrl === 'string' && input.updateManifestUrl.trim()
-    ? input.updateManifestUrl.trim()
-    : undefined;
   return {
-    autoUpgrade: input?.autoUpgrade !== false,
-    updateRepo,
-    updateManifestUrl,
+    autoUpgrade: input?.autoUpgrade === true,
+    // Production updates have one immutable authority. Legacy/custom feed
+    // values are intentionally discarded during normalization.
+    updateRepo: DEFAULT_UPDATE_REPO,
+    updateManifestUrl: undefined,
     checkIntervalHours: Number.isFinite(interval) && interval >= 1 ? interval : defaults.checkIntervalHours,
   };
 }
@@ -334,13 +366,15 @@ export interface ProviderProfile {
    * Base URL of the inference endpoint:
    *   ollama            http://127.0.0.1:11434
    *   lmstudio          http://127.0.0.1:1234/v1
-   *   openai-compatible http://host:8000/v1
+   *   openai-compatible https://host.example/v1 (or exact loopback HTTP)
    *   anthropic         https://api.anthropic.com
    *   openai            https://api.openai.com/v1
    */
   baseUrl: string;
-  /** API key — local providers usually need none; cloud requires it. Plaintext on disk. */
+  /** Legacy/plain fallback. Desktop builds migrate this immediately. */
   apiKey?: string;
+  /** Electron safeStorage ciphertext (base64); never returned to the renderer. */
+  apiKeyEncrypted?: string;
   /** Provider-level key requirement. OpenAI-compatible can be local/keyless or cloud/keyed. */
   needsKey?: boolean;
   /** Whether the provider is selectable/active. */
@@ -385,6 +419,89 @@ export interface WalletConnectSettings {
   updatedAt?: number;
 }
 
+export const LOCAL_AGENT_IDENTITY_ROOT = 'agents.idacc.local';
+export const ROOT_IDENTITY_CHAIN_ID = 1;
+
+export interface RootIdentitySettings {
+  /** Explicit operator opt-in. False always selects the local/mock provider. */
+  enabled: boolean;
+  /** ENS suffix reserved for agents, for example agents.example.eth. */
+  ensRoot: string;
+  /** Root Safe that owns recovery and revocation authority. */
+  safeAddress: string;
+  /** Live Safe/Zodiac support is currently attested only on Ethereum mainnet. */
+  chainId: typeof ROOT_IDENTITY_CHAIN_ID;
+  updatedAt?: number;
+}
+
+export interface ConfiguredRootIdentity extends RootIdentitySettings {
+  enabled: true;
+}
+
+export interface RootIdentityStatus {
+  settings: RootIdentitySettings;
+  activeProvider: 'local' | 'safe-roles';
+  error?: string;
+}
+
+/** Fresh profiles are intentionally local-only and contain no consumer wallet. */
+export function defaultRootIdentitySettings(): RootIdentitySettings {
+  return {
+    enabled: false,
+    ensRoot: LOCAL_AGENT_IDENTITY_ROOT,
+    safeAddress: '',
+    chainId: ROOT_IDENTITY_CHAIN_ID,
+  };
+}
+
+export function normalizeEnsRoot(value: unknown): string {
+  return typeof value === 'string' ? value.trim().replace(/\.$/, '').toLowerCase() : '';
+}
+
+export function isValidLiveEnsRoot(value: unknown): boolean {
+  const normalized = normalizeEnsRoot(value);
+  if (!normalized.endsWith('.eth') || normalized.length > 255) return false;
+  const labels = normalized.split('.');
+  return labels.length >= 2 && labels.every((label) => (
+    label.length >= 1
+    && label.length <= 63
+    && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)
+  ));
+}
+
+export function isValidEvmAddress(value: unknown): value is string {
+  return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value.trim());
+}
+
+/**
+ * Load-time normalization is fail-closed. Invalid legacy or hand-edited values
+ * remain visible for correction, but can never turn on the live provider.
+ */
+export function normalizeRootIdentitySettings(input: unknown): RootIdentitySettings {
+  const fallback = defaultRootIdentitySettings();
+  if (!input || typeof input !== 'object') return fallback;
+  const raw = input as Partial<RootIdentitySettings>;
+  const ensRoot = normalizeEnsRoot(raw.ensRoot) || fallback.ensRoot;
+  const safeAddress = typeof raw.safeAddress === 'string' ? raw.safeAddress.trim().toLowerCase() : '';
+  const valid = isValidLiveEnsRoot(ensRoot)
+    && isValidEvmAddress(safeAddress)
+    && Number(raw.chainId ?? ROOT_IDENTITY_CHAIN_ID) === ROOT_IDENTITY_CHAIN_ID;
+  return {
+    enabled: raw.enabled === true && valid,
+    ensRoot,
+    safeAddress,
+    chainId: ROOT_IDENTITY_CHAIN_ID,
+    updatedAt: typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt)
+      ? Math.floor(raw.updatedAt)
+      : undefined,
+  };
+}
+
+export function configuredRootIdentity(input: unknown): ConfiguredRootIdentity | null {
+  const normalized = normalizeRootIdentitySettings(input);
+  return normalized.enabled ? { ...normalized, enabled: true } : null;
+}
+
 /** Cached status from the most recent data-availability probe. */
 export interface EvmRpcRequest {
   /** ms epoch of the last JSON-RPC request. */
@@ -420,8 +537,8 @@ export type McpTransport = 'stdio' | 'http' | 'sse';
 
 /**
  * A registered MCP server definition. `enabled` lets the operator keep a
- * server in the catalog without attaching it. Plaintext on disk (file 0600);
- * env/headers may carry tokens.
+ * server in the catalog without attaching it. Desktop builds encrypt connection
+ * fields (URL, args, env, and headers) with Electron safeStorage.
  */
 export interface McpServerProfile {
   /** Unique, user-facing id, becomes the SDK mcpServers key. */
@@ -434,6 +551,15 @@ export interface McpServerProfile {
   /** http/sse: endpoint URL + headers. */
   url?: string;
   headers?: Record<string, string>;
+  /** Encrypted JSON connection fields; desktop main-process only. */
+  connectionEncrypted?: string;
+  /** Non-secret renderer hint; never used to hydrate a connection. */
+  hasStoredConnection?: boolean;
+  /**
+   * Opaque, non-secret revision of the exact registry row returned to a
+   * renderer. It is compare-and-set evidence only and is never persisted.
+   */
+  registryRevision?: string;
   /** Whether the server is selectable for attachment. */
   enabled: boolean;
 }
@@ -449,7 +575,9 @@ export function emptyConfig(): IdctlConfig {
     version: 1,
     managers: [],
     providers: [],
+    rootIdentity: defaultRootIdentitySettings(),
     update: defaultUpdateSettings(),
+    brainAutomation: defaultBrainAutomationSettings(),
     defaultTeam: DEFAULT_TEAM,
     knownTeams: [DEFAULT_TEAM],
   };

@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, renameSync, statSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { MAX_LOOP_STEPS } from '../shared/loopLimits.ts';
 
 function loopsDir(): string {
   const env = process.env.IDCTL_CONFIG?.trim();
@@ -67,12 +68,15 @@ export function getLoop(id: string): Loop | null {
 
 export function saveLoop(loop: Loop): { ok: boolean; id: string } {
   if (!loop?.id) throw new Error('loop id required');
+  if (!Array.isArray(loop.steps) || loop.steps.length > MAX_LOOP_STEPS) {
+    throw new Error(`loop must contain at most ${MAX_LOOP_STEPS} steps`);
+  }
   const f = fileFor(loop.id);
   const now = Date.now();
   const payload: Loop = {
     ...loop,
     title: (loop.title || '').slice(0, 200),
-    steps: (Array.isArray(loop.steps) ? loop.steps : []).slice(0, 20),
+    steps: loop.steps,
     createdAt: loop.createdAt || now,
     updatedAt: now,
   };

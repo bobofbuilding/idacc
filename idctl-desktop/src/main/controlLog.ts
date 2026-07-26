@@ -340,7 +340,7 @@ async function appendTrackingMemory(key: string, heading: string, event: Trackin
     content,
     tags,
     shared: true,
-    project: 'bittrees',
+    project: event.project || 'workspace',
   });
 }
 
@@ -387,14 +387,14 @@ async function recordTrackingHooks(method: string, args: unknown[], result: unkn
       `weekly-contributions:${event.weekKey}`,
       'Weekly contribution tracker',
       event,
-      ['dashboard-state', 'tracking', 'weekly-contributions', 'bittrees'],
+      ['dashboard-state', 'tracking', 'weekly-contributions', 'workspace'],
     ),
     ...(event.opportunity ? [
       appendTrackingMemory(
         `opportunity-attribution:${event.weekKey}`,
         'Opportunity attribution tracker',
         event,
-        ['dashboard-state', 'tracking', 'opportunity-attribution', 'bittrees', event.opportunity.type],
+        ['dashboard-state', 'tracking', 'opportunity-attribution', 'workspace', event.opportunity.type],
       ),
     ] : []),
   ]);
@@ -423,7 +423,22 @@ const ACTIONS: Record<string, (args: unknown[], result: unknown) => Summary> = {
   'tasks:setReview': (a) => ({ subject: `task ${s(a[0])} review → ${s(a[1])}`, data: { ref: s(a[0]), state: s(a[1]) }, tags: ['task'] }),
 
   // ── capability registries (was client-side-only) ──
-  'mcp:add': (a) => ({ subject: `mcp server added: ${s(obj(a[0]).name)}`, data: obj(a[0]), tags: ['cc-config', 'mcp'] }),
+  'mcp:add': (a) => {
+    const profile = obj(a[0]);
+    return {
+      subject: `mcp server added: ${s(profile.name)}`,
+      // Connection argv, URLs, headers, and environment values can contain
+      // credentials. Keep only the non-secret registry shape in Brain/audit.
+      data: {
+        name: s(profile.name),
+        transport: s(profile.transport),
+        command: s(profile.command),
+        enabled: profile.enabled !== false,
+        connectionStored: Boolean(profile.args || profile.env || profile.url || profile.headers || profile.hasStoredConnection),
+      },
+      tags: ['cc-config', 'mcp'],
+    };
+  },
   'mcp:remove': (a) => ({ subject: `mcp server removed: ${s(a[0])}`, data: { name: s(a[0]) }, tags: ['cc-config', 'mcp'] }),
   'providers:add': (a) => ({ subject: `provider added: ${s(obj(a[0]).name)}`, data: obj(a[0]), tags: ['cc-config', 'provider'] }),
   'providers:remove': (a) => ({ subject: `provider removed: ${s(a[0])}`, data: { name: s(a[0]) }, tags: ['cc-config', 'provider'] }),

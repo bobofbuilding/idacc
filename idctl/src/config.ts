@@ -18,9 +18,10 @@ export interface Config {
   apiKey?: string;
   /**
    * Send `X-Id-Admin: 1` on requests. The manager grants admin only to
-   * loopback callers that set this header (admin-gated routes: skill install,
-   * MCP attach, team auto-create). idctl is the operator's local control
-   * center talking to 127.0.0.1, so it is a legitimate admin client.
+   * loopback callers that set this header and, when configured, present the
+   * matching bearer (admin-gated routes: skill install, MCP attach, team
+   * auto-create). idctl is the operator's local control center talking to
+   * 127.0.0.1, so it is a legitimate admin client.
    */
   admin?: boolean;
   /** How often (ms) the fleet/agents snapshot is re-polled. */

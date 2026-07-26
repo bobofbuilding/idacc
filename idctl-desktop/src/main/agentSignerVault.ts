@@ -1,6 +1,6 @@
-import { app, safeStorage } from 'electron';
+import { safeStorage } from 'electron';
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import {
   createAgentPrivateKey,
   ethereumAddressForPrivateKey,
@@ -8,6 +8,9 @@ import {
   signEvmDigest,
   type AgentEip1559Transaction,
 } from '../shared/agentSigner.ts';
+import { appProfilePaths } from './appProfile.ts';
+import { agentSignerVaultPathForConfig } from './profileStatePaths.ts';
+import { secureStorageStatus } from './secureStoragePolicy.ts';
 
 interface SignerRecord {
   agent: string;
@@ -30,7 +33,7 @@ export interface AgentSignerMetadata {
 }
 
 function signerVaultPath(): string {
-  return join(app.getPath('userData'), 'keys', 'agent-signers.json');
+  return agentSignerVaultPathForConfig(appProfilePaths().config);
 }
 
 function cleanAgentKey(value: string): string {
@@ -64,9 +67,10 @@ function saveState(state: SignerVaultState): void {
 }
 
 function requireEncryption(): void {
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error('macOS Keychain-backed encryption is unavailable; refusing to create or use agent signing keys.');
-  }
+  const status = secureStorageStatus(safeStorage);
+  if (!status.available) throw new Error(
+    `${status.error ?? 'Secure credential storage is unavailable.'} Refusing to create or use agent signing keys.`,
+  );
 }
 
 function publicMetadata(record: SignerRecord): AgentSignerMetadata {
@@ -91,12 +95,12 @@ function createRecord(agent: string, rotatedAt?: number): SignerRecord {
 }
 
 export function agentSignerVaultStatus(): { available: boolean; backend: string; signerCount: number; error?: string } {
-  const available = safeStorage.isEncryptionAvailable();
-  if (!available) return { available: false, backend: 'electron-safeStorage', signerCount: 0, error: 'Keychain-backed encryption is unavailable.' };
+  const storage = secureStorageStatus(safeStorage);
+  if (!storage.available) return { ...storage, signerCount: 0 };
   try {
-    return { available: true, backend: 'electron-safeStorage/macOS-Keychain', signerCount: Object.keys(loadState().signers).length };
+    return { available: true, backend: storage.backend, signerCount: Object.keys(loadState().signers).length };
   } catch (error) {
-    return { available: false, backend: 'electron-safeStorage/macOS-Keychain', signerCount: 0, error: error instanceof Error ? error.message : String(error) };
+    return { available: false, backend: storage.backend, signerCount: 0, error: error instanceof Error ? error.message : String(error) };
   }
 }
 

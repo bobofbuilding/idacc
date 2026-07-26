@@ -107,7 +107,7 @@ function taskBriefFlags(objective: string, st: Pick<SubTask, 'title' | 'descript
   const validation = 'Owning lead reviews the completion; default coder and researcher validate substantial cross-team work.';
   const outOfScope = 'Unrelated refactors, destructive operations, credential changes, and optional follow-up recommendations beyond this task.';
   const backlog = 'Non-required recommendations or low-relevance follow-ups become backlog candidates instead of live delegated work.';
-  const relevance = 'medium: improves managed-agent throughput and contributor readiness for Bittrees-related work.';
+  const relevance = 'medium: directly improves the requested workspace outcome and managed-agent throughput.';
   return [
     ['--goal', goalId],
     ['--expected-output', expected],
@@ -115,7 +115,7 @@ function taskBriefFlags(objective: string, st: Pick<SubTask, 'title' | 'descript
     ['--validation-path', validation],
     ['--out-of-scope', outOfScope],
     ['--backlog-policy', backlog],
-    ['--bittrees-relevance', relevance],
+    ['--work-relevance', relevance],
   ].map(([flag, value]) => `${flag} ${qArg(value)}`).join(' ');
 }
 
@@ -1102,7 +1102,7 @@ ${objective}
 
 How to run it:
 1. Break it into concrete, independently-actionable tasks for your ACTIVE teammates (skip anyone stopped).
-2. Create each as a real task with dispatch-ready metadata: /task create "<short title>" --owner <teammate> --description "<what to do + expected output>" --goal "<goal id from objective, or goal_manual_dispatch>" --expected-output "<artifact or result>" --acceptance "<how to verify done>" --validation-path "coder and researcher review substantial work" --out-of-scope "<what not to do>" --backlog-policy "Non-required recommendations become backlog candidates." --bittrees-relevance "medium: improves managed-agent throughput and contributor readiness for Bittrees-related work."
+2. Create each as a real task with dispatch-ready metadata: /task create "<short title>" --owner <teammate> --description "<what to do + expected output>" --goal "<goal id from objective, or goal_manual_dispatch>" --expected-output "<artifact or result>" --acceptance "<how to verify done>" --validation-path "coder and researcher review substantial work" --out-of-scope "<what not to do>" --backlog-policy "Non-required recommendations become backlog candidates." --work-relevance "medium: directly improves the requested workspace outcome and managed-agent throughput."
 3. Dispatch the work, coordinate, and keep task status updated as things progress.
 4. Other teams are handling their own slices in parallel — own yours end to end.
 

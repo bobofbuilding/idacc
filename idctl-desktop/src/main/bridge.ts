@@ -5,7 +5,7 @@
  * allow-listed methods below over IPC.
  */
 
-import { inspectLibraryPluginMetadata, ManagerClient, ManagerError } from '../../../idctl/src/api/client.ts';
+import { heuristicSkillTags, inspectLibraryPluginMetadata, ManagerClient, ManagerError } from '../../../idctl/src/api/client.ts';
 import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
 import { configureControlEventEmitter } from './controlLog.ts';
@@ -45,7 +45,12 @@ import { configDir, resolveConfigPath } from '../../../idctl/src/settings/paths.
 import { detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { realpathSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
-import { ProviderClient } from '../../../idctl/src/settings/ProviderClient.ts';
+import { ProviderClient, type ProbeOutcome } from '../../../idctl/src/settings/ProviderClient.ts';
+import {
+  normalizeProviderBaseUrl,
+  providerTransportDecision,
+  providerUrlIsLoopback,
+} from '../../../idctl/src/settings/providerTransport.ts';
 import { discoverLocalServers, mergeLocalDiscoveryCandidates, type DiscoveredServer } from '../../../idctl/src/settings/localDiscovery.ts';
 import { type HeadroomPilotSettings, type IdctlConfig, type ProviderKind, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
 import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts';
@@ -65,8 +70,11 @@ import { syncDomainsForMethod } from '../shared/syncDomains.ts';
 import { COALESCED_READ_METHODS, ReadCallCache } from '../shared/readCallCache.ts';
 import { mapTeamAgentGroups } from '../shared/teamAgentGroups.ts';
 import { isDashboardRelevantEvent } from '../shared/dashboardEvents.ts';
+import { identityRegisterNoop } from '../shared/identityVerification.ts';
+import { isDreamSchedule, type ScheduledDreamNewsItem } from '../shared/dreamSchedule.ts';
+import { sanitizeSecretPayload } from './secretRedaction.ts';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
@@ -88,6 +96,211 @@ const ETH_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const PRIMARY_TEAM = 'default';
 const DEFAULT_PRIMARY_AGENT = 'lead';
 const DEFAULT_VALIDATORS = ['coder', 'researcher'];
+
+interface SettingsSecretCodec {
+  encrypt(value: string): string;
+  decrypt(value: string): string | undefined;
+}
+
+let settingsSecretCodec: SettingsSecretCodec | null = null;
+
+export function configureSettingsSecretCodec(codec: SettingsSecretCodec): void {
+  settingsSecretCodec = codec;
+}
+
+function requireSettingsSecretCodec(): SettingsSecretCodec {
+  if (!settingsSecretCodec) throw new Error('Secure settings storage is not available yet.');
+  return settingsSecretCodec;
+}
+
+function providerKey(provider: ProviderProfile): string | undefined {
+  if (!providerTransportDecision(provider.baseUrl).ok) return undefined;
+  if (provider.apiKeyEncrypted) {
+    const decrypted = settingsSecretCodec?.decrypt(provider.apiKeyEncrypted);
+    if (decrypted) return decrypted;
+  }
+  return resolveProviderKey(provider);
+}
+
+function providerForStorage(input: ProviderProfile): ProviderProfile {
+  const normalizedBaseUrl = normalizeProviderBaseUrl(input.baseUrl);
+  const previous = loadSettings().providers.find((provider) => provider.name === input.name);
+  const plaintext = input.apiKey?.trim();
+  const encrypted = plaintext
+    ? requireSettingsSecretCodec().encrypt(plaintext)
+    : previous?.apiKeyEncrypted;
+  const stored: ProviderProfile = {
+    ...(previous ?? {}),
+    ...input,
+    baseUrl: normalizedBaseUrl,
+    apiKey: undefined,
+    apiKeyEncrypted: encrypted,
+  };
+  delete stored.apiKey;
+  if (!stored.apiKeyEncrypted) delete stored.apiKeyEncrypted;
+  return stored;
+}
+
+async function probeConfiguredProvider(
+  provider: ProviderProfile,
+  timeoutMs?: number,
+): Promise<ProbeOutcome> {
+  const transport = providerTransportDecision(provider.baseUrl);
+  if (!transport.ok || !transport.normalizedUrl) {
+    return {
+      ok: false,
+      status: 'error',
+      models: [],
+      message: transport.error || 'Provider URL is not allowed.',
+    };
+  }
+  return new ProviderClient(
+    { ...provider, baseUrl: transport.normalizedUrl },
+    providerKey(provider),
+  ).probe(undefined, timeoutMs);
+}
+
+const MCP_CONNECTION_FIELDS = ['args', 'env', 'url', 'headers'] as const;
+type McpConnectionFields = Pick<McpServerProfile, typeof MCP_CONNECTION_FIELDS[number]>;
+
+function mcpConnection(profile: McpServerProfile): McpConnectionFields {
+  return {
+    ...(profile.args !== undefined ? { args: profile.args } : {}),
+    ...(profile.env !== undefined ? { env: profile.env } : {}),
+    ...(profile.url !== undefined ? { url: profile.url } : {}),
+    ...(profile.headers !== undefined ? { headers: profile.headers } : {}),
+  };
+}
+
+function mcpForStorage(input: McpServerProfile): McpServerProfile {
+  const previous = loadSettings().mcpServers?.find((server) => server.name === input.name);
+  const incoming = mcpConnection(input);
+  const hasIncoming = Object.keys(incoming).length > 0;
+  const connectionEncrypted = hasIncoming
+    ? requireSettingsSecretCodec().encrypt(JSON.stringify(incoming))
+    : previous?.connectionEncrypted;
+  const stored: McpServerProfile = {
+    ...(previous ?? {}),
+    ...input,
+    connectionEncrypted,
+  };
+  for (const field of MCP_CONNECTION_FIELDS) delete stored[field];
+  delete stored.hasStoredConnection;
+  delete stored.registryRevision;
+  if (!stored.connectionEncrypted) delete stored.connectionEncrypted;
+  return stored;
+}
+
+function hydrateMcp(profile: McpServerProfile): McpServerProfile {
+  if (!profile.connectionEncrypted) return { ...profile };
+  const plaintext = settingsSecretCodec?.decrypt(profile.connectionEncrypted);
+  if (!plaintext) throw new Error(`Cannot decrypt the saved connection for MCP server "${profile.name}".`);
+  let connection: McpConnectionFields;
+  try {
+    connection = JSON.parse(plaintext) as McpConnectionFields;
+  } catch {
+    throw new Error(`Saved connection for MCP server "${profile.name}" is corrupt.`);
+  }
+  const hydrated = { ...profile, ...connection };
+  delete hydrated.connectionEncrypted;
+  delete hydrated.hasStoredConnection;
+  return hydrated;
+}
+
+function hydrateRegisteredMcp(profile: McpServerProfile): McpServerProfile {
+  const registered = loadSettings().mcpServers?.find((server) => server.name === profile.name);
+  return hydrateMcp(registered ?? profile);
+}
+
+function hydrateRequiredRegisteredMcp(profile: McpServerProfile): McpServerProfile {
+  const registered = loadSettings().mcpServers?.find((server) => server.name === profile.name);
+  if (!registered) {
+    throw new Error(`MCP server "${profile.name}" is no longer in the registry. Refresh capabilities and try again.`);
+  }
+  return hydrateMcp(registered);
+}
+
+function mcpRegistryRevision(profile: McpServerProfile): string {
+  return createHash('sha256').update(JSON.stringify({
+    name: profile.name,
+    transport: profile.transport,
+    command: profile.command ?? '',
+    enabled: profile.enabled !== false,
+    connectionEncrypted: profile.connectionEncrypted ?? '',
+    args: profile.args ?? [],
+    env: profile.env ?? {},
+    url: profile.url ?? '',
+    headers: profile.headers ?? {},
+  })).digest('hex');
+}
+
+function rendererMcp(profile: McpServerProfile): McpServerProfile {
+  const safe = { ...profile, hasStoredConnection: Boolean(
+    profile.connectionEncrypted || MCP_CONNECTION_FIELDS.some((field) => profile[field] !== undefined),
+  ), registryRevision: mcpRegistryRevision(profile) };
+  for (const field of MCP_CONNECTION_FIELDS) delete safe[field];
+  delete safe.connectionEncrypted;
+  return safe;
+}
+
+function rendererMcpList(): McpServerProfile[] {
+  return (loadSettings().mcpServers ?? []).map(rendererMcp);
+}
+
+function rendererMcpStamp(profile: McpServerProfile): string {
+  return JSON.stringify({
+    name: profile.name,
+    transport: profile.transport,
+    command: profile.command ?? '',
+    enabled: profile.enabled !== false,
+    hasStoredConnection: profile.hasStoredConnection === true,
+    registryRevision: profile.registryRevision ?? '',
+  });
+}
+
+function canonicalMcpValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalMcpValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => [key, canonicalMcpValue(child)]),
+  );
+}
+
+function rendererAgentMcpStamp(servers: McpServerSpec[]): string {
+  return JSON.stringify(canonicalMcpValue(sanitizeSecretPayload(servers ?? [])));
+}
+
+/** Migrate legacy plaintext provider and MCP connection material in place. */
+export function migrateSettingsSecrets(): { providers: number; mcpServers: number } {
+  const codec = requireSettingsSecretCodec();
+  const config = loadSettings();
+  let providers = 0;
+  let mcpServers = 0;
+  config.providers = config.providers.map((provider) => {
+    if (!provider.apiKey) return provider;
+    providers += 1;
+    const migrated = {
+      ...provider,
+      apiKeyEncrypted: provider.apiKeyEncrypted || codec.encrypt(provider.apiKey),
+    };
+    delete migrated.apiKey;
+    return migrated;
+  });
+  config.mcpServers = (config.mcpServers ?? []).map((server) => {
+    if (server.connectionEncrypted || !MCP_CONNECTION_FIELDS.some((field) => server[field] !== undefined)) return server;
+    mcpServers += 1;
+    const migrated = {
+      ...server,
+      connectionEncrypted: codec.encrypt(JSON.stringify(mcpConnection(server))),
+    };
+    for (const field of MCP_CONNECTION_FIELDS) delete migrated[field];
+    return migrated;
+  });
+  if (providers || mcpServers) saveSettings(config);
+  return { providers, mcpServers };
+}
 
 function assertDefaultPrimaryWrite(team: string, agent: string): void {
   if (team !== PRIMARY_TEAM || agent !== DEFAULT_PRIMARY_AGENT) {
@@ -207,7 +420,7 @@ async function verifyControllerChallenge(agent: string, wallet: string, signatur
   if (recovered.toLowerCase() !== wallet.toLowerCase()) {
     throw new Error('Controller signature does not match the challenge wallet.');
   }
-  const verified = { ...record, signature: trimmed, verifiedAt: Date.now() };
+  const verified = { ...record, signature: '', verifiedAt: Date.now() };
   controllerProofs.set(key, verified);
   return verified;
 }
@@ -393,9 +606,9 @@ function cliEnv(): NodeJS.ProcessEnv {
     '/usr/local/bin',
     '/usr/bin',
     '/bin',
-    ...(process.env.PATH ? process.env.PATH.split(':') : []),
+    ...(process.env.PATH ? process.env.PATH.split(delimiter) : []),
   ];
-  return { ...process.env, PATH: Array.from(new Set(dirs)).join(':') };
+  return { ...process.env, PATH: Array.from(new Set(dirs)).join(delimiter) };
 }
 
 function codexModelsFromCache(): string[] {
@@ -640,7 +853,7 @@ async function probeAllRuntimes(): Promise<Record<string, string[]>> {
       .filter((p) => p.enabled !== false)
       .map(async (p) => {
         try {
-          const outcome = await new ProviderClient(p, resolveProviderKey(p)).probe();
+          const outcome = await probeConfiguredProvider(p);
           recordProviderSync(p.name, {
             at: Date.now(),
             status: outcome.status,
@@ -667,7 +880,7 @@ async function probeLocalRuntimes(): Promise<Record<string, string[]>> {
       .filter((p) => p.enabled !== false && isLocalProvider(p))
       .map(async (p) => {
         try {
-          const outcome = await new ProviderClient(p, resolveProviderKey(p)).probe(undefined, 3000);
+          const outcome = await probeConfiguredProvider(p, 3000);
           recordProviderSync(p.name, {
             at: Date.now(),
             status: outcome.status,
@@ -717,7 +930,7 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
     const p = loadSettings().providers.find((x) => x.name === name);
     if (!p) return;
     try {
-      const outcome = await new ProviderClient(p, resolveProviderKey(p)).probe(undefined, 8000);
+      const outcome = await probeConfiguredProvider(p, 8000);
       recordProviderSync(p.name, {
         at: Date.now(),
         status: outcome.status,
@@ -781,7 +994,7 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
         label: runtimeDisplayLabel(row.runtime),
         model: row.model || undefined,
         ok: false,
-        detail: 'The connected ID Agents manager is outdated and cannot verify runtime assignments. Open Settings, run Update & sync manager, then retry.',
+        detail: 'The bundled Agent manager cannot verify runtime assignments. Open Settings, check for a unified IDACC update, then retry.',
         source: 'harness',
         modelCount: models.length,
       };
@@ -817,22 +1030,22 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
 
 /** Where a provider's API key resolves from, without exposing the value. */
 function keySourceOf(p: ProviderProfile): 'config' | 'env' | 'none' {
-  if (p.apiKey) return 'config';
-  if (resolveProviderKey(p)) return 'env';
+  if (p.apiKey || p.apiKeyEncrypted) return 'config';
+  if (providerKey(p)) return 'env';
   return 'none';
 }
 /** Provider list enriched with the (non-secret) key source for the UI. */
 function listProvidersEnriched(): (ProviderProfile & { keySource: 'config' | 'env' | 'none'; needsKey: boolean })[] {
-  return loadSettings().providers.map((p) => ({ ...p, keySource: keySourceOf(p), needsKey: providerNeedsKey(p) }));
+  return loadSettings().providers.map((p) => {
+    const { apiKey: _apiKey, apiKeyEncrypted: _apiKeyEncrypted, ...safe } = p;
+    void _apiKey;
+    void _apiKeyEncrypted;
+    return { ...safe, keySource: keySourceOf(p), needsKey: providerNeedsKey(p) };
+  });
 }
 
 function isLoopbackProvider(p: ProviderProfile): boolean {
-  try {
-    const host = new URL(p.baseUrl).hostname.toLowerCase();
-    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
-  } catch {
-    return false;
-  }
+  return providerUrlIsLoopback(p.baseUrl);
 }
 
 function providerBridgeStamp(p: ProviderProfile): string {
@@ -875,7 +1088,7 @@ function resolveProviderLaneAssignment(runtime: string): { providerName: string;
   const p = loadSettings().providers.find((x) => x.name === providerName);
   if (!p) throw new Error(`provider lane "${providerName}" is no longer configured in Settings`);
   if (!providerRouteReadyForAssignment(p)) throw new Error(`provider lane "${providerName}" is not ready; Connect & sync it in Settings first`);
-  const apiKey = resolveProviderKey(p) || (!providerNeedsKey(p) && isLoopbackProvider(p) ? 'idacc-local-provider-no-key' : '');
+  const apiKey = providerKey(p) || (!providerNeedsKey(p) && isLoopbackProvider(p) ? 'idacc-local-provider-no-key' : '');
   if (providerNeedsKey(p) && !apiKey) throw new Error(`provider lane "${providerName}" is missing an API key`);
   return {
     providerName,
@@ -890,7 +1103,8 @@ function resolveProviderLaneAssignment(runtime: string): { providerName: string;
 }
 
 function providerRouteReadyForAssignment(p: ProviderProfile): boolean {
-  const keyReady = !providerNeedsKey(p) || Boolean(resolveProviderKey(p));
+  if (!providerTransportDecision(p.baseUrl).ok) return false;
+  const keyReady = !providerNeedsKey(p) || Boolean(providerKey(p));
   const modelCount = p.lastSync?.models?.length ?? p.lastSync?.modelCount ?? 0;
   if (isLocalProvider(p)) return keyReady && localProviderRouteIsLive(p);
   return p.enabled !== false && keyReady && modelCount > 0 && (p.lastSync?.status === 'live' || p.lastSync?.status === 'preset' || modelCount > 0);
@@ -909,7 +1123,7 @@ async function prepareOnboardRuntime(plan: OnboardPlan): Promise<PreparedRuntime
   if (!assignment) {
     const preflight = await client.runtimePreflight(runtime || undefined, plan.model);
     if (!preflight) {
-      throw new Error('The connected ID Agents manager is outdated and cannot verify runtime assignments. Open Settings, run Update & sync manager, then retry.');
+      throw new Error('The bundled Agent manager cannot verify runtime assignments. Open Settings, check for a unified IDACC update, then retry.');
     }
     if (!preflight.ok) {
       throw new Error(preflight.detail || preflight.issues.map((issue) => issue.message).join('; ') || 'Manager runtime preflight failed.');
@@ -1057,7 +1271,6 @@ function localSkillCandidateRoots(): Array<{ label: string; root: string }> {
   return [
     { label: 'Codex', root: join(home, '.codex', 'skills') },
     { label: 'Agents', root: join(home, '.agents', 'skills') },
-    { label: 'ID Agents', root: join(home, 'bob', 'Library', 'Assistants', 'idagents', '.agents', 'skills') },
   ];
 }
 
@@ -1178,7 +1391,7 @@ async function projectPluginSkill(name: string): Promise<ProjectPluginSkillResul
 }
 import type { LibrarySkillEntry, McpServerSpec, CreateSkillInput, LibraryPluginInspection, ProjectPluginSkillResult } from '../../../idctl/src/api/client.ts';
 import { filterParkedMcpServers } from '../../../idctl/src/settings/mcpCatalog.ts';
-import { brokerServerPath, mintAgentToken, revokeAgentToken, brokerUrl } from './computeruse/broker.ts';
+import { brokerServerPath, brokerSessionPath, mintAgentToken, revokeAgentToken, brokerUrl } from './computeruse/broker.ts';
 // The Computer Use MCP server name. NEVER "computer-use" — Claude Code reserves that
 // name and rejects the entire MCP config, breaking every dispatch. CU_MCP_ALIASES
 // includes the old broken name so existing attachments can be detected + cleaned up.
@@ -1221,9 +1434,9 @@ export function configureKeyProvider(provider: KeyProvider): void {
   activeKeyProvider = provider;
 }
 
-/** Point the desktop bridge at the app-owned manager after profile bootstrap. */
-export function configureManagedManager(url: string): void {
-  cfg = { ...cfg, managerUrl: url };
+/** Point the desktop bridge at the app-owned Manager after profile bootstrap. */
+export function configureManagedManager(url: string, adminToken?: string): void {
+  cfg = { ...cfg, managerUrl: url, apiKey: adminToken };
   client = new ManagerClient(cfg);
   brain.setTransport((request) => client.brainRequest(request));
   configureControlEventEmitter((event) => client.emitControlEvent(event));
@@ -1240,6 +1453,7 @@ type OrgControlRead = {
 };
 
 let controlStateWriteTail: Promise<void> = Promise.resolve();
+let mcpRegistryWriteTail: Promise<void> = Promise.resolve();
 
 function controlStateClient(): ManagerClient {
   // App-wide control state must not move when the operator changes the visible
@@ -1253,11 +1467,36 @@ function serializeControlStateWrite<T>(write: () => Promise<T>): Promise<T> {
   return next;
 }
 
+function serializeMcpRegistryWrite<T>(write: () => Promise<T>): Promise<T> {
+  const next = mcpRegistryWriteTail.then(write, write);
+  mcpRegistryWriteTail = next.then(() => undefined, () => undefined);
+  return next;
+}
+
 function mirrorProjects(projects: ProjectEntry[]): ProjectEntry[] {
   const settings = loadSettings();
   settings.projects = projects;
   saveSettings(settings);
   return projects;
+}
+
+function projectControlStamp(project: ProjectEntry): string {
+  return JSON.stringify({
+    id: project.id,
+    name: project.name,
+    status: project.status,
+    description: project.description ?? '',
+    team: project.team ?? '',
+    lead: project.lead ?? '',
+    policy: project.policy ?? 'balanced',
+    tags: project.tags ?? [],
+    links: project.links ?? [],
+    path: project.path ?? '',
+    notes: project.notes ?? '',
+    autoCommit: project.autoCommit ?? 'off',
+    createdAt: project.createdAt ?? 0,
+    updatedAt: project.updatedAt ?? 0,
+  });
 }
 
 async function managerProjects(): Promise<ProjectEntry[]> {
@@ -1515,13 +1754,34 @@ async function eventTailCursor(scopedClient: ManagerClient): Promise<number> {
   return cursor;
 }
 
+async function strictAllTeamAgentGroups(): Promise<Array<{ team: string; agents: Agent[] }>> {
+  // Destructive fleet-wide operations must distinguish "this team is empty"
+  // from "the Manager could not enumerate/read this team". The ordinary roster
+  // remains best-effort for display, while this path propagates every read
+  // failure so a registry entry cannot be deleted from an incomplete snapshot.
+  const teams = await client.teams();
+  const names = [...new Set(
+    (teams.length
+      ? [PRIMARY_TEAM, cfg.team ?? PRIMARY_TEAM, ...teams.map((row) => row.name)]
+      : [cfg.team ?? PRIMARY_TEAM])
+      .map((name) => String(name).trim())
+      .filter(Boolean),
+  )];
+  const groups: Array<{ team: string; agents: Agent[] }> = [];
+  for (const team of names) {
+    groups.push({ team, agents: await client.withTeam(team).agents() });
+  }
+  return groups;
+}
+
 const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // fleet
   health: () => client.health(),
   agents: () => client.agents(),
   teams: () => client.teams(),
   // Agents across ALL teams, grouped — for the Health roster.
-  'agents:allTeams': async () => {
+  'agents:allTeams': async (options?: { requireComplete?: boolean }) => {
+    if (options?.requireComplete) return strictAllTeamAgentGroups();
     const teams = await client.teams().catch(() => []);
     const names = teams.length ? teams.map((t) => t.name) : [cfg.team ?? 'default'];
     const groups = await mapTeamAgentGroups<Agent>(names, (name) => client.withTeam(name).agents());
@@ -1774,6 +2034,29 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   checkins: () => client.checkins(),
   'checkins:close': (id: string) => client.closeCheckin(String(id)),
   schedules: () => client.schedules(),
+  // Scheduled Dream reports complete asynchronously inside the agent runtime.
+  // Return the exact schedule receipts + query-completion rows so the app-local
+  // Dream store can reconcile them idempotently, including after an app restart.
+  'dreams:scheduledRuns': async (team?: string) => {
+    const targetTeam = team ? String(team) : client.team;
+    const teamClient = client.withTeam(targetTeam);
+    const schedules = (await teamClient.schedules()).filter(isDreamSchedule);
+    // Include the full current roster, not only active schedule targets. A run
+    // can complete after its schedule was edited or deleted; its durable
+    // marker-bearing receipt still identifies it as Dream work.
+    const roster = await teamClient.agents().catch(() => [] as Agent[]);
+    const agents = [...new Set([
+      ...schedules.flatMap((schedule) => schedule.targets),
+      ...roster.map((agent) => agent.name),
+    ].filter(Boolean))];
+    const pairs = await Promise.all(agents.map(async (agent) => {
+      const result = await teamClient
+        .remote<{ items?: ScheduledDreamNewsItem[] }>(`/news ${JSON.stringify(agent)}`)
+        .catch(() => null);
+      return [agent, result?.result?.items ?? []] as const;
+    }));
+    return { schedules, newsByAgent: Object.fromEntries(pairs) };
+  },
   // Every team's schedules, each tagged with its team — so the Schedule tab can surface
   // heartbeats whose target isn't in the CURRENT team's roster (e.g. a cross-team or
   // manager-level "task-master" heartbeat) instead of silently hiding them.
@@ -1862,6 +2145,8 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // dashboard: switch runtime (rebuild required to apply)
   setAgentRuntime: (id: string, runtime: string, team?: string) =>
     setAgentRuntimeFromSettings(String(id), String(runtime), team ? String(team) : undefined),
+  setAgentModel: (id: string, model: string, team?: string) =>
+    (team ? client.withTeam(String(team)) : client).setAgentModel(String(id), String(model)),
   setAgentEffort: (id: string, effort: string, team?: string) =>
     (team ? client.withTeam(String(team)) : client).setAgentEffort(String(id), String(effort ?? '')),
   setAgentSpeed: (id: string, speed: string, team?: string) =>
@@ -1899,8 +2184,16 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'identity:register': async (agent: string, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
+    const scopedClient = teamName ? client.withTeam(teamName) : client;
+    const current = (await scopedClient.agents()).find((row) => row.name === name || row.id === name);
+    if (!current) throw new Error(`Agent "${name}" is no longer in ${teamName ?? client.team ?? 'default'}.`);
+    const registration = identityRegisterNoop(current);
+    if (registration.noop) {
+      return { ok: true, noop: true, changed: false, domain: registration.domain };
+    }
     await requireControllerProof(name, teamName);
-    return (teamName ? client.withTeam(teamName) : client).remote(`/register ${name}`);
+    const result = await scopedClient.remote(`/register ${name}`);
+    return { ok: true, noop: false, changed: true, result };
   },
   'wallet:provision': async (agent: string, team?: string) => {
     const name = String(agent);
@@ -1908,7 +2201,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     await requireControllerProofIfWalletExists(name, teamName);
     return (teamName ? client.withTeam(teamName) : client).remote(`/agent ${name} wallet provision`);
   },
-  'onboard:run': (plan: OnboardPlan) => runOnboarding(client, plan, { prepareRuntime: prepareOnboardRuntime }),
+  'onboard:run': (plan: OnboardPlan) => runOnboarding(client, {
+    ...plan,
+    mcpServers: plan.mcpServers?.map((server) => hydrateRegisteredMcp(server as McpServerProfile)),
+  }, { prepareRuntime: prepareOnboardRuntime }),
 
   // dashboard: per-runtime model catalog (synced providers + codex cache + curated)
   'runtime:models': async () => runtimeCatalogWithLiveCliModels(),
@@ -1943,7 +2239,12 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const cached = loadSettings().skillTags ?? {};
     const targets = skills.filter((s) => !(s.tags && s.tags.length) && (force || !cached[s.name]));
     if (!targets.length) return cached;
-    const derived = await client.categorizeSkillsAI(targets.map((s) => ({ name: s.name, description: s.description })));
+    // First-load categorization is deterministic and offline. AI refinement is
+    // reserved for the explicit, confirmed "AI re-tag" action (force=true), so
+    // merely opening Capabilities can never create a billable model request.
+    const derived = force
+      ? await client.categorizeSkillsAI(targets.map((s) => ({ name: s.name, description: s.description })))
+      : Object.fromEntries(targets.map((s) => [s.name, heuristicSkillTags(s.name, s.description)]));
     setSkillTags(derived);
     return loadSettings().skillTags ?? {};
   },
@@ -1987,7 +2288,34 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   deleteSkill: (name: string) => client.deleteSkill(String(name)),
   uninstallSkill: (skill: string, agent: string, team?: string) => (team ? client.withTeam(String(team)) : client).uninstallSkill(String(skill), String(agent)),
   usage: () => client.usage(),
-  setAgentMcp: (agentId: string, servers: McpServerSpec[], team?: string) => (team ? client.withTeam(String(team)) : client).setAgentMcp(String(agentId), filterParkedMcpServers(servers ?? [])),
+  setAgentMcp: (agentId: string, servers: McpServerSpec[], team?: string, expectedServers?: McpServerSpec[]) => serializeMcpRegistryWrite(async () => {
+    if (!Array.isArray(expectedServers)) {
+      throw new Error('Agent MCP writes require a reviewed current attachment snapshot. Refresh capabilities and try again.');
+    }
+    const scopedClient = team ? client.withTeam(String(team)) : client;
+    const currentAgent = (await scopedClient.agents()).find((agent) => agent.id === String(agentId));
+    if (!currentAgent) throw new Error(`Agent "${agentId}" is no longer in ${team ? String(team) : (client.team ?? 'default')}.`);
+    const currentExact = (((currentAgent.metadata as any)?.mcpServers) ?? []) as McpServerSpec[];
+    if (rendererAgentMcpStamp(expectedServers) !== rendererAgentMcpStamp(currentExact)) {
+      throw new Error('Agent MCP capabilities changed before this write. Refresh and review the current attachment list.');
+    }
+
+    // Renderer IPC deliberately redacts token/env/header values. Preserve the
+    // exact Manager copy for unchanged rows and hydrate only genuinely new or
+    // changed registry entries, then use the exact current list for Manager CAS.
+    const currentByName = new Map(currentExact.map((server) => [server.name, server]));
+    const desiredExact = filterParkedMcpServers((servers ?? []).map((server) => {
+      const current = currentByName.get(server.name);
+      if (
+        current
+        && rendererAgentMcpStamp([server]) === rendererAgentMcpStamp([current])
+      ) {
+        return current;
+      }
+      return hydrateRequiredRegisteredMcp(server as McpServerProfile);
+    }));
+    return scopedClient.setAgentMcp(String(agentId), desiredExact, currentExact);
+  }),
   rebuildAgent: (agent: string, team?: string) => (team ? client.withTeam(String(team)) : client).remote(`/agent ${agent} rebuild`),
 
   // Computer Use: attach/detach the bundled computer-use MCP server to an agent
@@ -2009,9 +2337,21 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     // (the broker derives identity from the token, not a self-reported name). The
     // server name MUST NOT be "computer-use" — Claude Code reserves that and rejects
     // the WHOLE MCP config, breaking every dispatch to the agent.
-    const spec: McpServerSpec = { name: CU_MCP_NAME, command: 'node', args: [brokerServerPath()], env: { ID_CU_AGENT: authority, ID_CU_AGENT_NAME: String(a.name), ID_CU_TEAM: authorityTeam, ID_CU_TOKEN: mintAgentToken(authority), ID_CU_URL: brokerUrl() } };
+    const spec: McpServerSpec = {
+      name: CU_MCP_NAME,
+      command: 'node',
+      args: [brokerServerPath()],
+      env: {
+        ID_CU_AGENT: authority,
+        ID_CU_AGENT_NAME: String(a.name),
+        ID_CU_TEAM: authorityTeam,
+        ID_CU_TOKEN: mintAgentToken(authority),
+        ID_CU_URL: brokerUrl(),
+        ID_CU_SESSION_FILE: brokerSessionPath(),
+      },
+    };
     const next = filterParkedMcpServers([...cur.filter((s) => !CU_MCP_ALIASES.includes(s.name)), spec]); // also strips the old broken name
-    return scopedClient.setAgentMcp(a.id, next);
+    return scopedClient.setAgentMcp(a.id, next, cur);
   },
   'cu:detach': async (agentId: string, agentName?: string, team?: string) => {
     const teamName = team ? String(team) : undefined;
@@ -2020,7 +2360,11 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const a = requireCurrentComputerUseAgent(agents, agentId, agentName);
     revokeAgentToken(scopedAgentKey(a.name, teamName ?? client.team ?? 'default'));
     const cur = (((a.metadata as any)?.mcpServers) ?? []) as McpServerSpec[];
-    return scopedClient.setAgentMcp(a.id, filterParkedMcpServers(cur.filter((s) => !CU_MCP_ALIASES.includes(s.name))));
+    return scopedClient.setAgentMcp(
+      a.id,
+      filterParkedMcpServers(cur.filter((s) => !CU_MCP_ALIASES.includes(s.name))),
+      cur,
+    );
   },
   // Agents that have computer-use attached (for the view's "blessed" list) — detects
   // the old reserved name too, so a previously-broken agent shows up to be removed/re-blessed.
@@ -2034,16 +2378,58 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   },
 
   // MCP server registry (local settings catalog)
-  'mcp:list': async () => loadSettings().mcpServers ?? [],
-  'mcp:add': async (profile: McpServerProfile) => {
-    upsertMcpServer(profile);
-    return loadSettings().mcpServers ?? [];
-  },
-  'mcp:remove': async (name: string) => {
+  'mcp:list': async () => rendererMcpList(),
+  'mcp:add': (profile: McpServerProfile, expected?: McpServerProfile | null) => serializeMcpRegistryWrite(async () => {
+    if (expected === undefined) {
+      throw new Error('MCP registry writes require a reviewed current snapshot. Refresh the registry and try again.');
+    }
+    const current = rendererMcpList().find((row) => row.name === profile.name);
+    if (expected === null && current) {
+      throw new Error(`MCP server "${profile.name}" was added before this write. Refresh and review the current registry.`);
+    }
+    if (expected && (!current || rendererMcpStamp(current) !== rendererMcpStamp(expected))) {
+      throw new Error(`MCP server "${profile.name}" changed before replacement. Refresh and review the current registry.`);
+    }
+    upsertMcpServer(mcpForStorage(profile));
+    return rendererMcpList();
+  }),
+  'mcp:remove': (name: string, expected?: McpServerProfile) => serializeMcpRegistryWrite(async () => {
+    if (!expected) {
+      throw new Error('MCP registry removal requires a reviewed current snapshot. Refresh the registry and try again.');
+    }
+    const current = rendererMcpList().find((profile) => profile.name === String(name));
+    if (!current) throw new Error(`MCP server "${String(name)}" is no longer registered.`);
+    if (expected && rendererMcpStamp(current) !== rendererMcpStamp(expected)) {
+      throw new Error(`MCP server "${String(name)}" changed before removal. Refresh and review the current registry.`);
+    }
+    const attached = (await strictAllTeamAgentGroups()).flatMap((group) => group.agents
+      .filter((agent) => (((agent.metadata as any)?.mcpServers ?? []) as Array<{ name?: string }>)
+        .some((server) => server.name === String(name)))
+      .map((agent) => `${group.team}/${agent.name}`));
+    if (attached.length) {
+      throw new Error(`MCP server "${String(name)}" is still attached to ${attached.slice(0, 8).join(', ')}${attached.length > 8 ? ` and ${attached.length - 8} more` : ''}. Registry removal was blocked.`);
+    }
+    const stored = loadSettings().mcpServers?.find((profile) => profile.name === String(name));
+    if (!stored) throw new Error(`MCP server "${String(name)}" is no longer registered.`);
     removeMcpServer(String(name));
-    return loadSettings().mcpServers ?? [];
-  },
-  'mcp:test': (spec: McpServerSpec) => testMcpServer(spec),
+    try {
+      const appeared = (await strictAllTeamAgentGroups()).flatMap((group) => group.agents
+        .filter((agent) => (((agent.metadata as any)?.mcpServers ?? []) as Array<{ name?: string }>)
+          .some((server) => server.name === String(name)))
+        .map((agent) => `${group.team}/${agent.name}`));
+      if (appeared.length) {
+        upsertMcpServer(stored);
+        throw new Error(`MCP server "${String(name)}" was re-attached during removal. Its registry entry was restored; review ${appeared.slice(0, 8).join(', ')}.`);
+      }
+    } catch (error) {
+      if (!loadSettings().mcpServers?.some((profile) => profile.name === String(name))) {
+        upsertMcpServer(stored);
+      }
+      throw error;
+    }
+    return rendererMcpList();
+  }),
+  'mcp:test': (spec: McpServerSpec) => testMcpServer(hydrateRegisteredMcp(spec as McpServerProfile)),
 
   // Projects are Manager-owned. The settings copy is a cache used by existing
   // local git helpers and can be rebuilt from this control-plane registry.
@@ -2052,9 +2438,17 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const project = { ...p, updatedAt: Date.now() };
     return serializeControlStateWrite(() => persistProject(project));
   },
-  'projects:remove': async (id: string) => {
+  'projects:remove': async (id: string, expectedProject?: ProjectEntry) => {
     const key = String(id);
-    await serializeControlStateWrite(() => controlStateClient().controlStateDelete('project', key));
+    await serializeControlStateWrite(async () => {
+      const manager = controlStateClient();
+      const current = await manager.controlStateGet<ProjectEntry>('project', key);
+      if (!current) throw new Error('Project was already removed. Refresh Projects before trying again.');
+      if (!expectedProject || projectControlStamp(current.value) !== projectControlStamp(expectedProject)) {
+        throw new Error('Project changed after review. Refresh Projects before deleting it.');
+      }
+      await manager.controlStateDelete('project', key, current.version);
+    });
     const next = (loadSettings().projects ?? []).filter((project) => project.id !== key);
     return mirrorProjects(next);
   },
@@ -2226,7 +2620,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // inference providers (settings store + probe + connect/sync)
   'providers:list': async () => listProvidersEnriched(),
   'providers:add': async (profile: ProviderProfile) => {
-    upsertProvider(profile);
+    upsertProvider(providerForStorage(profile));
     return listProvidersEnriched();
   },
   'providers:remove': async (name: string) => {
@@ -2253,7 +2647,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'providers:probe': async (name: string) => {
     const p = loadSettings().providers.find((x) => x.name === name);
     if (!p) throw new Error('provider not found');
-    return new ProviderClient(p, resolveProviderKey(p)).probe();
+    return probeConfiguredProvider(p);
   },
   // Connect & sync: resolve the key (config → env), validate live, cache the
   // discovered model list onto the provider so models stay discoverable.
@@ -2262,8 +2656,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     if (!p) throw new Error('provider not found');
     const expected = typeof expectedStamp === 'string' ? expectedStamp : '';
     if (expected && providerBridgeStamp(p) !== expected) throw new Error('provider changed before sync started');
-    const key = resolveProviderKey(p);
-    const outcome = await new ProviderClient(p, key).probe();
+    const outcome = await probeConfiguredProvider(p);
     const latest = loadSettings().providers.find((x) => x.name === name);
     if (!latest) throw new Error('provider removed before sync completed');
     if (expected && providerBridgeStamp(latest) !== expected) throw new Error('provider changed before sync completed');

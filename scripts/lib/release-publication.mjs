@@ -6,7 +6,7 @@ export function semverTags(tags) {
   );
 }
 
-function compareTags(a, b) {
+export function compareTags(a, b) {
   const left = a.slice(1).split('.').map(Number);
   const right = b.slice(1).split('.').map(Number);
   for (let index = 0; index < left.length; index += 1) {

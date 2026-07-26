@@ -18,7 +18,7 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^goalDriver:(setConfig|runOnce)$/, ['goals', 'tasks', 'work', 'brain']],
   [/^draftDispatcher:runOnce$/, ['tasks', 'work', 'dashboard', 'brain']],
   [/^loops:(save|remove)$/, ['loops', 'work', 'brain']],
-  [/^dreams:(save|remove)$/, ['dreams', 'work', 'brain']],
+  [/^dreams:(save|remove|archiveScheduled)$/, ['dreams', 'work', 'brain']],
   [/^materials:changed$/, ['materials']],
   [/^materials:tasks$/, ['materials', 'tasks', 'work', 'dashboard', 'brain']],
   [/^materials:(autoCreateTasks|routeLeads)$/, ['materials', 'tasks', 'work', 'dashboard', 'brain']],
@@ -40,8 +40,8 @@ const RULES: Array<[RegExp, string[]]> = [
   [/^skills:(syncBrain|categorize|importLocalCandidate)$/, ['modules', 'brain', 'agents', 'teams', 'dashboard']],
   [/^mcp:(add|remove)$/, ['settings', 'modules', 'brain']],
   [/^(providers:(add|remove|setDefault|setModelSelection|toggle|connect)|runtime:probe|subs:(signin|signout|install)|ollama:(pull|remove|catalogCheck))$/, ['settings', 'runtime-catalog', 'brain']],
+  [/^onboarding:(configureProvider|runStarterFleet|defer|resume)$/, ['settings', 'runtime-catalog', 'agents', 'teams', 'org', 'dashboard']],
   [/^(manager:setLocalConcurrency|headroom:setPilot|evmRpc:(save|remove|probe)|image:setServer)$/, ['settings', 'brain']],
-  [/^managerUpdate:(apply|bootstrap)$/, ['settings', 'agents', 'teams', 'dashboard', 'tasks', 'inbox', 'work']],
   [/^(chats:(save|rename|remove|markRead|patch)|chat:saveFiles|chat:savePasted)$/, ['chats', 'dashboard']],
   [/^(dispatch|dispatch:start|remote)$/, ['dashboard', 'tasks', 'inbox']],
 ];

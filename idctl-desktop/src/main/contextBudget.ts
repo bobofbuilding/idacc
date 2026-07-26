@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { configDir, resolveConfigPath } from '../../../idctl/src/settings/paths.ts';
 import { auditPreview, estimateTokens, optimizeAskCommandCore, type ContextBudgetDecision, type ContextBudgetOptions } from '../shared/contextBudget.ts';
 
@@ -69,6 +69,7 @@ export interface ContextBudgetReport {
     route: 'deterministic-first';
     headroomEngine: 'not-required-for-core-budgeting';
     retrieval: 'hashes-and-redacted-previews-only';
+    retention: typeof CONTEXT_BUDGET_RETENTION;
   };
   qualityGuards: string[];
 }
@@ -82,6 +83,12 @@ export type ContextBudgetDecisionView = Omit<ContextBudgetDecision, 'command' | 
 };
 
 const MAX_RECENT = 80;
+export const CONTEXT_BUDGET_RETENTION = {
+  auditDays: 30,
+  maxAuditRecords: 2_000,
+  maxAuditBytes: 32 * 1024 * 1024,
+  dailyStatsDays: 90,
+} as const;
 const recent: ContextBudgetRecord[] = [];
 type MutableMeasurement = Omit<ContextBudgetMeasurement, 'savingsRatio'>;
 interface StatsFile {
@@ -101,9 +108,17 @@ const totals = {
 };
 let migratedStoredRecords = false;
 let statsCache: StatsFile | null = null;
+let recordsSinceRetention = 0;
 
 function budgetDir(): string {
-  const dir = join(configDir(resolveConfigPath()), 'context-budget');
+  const profileRoot = process.env.IDACC_DATA_DIR?.trim();
+  const xdgCache = process.env.XDG_CACHE_HOME?.trim();
+  const cacheRoot = profileRoot
+    ? join(profileRoot, 'cache')
+    : xdgCache && isAbsolute(xdgCache)
+      ? xdgCache
+      : join(configDir(resolveConfigPath()), 'cache');
+  const dir = join(cacheRoot, 'context-budget');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
@@ -130,6 +145,11 @@ function writeRecord(record: ContextBudgetRecord): void {
   } catch (err) {
     try { rmSync(tmp, { force: true }); } catch { /* ignore cleanup */ }
     throw err;
+  }
+  recordsSinceRetention += 1;
+  if (recordsSinceRetention >= 25) {
+    recordsSinceRetention = 0;
+    pruneContextBudgetStorage();
   }
 }
 
@@ -226,8 +246,11 @@ function normalizeStats(raw: unknown): StatsFile {
   const input = raw && typeof raw === 'object' ? raw as Partial<StatsFile> : {};
   const days: Record<string, MutableMeasurement> = {};
   const rawDays = input.days && typeof input.days === 'object' ? input.days : {};
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - (CONTEXT_BUDGET_RETENTION.dailyStatsDays - 1));
+  const cutoffDay = cutoff.toISOString().slice(0, 10);
   for (const [day, value] of Object.entries(rawDays)) {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(day)) days[day] = normalizeMeasurement(value);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(day) && day >= cutoffDay) days[day] = normalizeMeasurement(value);
   }
   return {
     version: 1,
@@ -309,6 +332,50 @@ function migrateStoredRecordFiles(): void {
     }
   } catch {
     /* Migration is best-effort; hidden read routes still sanitize legacy records before returning them. */
+  }
+  pruneContextBudgetStorage();
+}
+
+/** Bound profile cache growth by age, count, and total bytes. */
+export function pruneContextBudgetStorage(now = Date.now()): { removed: number; kept: number; bytes: number } {
+  const cutoff = now - CONTEXT_BUDGET_RETENTION.auditDays * 24 * 60 * 60 * 1_000;
+  try {
+    const dir = budgetDir();
+    const entries = readdirSync(dir)
+      .filter((name) => /^cb_.*\.json$/.test(name))
+      .map((name) => {
+        const path = join(dir, name);
+        try {
+          const stat = statSync(path);
+          return { path, mtime: stat.mtimeMs, bytes: stat.size };
+        } catch {
+          return null;
+        }
+      })
+      .filter((entry): entry is { path: string; mtime: number; bytes: number } => Boolean(entry))
+      .sort((a, b) => b.mtime - a.mtime);
+    let kept = 0;
+    let bytes = 0;
+    let removed = 0;
+    for (const entry of entries) {
+      const withinBounds = entry.mtime >= cutoff
+        && kept < CONTEXT_BUDGET_RETENTION.maxAuditRecords
+        && bytes + entry.bytes <= CONTEXT_BUDGET_RETENTION.maxAuditBytes;
+      if (withinBounds) {
+        kept += 1;
+        bytes += entry.bytes;
+        continue;
+      }
+      try {
+        rmSync(entry.path, { force: true });
+        removed += 1;
+      } catch {
+        // Cache cleanup is best-effort and must not affect dispatch.
+      }
+    }
+    return { removed, kept, bytes };
+  } catch {
+    return { removed: 0, kept: 0, bytes: 0 };
   }
 }
 
@@ -432,6 +499,7 @@ export function contextBudgetReport(): ContextBudgetReport {
       route: 'deterministic-first',
       headroomEngine: 'not-required-for-core-budgeting',
       retrieval: 'hashes-and-redacted-previews-only',
+      retention: CONTEXT_BUDGET_RETENTION,
     },
     qualityGuards: [
       'Only /ask payloads are eligible; manager lifecycle commands pass through unchanged.',

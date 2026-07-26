@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { call, type FleetStore } from '../../../store.ts';
+import type { CommandEnvironment } from '../../../dashboard/commandRuntime.ts';
+import {
+  DRAWER_COMMANDS,
+  drawerCommandStatus,
+  runDrawerCommand,
+} from '../../../dashboard/drawerCommands.ts';
+import { useDrawerGuard, type DrawerGuardReporter } from '../drawerGuard.ts';
 
 type Hierarchy = { coordinators?: Record<string, string>; teams?: string[]; secondaries?: SecondaryLead[] };
 type SecondaryLead = { agent: string; team: string; leadsTeams: string[] };
@@ -8,7 +15,17 @@ function teamOf(agent: FleetStore['allAgents'][number]): string {
   return String(agent.team ?? agent.teamName ?? '');
 }
 
-export function OrgPanel({ store, onOpenHr }: { store: FleetStore; onOpenHr?: () => void }) {
+export function OrgPanel({
+  store,
+  onOpenHr,
+  commandEnvironment,
+  onGuardChange,
+}: {
+  store: FleetStore;
+  onOpenHr?: () => void;
+  commandEnvironment: CommandEnvironment;
+  onGuardChange?: DrawerGuardReporter;
+}) {
   const [hierarchy, setHierarchy] = useState<Hierarchy>({});
   const [team, setTeam] = useState('default');
   const [lead, setLead] = useState('lead');
@@ -25,6 +42,14 @@ export function OrgPanel({ store, onOpenHr }: { store: FleetStore; onOpenHr?: ()
   useEffect(() => { void load(); }, []);
   const teams = useMemo(() => Array.from(new Set(['default', ...(hierarchy.teams ?? []), ...store.teams.map((row) => row.name)])).filter(Boolean), [hierarchy.teams, store.teams]);
   const agents = store.allAgents.filter((agent) => teamOf(agent) === team);
+  const dirty = (team !== 'default' && lead !== (hierarchy.coordinators?.[team] || ''))
+    || Boolean(secondaryAgent || secondaryTeams.trim());
+  useDrawerGuard(
+    onGuardChange,
+    dirty,
+    busy,
+    busy ? 'An organization update is still running.' : 'Lead or secondary-scope edits have not been synchronized.',
+  );
 
   const act = async (label: string, action: () => Promise<void>) => {
     setBusy(true); setStatus(`${label}...`);
@@ -34,21 +59,54 @@ export function OrgPanel({ store, onOpenHr }: { store: FleetStore; onOpenHr?: ()
 
   const assign = () => act('Updating accountable lead', async () => {
     if (!lead) throw new Error('Choose a lead');
-    await call('coordinator:set', team, lead);
-    await call('org:sync', { autoRebuild: false });
-    await load();
-    setStatus(`${team}/${lead} is accountable and Brain is synchronized`);
+    const result = await runDrawerCommand({
+      metadata: DRAWER_COMMANDS.orgAssignLead,
+      environment: commandEnvironment,
+      label: 'Assign accountable lead',
+      resourceRefs: [`team:${team}`, `agent:${team}/${lead}`],
+      operation: async ({ idempotencyKey }) => {
+        await call('coordinator:set', team, lead);
+        await call('org:sync', { autoRebuild: false, idempotencyKey });
+      },
+    });
+    if (result.receipt.state === 'succeeded') await load();
+    setStatus(drawerCommandStatus('Assign accountable lead', result, `${team}/${lead} is accountable and Brain is synchronized.`));
   });
 
   const saveSecondary = () => act('Updating secondary lead scope', async () => {
     if (!secondaryAgent) throw new Error('Choose a secondary lead');
     const existing = await call<SecondaryLead[]>('org:getSecondaryLeads').catch(() => []);
-    const row: SecondaryLead = { agent: secondaryAgent, team: teamOf(store.allAgents.find((agent) => agent.name === secondaryAgent)!) || 'default', leadsTeams: secondaryTeams.split(',').map((value) => value.trim()).filter(Boolean) };
+    const selected = store.allAgents.find((agent) => agent.name === secondaryAgent);
+    const row: SecondaryLead = { agent: secondaryAgent, team: selected ? teamOf(selected) || 'default' : 'default', leadsTeams: secondaryTeams.split(',').map((value) => value.trim()).filter(Boolean) };
     const next = [...existing.filter((item) => item.agent !== row.agent), row];
-    await call('org:setSecondaryLeads', next);
-    await call('org:sync', { autoRebuild: false });
-    await load();
-    setStatus(`${secondaryAgent} secondary scope saved`);
+    const result = await runDrawerCommand({
+      metadata: DRAWER_COMMANDS.orgSecondaryScope,
+      environment: commandEnvironment,
+      label: 'Save secondary lead scope',
+      resourceRefs: [`agent:${row.team}/${row.agent}`, ...row.leadsTeams.map((name) => `team:${name}`)],
+      operation: async ({ idempotencyKey }) => {
+        await call('org:setSecondaryLeads', next);
+        await call('org:sync', { autoRebuild: false, idempotencyKey });
+      },
+    });
+    if (result.receipt.state === 'succeeded') {
+      await load();
+      setSecondaryAgent('');
+      setSecondaryTeams('');
+    }
+    setStatus(drawerCommandStatus('Save secondary lead scope', result, `${secondaryAgent} secondary scope saved.`));
+  });
+
+  const syncOrganization = () => act('Synchronizing organization', async () => {
+    const result = await runDrawerCommand({
+      metadata: DRAWER_COMMANDS.orgSync,
+      environment: commandEnvironment,
+      label: 'Synchronize organization',
+      resourceRefs: ['organization'],
+      operation: ({ idempotencyKey }) => call('org:sync', { autoRebuild: false, idempotencyKey }),
+    });
+    if (result.receipt.state === 'succeeded') await load();
+    setStatus(drawerCommandStatus('Synchronize organization', result, 'Organization synchronized through Manager and Brain.'));
   });
 
   return <div className="driver-panel">
@@ -56,7 +114,7 @@ export function OrgPanel({ store, onOpenHr }: { store: FleetStore; onOpenHr?: ()
       <label>Team<select value={team} onChange={(event) => { const value = event.target.value; setTeam(value); setLead(hierarchy.coordinators?.[value] || (value === 'default' ? 'lead' : '')); }}>{teams.map((value) => <option key={value}>{value}</option>)}</select></label>
       <label>Accountable lead<select value={lead} disabled={team === 'default'} onChange={(event) => setLead(event.target.value)}><option value="">Choose lead</option>{agents.map((agent) => <option key={agent.id || agent.name}>{agent.name}</option>)}</select></label>
     </div>
-    <div className="driver-toolbar"><button className="btn primary" disabled={busy || team === 'default'} onClick={() => void assign()}>Assign lead</button><button className="btn" disabled={busy} onClick={() => void act('Synchronizing organization', async () => { await call('org:sync', { autoRebuild: false }); await load(); setStatus('Organization synchronized through Manager and Brain'); })}>Sync organization</button></div>
+    <div className="driver-toolbar"><button className="btn primary" disabled={busy || team === 'default'} onClick={() => void assign()}>Assign lead</button><button className="btn" disabled={busy} onClick={() => void syncOrganization()}>Sync organization</button></div>
     {team === 'default' ? <div className="muted small">The default team is hardwired to default/lead.</div> : null}
     <hr />
     <h4>Secondary lead scope</h4>

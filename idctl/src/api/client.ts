@@ -29,6 +29,7 @@ import type {
 } from './types.ts';
 import type { Config } from '../config.ts';
 import { slugName, type ParsedTeamSpec } from './teamSpec.ts';
+import type { ControlCenterCapabilities } from './controlCenterContract.ts';
 
 /** One agent in an AI-designed team — richer than a ParsedTeamSpec agent: it also
  *  carries a suggested runtime/model/skills the team builder can apply per agent,
@@ -493,6 +494,32 @@ export class ManagerClient {
     }
   }
 
+  private async deleteJson<T>(
+    path: string,
+    body: unknown,
+    signal?: AbortSignal,
+    timeoutMs = DEFAULT_MANAGER_TIMEOUT_MS,
+  ): Promise<T> {
+    const req = this.requestSignal(signal, timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(`${this.cfg.managerUrl}${path}`, {
+        method: 'DELETE',
+        headers: this.headers(),
+        body: JSON.stringify(body ?? {}),
+        signal: req.signal,
+      });
+    } catch (err) {
+      req.cleanup();
+      throw this.requestError('DELETE', path, err, req.timedOut());
+    }
+    try {
+      return await this.jsonOrThrow<T>('DELETE', path, res);
+    } finally {
+      req.cleanup();
+    }
+  }
+
   private async post<T>(path: string, body: unknown, signal?: AbortSignal, timeoutMs = DEFAULT_MANAGER_TIMEOUT_MS): Promise<T> {
     const req = this.requestSignal(signal, timeoutMs);
     let res: Response;
@@ -618,9 +645,21 @@ export class ManagerClient {
     return { key: response.item.state_key, value: response.item.value, version: Number(response.item.version), updatedAt: Number(response.item.updated_at) };
   }
 
-  async controlStateDelete(scope: 'global' | 'team' | 'project', key: string, signal?: AbortSignal): Promise<boolean> {
+  async controlStateDelete(
+    scope: 'global' | 'team' | 'project',
+    key: string,
+    expectedVersion: number,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+      throw new Error('controlStateDelete requires the current positive version');
+    }
     const response = await this.requireRoute('Manager control state', () =>
-      this.del<{ ok: boolean; deleted?: boolean }>(`/control/state/${scope}/${encodeURIComponent(key)}`, signal));
+      this.deleteJson<{ ok: boolean; deleted?: boolean }>(
+        `/control/state/${scope}/${encodeURIComponent(key)}`,
+        { expected_version: expectedVersion },
+        signal,
+      ));
     return response.deleted === true;
   }
 
@@ -788,7 +827,7 @@ export class ManagerClient {
 
   /** Control Center capability discovery — which CC-only routes this manager supports.
    *  Returns null on a stock/older manager (no /capabilities), so the GUI can degrade. */
-  async capabilities(signal?: AbortSignal): Promise<{ cc_api_version?: number; features?: string[]; routes?: { method: string; path: string; group: string }[] } | null> {
+  async capabilities(signal?: AbortSignal): Promise<ControlCenterCapabilities | null> {
     try {
       return await this.get('/capabilities', signal);
     } catch {
@@ -1380,10 +1419,22 @@ export class ManagerClient {
       this.post('/library/skills/uninstall', { skill, agent }, signal));
   }
 
-  /** Attach external MCP servers to an agent. Takes effect on next rebuild. */
-  async setAgentMcp(agentId: string, servers: McpServerSpec[], signal?: AbortSignal): Promise<SetMcpResult> {
+  /**
+   * Attach external MCP servers to an agent. `expectedServers` enables a
+   * compare-and-set write so a concurrent capability edit cannot be silently
+   * replaced. Takes effect on the next rebuild.
+   */
+  async setAgentMcp(
+    agentId: string,
+    servers: McpServerSpec[],
+    expectedServers?: McpServerSpec[],
+    signal?: AbortSignal,
+  ): Promise<SetMcpResult> {
     return this.requireRoute('Attach MCP servers', () =>
-      this.post(`/agents/${encodeURIComponent(agentId)}/mcp`, { servers }, signal));
+      this.post(`/agents/${encodeURIComponent(agentId)}/mcp`, {
+        servers,
+        ...(Array.isArray(expectedServers) ? { expectedServers } : {}),
+      }, signal));
   }
 
   // ---- News feed --------------------------------------------------------
