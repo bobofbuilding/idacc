@@ -35,7 +35,7 @@
     "react-devtools-core": "file:build/react-devtools-core-stub"
   },
   "devDependencies": {
-    "@types/node": "^22.19.21",
+    "@types/node": "^26.1.1",
     "@types/react": "^18.3.12",
     "esbuild": "^0.28.1",
     "ink-testing-library": "^4.0.0",
