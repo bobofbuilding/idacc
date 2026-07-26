@@ -14,10 +14,12 @@ import { copyFilePrivateSync } from './privateFileCopy.ts';
 
 const WINDOWS_PROFILE_ACL_OK = 'IDACC_WINDOWS_PROFILE_ACL_OK';
 const WINDOWS_PROFILE_ACL_FAILED = 'IDACC_WINDOWS_PROFILE_ACL_FAILED';
+const WINDOWS_PROFILE_ACL_PARSE_LINE = 'IDACC_WINDOWS_PROFILE_ACL_PARSE_LINE';
 const WINDOWS_PROFILE_NEWER = 'IDACC_WINDOWS_PROFILE_NEWER';
 const WINDOWS_PROFILE_TOO_LARGE = 'IDACC_WINDOWS_PROFILE_TOO_LARGE';
 const WINDOWS_PROFILE_ACL_TIMEOUT_MS = 2 * 60_000;
 const WINDOWS_PROFILE_STREAMING_TIMEOUT_MS = 5 * 60_000;
+const WINDOWS_PROFILE_ACL_MAX_DIAGNOSTIC_LINE = 100_000;
 const WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASES = [
   'validate-root',
   'validate-volume',
@@ -84,10 +86,10 @@ export interface WindowsProfileAclRunResult {
   status: number | null;
   stdout?: string;
   stderrPresent?: boolean;
-  parserFailure?: boolean;
   error?: unknown;
   signal?: NodeJS.Signals | null;
   diagnosticPhase?: WindowsProfileAclDiagnosticPhase;
+  diagnosticLine?: number;
 }
 
 export type WindowsProfileAclRunner = (
@@ -111,6 +113,7 @@ export interface SecureWindowsPrivatePathOptions {
 function profilePrivacyError(
   subject = 'profile',
   diagnosticPhase?: WindowsProfileAclDiagnosticPhase,
+  diagnosticLine?: number,
 ): NodeJS.ErrnoException {
   const error = new Error(
     `IDACC could not establish and verify private Windows access for this ${subject}.`,
@@ -122,6 +125,19 @@ function profilePrivacyError(
       enumerable: false,
       writable: false,
       value: diagnosticPhase,
+    });
+  }
+  if (
+    diagnosticPhase === 'helper-parse'
+    && Number.isInteger(diagnosticLine)
+    && Number(diagnosticLine) >= 1
+    && Number(diagnosticLine) <= WINDOWS_PROFILE_ACL_MAX_DIAGNOSTIC_LINE
+  ) {
+    Object.defineProperty(error, 'diagnosticLine', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: diagnosticLine,
     });
   }
   return error;
@@ -140,6 +156,29 @@ export function windowsProfilePrivacyDiagnosticPhase(
   return typeof value === 'string'
     && WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASE_SET.has(value)
     ? value as WindowsProfileAclDiagnosticPhase
+    : undefined;
+}
+
+/**
+ * Return only a bounded source line for a trusted helper parse failure. This
+ * never contains the helper source, a filesystem path, ACL data, or exception
+ * text, and the property remains non-enumerable on the public error object.
+ */
+export function windowsProfilePrivacyDiagnosticLine(
+  error: unknown,
+): number | undefined {
+  if (
+    windowsProfilePrivacyDiagnosticPhase(error) !== 'helper-parse'
+    || !error
+    || typeof error !== 'object'
+  ) {
+    return undefined;
+  }
+  const value = (error as { diagnosticLine?: unknown }).diagnosticLine;
+  return Number.isInteger(value)
+    && Number(value) >= 1
+    && Number(value) <= WINDOWS_PROFILE_ACL_MAX_DIAGNOSTIC_LINE
+    ? Number(value)
     : undefined;
 }
 
@@ -166,6 +205,33 @@ function windowsProfileAclResultDiagnosticPhase(
   return undefined;
 }
 
+function windowsProfileAclResultDiagnosticLine(
+  result: WindowsProfileAclRunResult,
+): number | undefined {
+  if (
+    Number.isInteger(result.diagnosticLine)
+    && Number(result.diagnosticLine) >= 1
+    && Number(result.diagnosticLine) <= WINDOWS_PROFILE_ACL_MAX_DIAGNOSTIC_LINE
+  ) {
+    return Number(result.diagnosticLine);
+  }
+  for (const line of String(result.stdout || '').split(/\r?\n/)) {
+    const match = new RegExp(`^${WINDOWS_PROFILE_ACL_PARSE_LINE}:(\\d+)$`).exec(
+      line.trim(),
+    );
+    if (!match) continue;
+    const value = Number(match[1]);
+    if (
+      Number.isInteger(value)
+      && value >= 1
+      && value <= WINDOWS_PROFILE_ACL_MAX_DIAGNOSTIC_LINE
+    ) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 function windowsProfileAclFailureDiagnosticPhase(
   result: WindowsProfileAclRunResult,
   verified: boolean,
@@ -179,10 +245,10 @@ function windowsProfileAclFailureDiagnosticPhase(
   if (errorCode === 'ETIMEDOUT') return 'helper-timeout';
   if (result.error) return 'helper-launch';
   if (result.signal) return 'helper-terminated';
+  if (result.stderrPresent) return 'helper-host-error';
   if (result.status === null) return 'helper-launch';
   if (result.status !== 0) {
-    if (result.parserFailure) return 'helper-parse';
-    return result.stderrPresent ? 'helper-host-error' : 'helper-no-marker';
+    return 'helper-no-marker';
   }
   return verified ? undefined : 'helper-invalid-output';
 }
@@ -353,6 +419,46 @@ function rollbackOversizedWindowsCache(
  * permissive parent folder from being inherited into profile files. Existing
  * child ACLs are replaced rather than trusted.
  */
+export const WINDOWS_PROFILE_ACL_BOOTSTRAP = String.raw`
+$ErrorActionPreference = 'Stop'
+try {
+  [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  $source = [Console]::In.ReadToEnd()
+  $tokens = $null
+  $parseErrors = $null
+  [void][System.Management.Automation.Language.Parser]::ParseInput(
+    $source,
+    [ref]$tokens,
+    [ref]$parseErrors
+  )
+  if (@($parseErrors).Count -ne 0) {
+    $firstLine = [int]$parseErrors[0].Extent.StartLineNumber
+    if ($firstLine -lt 1 -or $firstLine -gt ${WINDOWS_PROFILE_ACL_MAX_DIAGNOSTIC_LINE}) {
+      $firstLine = 1
+    }
+    [Console]::Out.WriteLine('${WINDOWS_PROFILE_ACL_FAILED}:helper-parse')
+    [Console]::Out.WriteLine('${WINDOWS_PROFILE_ACL_PARSE_LINE}:{0}', $firstLine)
+    exit 1
+  }
+  $scriptBlock = [ScriptBlock]::Create($source)
+  $global:LASTEXITCODE = $null
+  & $scriptBlock
+  $invocationSucceeded = $?
+  $invocationExitCode = $global:LASTEXITCODE
+  if ($null -ne $invocationExitCode) {
+    exit [int]$invocationExitCode
+  }
+  if ($invocationSucceeded) {
+    exit 0
+  }
+  exit 1
+} catch {
+  [Console]::Out.WriteLine('${WINDOWS_PROFILE_ACL_FAILED}:helper-host-error')
+  exit 1
+}
+`;
+
 export const WINDOWS_PROFILE_ACL_SCRIPT = String.raw`
 $script:diagnosticPhase = 'configure-output'
 try {
@@ -378,7 +484,7 @@ try {
     throw 'alternate data streams are not supported'
   }
 
-  $diagnosticPhase = 'validate-volume'
+  $script:diagnosticPhase = 'validate-volume'
   $drive = [System.IO.DriveInfo]::new($volumeRoot)
   if (-not $drive.IsReady) {
     throw 'volume is unavailable'
@@ -763,10 +869,10 @@ public static class IdaccProfileFileProbe {
   }
 }
 '@
-  $diagnosticPhase = 'compile-native'
+  $script:diagnosticPhase = 'compile-native'
   Add-Type -TypeDefinition $nativeSource -Language CSharp
 
-  $diagnosticPhase = 'configure-policy'
+  $script:diagnosticPhase = 'configure-policy'
   $reparseFlag = [System.IO.FileAttributes]::ReparsePoint
   $directoryFlag = [System.IO.FileAttributes]::Directory
   $workspaceRoot = [System.IO.Path]::Combine($root, 'workspace')
@@ -1510,22 +1616,22 @@ public static class IdaccProfileFileProbe {
   }
 
   if ($aclMode -eq 'single-file' -or $aclMode -eq 'single-directory') {
-    $diagnosticPhase = 'single-object-type'
+    $script:diagnosticPhase = 'single-object-type'
     $singleIsDirectory = $aclMode -eq 'single-directory'
     if ($singleIsDirectory) {
       if ([System.IO.File]::Exists($root)) {
         throw 'private directory is not a directory'
       }
-      $diagnosticPhase = 'single-ancestors'
+      $script:diagnosticPhase = 'single-ancestors'
       Assert-SafeAncestors $root
-      $diagnosticPhase = 'single-parent-acl'
+      $script:diagnosticPhase = 'single-parent-acl'
       Assert-SafeParentAclChain $root
       if (-not [System.IO.Directory]::Exists($root)) {
-        $diagnosticPhase = 'single-create'
+        $script:diagnosticPhase = 'single-create'
         [void][System.IO.Directory]::CreateDirectory($root)
-        $diagnosticPhase = 'single-ancestors'
+        $script:diagnosticPhase = 'single-ancestors'
         Assert-SafeAncestors $root
-        $diagnosticPhase = 'single-parent-acl'
+        $script:diagnosticPhase = 'single-parent-acl'
         Assert-SafeParentAclChain $root
       }
     } else {
@@ -1536,14 +1642,14 @@ public static class IdaccProfileFileProbe {
       if ($null -eq $singleParent) {
         throw 'private file parent is unavailable'
       }
-      $diagnosticPhase = 'single-ancestors'
+      $script:diagnosticPhase = 'single-ancestors'
       Assert-SafeAncestors $singleParent.FullName
-      $diagnosticPhase = 'single-parent-acl'
+      $script:diagnosticPhase = 'single-parent-acl'
       Assert-SafeParentAclChain $root
     }
-    $diagnosticPhase = 'single-object'
+    $script:diagnosticPhase = 'single-object'
     Assert-NotReparse $root
-    $diagnosticPhase = 'single-lock'
+    $script:diagnosticPhase = 'single-lock'
     $singleLock = [IdaccProfileFileProbe]::OpenLockedObject(
       $root,
       $singleIsDirectory
@@ -1555,14 +1661,14 @@ public static class IdaccProfileFileProbe {
         Identity = $singleLock.Identity
         Lock = $singleLock
       }
-      $diagnosticPhase = 'single-check'
+      $script:diagnosticPhase = 'single-check'
       if (-not (Test-PrivateAcl $singleItem)) {
-        $diagnosticPhase = 'single-apply'
+        $script:diagnosticPhase = 'single-apply'
         Set-PrivateAcl $singleItem
       }
-      $diagnosticPhase = 'single-verify'
+      $script:diagnosticPhase = 'single-verify'
       Assert-PrivateAcl $singleItem
-      $diagnosticPhase = 'single-identity'
+      $script:diagnosticPhase = 'single-identity'
       [IdaccProfileFileProbe]::AssertLockedPath($singleLock, $root)
     } finally {
       $singleLock.Dispose()
@@ -1571,29 +1677,29 @@ public static class IdaccProfileFileProbe {
     exit 0
   }
 
-  $diagnosticPhase = 'profile-ancestors'
+  $script:diagnosticPhase = 'profile-ancestors'
   Assert-SafeAncestors $root
-  $diagnosticPhase = 'profile-compatibility'
+  $script:diagnosticPhase = 'profile-compatibility'
   Assert-CompatibleProfileMarker
-  $diagnosticPhase = 'profile-parent-acl'
+  $script:diagnosticPhase = 'profile-parent-acl'
   Assert-SafeParentAclChain $root
   if ([System.IO.File]::Exists($root)) {
     throw 'profile root is not a directory'
   }
-  $diagnosticPhase = 'profile-attestation-check'
+  $script:diagnosticPhase = 'profile-attestation-check'
   if ($aclMode -eq 'normal' -and (Test-AclAttestation)) {
     [Console]::Out.WriteLine('${WINDOWS_PROFILE_ACL_OK}:0')
     exit 0
   }
-  $diagnosticPhase = 'profile-create'
+  $script:diagnosticPhase = 'profile-create'
   [void][System.IO.Directory]::CreateDirectory($root)
-  $diagnosticPhase = 'profile-ancestors'
+  $script:diagnosticPhase = 'profile-ancestors'
   Assert-SafeAncestors $root
-  $diagnosticPhase = 'profile-parent-acl'
+  $script:diagnosticPhase = 'profile-parent-acl'
   Assert-SafeParentAclChain $root
 
   if ($aclMode -eq 'cache-boundary') {
-    $diagnosticPhase = 'profile-boundary'
+    $script:diagnosticPhase = 'profile-boundary'
     $boundaryCount = Secure-CacheBoundary
     [Console]::Out.WriteLine(
       '${WINDOWS_PROFILE_ACL_OK}:{0}',
@@ -1603,16 +1709,16 @@ public static class IdaccProfileFileProbe {
   }
 
   if ($aclMode -eq 'streaming-upgrade') {
-    $diagnosticPhase = 'profile-stream'
+    $script:diagnosticPhase = 'profile-stream'
     $firstStreamingCount = Convert-ProfileObjectsStreaming $root
     $secondStreamingCount = Convert-ProfileObjectsStreaming $root
     if ($firstStreamingCount -ne $secondStreamingCount) {
       throw 'profile tree changed during streaming ACL conversion'
     }
     if ([System.IO.File]::Exists($profileMarkerPath)) {
-      $diagnosticPhase = 'profile-attestation-write'
+      $script:diagnosticPhase = 'profile-attestation-write'
       Write-AclAttestation
-      $diagnosticPhase = 'profile-attestation-verify'
+      $script:diagnosticPhase = 'profile-attestation-verify'
       if (-not (Test-AclAttestation)) {
         throw 'profile ACL attestation verification failed'
       }
@@ -1630,11 +1736,11 @@ public static class IdaccProfileFileProbe {
   $verifiedObjects = @()
   $verifiedCount = 0
   try {
-    $diagnosticPhase = 'profile-enumerate'
+    $script:diagnosticPhase = 'profile-enumerate'
     $objects = @(Get-ProfileObjects $root)
     foreach ($item in $objects) {
       if (-not (Test-PrivateAcl $item)) {
-        $diagnosticPhase = 'profile-apply'
+        $script:diagnosticPhase = 'profile-apply'
         Set-PrivateAcl $item
       }
     }
@@ -1642,13 +1748,13 @@ public static class IdaccProfileFileProbe {
     # Re-enumeration catches replacements or new reparse points introduced while
     # the original tree was being hardened. Both object generations stay locked
     # until exact ACL and stable 128-bit identity verification completes.
-    $diagnosticPhase = 'profile-ancestors'
+    $script:diagnosticPhase = 'profile-ancestors'
     Assert-SafeAncestors $root
-    $diagnosticPhase = 'profile-parent-acl'
+    $script:diagnosticPhase = 'profile-parent-acl'
     Assert-SafeParentAclChain $root
-    $diagnosticPhase = 'profile-reenumerate'
+    $script:diagnosticPhase = 'profile-reenumerate'
     $verifiedObjects = @(Get-ProfileObjects $root)
-    $diagnosticPhase = 'profile-verify'
+    $script:diagnosticPhase = 'profile-verify'
     foreach ($item in $verifiedObjects) {
       Assert-PrivateAcl $item
     }
@@ -1662,9 +1768,9 @@ public static class IdaccProfileFileProbe {
   # bootstrap remains a valid explicit data-directory selection. Once profile
   # metadata exists, the next launch records the versioned steady-state proof.
   if ([System.IO.File]::Exists($profileMarkerPath)) {
-    $diagnosticPhase = 'profile-attestation-write'
+    $script:diagnosticPhase = 'profile-attestation-write'
     Write-AclAttestation
-    $diagnosticPhase = 'profile-attestation-verify'
+    $script:diagnosticPhase = 'profile-attestation-verify'
     if (-not (Test-AclAttestation)) {
       throw 'profile ACL attestation verification failed'
     }
@@ -1726,8 +1832,12 @@ function defaultWindowsProfileAclRunner(
     '-NonInteractive',
     '-ExecutionPolicy',
     'Bypass',
+    '-InputFormat',
+    'Text',
+    '-OutputFormat',
+    'Text',
     '-Command',
-    '-',
+    WINDOWS_PROFILE_ACL_BOOTSTRAP,
   ], {
     encoding: 'utf8',
     env: environment,
@@ -1746,9 +1856,6 @@ function defaultWindowsProfileAclRunner(
     status: result.status,
     stdout: String(result.stdout || '').replaceAll('\u0000', ''),
     stderrPresent: Boolean(stderr.trim()),
-    parserFailure:
-      /(?:ParserError|ParseException|unexpected token|missing closing|terminator expected)/i
-        .test(stderr),
     error: result.error,
     signal: result.signal,
   };
@@ -1801,6 +1908,7 @@ export function secureWindowsPrivatePath(
     throw profilePrivacyError(
       'application-state path',
       diagnosticPhase,
+      windowsProfileAclResultDiagnosticLine(result),
     );
   }
   return normalized;
@@ -1876,6 +1984,7 @@ export function secureWindowsProfileRoot(
       throw profilePrivacyError(
         'profile',
         diagnosticPhase,
+        windowsProfileAclResultDiagnosticLine(result),
       );
     }
   };
@@ -1941,6 +2050,7 @@ export function secureWindowsProfileRoot(
     throw profilePrivacyError(
       'profile',
       windowsProfilePrivacyDiagnosticPhase(error),
+      windowsProfilePrivacyDiagnosticLine(error),
     );
   }
   return normalized;

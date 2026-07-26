@@ -32,7 +32,9 @@ import {
   normalizeWindowsProfileRoot,
   secureWindowsPrivatePath,
   secureWindowsProfileRoot,
+  windowsProfilePrivacyDiagnosticLine,
   windowsProfilePrivacyDiagnosticPhase,
+  WINDOWS_PROFILE_ACL_BOOTSTRAP,
   WINDOWS_PROFILE_ACL_SCRIPT,
   type WindowsProfileAclRunner,
 } from '../src/main/profilePrivacy.ts';
@@ -94,6 +96,45 @@ function windowsPowerShellForTest(script: string, profileRoot: string): string {
   assert.equal(result.status, 0, 'Windows ACL test helper must complete successfully');
   assert.equal(result.error, undefined);
   return String(result.stdout || '').replaceAll('\u0000', '');
+}
+
+function windowsProfileAclBootstrapStatusForTest(script: string): number | null {
+  const systemRoot = String(process.env.SystemRoot || process.env.WINDIR || '');
+  assert.ok(systemRoot, 'Windows ACL bootstrap smoke requires SystemRoot or WINDIR');
+  const executable = win32.join(
+    systemRoot,
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+  const result = spawnSync(executable, [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-InputFormat',
+    'Text',
+    '-OutputFormat',
+    'Text',
+    '-Command',
+    WINDOWS_PROFILE_ACL_BOOTSTRAP,
+  ], {
+    encoding: 'utf8',
+    env: {
+      SystemRoot: process.env.SystemRoot || process.env.WINDIR,
+      WINDIR: process.env.WINDIR || process.env.SystemRoot,
+      ...(process.env.TEMP ? { TEMP: process.env.TEMP } : {}),
+      ...(process.env.TMP ? { TMP: process.env.TMP } : {}),
+    },
+    input: script,
+    maxBuffer: 1024 * 1024,
+    windowsHide: true,
+  });
+  assert.equal(result.error, undefined, 'Windows ACL bootstrap must launch');
+  assert.equal(result.signal, null, 'Windows ACL bootstrap must not be terminated');
+  return result.status;
 }
 
 const WINDOWS_ADD_PERMISSIVE_ACL = String.raw`
@@ -614,6 +655,16 @@ const temp = mkdtempSync(join(
 ));
 try {
   if (process.platform === 'win32') {
+    assert.equal(
+      windowsProfileAclBootstrapStatusForTest('exit 42'),
+      42,
+      'the stdin bootstrap must preserve the newer-profile exit protocol',
+    );
+    assert.equal(
+      windowsProfileAclBootstrapStatusForTest('exit 43'),
+      43,
+      'the stdin bootstrap must preserve the oversized-profile exit protocol',
+    );
     // Use the per-user application-data base that backs Electron userData.
     // Windows TEMP may intentionally allow another principal to replace/delete
     // children, in which case production correctly refuses to secure even an
@@ -622,10 +673,11 @@ try {
     try {
       secureWindowsPrivatePath(temp, 'directory');
     } catch (error) {
+      const diagnosticLine = windowsProfilePrivacyDiagnosticLine(error);
       assert.fail(
         `the Windows migration fixture boundary failed at phase: ${
           windowsProfilePrivacyDiagnosticPhase(error) || 'unavailable'
-        }`,
+        }${diagnosticLine ? ` (helper line ${diagnosticLine})` : ''}`,
       );
     }
     assert.match(
@@ -859,8 +911,10 @@ try {
       'PowerShell parse',
       () => ({
         status: 1,
-        stderrPresent: true,
-        parserFailure: true,
+        stdout: [
+          'IDACC_WINDOWS_PROFILE_ACL_FAILED:helper-parse',
+          'IDACC_WINDOWS_PROFILE_ACL_PARSE_LINE:17',
+        ].join('\n'),
       }),
       'helper-parse',
     ],
@@ -890,9 +944,14 @@ try {
       `${label} must retain only its bounded diagnostic`,
     );
     assert.equal((error as NodeJS.ErrnoException).code, 'EPERM');
+    assert.equal(
+      windowsProfilePrivacyDiagnosticLine(error),
+      expected === 'helper-parse' ? 17 : undefined,
+      `${label} must expose only a bounded source line for trusted parse failures`,
+    );
     assert.doesNotMatch(
       `${error.message}\n${JSON.stringify(error)}`,
-      /Consumer|private (?:timeout|launch|detail|host)/i,
+      /Consumer|private (?:timeout|launch|detail|host)|diagnosticLine|17/i,
       `${label} must not expose raw helper details`,
     );
   }
@@ -904,9 +963,31 @@ try {
     Buffer.from(WINDOWS_PROFILE_ACL_SCRIPT, 'utf16le').toString('base64').length > 32_767,
     'the native helper fixture must remain large enough to catch argv transport regressions',
   );
+  assert.ok(
+    WINDOWS_PROFILE_ACL_BOOTSTRAP.length < 32_767,
+    'only the bounded stdin bootstrap may be placed on the Windows command line',
+  );
   assert.doesNotMatch(privacySource, /-EncodedCommand/);
-  assert.match(privacySource, /'-Command',\s*'-'/);
+  assert.doesNotMatch(privacySource, /'-Command',\s*'-'/);
+  assert.match(privacySource, /'-Command',\s*WINDOWS_PROFILE_ACL_BOOTSTRAP/);
   assert.match(privacySource, /input:\s*WINDOWS_PROFILE_ACL_SCRIPT/);
+  assert.match(WINDOWS_PROFILE_ACL_BOOTSTRAP, /Console\]::In\.ReadToEnd\(\)/);
+  assert.match(
+    WINDOWS_PROFILE_ACL_BOOTSTRAP,
+    /Management\.Automation\.Language\.Parser\]::ParseInput/,
+  );
+  assert.match(
+    WINDOWS_PROFILE_ACL_BOOTSTRAP,
+    /IDACC_WINDOWS_PROFILE_ACL_FAILED:helper-parse/,
+  );
+  assert.match(
+    WINDOWS_PROFILE_ACL_BOOTSTRAP,
+    /\$invocationSucceeded = \$\?/,
+  );
+  assert.match(
+    WINDOWS_PROFILE_ACL_BOOTSTRAP,
+    /exit \[int\]\$invocationExitCode/,
+  );
   const diagnosticBootstrap = WINDOWS_PROFILE_ACL_SCRIPT.indexOf(
     "$script:diagnosticPhase = 'configure-output'",
   );
