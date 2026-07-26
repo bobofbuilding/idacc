@@ -1033,6 +1033,11 @@ try {
   assert.match(privacySource, /FileIdLow/);
   assert.match(privacySource, /FileIdHigh/);
   assert.match(privacySource, /OpenLockedObject/);
+  assert.match(privacySource, /FILE_READ_DATA_OR_LIST_DIRECTORY/);
+  assert.match(
+    privacySource,
+    /FILE_READ_DATA_OR_LIST_DIRECTORY \| FILE_READ_ATTRIBUTES \| READ_CONTROL/,
+  );
   assert.match(privacySource, /AssertLockedPath\(locked, path\)/);
   assert.match(privacySource, /ReadLockedSecurityDescriptor/);
   assert.match(privacySource, /GetSecurityInfo/);

@@ -619,6 +619,10 @@ public static class IdaccProfileFileProbe {
     bool isDirectory,
     uint shareMode
   ) {
+    // FILE_READ_DATA and FILE_LIST_DIRECTORY intentionally share this bit.
+    // Metadata-only access does not participate in Windows read/write share
+    // enforcement, so it cannot exclude an existing or future data writer.
+    const uint FILE_READ_DATA_OR_LIST_DIRECTORY = 0x00000001;
     const uint FILE_READ_ATTRIBUTES = 0x00000080;
     const uint READ_CONTROL = 0x00020000;
     const uint OPEN_EXISTING = 3;
@@ -630,7 +634,7 @@ public static class IdaccProfileFileProbe {
     }
     SafeFileHandle file = CreateFileW(
       path,
-      FILE_READ_ATTRIBUTES | READ_CONTROL,
+      FILE_READ_DATA_OR_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
       shareMode,
       IntPtr.Zero,
       OPEN_EXISTING,
