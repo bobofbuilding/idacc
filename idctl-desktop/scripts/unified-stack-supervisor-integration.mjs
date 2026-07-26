@@ -856,10 +856,12 @@ try {
   assert.equal(line.includes(managerAdminToken), false, 'stack status exposed the Manager admin bearer');
   assert.equal(line.includes(listenerStatus.instanceNonce), false, 'stack status exposed the listener process nonce');
   assert.equal(authLine.includes(managerAdminToken), false, 'auth smoke exposed the Manager admin bearer');
-  assert.equal(statSync(join(profile, 'logs', 'manager.log')).mode & 0o777, 0o600);
-  assert.equal(statSync(join(profile, 'logs', 'brain-listener.log')).mode & 0o777, 0o600);
-  assert.equal(statSync(join(profile, 'logs', 'brain-cycle.log')).mode & 0o777, 0o600);
   if (process.platform !== 'win32') {
+    // Windows protects these files with the profile directory's ACL; POSIX
+    // mode bits are not a meaningful privacy assertion there.
+    assert.equal(statSync(join(profile, 'logs', 'manager.log')).mode & 0o777, 0o600);
+    assert.equal(statSync(join(profile, 'logs', 'brain-listener.log')).mode & 0o777, 0o600);
+    assert.equal(statSync(join(profile, 'logs', 'brain-cycle.log')).mode & 0o777, 0o600);
     assert.equal(statSync(cursorFile).mode & 0o777, 0o600);
     assert.equal(statSync(listenerStatusFile).mode & 0o777, 0o600);
     assert.equal(statSync(cycleStateFile).mode & 0o777, 0o600);
