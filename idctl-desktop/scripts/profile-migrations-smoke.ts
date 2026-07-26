@@ -584,14 +584,39 @@ foreach ($item in @($directory, $file)) {
 [Console]::Out.WriteLine('IDACC_TEST_PRIVATE_WORKSPACE_CHILD_OK')
 `;
 
-const temp = mkdtempSync(join(tmpdir(), 'idacc-profile-migrations-'));
+const windowsAppDataInput = String(process.env.APPDATA || '').trim();
+let windowsAppData = '';
+if (process.platform === 'win32') {
+  assert.ok(
+    windowsAppDataInput,
+    'Windows profile migrations require the per-user APPDATA base used by Electron',
+  );
+  // Reject UNC, device, drive-root, relative, and alternate-stream paths before
+  // mkdtemp can mutate an unsupported application-data location.
+  windowsAppData = normalizeWindowsProfileRoot(windowsAppDataInput);
+  const appDataEntry = lstatSync(windowsAppData);
+  assert.equal(
+    appDataEntry.isSymbolicLink(),
+    false,
+    'the Windows APPDATA base must not be a reparse-point alias',
+  );
+  assert.equal(
+    appDataEntry.isDirectory(),
+    true,
+    'the Windows APPDATA base must be an existing directory',
+  );
+}
+const temp = mkdtempSync(join(
+  process.platform === 'win32' ? windowsAppData : tmpdir(),
+  'idacc-profile-migrations-',
+));
 try {
   if (process.platform === 'win32') {
-    // Windows hosted-runner TEMP directories may intentionally grant another
-    // principal child-creation rights. That is not a safe parent for testing a
-    // missing consumer profile: production correctly rejects the resulting
-    // path-creation race. Establish the same exact app-owned boundary that the
-    // desktop applies to its userData root before creating profiles beneath it.
+    // Use the per-user application-data base that backs Electron userData.
+    // Windows TEMP may intentionally allow another principal to replace/delete
+    // children, in which case production correctly refuses to secure even an
+    // existing scratch root. Establish and verify the same exact app-owned
+    // boundary the desktop applies before creating profiles beneath it.
     secureWindowsPrivatePath(temp, 'directory');
     assert.match(
       windowsPowerShellForTest(WINDOWS_ASSERT_PRIVATE_DIRECTORY_ACL, temp),
