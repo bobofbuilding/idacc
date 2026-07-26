@@ -15,10 +15,11 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import electronPath from 'electron';
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const builtMain = join(desktop, 'out', 'main', 'main.cjs');
-const electron = join(desktop, 'node_modules', '.bin', 'electron');
+const electron = electronPath;
 assert.equal(existsSync(builtMain), true, 'build the desktop app before running this integration smoke');
 assert.equal(existsSync(electron), true, 'Electron is not installed');
 
