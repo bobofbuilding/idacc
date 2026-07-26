@@ -6,13 +6,13 @@ import electronPath from 'electron';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const temp = await mkdtemp(join(tmpdir(), 'idacc-dashboard-rendered-'));
 const renderer = join(temp, 'renderer.js');
 const html = join(temp, 'index.html');
 const main = join(temp, 'main.cjs');
-const productionStyles = pathToFileURL(new URL('../src/renderer/styles.css', import.meta.url).pathname).href;
+const productionStyles = new URL('../src/renderer/styles.css', import.meta.url).href;
 
 const interactionScript = String.raw`
 (async () => {
@@ -136,7 +136,9 @@ const interactionScript = String.raw`
 
 try {
   await build({
-    entryPoints: [new URL('./fixtures/dashboard-command-surface-harness.tsx', import.meta.url).pathname],
+    entryPoints: [
+      fileURLToPath(new URL('./fixtures/dashboard-command-surface-harness.tsx', import.meta.url)),
+    ],
     outfile: renderer,
     bundle: true,
     platform: 'browser',
