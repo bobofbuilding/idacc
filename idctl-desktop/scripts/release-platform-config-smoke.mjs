@@ -21,6 +21,12 @@ const root = resolve(desktop, '..');
 const require = createRequire(import.meta.url);
 const pkg = JSON.parse(readFileSync(join(desktop, 'package.json'), 'utf8'));
 const build = pkg.build || {};
+const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
+assert.match(
+  gitignore,
+  /^\/idctl-desktop\/resources\/THIRD_PARTY_NOTICES\.md$/m,
+  'generated dependency notices must not dirty the exact application source used for runtime staging',
+);
 const stageSource = readFileSync(join(desktop, 'scripts', 'stage-unified-runtime.mjs'), 'utf8');
 assert.match(pkg.scripts?.['build:release'] || '', /--require-runtime/);
 for (const script of ['dist', 'release:mac', 'release:win', 'release:linux']) {
