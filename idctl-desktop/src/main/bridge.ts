@@ -54,7 +54,7 @@ import {
 import { discoverLocalServers, mergeLocalDiscoveryCandidates, type DiscoveredServer } from '../../../idctl/src/settings/localDiscovery.ts';
 import { type HeadroomPilotSettings, type IdctlConfig, type ProviderKind, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
 import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts';
-import { buildProviderModelLanes, buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider, localProviderRouteIsLive, settingsAvailableRuntimeSet, managedRuntimeHasEvidence, runtimeDisplayLabel, runtimeHasManagerHarness, type RuntimeModelLaneKind } from '../../../idctl/src/settings/runtimeCatalog.ts';
+import { buildProviderModelLanes, buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider, localProviderRouteIsLive, settingsAvailableRuntimeSet, managedRuntimeHasEvidence, runtimeDisplayLabel, runtimeHasManagerHarness, starterMcpCapabilityPolicy, type RuntimeModelLaneKind } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import { subsStatus, subsStatusForRuntimes } from './subscriptions.ts';
 import { testMcpServer } from './mcpTest.ts';
 import { headroomBackendContractAudit, headroomCoreAudit, headroomStatus } from './headroom.ts';
@@ -64,8 +64,15 @@ import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayOpti
 import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
 import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, syncGoalDriverConfig, type GoalDriverConfig } from './goaldriver.ts';
 import { discoverClaudeCliModels } from './claudeModels.ts';
-import { processDraftProposalsOnce, startDraftDispatcherLoop } from './draftDispatcher.ts';
+import {
+  processDraftProposalsOnce,
+  resetDraftDispatcherWork,
+  startDraftDispatcherLoop,
+  stopDraftDispatcherWork,
+} from './draftDispatcher.ts';
 import { buildOrgHierarchy, previewOrgSync, syncOrg, startOrgSyncLoop } from './orgSync.ts';
+import { createSingleFlightBackgroundGate } from './backgroundActivity.ts';
+import { inspectOllamaStarterToolModels } from './starterToolCapability.ts';
 import { syncDomainsForMethod } from '../shared/syncDomains.ts';
 import { COALESCED_READ_METHODS, ReadCallCache } from '../shared/readCallCache.ts';
 import { mapTeamAgentGroups } from '../shared/teamAgentGroups.ts';
@@ -762,6 +769,14 @@ type RuntimeFreshness = {
   provider?: string;
   lastCheckedMs: number | null;
   selectable?: boolean;
+  providerKind?: ProviderKind;
+  /** Effective Brain MCP support for at least one model in this row. */
+  supportsMcp?: boolean;
+  /** Model subset with authoritative starter-compatible tool evidence. */
+  mcpModels?: string[];
+  mcpEvidence?: 'runtime' | 'ollama-show' | 'none';
+  mcpExcludedModels?: string[];
+  mcpDetail?: string;
   detail?: string;
 };
 async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
@@ -793,6 +808,7 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
     count: lane.models.length,
     source: lane.source,
     provider: lane.provider,
+    providerKind: lane.providerKind,
     lastCheckedMs: lane.lastCheckedMs,
     selectable: lane.selectable,
     detail: lane.detail,
@@ -843,7 +859,56 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
     if (p) return { runtime: rt, kind: 'harness', models, count: models.length, source: 'provider', provider: p.name, lastCheckedMs: p.lastSync?.at ?? null, selectable, detail: unavailableDetail };
     return { runtime: rt, kind: 'harness', models, count: models.length, source: models.length ? 'curated' : 'none', lastCheckedMs: null, selectable, detail: unavailableDetail };
   });
-  return [...harnessRows, ...providerRows];
+  return Promise.all([...harnessRows, ...providerRows].map(async (row): Promise<RuntimeFreshness> => {
+    const policy = starterMcpCapabilityPolicy(row.runtime, row.providerKind);
+    if (policy === 'runtime') {
+      return {
+        ...row,
+        supportsMcp: true,
+        mcpModels: [...row.models],
+        mcpEvidence: 'runtime',
+        mcpExcludedModels: [],
+        mcpDetail: `${runtimeDisplayLabel(row.runtime)} supplies model-independent MCP tool access for the Brain-backed starter workspace.`,
+      };
+    }
+
+    if (policy === 'ollama-model') {
+      const provider = row.runtime === 'ollama'
+        ? providerFor('ollama')
+        : providers.find((candidate) => candidate.name === row.provider);
+      if (row.selectable !== true || provider?.kind !== 'ollama') {
+        return {
+          ...row,
+          supportsMcp: false,
+          mcpModels: [],
+          mcpEvidence: 'none',
+          mcpExcludedModels: [...row.models],
+          mcpDetail: 'This Ollama route must be live before IDACC can verify model-specific Brain tool capability.',
+        };
+      }
+      const evidence = await inspectOllamaStarterToolModels(provider.baseUrl, row.models);
+      return {
+        ...row,
+        supportsMcp: evidence.toolCapableModels.length > 0,
+        mcpModels: evidence.toolCapableModels,
+        mcpEvidence: 'ollama-show',
+        mcpExcludedModels: [...evidence.nonToolModels, ...evidence.unverifiedModels],
+        mcpDetail: evidence.detail,
+      };
+    }
+
+    const mcpDetail = policy === 'unverified'
+      ? 'The Manager can wire MCP into this provider route, but this provider/model catalog has no deterministic tool-capability proof. It remains available for general agents and is conservatively excluded from starter setup.'
+      : `${runtimeDisplayLabel(row.runtime)} does not consume the Manager MCP attachment required by the Brain-backed starter workspace.`;
+    return {
+      ...row,
+      supportsMcp: false,
+      mcpModels: [],
+      mcpEvidence: 'none',
+      mcpExcludedModels: [...row.models],
+      mcpDetail,
+    };
+  }));
 }
 
 /** Probe every enabled provider that backs a runtime, refresh its synced model list, and
@@ -2222,7 +2287,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'runtime:verifyAssignments': async (assignments: RuntimeAssignment[]) => verifyRuntimeAssignments(assignments),
   // Per-runtime model freshness (live list + source + when last refreshed) for the
   // "models stay up to date" panel.
-  'runtime:freshness': async () => runtimeFreshness(),
+  // The optional force object is consumed by ReadCallCache. Explicit setup
+  // retries bypass the normal five-minute catalog cache and repopulate its
+  // canonical key with fresh per-model tool-capability evidence.
+  'runtime:freshness': async (_options?: { force?: boolean }) => runtimeFreshness(),
   // Runtime credential lane cooldowns (newer managers); empty on stock/older managers.
   'runtime:cooldowns': async () => client.runtimeCooldowns(),
 
@@ -2789,19 +2857,21 @@ export function info() {
 }
 
 /** Start the reactive org-sync loop, always reading the live (possibly-reassigned) client. */
-export function startOrgSync(): () => void {
+export function startOrgSync(): () => Promise<void> {
   return startOrgSyncLoop(() => client);
 }
 
 /** Keep the manager-owned goal cadence configuration synchronized with IDACC settings. */
-export function startGoalDriver(): () => void {
+export function startGoalDriver(): () => Promise<void> {
   return startGoalDriverLoop(() => client, goalDriverConfig);
 }
 
 /** Promote task-shaped draft replies into manager-routed tasks in the background. */
-export function startDraftDispatcher(): () => void {
+export function startDraftDispatcher(): () => Promise<void> {
   return startDraftDispatcherLoop(() => client);
 }
+
+export { resetDraftDispatcherWork, stopDraftDispatcherWork };
 
 /**
  * Background model refresh. Local loopback lanes are cheap to check and can appear or
@@ -2809,28 +2879,29 @@ export function startDraftDispatcher(): () => void {
  * often and stay on a wider cadence. Every successful pass clears the read cache and notifies
  * the shell so mounted runtime pickers update without an operator pressing Refresh.
  */
-export function startModelRefreshLoop(onRefresh: (scope: 'local' | 'all') => void = () => {}): () => void {
-  let stopped = false;
-  let running = false;
-  const tick = async (scope: 'local' | 'all') => {
-    if (stopped || running) return;
-    running = true;
+export function startModelRefreshLoop(onRefresh: (scope: 'local' | 'all') => void = () => {}): () => Promise<void> {
+  const gate = createSingleFlightBackgroundGate();
+  const tick = (scope: 'local' | 'all'): Promise<void> => gate.run(async () => {
     try {
       if (scope === 'local') await probeLocalRuntimes();
       else await probeAllRuntimes();
+      if (gate.isStopped()) return;
       readCallCache.clear();
       onRefresh(scope);
     } catch {
       // Preserve the last known-good catalog. The next bounded pass retries.
-    } finally {
-      running = false;
     }
-  };
+  });
   const first = setTimeout(() => void tick('all'), 10_000);
   const local = setInterval(() => void tick('local'), 2 * 60 * 1000);
   const all = setInterval(() => void tick('all'), 30 * 60 * 1000);
   first.unref?.();
   local.unref?.();
   all.unref?.();
-  return () => { stopped = true; clearTimeout(first); clearInterval(local); clearInterval(all); };
+  return () => {
+    clearTimeout(first);
+    clearInterval(local);
+    clearInterval(all);
+    return gate.stop();
+  };
 }

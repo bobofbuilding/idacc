@@ -74,13 +74,16 @@ function readCallKey(method: string, args: unknown[]): string {
 
 function isForcedRead(method: string, args: unknown[]): boolean {
   if (method === 'subs:status' && args[0] === true) return true;
-  if (method !== 'agents:allTeams') return false;
+  if (method !== 'agents:allTeams' && method !== 'runtime:freshness') return false;
   const first = args[0];
   return typeof first === 'object' && first !== null && (first as { force?: unknown }).force === true;
 }
 
 function cacheKeyArgs(method: string, args: unknown[]): unknown[] {
-  if (method === 'agents:allTeams' && isForcedRead(method, args)) return [];
+  if (
+    (method === 'agents:allTeams' || method === 'runtime:freshness')
+    && isForcedRead(method, args)
+  ) return [];
   return args;
 }
 

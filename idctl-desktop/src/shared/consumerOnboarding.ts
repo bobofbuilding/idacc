@@ -45,6 +45,8 @@ export interface OnboardingRuntimeOption {
   source: string;
   provider?: string;
   detail?: string;
+  /** Local tool readiness was proven for exact model ids, so no implicit default is safe. */
+  requiresModel?: boolean;
 }
 
 export interface OnboardingSubscriptionOption {
@@ -149,7 +151,8 @@ export function onboardingAssignmentAvailable(
   const option = options.find((row) => row.runtime === runtime);
   if (!option) return false;
   const model = String(agent.model ?? '').trim();
-  return !model || option.models.length === 0 || option.models.includes(model);
+  if (!model) return option.requiresModel !== true;
+  return option.models.length === 0 || option.models.includes(model);
 }
 
 function persistedStatus(state: ConsumerOnboardingState, name: StarterAgentName, present: boolean): StarterAgentSetupStatus {

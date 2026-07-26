@@ -35,6 +35,36 @@ let emitControlEvent: ControlEventEmitter | null = null;
 export function configureControlEventEmitter(emitter: ControlEventEmitter): void {
   emitControlEvent = emitter;
 }
+
+type ControlWriteScheduler = (
+  work: () => Promise<unknown> | unknown,
+) => void;
+let scheduleControlWrite: ControlWriteScheduler | null = null;
+
+/**
+ * Let the application lifecycle own otherwise fire-and-forget Manager/Brain
+ * writes. The scheduler is deliberately factory-based: shutdown can close
+ * admission before a late control action creates a network request.
+ */
+export function configureControlWriteScheduler(
+  scheduler: ControlWriteScheduler | null,
+): void {
+  scheduleControlWrite = scheduler;
+}
+
+function runBestEffortControlWrite(
+  work: () => Promise<unknown> | unknown,
+): void {
+  try {
+    if (scheduleControlWrite) {
+      scheduleControlWrite(work);
+      return;
+    }
+    void Promise.resolve().then(work).catch(() => {});
+  } catch {
+    // Brain mirroring must never break the originating control action.
+  }
+}
 type TrackingCandidate = {
   contributionType: string;
   title: string;
@@ -347,7 +377,7 @@ async function appendTrackingMemory(key: string, heading: string, event: Trackin
 async function recordTrackingHooks(method: string, args: unknown[], result: unknown, summary: Summary): Promise<void> {
   const event = trackingEvent(method, args, result, summary);
   if (!event) return;
-  await Promise.all([
+  await Promise.allSettled([
     brain.timeline({
       type: event.opportunity ? 'tracking:opportunity-attributed' : 'tracking:weekly-contribution',
       subject: event.title,
@@ -602,19 +632,20 @@ export async function recordLearnMaterial(value: unknown): Promise<void> {
 }
 
 /** Actions that ALSO warrant a richer write (entity upsert / text ingest) beyond the timeline. */
-const EXTRAS: Record<string, (args: unknown[], result: unknown) => void> = {
-  'materials:save': (_a, r) => { void recordLearnMaterial(r); },
-  'materials:priority': (_a, r) => { void recordLearnMaterial(r); },
-  'materials:process': (_a, r) => { void recordLearnMaterial(r); },
-  'materials:processNext': (_a, r) => { void recordLearnMaterial(r); },
-  'materials:markRecommendation': (_a, r) => { void recordLearnMaterial(r); },
+const EXTRAS: Record<string, (args: unknown[], result: unknown) => Promise<unknown> | void> = {
+  'materials:save': (_a, r) => recordLearnMaterial(r),
+  'materials:priority': (_a, r) => recordLearnMaterial(r),
+  'materials:process': (_a, r) => recordLearnMaterial(r),
+  'materials:processNext': (_a, r) => recordLearnMaterial(r),
+  'materials:markRecommendation': (_a, r) => recordLearnMaterial(r),
   'materials:importFiles': (_a, r) => {
-    if (Array.isArray(r)) for (const material of r) void recordLearnMaterial(material);
+    if (!Array.isArray(r)) return;
+    return Promise.allSettled(r.map((material) => recordLearnMaterial(material)));
   },
   'materials:remove': (a) => {
     const id = s(a[0]);
     if (!id) return;
-    void brain.entity({ id: `learn:${id}`, type: 'learn-material', name: id, status: 'removed', tags: ['learn', 'removed', 'dashboard-state'] });
+    return brain.entity({ id: `learn:${id}`, type: 'learn-material', name: id, status: 'removed', tags: ['learn', 'removed', 'dashboard-state'] });
   },
   'plans:save': (a) => {
     const p = obj(a[0]);
@@ -623,29 +654,31 @@ const EXTRAS: Record<string, (args: unknown[], result: unknown) => void> = {
     const team = s(p.team) || 'default';
     const title = s(p.title) || s(p.id);
     const status = s(p.status) || 'draft';
-    void brain.entity({
-      id, type: 'plan', name: title, status,
-      tags: ['plan', 'dashboard-state', ...(Array.isArray(p.tags) ? p.tags.map(String) : [])],
-      data: { team, agent: p.agent, version: p.version, promoted: Array.isArray(p.tags) ? p.tags.some((t) => /^→ plan /.test(String(t))) : false },
-    });
-    void brain.facts([
-      { entity_id: id, field: 'team', value: team },
-      { entity_id: id, field: 'status', value: status },
-      ...(p.agent ? [{ entity_id: id, field: 'agent', value: s(p.agent) }] : []),
-      ...(p.version ? [{ entity_id: id, field: 'version', value: Number(p.version) }] : []),
+    return Promise.allSettled([
+      brain.entity({
+        id, type: 'plan', name: title, status,
+        tags: ['plan', 'dashboard-state', ...(Array.isArray(p.tags) ? p.tags.map(String) : [])],
+        data: { team, agent: p.agent, version: p.version, promoted: Array.isArray(p.tags) ? p.tags.some((t) => /^→ plan /.test(String(t))) : false },
+      }),
+      brain.facts([
+        { entity_id: id, field: 'team', value: team },
+        { entity_id: id, field: 'status', value: status },
+        ...(p.agent ? [{ entity_id: id, field: 'agent', value: s(p.agent) }] : []),
+        ...(p.version ? [{ entity_id: id, field: 'version', value: Number(p.version) }] : []),
+      ]),
+      brain.memory('control-center', {
+        key: id,
+        content: [`# Draft plan: ${title}`, `Status: ${status}`, `Team: ${team}`, p.agent ? `Agent: ${s(p.agent)}` : '', '', s(p.content).slice(0, 24000)].filter(Boolean).join('\n'),
+        tags: ['dashboard-state', 'plan', 'draft'],
+        shared: true,
+        project: team,
+      }),
     ]);
-    void brain.memory('control-center', {
-      key: id,
-      content: [`# Draft plan: ${title}`, `Status: ${status}`, `Team: ${team}`, p.agent ? `Agent: ${s(p.agent)}` : '', '', s(p.content).slice(0, 24000)].filter(Boolean).join('\n'),
-      tags: ['dashboard-state', 'plan', 'draft'],
-      shared: true,
-      project: team,
-    });
   },
   'plans:remove': (a) => {
     const id = s(a[0]);
     if (!id) return;
-    void brain.entity({ id: `plan:${id}`, type: 'plan', name: id, status: 'removed', tags: ['plan', 'removed', 'dashboard-state'] });
+    return brain.entity({ id: `plan:${id}`, type: 'plan', name: id, status: 'removed', tags: ['plan', 'removed', 'dashboard-state'] });
   },
   'goals:save': (a) => {
     const g = obj(a[0]);
@@ -655,30 +688,32 @@ const EXTRAS: Record<string, (args: unknown[], result: unknown) => void> = {
     const title = s(g.title) || s(g.id);
     const status = s(g.status) || 'draft';
     const priority = s(g.priority) || 'general';
-    void brain.entity({
-      id, type: 'goal', name: title, status,
-      tags: ['goal', priority, 'dashboard-state', g.autopilot ? 'autopilot' : 'manual'],
-      data: { team, priority, agent: g.agent, autopilot: !!g.autopilot, driver: g.driver },
-    });
-    void brain.facts([
-      { entity_id: id, field: 'team', value: team },
-      { entity_id: id, field: 'status', value: status },
-      { entity_id: id, field: 'priority', value: priority },
-      { entity_id: id, field: 'autopilot', value: !!g.autopilot },
-      ...(g.agent ? [{ entity_id: id, field: 'agent', value: s(g.agent) }] : []),
+    return Promise.allSettled([
+      brain.entity({
+        id, type: 'goal', name: title, status,
+        tags: ['goal', priority, 'dashboard-state', g.autopilot ? 'autopilot' : 'manual'],
+        data: { team, priority, agent: g.agent, autopilot: !!g.autopilot, driver: g.driver },
+      }),
+      brain.facts([
+        { entity_id: id, field: 'team', value: team },
+        { entity_id: id, field: 'status', value: status },
+        { entity_id: id, field: 'priority', value: priority },
+        { entity_id: id, field: 'autopilot', value: !!g.autopilot },
+        ...(g.agent ? [{ entity_id: id, field: 'agent', value: s(g.agent) }] : []),
+      ]),
+      brain.memory('control-center', {
+        key: id,
+        content: [`# Goal: ${title}`, `Status: ${status}`, `Tier: ${priority}`, `Team: ${team}`, `Autopilot: ${g.autopilot ? 'on' : 'off'}`, g.agent ? `Agent: ${s(g.agent)}` : '', '', s(g.content).slice(0, 12000)].filter(Boolean).join('\n'),
+        tags: ['dashboard-state', 'goal'],
+        shared: true,
+        project: team,
+      }),
     ]);
-    void brain.memory('control-center', {
-      key: id,
-      content: [`# Goal: ${title}`, `Status: ${status}`, `Tier: ${priority}`, `Team: ${team}`, `Autopilot: ${g.autopilot ? 'on' : 'off'}`, g.agent ? `Agent: ${s(g.agent)}` : '', '', s(g.content).slice(0, 12000)].filter(Boolean).join('\n'),
-      tags: ['dashboard-state', 'goal'],
-      shared: true,
-      project: team,
-    });
   },
   'goals:remove': (a) => {
     const id = s(a[0]);
     if (!id) return;
-    void brain.entity({ id: `goal:${id}`, type: 'goal', name: id, status: 'removed', tags: ['goal', 'removed', 'dashboard-state'] });
+    return brain.entity({ id: `goal:${id}`, type: 'goal', name: id, status: 'removed', tags: ['goal', 'removed', 'dashboard-state'] });
   },
   'loops:save': (a) => {
     const l = obj(a[0]);
@@ -687,98 +722,111 @@ const EXTRAS: Record<string, (args: unknown[], result: unknown) => void> = {
     const team = s(l.team) || 'default';
     const title = s(l.title) || s(l.id);
     const steps = Array.isArray(l.steps) ? l.steps.map(obj) : [];
-    void brain.entity({
-      id, type: 'loop', name: title, status: l.lastRunAt ? 'ran' : 'saved',
-      tags: ['loop', 'dashboard-state'],
-      data: { team, steps: steps.length, lastRunAt: l.lastRunAt },
-    });
-    void brain.facts([
-      { entity_id: id, field: 'team', value: team },
-      { entity_id: id, field: 'steps', value: steps.length },
-      ...(l.lastRunAt ? [{ entity_id: id, field: 'lastRunAt', value: Number(l.lastRunAt) }] : []),
+    return Promise.allSettled([
+      brain.entity({
+        id, type: 'loop', name: title, status: l.lastRunAt ? 'ran' : 'saved',
+        tags: ['loop', 'dashboard-state'],
+        data: { team, steps: steps.length, lastRunAt: l.lastRunAt },
+      }),
+      brain.facts([
+        { entity_id: id, field: 'team', value: team },
+        { entity_id: id, field: 'steps', value: steps.length },
+        ...(l.lastRunAt ? [{ entity_id: id, field: 'lastRunAt', value: Number(l.lastRunAt) }] : []),
+      ]),
+      brain.memory('control-center', {
+        key: id,
+        content: [
+          `# Loop: ${title}`,
+          `Team: ${team}`,
+          s(l.goal) ? `Goal: ${s(l.goal)}` : '',
+          '',
+          ...steps.map((step, i) => `${i + 1}. ${s(step.agent)}: ${s(step.task)}`),
+        ].filter(Boolean).join('\n'),
+        tags: ['dashboard-state', 'loop'],
+        shared: true,
+        project: team,
+      }),
     ]);
-    void brain.memory('control-center', {
-      key: id,
-      content: [
-        `# Loop: ${title}`,
-        `Team: ${team}`,
-        s(l.goal) ? `Goal: ${s(l.goal)}` : '',
-        '',
-        ...steps.map((step, i) => `${i + 1}. ${s(step.agent)}: ${s(step.task)}`),
-      ].filter(Boolean).join('\n'),
-      tags: ['dashboard-state', 'loop'],
-      shared: true,
-      project: team,
-    });
   },
   'loops:remove': (a) => {
     const id = s(a[0]);
     if (!id) return;
-    void brain.entity({ id: `loop:${id}`, type: 'loop', name: id, status: 'removed', tags: ['loop', 'removed', 'dashboard-state'] });
+    return brain.entity({ id: `loop:${id}`, type: 'loop', name: id, status: 'removed', tags: ['loop', 'removed', 'dashboard-state'] });
   },
-  'goalDriver:setConfig': (a) => {
-    void brain.memory('control-center', {
+  'goalDriver:setConfig': (a) =>
+    brain.memory('control-center', {
       key: 'goalDriver:config',
       content: JSON.stringify(obj(a[0]), null, 2),
       tags: ['dashboard-state', 'goal', 'autopilot', 'cc-config'],
       shared: true,
-    });
-  },
+    }),
   addHeartbeat: (a) => {
     const team = s(a[4]) || 'default';
     const agent = s(a[0]);
     if (!agent) return;
     const id = `schedule:heartbeat:${keyPart(team)}:${keyPart(agent)}`;
-    void brain.entity({ id, type: 'schedule', name: `Heartbeat: ${agent}`, status: 'active', tags: ['schedule', 'heartbeat', 'dashboard-state'], data: { team, agent, seconds: a[1], delivery: a[3] } });
-    void brain.memory('control-center', {
-      key: id,
-      content: [`# Heartbeat: ${agent}`, `Team: ${team}`, `Every: ${a[1]} seconds`, `Delivery: ${s(a[3]) || 'internal'}`, '', s(a[2])].filter(Boolean).join('\n'),
-      tags: ['dashboard-state', 'schedule', 'heartbeat'],
-      shared: true,
-      project: team,
-    });
+    return Promise.allSettled([
+      brain.entity({ id, type: 'schedule', name: `Heartbeat: ${agent}`, status: 'active', tags: ['schedule', 'heartbeat', 'dashboard-state'], data: { team, agent, seconds: a[1], delivery: a[3] } }),
+      brain.memory('control-center', {
+        key: id,
+        content: [`# Heartbeat: ${agent}`, `Team: ${team}`, `Every: ${a[1]} seconds`, `Delivery: ${s(a[3]) || 'internal'}`, '', s(a[2])].filter(Boolean).join('\n'),
+        tags: ['dashboard-state', 'schedule', 'heartbeat'],
+        shared: true,
+        project: team,
+      }),
+    ]);
   },
   addCalendarCheckin: (a) => {
     const team = s(a[5]) || 'default';
     const agent = s(a[0]);
     if (!agent) return;
     const id = `schedule:calendar:${keyPart(team)}:${keyPart(agent)}:${keyPart(a[1])}:${keyPart(a[2])}:${keyPart(clip(a[3], 40))}`;
-    void brain.entity({ id, type: 'schedule', name: `Calendar objective: ${agent}`, status: 'active', tags: ['schedule', 'calendar', 'loop', 'dashboard-state'], data: { team, agent, time: a[1], when: a[2], delivery: obj(a[4]).delivery } });
-    void brain.memory('control-center', {
-      key: id,
-      content: [`# Calendar objective: ${agent}`, `Team: ${team}`, `When: ${s(a[2])} at ${s(a[1])}`, `Delivery: ${s(obj(a[4]).delivery) || 'talk'}`, '', s(a[3]).slice(0, 12000)].filter(Boolean).join('\n'),
-      tags: ['dashboard-state', 'schedule', 'calendar', 'loop'],
-      shared: true,
-      project: team,
-    });
+    return Promise.allSettled([
+      brain.entity({ id, type: 'schedule', name: `Calendar objective: ${agent}`, status: 'active', tags: ['schedule', 'calendar', 'loop', 'dashboard-state'], data: { team, agent, time: a[1], when: a[2], delivery: obj(a[4]).delivery } }),
+      brain.memory('control-center', {
+        key: id,
+        content: [`# Calendar objective: ${agent}`, `Team: ${team}`, `When: ${s(a[2])} at ${s(a[1])}`, `Delivery: ${s(obj(a[4]).delivery) || 'talk'}`, '', s(a[3]).slice(0, 12000)].filter(Boolean).join('\n'),
+        tags: ['dashboard-state', 'schedule', 'calendar', 'loop'],
+        shared: true,
+        project: team,
+      }),
+    ]);
   },
-  pauseSchedule: (a) => { if (s(a[0])) void brain.entity({ id: `schedule:${s(a[0])}`, type: 'schedule', name: s(a[0]), status: 'paused', tags: ['schedule', 'dashboard-state'] }); },
-  resumeSchedule: (a) => { if (s(a[0])) void brain.entity({ id: `schedule:${s(a[0])}`, type: 'schedule', name: s(a[0]), status: 'active', tags: ['schedule', 'dashboard-state'] }); },
-  removeSchedule: (a) => { if (s(a[0])) void brain.entity({ id: `schedule:${s(a[0])}`, type: 'schedule', name: s(a[0]), status: 'removed', tags: ['schedule', 'removed', 'dashboard-state'] }); },
+  pauseSchedule: (a) => s(a[0])
+    ? brain.entity({ id: `schedule:${s(a[0])}`, type: 'schedule', name: s(a[0]), status: 'paused', tags: ['schedule', 'dashboard-state'] })
+    : undefined,
+  resumeSchedule: (a) => s(a[0])
+    ? brain.entity({ id: `schedule:${s(a[0])}`, type: 'schedule', name: s(a[0]), status: 'active', tags: ['schedule', 'dashboard-state'] })
+    : undefined,
+  removeSchedule: (a) => s(a[0])
+    ? brain.entity({ id: `schedule:${s(a[0])}`, type: 'schedule', name: s(a[0]), status: 'removed', tags: ['schedule', 'removed', 'dashboard-state'] })
+    : undefined,
   'projects:save': (a) => {
     const p = obj(a[0]);
     if (!p.id) return;
     const id = `project:${s(p.id)}`;
-    void brain.entity({
-      id, type: 'project', name: s(p.name) || s(p.id), status: s(p.status) || 'active',
-      tags: ['project', ...(Array.isArray(p.tags) ? p.tags.map(String) : [])],
-      data: { team: p.team, autoCommit: p.autoCommit, path: p.path, links: p.links, lead: p.lead, policy: p.policy },
-    });
-    void brain.facts([
-      { entity_id: id, field: 'team', value: s(p.team) },
-      { entity_id: id, field: 'status', value: s(p.status) },
-      ...(p.lead ? [{ entity_id: id, field: 'lead', value: s(p.lead) }] : []),
+    return Promise.allSettled([
+      brain.entity({
+        id, type: 'project', name: s(p.name) || s(p.id), status: s(p.status) || 'active',
+        tags: ['project', ...(Array.isArray(p.tags) ? p.tags.map(String) : [])],
+        data: { team: p.team, autoCommit: p.autoCommit, path: p.path, links: p.links, lead: p.lead, policy: p.policy },
+      }),
+      brain.facts([
+        { entity_id: id, field: 'team', value: s(p.team) },
+        { entity_id: id, field: 'status', value: s(p.status) },
+        ...(p.lead ? [{ entity_id: id, field: 'lead', value: s(p.lead) }] : []),
+      ]),
     ]);
   },
   'brain:createPlan': (a, r) => {
     const res = obj(r);
     if (!res.ok) return;
-    void brain.ingestText({ sourceKind: 'idagents-brain-plan', sourceId: `brain-plan:${s(res.file)}`, title: s(a[0]), content: s(a[1]), metadata: { num: res.num, file: res.file } });
+    return brain.ingestText({ sourceKind: 'idagents-brain-plan', sourceId: `brain-plan:${s(res.file)}`, title: s(a[0]), content: s(a[1]), metadata: { num: res.num, file: res.file } });
   },
   'dreams:save': (a) => {
     const d = obj(a[0]);
     if (!d.id || !s(d.content).trim()) return;
-    void brain.ingestText({ sourceKind: 'idagents-dream', sourceId: `dream:${s(d.id)}`, title: s(d.title) || 'dream', content: s(d.content), metadata: { agent: d.agent, team: d.team, focus: d.focus } });
+    return brain.ingestText({ sourceKind: 'idagents-dream', sourceId: `dream:${s(d.id)}`, title: s(d.title) || 'dream', content: s(d.content), metadata: { agent: d.agent, team: d.team, focus: d.focus } });
   },
 };
 
@@ -792,16 +840,16 @@ export function recordControlAction(method: string, args: unknown[], result: unk
       if (isRepeatedControlAction(method, out)) return;
       if (emitControlEvent) {
         const envelope = controlEventEnvelope(method, out);
-        void emitControlEvent({
-          ...envelope,
-          data: { action: method, subject: out.subject ?? method, data: out.data ?? {}, tags: out.tags ?? [] },
-          idempotency_key: controlIdempotencyKey(method, out),
-        }).catch(() => {});
+        runBestEffortControlWrite(() => emitControlEvent!({
+            ...envelope,
+            data: { action: method, subject: out!.subject ?? method, data: out!.data ?? {}, tags: out!.tags ?? [] },
+            idempotency_key: controlIdempotencyKey(method, out!),
+          }));
       }
-      void recordTrackingHooks(method, args, result, out).catch(() => {});
+      runBestEffortControlWrite(() => recordTrackingHooks(method, args, result, out!));
     }
     const extra = EXTRAS[method];
-    if (extra) { try { extra(args, result); } catch { /* best-effort */ } }
+    if (extra) runBestEffortControlWrite(() => extra(args, result));
   } catch { /* telemetry must never break the IPC reply */ }
 }
 

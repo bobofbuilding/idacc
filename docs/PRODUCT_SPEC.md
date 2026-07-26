@@ -83,10 +83,14 @@ Electron has no `window.prompt`, so text input uses an in-app modal (`usePrompt`
 release is staged, the sidebar shows **⬆ vX → vY · Restart & update**.
 
 On a new or incomplete profile, the setup wizard verifies the bundled Manager and Brain, requires
-a manager-executable runtime/model route, and creates only missing neutral starter agents
+a manager-executable runtime/model route with effective Brain MCP support, keeps Claude/Codex MCP
+routes at runtime-level readiness, and requires model-specific `tools` evidence from a bounded
+Ollama `/api/show` check before offering an Ollama model. Generic provider lanes and Ollama models
+without deterministic tool evidence remain available for general work but are excluded from starter
+setup with a clear diagnostic. Setup creates only missing neutral starter agents
 (`lead`, `coder`, `researcher`). Existing starter agents are preserved. If the user explicitly
 re-runs setup, IDACC first verifies the whole repair batch, then repairs stale runtime/model
-assignments and rebuilds stopped starters. A limited mode keeps Settings and diagnostics
+assignments, missing effective Brain attachments, and stopped starters. A limited mode keeps Settings and diagnostics
 available without claiming the starter workspace is ready.
 
 ### 2.5 Command palette, control drawer & receipts
@@ -639,8 +643,10 @@ Manager; this is the plumbing.)
   `bobofbuilding/idacc` release feed, and never offers a separate Manager install or update action.
   electron-builder metadata verifies downloaded bytes, macOS/Windows production releases require
   platform signatures, downgrades and prereleases are rejected, and applying a staged build still
-  requires the explicit **Restart & update** action. Linux AppImage builds support that replacement
-  path; Debian packages direct the user to the system package manager instead.
+  requires the explicit **Restart & update** action. The installer is not started until the
+  application-wide shutdown coordinator has quiesced UI mutations, stopped background loops, and
+  completed bounded Manager/Brain process-tree cleanup. Linux AppImage builds support that
+  replacement path; Debian packages direct the user to the system package manager instead.
 - **Managed subscription sign-ins**: CLI OAuth/device/browser flows (no API key) for `claude-*`,
   `codex`, `cursor-cli`, `grok`, Antigravity `agy`, `copilot`, `kiro-cli`, `kimi-cli`, and legacy `q`
   only when installed. Rows distinguish
@@ -797,6 +803,7 @@ implemented and covered by focused smoke or rendered-interaction tests:
 | HR Manager | Builder owns roster construction only; **Manage > Hierarchy** is the single routing authority and distinguishes inherited, explicit, and blocked relay state |
 | Chat | Dead scroll-ref code is removed; plan detection is conservative; malformed or attachment-bearing reserved control commands fail locally; reply, activity, and delegation annotations are exact-query scoped; concurrent writes and deletion are guarded |
 | First-run setup | Existing starter agents are preserved; stale assignments and stopped starters are repaired only inside an explicit, batch-verified setup run |
+| Unified runtime lifecycle | Manager, Brain, listener, and cycle roots use retained POSIX process-group ownership or Windows Job Objects; a root crash cannot orphan descendants, failed cleanup blocks replacement, and every quit/relaunch/update path runs through one early graceful-shutdown coordinator |
 
 The remaining external and intentional scope boundaries are documented here so they are not
 mistaken for incomplete consumer design work:

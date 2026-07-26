@@ -7,6 +7,7 @@ import {
   normalizeSpeedPreference,
   offerableRuntimes,
   runtimeHasSpeed,
+  starterMcpCapabilityPolicy,
   runtimeSupports,
   speedOptionLabel,
   speedOptions,
@@ -200,6 +201,25 @@ assert.deepEqual(
 
 assert.equal(runtimeSupports('antigravity', 'skills'), true, 'Antigravity uses the manager .agents skill workspace');
 assert.equal(runtimeSupports('antigravity', 'portablePlugins'), true, 'portable plugin packages must have an Antigravity fallback path');
+assert.equal(runtimeSupports('antigravity', 'mcp'), false, 'starter setup must not claim unsupported Manager MCP access');
+assert.equal(runtimeSupports('grok', 'mcp'), false, 'the bundled Grok harness does not consume Manager McpServerSpec');
+assert.equal(runtimeSupports('copilot', 'mcp'), false, 'the bundled Copilot harness does not consume Manager McpServerSpec');
+assert.equal(runtimeSupports('kiro-cli', 'mcp'), false, 'the bundled Kiro harness does not consume Manager McpServerSpec');
+assert.equal(runtimeSupports('codex', 'mcp'), true, 'Codex remains an MCP-capable starter runtime');
+assert.equal(runtimeSupports('provider:local-fixture', 'mcp'), true, 'concrete provider lanes use the MCP-capable provider-api harness');
+assert.equal(starterMcpCapabilityPolicy('codex'), 'runtime', 'Codex MCP support is authoritative at the runtime level');
+assert.equal(starterMcpCapabilityPolicy('ollama'), 'ollama-model', 'Ollama starter readiness needs per-model tool evidence');
+assert.equal(
+  starterMcpCapabilityPolicy('provider:local-ollama', 'ollama'),
+  'ollama-model',
+  'a native Ollama provider lane can be proven with /api/show',
+);
+assert.equal(
+  starterMcpCapabilityPolicy('provider:lmstudio', 'lmstudio'),
+  'unverified',
+  'a generic provider-api lane must not claim starter tool support from structural MCP wiring alone',
+);
+assert.equal(starterMcpCapabilityPolicy('grok'), 'unsupported');
 
 assert.deepEqual(
   offerableRuntimes([], undefined, [{ runtime: 'grok', installed: true, loggedIn: false, statusSupported: false }]),

@@ -16,6 +16,7 @@ import {
 } from 'node:fs';
 import type { Stats } from 'node:fs';
 import {
+  basename,
   dirname,
   join,
   parse,
@@ -376,11 +377,8 @@ function copyEntry(source: string, destination: string, merge: boolean): void {
     if (destinationEntry && !destinationEntry.isDirectory()) {
       throw new Error(`cannot merge a legacy directory into profile file: ${destination}`);
     }
-    if (!destinationEntry) {
-      ensurePrivateDirectory(dirname(destination));
-      mkdirSync(destination, { mode: 0o700 });
-    }
-    chmodSync(destination, 0o700);
+    ensurePrivateDirectory(dirname(destination));
+    ensurePrivateDirectory(destination);
     for (const child of readdirSync(source)) {
       copyEntry(join(source, child), join(destination, child), true);
     }
@@ -397,8 +395,77 @@ function copyEntry(source: string, destination: string, merge: boolean): void {
   });
 }
 
-function copyIfAbsent(source: string, destination: string): void {
-  copyEntry(source, destination, false);
+/**
+ * Publish a legacy directory only after its complete private copy is ready.
+ *
+ * The reserved sibling is never consumed by profile stores. A crash can leave
+ * it incomplete, so the next schema-0 retry validates and removes only that
+ * exact migration-owned tree, rebuilds it, and atomically renames it into
+ * place. If the real destination already exists, it remains wholly
+ * authoritative and receives no legacy children.
+ */
+function copyDirectoryIfAbsent(
+  source: string,
+  destination: string,
+  migrationId: string,
+): void {
+  const sourceEntry = lstatIfPresent(source);
+  if (sourceEntry?.isSymbolicLink()) {
+    throw new Error(`refusing symbolic link in legacy profile data: ${source}`);
+  }
+  const destinationEntry = lstatIfPresent(destination);
+  if (destinationEntry?.isSymbolicLink()) {
+    throw new Error(`refusing symbolic link in profile state: ${destination}`);
+  }
+  const staging = join(
+    dirname(destination),
+    `.${basename(destination)}.${migrationId}.staging`,
+  );
+  const stagingEntry = lstatIfPresent(staging);
+  if (stagingEntry?.isSymbolicLink()) {
+    throw new Error(`refusing symbolic link in profile migration staging: ${staging}`);
+  }
+  if (stagingEntry && !stagingEntry.isDirectory()) {
+    throw new Error(`profile migration staging is not a directory: ${staging}`);
+  }
+
+  if (destinationEntry) {
+    if (stagingEntry) {
+      validateAndTightenPrivateTree(staging);
+      rmSync(staging, { recursive: true, force: false });
+    }
+    return;
+  }
+  if (!sourceEntry) {
+    if (stagingEntry) {
+      validateAndTightenPrivateTree(staging);
+      rmSync(staging, { recursive: true, force: false });
+    }
+    return;
+  }
+  if (!sourceEntry.isDirectory()) {
+    throw new Error(`legacy profile entry must be a directory: ${source}`);
+  }
+
+  ensurePrivateDirectory(dirname(destination));
+  if (stagingEntry) {
+    validateAndTightenPrivateTree(staging);
+    rmSync(staging, { recursive: true, force: false });
+  }
+  ensurePrivateDirectory(staging);
+  copyEntry(source, staging, true);
+  validateAndTightenPrivateTree(staging);
+  const racedDestination = lstatIfPresent(destination);
+  if (racedDestination?.isSymbolicLink()) {
+    throw new Error(`refusing symbolic link in profile state: ${destination}`);
+  }
+  if (racedDestination) {
+    // Another profile owner won the publication race. Preserve it and remove
+    // only this migration's reserved staging tree.
+    rmSync(staging, { recursive: true, force: false });
+    return;
+  }
+  renameSync(staging, destination);
 }
 
 function copyRegularFileIfAbsent(source: string, destination: string): void {
@@ -533,7 +600,11 @@ const MIGRATIONS: ProfileMigration[] = [
       const legacy = context.legacyConfigDir;
       copyRegularFileIfAbsent(join(legacy, 'config.json'), paths.config);
       for (const name of ['goals', 'plans', 'chats', 'dreams', 'loops', 'learn', 'questions', 'work']) {
-        copyIfAbsent(join(legacy, name), join(dirname(paths.config), name));
+        copyDirectoryIfAbsent(
+          join(legacy, name),
+          join(dirname(paths.config), name),
+          'import-legacy-idctl-profile',
+        );
       }
       // Live Safe/Zodiac state is intentionally not imported automatically:
       // legacy files are not bound to a reviewed profile root identity. They

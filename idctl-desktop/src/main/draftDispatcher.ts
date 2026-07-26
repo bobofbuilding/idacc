@@ -12,6 +12,7 @@ import type { Agent, NewsItem, Task } from '../../../idctl/src/api/types.ts';
 import { loadSettings, saveSettings, setTaskDeps } from '../../../idctl/src/settings/store.ts';
 import type { DraftDispatcherProcessedRecord } from '../../../idctl/src/settings/schema.ts';
 import { optimizeAskCommand } from './contextBudget.ts';
+import { createSingleFlightBackgroundGate } from './backgroundActivity.ts';
 import { isActiveStatus, type CreatePlanResult, type CreatedTask, type SubTask } from './work.ts';
 
 type DraftNewsItem = NewsItem & { teamName?: string };
@@ -52,6 +53,112 @@ const POLL_MS = 30_000;
 const INITIAL_DELAY_MS = 12_000;
 
 const inFlightDrafts = new Set<string>();
+
+export interface DraftDispatchLifecycle {
+  activeCount(): number;
+  isStopped(): boolean;
+  track<T>(work: Promise<T>): Promise<T>;
+  waitForDependencies(work: PromiseLike<unknown>): Promise<boolean>;
+  onCancel(listener: () => void): () => void;
+  stop(): Promise<void>;
+}
+
+/**
+ * Own every detached dependency chain and polling pass created by draft
+ * promotion. Cancellation closes admission synchronously, wakes dependency and
+ * task waiters, and drains work that had already reached a Manager request.
+ */
+export function createDraftDispatchLifecycle(): DraftDispatchLifecycle {
+  let stopped = false;
+  let stopPromise: Promise<void> | null = null;
+  let resolveCancellation!: () => void;
+  const cancellation = new Promise<void>((resolve) => {
+    resolveCancellation = resolve;
+  });
+  const active = new Set<Promise<unknown>>();
+  const cancellationListeners = new Set<() => void>();
+
+  const drain = async (): Promise<void> => {
+    while (active.size > 0) {
+      await Promise.allSettled([...active]);
+    }
+  };
+
+  return {
+    activeCount: () => active.size,
+    isStopped: () => stopped,
+    track: <T>(work: Promise<T>): Promise<T> => {
+      const tracked = Promise.resolve(work).finally(() => {
+        active.delete(tracked);
+      });
+      active.add(tracked);
+      return tracked;
+    },
+    waitForDependencies: async (work) => {
+      if (stopped) return false;
+      return Promise.race([
+        Promise.resolve(work).then(() => true),
+        cancellation.then(() => false),
+      ]);
+    },
+    onCancel: (listener) => {
+      if (stopped) {
+        listener();
+        return () => {};
+      }
+      cancellationListeners.add(listener);
+      return () => {
+        cancellationListeners.delete(listener);
+      };
+    },
+    stop: () => {
+      if (stopPromise) return stopPromise;
+      stopped = true;
+      resolveCancellation();
+      for (const listener of [...cancellationListeners]) {
+        try { listener(); } catch { /* cancellation must continue */ }
+      }
+      cancellationListeners.clear();
+      stopPromise = drain();
+      return stopPromise;
+    },
+  };
+}
+
+let applicationDraftDispatchLifecycle = createDraftDispatchLifecycle();
+
+export function stopDraftDispatcherWork(): Promise<void> {
+  return applicationDraftDispatchLifecycle.stop();
+}
+
+export function resetDraftDispatcherWork(): void {
+  if (!applicationDraftDispatchLifecycle.isStopped()) return;
+  if (applicationDraftDispatchLifecycle.activeCount() !== 0) {
+    throw new Error('Draft dispatcher work is still draining and cannot be restarted.');
+  }
+  applicationDraftDispatchLifecycle = createDraftDispatchLifecycle();
+}
+
+/**
+ * Await predecessor/owner chains without allowing cancellation to cross the
+ * final `/ask` admission check. Once dispatch has started it is drained; once
+ * cancellation starts no new dispatch callback can run.
+ */
+export async function runDraftDependencyDispatch(
+  lifecycle: DraftDispatchLifecycle,
+  dependencies: PromiseLike<unknown>[],
+  dispatch: () => Promise<void>,
+  waitForDone: () => Promise<void>,
+): Promise<boolean> {
+  if (!await lifecycle.waitForDependencies(Promise.allSettled(dependencies))) {
+    return false;
+  }
+  if (lifecycle.isStopped()) return false;
+  await dispatch();
+  if (lifecycle.isStopped()) return true;
+  await waitForDone();
+  return true;
+}
 
 function envFlag(name: string): boolean {
   return /^(1|true|yes|on)$/i.test(String(process.env[name] || '').trim());
@@ -271,15 +378,22 @@ function budgetedCommand(client: ManagerClient, command: string, source: string)
   return optimizeAskCommand(command, { source, team: client.team }).command;
 }
 
-async function createAndDispatchRoutedDraft(client: ManagerClient, draft: ParsedDraftProposal, rosters: TeamRoster[]): Promise<CreatePlanResult> {
+async function createAndDispatchRoutedDraft(
+  client: ManagerClient,
+  draft: ParsedDraftProposal,
+  rosters: TeamRoster[],
+  lifecycle: DraftDispatchLifecycle,
+): Promise<CreatePlanResult> {
   const routedAll = routeSubtasks(draft.team, draft.subtasks, rosters);
   const routed = routedAll.slice(0, DRAFT_TASK_CREATE_CAP);
   const created: RoutedCreatedTask[] = [];
   for (let i = 0; i < routed.length; i++) {
+    if (lifecycle.isStopped()) break;
     const st = routed[i];
     const tc = client.withTeam(st.team);
     try {
       const env = await tc.remote<{ task?: { shortId?: string; name?: string } }>(budgetedCommand(tc, taskCreateCommand(st, draft.sourceLabel), 'draftDispatcher:create-task'));
+      if (lifecycle.isStopped()) break;
       const task = env.result?.task;
       const ref = task?.shortId ?? task?.name ?? st.title;
       created.push({ idx: i, ref, title: st.title, agent: st.agent, ok: true, dependsOn: st.dependsOn, dispatched: false, team: st.team });
@@ -296,6 +410,9 @@ async function createAndDispatchRoutedDraft(client: ManagerClient, draft: Parsed
         team: st.team,
       });
     }
+  }
+  if (lifecycle.isStopped()) {
+    return { created, dispatched: 0, deferred: created.filter((row) => row.ok).length };
   }
   for (let i = routed.length; i < routedAll.length; i++) {
     const st = routedAll[i];
@@ -328,13 +445,28 @@ async function createAndDispatchRoutedDraft(client: ManagerClient, draft: Parsed
 
   const waiters: { team: string; ref: string; resolve: () => void; deadline: number }[] = [];
   let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let pollPass: Promise<void> | null = null;
+  const resolveWaiters = (): void => {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = undefined;
+    for (const waiter of waiters.splice(0)) waiter.resolve();
+  };
+  const removeCancelListener = lifecycle.onCancel(resolveWaiters);
   const tickPoll = async (): Promise<void> => {
+    if (lifecycle.isStopped()) {
+      resolveWaiters();
+      return;
+    }
     if (!waiters.length) {
       if (pollTimer) { clearInterval(pollTimer); pollTimer = undefined; }
       return;
     }
     const teams = [...new Set(waiters.map((w) => w.team))];
     const snaps = await Promise.all(teams.map(async (team) => [team, await recentDoneTasks(client.withTeam(team))] as const));
+    if (lifecycle.isStopped()) {
+      resolveWaiters();
+      return;
+    }
     const doneKeys = new Set<string>();
     for (const [team, tasks] of snaps) {
       for (const t of tasks) {
@@ -351,10 +483,23 @@ async function createAndDispatchRoutedDraft(client: ManagerClient, draft: Parsed
       }
     }
   };
+  const runPoll = (): void => {
+    if (pollPass || lifecycle.isStopped()) return;
+    const tracked = lifecycle.track(tickPoll());
+    pollPass = tracked;
+    const clearPollPass = () => {
+      if (pollPass === tracked) pollPass = null;
+    };
+    void tracked.then(clearPollPass, clearPollPass);
+  };
   const waitForTaskDone = (team: string, ref: string): Promise<void> => new Promise((resolve) => {
+    if (lifecycle.isStopped()) {
+      resolve();
+      return;
+    }
     waiters.push({ team, ref, resolve, deadline: Date.now() + 20 * 60 * 1000 });
     if (!pollTimer) {
-      pollTimer = setInterval(() => void tickPoll(), 5000);
+      pollTimer = setInterval(runPoll, 5000);
       (pollTimer as { unref?: () => void }).unref?.();
     }
   });
@@ -370,17 +515,28 @@ async function createAndDispatchRoutedDraft(client: ManagerClient, draft: Parsed
     const ownerKey = `${c.team}/${c.agent}`;
     const prevForOwner = ownerChain[ownerKey];
     const waits = prevForOwner ? [...deps, prevForOwner] : deps;
-    const p = Promise.allSettled(waits).then(async () => {
-      c.dispatched = true;
-      const tc = client.withTeam(c.team);
-      await tc.remote<{ queryId?: string; status?: string }>(budgetedCommand(tc, `/ask ${c.agent} ${qArg(taskPrompt(draft.objective, routed[i], c.ref))}`, 'draftDispatcher:task-dispatch')).then(() => {}, () => {});
-      await waitForTaskDone(c.team, c.ref);
-    });
+    const p = lifecycle.track(runDraftDependencyDispatch(
+      lifecycle,
+      waits,
+      async () => {
+        // No asynchronous boundary may be inserted between this final
+        // cancellation check and Manager request creation.
+        if (lifecycle.isStopped()) return;
+        c.dispatched = true;
+        const tc = client.withTeam(c.team);
+        await tc.remote<{ queryId?: string; status?: string }>(budgetedCommand(tc, `/ask ${c.agent} ${qArg(taskPrompt(draft.objective, routed[i], c.ref))}`, 'draftDispatcher:task-dispatch')).then(() => {}, () => {});
+      },
+      () => waitForTaskDone(c.team, c.ref),
+    ).then(() => undefined));
     ownerChain[ownerKey] = p;
     return p;
   };
   for (let i = 0; i < routed.length; i++) done[i] = startSub(i);
-  void Promise.allSettled(done);
+  const dispatchGroup = lifecycle.track(Promise.allSettled(done).then(() => undefined));
+  void dispatchGroup.then(() => {
+    removeCancelListener();
+    resolveWaiters();
+  });
 
   const ok = created.filter((c) => c.ok);
   const ready = ok.filter((c) => routed[c.idx].dependsOn.filter((d) => d < c.idx).length === 0);
@@ -405,18 +561,32 @@ function saveProcessed(processed: Record<string, DraftDispatcherProcessedRecord>
   saveSettings(cfg);
 }
 
-export async function processDraftProposalsOnce(client: ManagerClient, opts: { now?: number; maxAgeMs?: number; maxDrafts?: number } = {}): Promise<DraftDispatchRunResult> {
+async function processDraftProposalsOnceOwned(
+  client: ManagerClient,
+  opts: { now?: number; maxAgeMs?: number; maxDrafts?: number },
+  lifecycle: DraftDispatchLifecycle,
+): Promise<DraftDispatchRunResult> {
   const now = opts.now ?? Date.now();
   const cfg = loadSettings();
-  if (cfg.draftDispatcher?.enabled !== true || !draftDispatcherLivePromotionAllowed()) {
+  if (
+    lifecycle.isStopped()
+    || cfg.draftDispatcher?.enabled !== true
+    || !draftDispatcherLivePromotionAllowed()
+  ) {
     return { enabled: false, scanned: 0, candidates: 0, dispatched: 0, createdTasks: 0, skippedProcessed: 0, failed: 0, details: [] };
   }
   const rawProcessed = { ...(cfg.draftDispatcher?.processed ?? {}) };
   const processed = pruneProcessed(rawProcessed, now);
   let processedChanged = Object.keys(processed).length !== Object.keys(rawProcessed).length;
   const teams = await client.teams().catch(() => []);
+  if (lifecycle.isStopped()) {
+    return { enabled: true, scanned: 0, candidates: 0, dispatched: 0, createdTasks: 0, skippedProcessed: 0, failed: 0, details: [] };
+  }
   const teamNames = teams.length ? teams.map((t) => t.name).filter(Boolean) : [client.team ?? 'default'];
   const rosters = await loadRosters(client, teamNames);
+  if (lifecycle.isStopped()) {
+    return { enabled: true, scanned: 0, candidates: 0, dispatched: 0, createdTasks: 0, skippedProcessed: 0, failed: 0, details: [] };
+  }
   const drafts: ParsedDraftProposal[] = [];
   let scanned = 0;
   await Promise.all(teamNames.map(async (team) => {
@@ -441,12 +611,14 @@ export async function processDraftProposalsOnce(client: ManagerClient, opts: { n
   };
   const maxDrafts = opts.maxDrafts ?? MAX_DRAFTS_PER_RUN;
   for (const draft of drafts) {
+    if (lifecycle.isStopped()) break;
     if (processed[draft.key]) { result.skippedProcessed++; continue; }
     if (inFlightDrafts.has(draft.key)) { result.skippedProcessed++; continue; }
     if (result.dispatched >= maxDrafts) break;
     inFlightDrafts.add(draft.key);
     try {
-      const plan = await createAndDispatchRoutedDraft(client, draft, rosters);
+      const plan = await createAndDispatchRoutedDraft(client, draft, rosters, lifecycle);
+      if (lifecycle.isStopped()) break;
       const ok = plan.created.filter((c) => c.ok);
       if (!ok.length) {
         result.failed++;
@@ -473,17 +645,34 @@ export async function processDraftProposalsOnce(client: ManagerClient, opts: { n
       inFlightDrafts.delete(draft.key);
     }
   }
-  if (processedChanged) saveProcessed(processed, now);
+  if (processedChanged && !lifecycle.isStopped()) saveProcessed(processed, now);
   return result;
 }
 
-export function startDraftDispatcherLoop(clientProvider: () => ManagerClient): () => void {
-  if (loadSettings().draftDispatcher?.enabled !== true || !draftDispatcherLivePromotionAllowed()) return () => {};
-  let stopped = false;
-  let running = false;
-  const tick = async (): Promise<void> => {
-    if (stopped || running) return;
-    running = true;
+export function processDraftProposalsOnce(
+  client: ManagerClient,
+  opts: {
+    now?: number;
+    maxAgeMs?: number;
+    maxDrafts?: number;
+    lifecycle?: DraftDispatchLifecycle;
+  } = {},
+): Promise<DraftDispatchRunResult> {
+  const lifecycle = opts.lifecycle ?? applicationDraftDispatchLifecycle;
+  const { lifecycle: _lifecycle, ...runOptions } = opts;
+  return lifecycle.track(processDraftProposalsOnceOwned(client, runOptions, lifecycle));
+}
+
+export function startDraftDispatcherLoop(clientProvider: () => ManagerClient): () => Promise<void> {
+  if (
+    applicationDraftDispatchLifecycle.isStopped()
+    || loadSettings().draftDispatcher?.enabled !== true
+    || !draftDispatcherLivePromotionAllowed()
+  ) {
+    return stopDraftDispatcherWork;
+  }
+  const gate = createSingleFlightBackgroundGate();
+  const tick = (): Promise<void> => gate.run(async () => {
     try {
       const res = await processDraftProposalsOnce(clientProvider());
       if (res.enabled && (res.dispatched || res.failed)) {
@@ -491,11 +680,16 @@ export function startDraftDispatcherLoop(clientProvider: () => ManagerClient): (
       }
     } catch (e) {
       console.warn('[draft-dispatcher] run failed:', e);
-    } finally {
-      running = false;
     }
-  };
+  });
   const t0 = setTimeout(() => void tick(), INITIAL_DELAY_MS);
   const iv = setInterval(() => void tick(), POLL_MS);
-  return () => { stopped = true; clearTimeout(t0); clearInterval(iv); };
+  return async () => {
+    clearTimeout(t0);
+    clearInterval(iv);
+    await Promise.all([
+      gate.stop(),
+      stopDraftDispatcherWork(),
+    ]);
+  };
 }

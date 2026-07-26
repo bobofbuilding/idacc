@@ -17,7 +17,7 @@ import {
 } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import {
   defaultBrainAutomationSettings,
   normalizeBrainAutomationSettings,
@@ -36,6 +36,13 @@ import {
   prepareManagerRuntimeProfile,
   type ManagerRuntimeProfile,
 } from './runtimeProfile.ts';
+import {
+  createManagedProcessLaunchCoordinator,
+  managedProcessTreeTerminationFailed,
+  retainedManagedProcessTreeLaunchFailure,
+  spawnManagedProcessTree,
+  terminateManagedProcessTree,
+} from './managedProcessTree.ts';
 import { subscriptionRuntimeEnvironment } from './subscriptions.ts';
 import {
   manifestDigestMatches,
@@ -73,6 +80,7 @@ export interface ServiceState {
   identityVerified: boolean;
   phase: ServicePhase;
   pid?: number;
+  supervisorPid?: number;
   version?: string;
   serviceId?: string;
   expectedVersion?: string;
@@ -95,6 +103,7 @@ export interface CompanionState {
   healthy?: boolean;
   phase: CompanionPhase;
   pid?: number;
+  supervisorPid?: number;
   restartCount: number;
   nextStartAt?: string;
   fuseUntil?: string;
@@ -140,11 +149,13 @@ interface ManagedService {
   instanceNonce: string;
   reservation?: PortReservation;
   child?: ChildProcess;
+  actualPid?: number;
+  hostPid?: number;
+  processGroupId?: number;
   log?: WriteStream;
   watchdog?: ReturnType<typeof setInterval>;
   initialProbeTimer?: ReturnType<typeof setTimeout>;
   restartTimer?: ReturnType<typeof setTimeout>;
-  forceKillTimer?: ReturnType<typeof setTimeout>;
   probeInFlight: boolean;
   healthFailures: number;
   restartAttempts: number;
@@ -157,6 +168,7 @@ interface ManagedService {
   lastExit?: string;
   error?: string;
   logError?: string;
+  processTreeCleanupError?: string;
   terminationReason?: string;
   manualRestart: boolean;
 }
@@ -174,10 +186,12 @@ interface ManagedCompanion {
   healthError?: string;
   lastSuccessfulPollAt?: string;
   child?: ChildProcess;
+  actualPid?: number;
+  hostPid?: number;
+  processGroupId?: number;
   log?: WriteStream;
   watchdog?: ReturnType<typeof setInterval>;
   restartTimer?: ReturnType<typeof setTimeout>;
-  forceKillTimer?: ReturnType<typeof setTimeout>;
   restartAttempts: number;
   crashTimes: number[];
   fuseUntil?: number;
@@ -186,6 +200,7 @@ interface ManagedCompanion {
   lastCompletedAt?: number;
   lastExit?: string;
   error?: string;
+  processTreeCleanupError?: string;
   terminationReason?: string;
 }
 
@@ -213,12 +228,18 @@ const FUSE_COOLDOWN_MS = 5 * 60_000;
 const COMPANION_WATCHDOG_MS = 5_000;
 const CYCLE_INITIAL_DELAY_MS = 5 * 60_000;
 const BRAIN_CYCLE_STATE_FILE = 'brain-cycle-state.json';
+const SERVICE_STOP_GRACE_MS = 20_000;
+const COMPANION_STOP_GRACE_MS = 10_000;
 
 const services = new Map<ServiceName, ManagedService>();
 const companions = new Map<CompanionName, ManagedCompanion>();
+const managedLaunches = createManagedProcessLaunchCoordinator();
 let profile: AppProfilePaths | null = null;
 let stopping = false;
+let processTreeShutdownError: string | null = null;
 let startupPromise: Promise<UnifiedStackStatus> | null = null;
+let shutdownPromise: Promise<void> | null = null;
+let shutdownInProgress = false;
 let companionStartPromise: Promise<void> | null = null;
 let stackBrainToken: string | null = null;
 let stackAdminToken: string | null = null;
@@ -242,6 +263,26 @@ function runtimeRoot(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'idacc-runtime')
     : join(app.getAppPath(), 'resources', 'idacc-runtime');
+}
+
+function windowsJobHostPath(): string | undefined {
+  if (process.platform !== 'win32') return undefined;
+  return app.isPackaged
+    ? join(process.resourcesPath, 'app.asar.unpacked', 'out', 'native', 'idacc-job-host.exe')
+    : join(app.getAppPath(), 'out', 'native', 'idacc-job-host.exe');
+}
+
+function managedServiceBootstrapPath(): string | undefined {
+  if (process.platform !== 'win32') return undefined;
+  return app.isPackaged
+    ? join(
+        process.resourcesPath,
+        'app.asar.unpacked',
+        'out',
+        'main',
+        'managed-service-bootstrap.cjs',
+      )
+    : join(app.getAppPath(), 'out', 'main', 'managed-service-bootstrap.cjs');
 }
 
 function errorMessage(error: unknown): string {
@@ -404,6 +445,11 @@ async function createManagedService(
             AGENT_MANAGER_PORT: String(port),
             BRAIN_MCP_COMMAND: resolve(process.execPath),
             BRAIN_MCP_ARGS_JSON: JSON.stringify([resolve(root, 'brain', 'brain-mcp.mjs')]),
+            // The unified consumer contract always ships Brain integration.
+            // Ambient developer/launcher flags must not silently disable the
+            // default attachment or context/control paths for another user.
+            ID_AUTO_ATTACH_BRAIN_MCP: '1',
+            BRAIN_CONTEXT_DISABLED: 'false',
             ...(managerRuntimeProfile ? {
               ID_LIBRARY_ROOT: managerRuntimeProfile.libraryRoot,
               ID_PLUGINS_ROOT: managerRuntimeProfile.pluginsRoot,
@@ -444,15 +490,25 @@ function isChildAlive(service: ManagedService): boolean {
   );
 }
 
+function processTreeTerminationOptions(processGroupId: number | undefined): {
+  detachedProcessGroup?: boolean;
+  ownedProcessGroupId?: number;
+} {
+  return processGroupId === undefined
+    ? {}
+    : {
+        detachedProcessGroup: true,
+        ownedProcessGroupId: processGroupId,
+      };
+}
+
 function clearServiceTimers(service: ManagedService): void {
   if (service.watchdog) clearInterval(service.watchdog);
   if (service.initialProbeTimer) clearTimeout(service.initialProbeTimer);
   if (service.restartTimer) clearTimeout(service.restartTimer);
-  if (service.forceKillTimer) clearTimeout(service.forceKillTimer);
   service.watchdog = undefined;
   service.initialProbeTimer = undefined;
   service.restartTimer = undefined;
-  service.forceKillTimer = undefined;
   service.nextRestartAt = undefined;
 }
 
@@ -480,10 +536,8 @@ function isCompanionAlive(companion: ManagedCompanion): boolean {
 function clearCompanionTimers(companion: ManagedCompanion): void {
   if (companion.watchdog) clearInterval(companion.watchdog);
   if (companion.restartTimer) clearTimeout(companion.restartTimer);
-  if (companion.forceKillTimer) clearTimeout(companion.forceKillTimer);
   companion.watchdog = undefined;
   companion.restartTimer = undefined;
-  companion.forceKillTimer = undefined;
   companion.nextStartAt = undefined;
 }
 
@@ -674,8 +728,7 @@ function refreshBrainListenerStatus(companion: ManagedCompanion): void {
     companion.healthError = 'listener is stopping';
     return;
   }
-  const child = companion.child;
-  const pid = child?.pid;
+  const pid = companion.actualPid;
   if (
     !isCompanionAlive(companion)
     || !Number.isInteger(pid)
@@ -762,25 +815,49 @@ function scheduleCycle(companion: ManagedCompanion, requestedState?: BrainCycleS
   companion.restartTimer.unref?.();
 }
 
-function handleCompanionTermination(
+async function handleCompanionTermination(
   companion: ManagedCompanion,
   child: ChildProcess,
   code: number | null,
   fallbackReason: string,
-): void {
+): Promise<void> {
   if (companion.child !== child) return;
-  companion.child = undefined;
   if (companion.watchdog) clearInterval(companion.watchdog);
-  if (companion.forceKillTimer) clearTimeout(companion.forceKillTimer);
   companion.watchdog = undefined;
-  companion.forceKillTimer = undefined;
+  const processGroupId = companion.processGroupId;
+  const requestedWindowsTreeKill = process.platform === 'win32';
+  let processTreeError: string | undefined;
+  if (processGroupId !== undefined || requestedWindowsTreeKill) {
+    const result = await terminateManagedProcessTree(
+      child,
+      () => companion.child === child
+        && (processGroupId === undefined || companion.processGroupId === processGroupId),
+      processTreeTerminationOptions(processGroupId),
+    );
+    if (managedProcessTreeTerminationFailed(result, true)) {
+      processTreeError = result.error || (processGroupId === undefined
+        ? 'managed Windows process tree did not exit'
+        : `managed process group ${processGroupId} did not exit`);
+    }
+  }
+  if (companion.child !== child) return;
+  companion.processTreeCleanupError = processTreeError;
+  if (!processTreeError) {
+    companion.child = undefined;
+    companion.actualPid = undefined;
+    companion.hostPid = undefined;
+    companion.processGroupId = undefined;
+  }
   closeCompanionLog(companion, child);
 
   const now = Date.now();
-  const reason = companion.terminationReason || fallbackReason;
+  const baseReason = companion.terminationReason || fallbackReason;
+  const reason = processTreeError
+    ? `${baseReason}; process-tree cleanup failed: ${processTreeError}`
+    : baseReason;
   companion.terminationReason = undefined;
   companion.lastExit = `${new Date(now).toISOString()} — ${reason}`;
-  companion.error = code === 0 ? undefined : reason;
+  companion.error = code === 0 && !processTreeError ? undefined : reason;
   if (companion.name === 'brain-listener') {
     companion.statusHealthy = false;
     companion.healthError = 'listener process is not running';
@@ -793,8 +870,8 @@ function handleCompanionTermination(
       cadenceMs: cycleCadenceMs(),
       nextRunAt: now + cycleCadenceMs(),
       lastStartedAt: companion.lastStartedAt,
-      lastCompletedAt: code === 0 ? now : state.lastCompletedAt,
-      lastExitCode: code ?? undefined,
+      lastCompletedAt: code === 0 && !processTreeError ? now : state.lastCompletedAt,
+      lastExitCode: processTreeError ? 1 : code ?? undefined,
     };
     try { writeCycleState(state); } catch (error) {
       companion.error = `could not persist Brain cycle state: ${errorMessage(error)}`;
@@ -804,12 +881,20 @@ function handleCompanionTermination(
       companion.phase = companion.enabled ? 'stopped' : 'disabled';
       return;
     }
+    if (processTreeError) {
+      companion.phase = 'unhealthy';
+      return;
+    }
     scheduleCycle(companion, state);
     return;
   }
 
   if (stopping) {
     companion.phase = 'stopped';
+    return;
+  }
+  if (processTreeError) {
+    companion.phase = 'unhealthy';
     return;
   }
   companion.restartAttempts += 1;
@@ -823,11 +908,13 @@ function handleCompanionTermination(
   scheduleContinuousCompanion(companion, restartDelayMs(companion.restartAttempts), false);
 }
 
-async function launchCompanion(companion: ManagedCompanion): Promise<void> {
+async function launchCompanionOnce(companion: ManagedCompanion): Promise<void> {
   if (
     stopping
     || !companion.enabled
     || isCompanionAlive(companion)
+    || companion.child !== undefined
+    || companion.processTreeCleanupError !== undefined
     || !profile
     || !coreServicesReady()
   ) return;
@@ -885,14 +972,35 @@ async function launchCompanion(companion: ManagedCompanion): Promise<void> {
   });
 
   let child: ChildProcess;
+  let actualPid: number;
+  let hostPid: number;
+  let processGroupId: number | undefined;
   try {
-    child = spawn(process.execPath, [companion.entry], {
+    const launched = await spawnManagedProcessTree(process.execPath, [companion.entry], {
       cwd: companion.cwd,
       env: companionEnvironment(companion),
-      stdio: ['ignore', 'pipe', 'pipe'],
+      graceMs: COMPANION_STOP_GRACE_MS,
+      jobHostPath: windowsJobHostPath(),
+      bootstrapPath: managedServiceBootstrapPath(),
     });
+    child = launched.child;
+    actualPid = launched.actualPid;
+    hostPid = launched.hostPid;
+    processGroupId = launched.processGroupId;
   } catch (error) {
     closeCompanionLog(companion);
+    const retained = retainedManagedProcessTreeLaunchFailure(error);
+    if (retained) {
+      companion.child = retained.child;
+      companion.actualPid = retained.actualPid;
+      companion.hostPid = retained.hostPid;
+      companion.processGroupId = undefined;
+      companion.processTreeCleanupError = retained.cleanupError;
+      companion.phase = 'unhealthy';
+      companion.error =
+        `could not spawn companion: ${errorMessage(error)}; replacement is blocked`;
+      return;
+    }
     companion.error = `could not spawn companion: ${errorMessage(error)}`;
     if (companion.continuous) {
       companion.restartAttempts += 1;
@@ -904,6 +1012,10 @@ async function launchCompanion(companion: ManagedCompanion): Promise<void> {
   }
 
   companion.child = child;
+  companion.actualPid = actualPid;
+  companion.hostPid = hostPid;
+  companion.processGroupId = processGroupId;
+  companion.processTreeCleanupError = undefined;
   companion.phase = companion.continuous ? 'starting' : 'running';
   if (companion.continuous) companion.lastStartedAt = Date.now();
   companion.error = undefined;
@@ -913,7 +1025,7 @@ async function launchCompanion(companion: ManagedCompanion): Promise<void> {
   const terminal = (code: number | null, reason: string) => {
     if (terminalHandled) return;
     terminalHandled = true;
-    handleCompanionTermination(companion, child, code, reason);
+    void handleCompanionTermination(companion, child, code, reason);
   };
   child.once('error', (error) => terminal(null, `spawn error: ${errorMessage(error)}`));
   child.once('exit', (code, signal) => terminal(
@@ -928,6 +1040,10 @@ async function launchCompanion(companion: ManagedCompanion): Promise<void> {
     }
   }, COMPANION_WATCHDOG_MS);
   companion.watchdog.unref?.();
+}
+
+function launchCompanion(companion: ManagedCompanion): Promise<void> {
+  return managedLaunches.run(companion, () => launchCompanionOnce(companion));
 }
 
 async function probeBrainSkillCatalog(): Promise<void> {
@@ -1112,19 +1228,22 @@ function rotateActiveLog(service: ManagedService): void {
   }
 }
 
-function terminateUnhealthyService(service: ManagedService, reason: string): void {
+async function terminateUnhealthyService(service: ManagedService, reason: string): Promise<void> {
   const child = service.child;
   if (!child || !isChildAlive(service)) return;
   service.terminationReason = reason;
   service.phase = 'unhealthy';
   service.error = reason;
-  try { child.kill('SIGTERM'); } catch { /* force timer below is the fallback */ }
-  service.forceKillTimer = setTimeout(() => {
-    if (service.child === child && isChildAlive(service)) {
-      try { child.kill('SIGKILL'); } catch { /* process is already gone */ }
-    }
-  }, 4_000);
-  service.forceKillTimer.unref?.();
+  const processGroupId = service.processGroupId;
+  const result = await terminateManagedProcessTree(
+    child,
+    () => service.child === child && service.processGroupId === processGroupId,
+    processTreeTerminationOptions(processGroupId),
+  );
+  const treeKillRequired = process.platform === 'win32' || processGroupId !== undefined;
+  if (managedProcessTreeTerminationFailed(result, treeKillRequired) && service.child === child) {
+    service.error = `${reason}; process-tree termination failed${result.error ? `: ${result.error}` : ''}`;
+  }
 }
 
 async function watchdogTick(service: ManagedService, child: ChildProcess): Promise<void> {
@@ -1156,7 +1275,7 @@ async function watchdogTick(service: ManagedService, child: ChildProcess): Promi
     service.healthFailures += 1;
     service.phase = 'unhealthy';
     if (service.healthFailures >= HEALTH_FAILURE_LIMIT) {
-      terminateUnhealthyService(
+      await terminateUnhealthyService(
         service,
         `health watchdog restarted ${service.spec.name} after ${service.healthFailures} consecutive failures`,
       );
@@ -1189,23 +1308,47 @@ function scheduleLaunch(service: ManagedService, delayMs: number, fused: boolean
   service.restartTimer.unref?.();
 }
 
-function handleServiceTermination(
+async function handleServiceTermination(
   service: ManagedService,
   child: ChildProcess,
   fallbackReason: string,
-): void {
+): Promise<void> {
   if (service.child !== child) return;
-  service.child = undefined;
   if (service.watchdog) clearInterval(service.watchdog);
   if (service.initialProbeTimer) clearTimeout(service.initialProbeTimer);
-  if (service.forceKillTimer) clearTimeout(service.forceKillTimer);
   service.watchdog = undefined;
   service.initialProbeTimer = undefined;
-  service.forceKillTimer = undefined;
+  const processGroupId = service.processGroupId;
+  const requestedWindowsTreeKill = process.platform === 'win32';
+  let processTreeError: string | undefined;
+  if (processGroupId !== undefined || requestedWindowsTreeKill) {
+    const result = await terminateManagedProcessTree(
+      child,
+      () => service.child === child
+        && (processGroupId === undefined || service.processGroupId === processGroupId),
+      processTreeTerminationOptions(processGroupId),
+    );
+    if (managedProcessTreeTerminationFailed(result, true)) {
+      processTreeError = result.error || (processGroupId === undefined
+        ? 'managed Windows process tree did not exit'
+        : `managed process group ${processGroupId} did not exit`);
+    }
+  }
+  if (service.child !== child) return;
+  service.processTreeCleanupError = processTreeError;
+  if (!processTreeError) {
+    service.child = undefined;
+    service.actualPid = undefined;
+    service.hostPid = undefined;
+    service.processGroupId = undefined;
+  }
   closeServiceLog(service, child);
 
   const now = Date.now();
-  const reason = service.terminationReason || fallbackReason;
+  const baseReason = service.terminationReason || fallbackReason;
+  const reason = processTreeError
+    ? `${baseReason}; process-tree cleanup failed: ${processTreeError}`
+    : baseReason;
   const manualRestart = service.manualRestart;
   service.terminationReason = undefined;
   service.manualRestart = false;
@@ -1217,6 +1360,10 @@ function handleServiceTermination(
 
   if (stopping) {
     service.phase = 'stopped';
+    return;
+  }
+  if (processTreeError) {
+    service.phase = 'unhealthy';
     return;
   }
   if (manualRestart) {
@@ -1243,8 +1390,13 @@ function handleServiceTermination(
   scheduleLaunch(service, restartDelayMs(service.restartAttempts), false);
 }
 
-async function launchService(service: ManagedService): Promise<void> {
-  if (stopping || isChildAlive(service)) return;
+async function launchServiceOnce(service: ManagedService): Promise<void> {
+  if (
+    stopping
+    || isChildAlive(service)
+    || service.child !== undefined
+    || service.processTreeCleanupError !== undefined
+  ) return;
   if (service.restartTimer) clearTimeout(service.restartTimer);
   service.restartTimer = undefined;
   service.nextRestartAt = undefined;
@@ -1319,14 +1471,35 @@ async function launchService(service: ManagedService): Promise<void> {
   }
 
   let child: ChildProcess;
+  let actualPid: number;
+  let hostPid: number;
+  let processGroupId: number | undefined;
   try {
-    child = spawn(process.execPath, [service.spec.entry], {
+    const launched = await spawnManagedProcessTree(process.execPath, [service.spec.entry], {
       cwd: service.spec.cwd,
       env: childEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      graceMs: SERVICE_STOP_GRACE_MS,
+      jobHostPath: windowsJobHostPath(),
+      bootstrapPath: managedServiceBootstrapPath(),
     });
+    child = launched.child;
+    actualPid = launched.actualPid;
+    hostPid = launched.hostPid;
+    processGroupId = launched.processGroupId;
   } catch (error) {
     closeServiceLog(service);
+    const retained = retainedManagedProcessTreeLaunchFailure(error);
+    if (retained) {
+      service.child = retained.child;
+      service.actualPid = retained.actualPid;
+      service.hostPid = retained.hostPid;
+      service.processGroupId = undefined;
+      service.processTreeCleanupError = retained.cleanupError;
+      service.phase = 'unhealthy';
+      service.error =
+        `could not spawn service: ${errorMessage(error)}; replacement is blocked`;
+      return;
+    }
     service.error = `could not spawn service: ${errorMessage(error)}`;
     service.restartAttempts += 1;
     service.crashTimes = recentCrashes([...service.crashTimes, Date.now()], Date.now(), CRASH_WINDOW_MS);
@@ -1335,6 +1508,10 @@ async function launchService(service: ManagedService): Promise<void> {
   }
 
   service.child = child;
+  service.actualPid = actualPid;
+  service.hostPid = hostPid;
+  service.processGroupId = processGroupId;
+  service.processTreeCleanupError = undefined;
   service.phase = 'starting';
   service.lastStartedAt = Date.now();
   service.lastHealth = failedHealth('service is starting');
@@ -1348,7 +1525,7 @@ async function launchService(service: ManagedService): Promise<void> {
   const terminal = (reason: string) => {
     if (terminalHandled) return;
     terminalHandled = true;
-    handleServiceTermination(service, child, reason);
+    void handleServiceTermination(service, child, reason);
   };
   child.once('error', (error) => terminal(`spawn error: ${errorMessage(error)}`));
   child.once('exit', (code, signal) => terminal(
@@ -1364,8 +1541,21 @@ async function launchService(service: ManagedService): Promise<void> {
   service.initialProbeTimer.unref?.();
 }
 
+function launchService(service: ManagedService): Promise<void> {
+  return managedLaunches.run(service, () => launchServiceOnce(service));
+}
+
 async function startUnifiedStackInternal(paths: AppProfilePaths): Promise<UnifiedStackStatus> {
+  if (shutdownInProgress) {
+    throw new Error('cannot start the unified stack while shutdown is still in progress');
+  }
   if (services.size && !stopping) return unifiedStackStatus();
+  if (processTreeShutdownError) {
+    throw new Error(
+      `cannot start the unified stack while prior process-tree shutdown is unconfirmed: ${processTreeShutdownError}`,
+    );
+  }
+  shutdownPromise = null;
   services.clear();
   companions.clear();
   profile = paths;
@@ -1510,61 +1700,145 @@ export async function configureUnifiedBrainAutomation(
   return unifiedStackStatus();
 }
 
-function waitForChildExit(child: ChildProcess): Promise<void> {
-  return new Promise((resolve) => {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      resolve();
-      return;
-    }
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(force);
-      clearTimeout(giveUp);
-      resolve();
-    };
-    child.once('exit', finish);
-    child.once('error', finish);
-    const force = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch { /* process is already gone */ }
-    }, 4_000);
-    const giveUp = setTimeout(finish, 5_000);
-    force.unref?.();
-    giveUp.unref?.();
-    try { child.kill('SIGTERM'); } catch { finish(); }
-  });
-}
-
-export async function stopUnifiedStack(): Promise<void> {
+async function stopUnifiedStackOnce(): Promise<void> {
   stopping = true;
-  const active: ChildProcess[] = [];
+  // A launch may already be waiting on the Windows Job Host handshake (or a
+  // POSIX spawn microtask). Drain it before taking the owned-child snapshot.
+  // Per-owner single flight also prevents two overlapping launches from
+  // replacing the one retained child handle.
+  await managedLaunches.drain();
+  const retainedTerminationFailures: Array<{ label: string; error: string }> = [];
+  const active: Array<{
+    child: ChildProcess;
+    ownsChild: () => boolean;
+    label: string;
+    processGroupId?: number;
+    treeKillRequired: boolean;
+  }> = [];
   for (const companion of companions.values()) {
     clearCompanionTimers(companion);
     companion.phase = 'stopping';
     companion.terminationReason = 'application shutdown';
-    if (companion.child && isCompanionAlive(companion)) active.push(companion.child);
+    if (
+      companion.processTreeCleanupError
+      && (
+        !companion.child
+        || (
+          process.platform !== 'win32'
+          && !isCompanionAlive(companion)
+          && companion.processGroupId === undefined
+        )
+      )
+    ) {
+      retainedTerminationFailures.push({
+        label: companion.name,
+        error: companion.processTreeCleanupError,
+      });
+    }
+    if (
+      companion.child
+      && (
+        isCompanionAlive(companion)
+        || companion.processGroupId !== undefined
+        || process.platform === 'win32'
+      )
+    ) {
+      const child = companion.child;
+      const processGroupId = companion.processGroupId;
+      active.push({
+        child,
+        ownsChild: () => companion.child === child && companion.processGroupId === processGroupId,
+        label: companion.name,
+        processGroupId,
+        treeKillRequired: process.platform === 'win32' || processGroupId !== undefined,
+      });
+    }
   }
   for (const service of services.values()) {
     clearServiceTimers(service);
     service.phase = 'stopping';
     service.terminationReason = 'application shutdown';
+    if (
+      service.processTreeCleanupError
+      && (
+        !service.child
+        || (
+          process.platform !== 'win32'
+          && !isChildAlive(service)
+          && service.processGroupId === undefined
+        )
+      )
+    ) {
+      retainedTerminationFailures.push({
+        label: service.spec.name,
+        error: service.processTreeCleanupError,
+      });
+    }
     if (service.reservation) {
       const reservation = service.reservation;
       service.reservation = undefined;
       await reservation.release();
     }
-    if (service.child && isChildAlive(service)) active.push(service.child);
+    if (
+      service.child
+      && (
+        isChildAlive(service)
+        || service.processGroupId !== undefined
+        || process.platform === 'win32'
+      )
+    ) {
+      const child = service.child;
+      const processGroupId = service.processGroupId;
+      active.push({
+        child,
+        ownsChild: () => service.child === child && service.processGroupId === processGroupId,
+        label: service.spec.name,
+        processGroupId,
+        treeKillRequired: process.platform === 'win32' || processGroupId !== undefined,
+      });
+    }
   }
-  await Promise.all(active.map(waitForChildExit));
+  const terminationResults = await Promise.all(active.map(async (entry) => ({
+    label: entry.label,
+    treeKillRequired: entry.treeKillRequired,
+    result: await terminateManagedProcessTree(
+      entry.child,
+      entry.ownsChild,
+      processTreeTerminationOptions(entry.processGroupId),
+    ),
+  })));
+  const terminationFailures = terminationResults.filter(
+    ({ result, treeKillRequired }) => managedProcessTreeTerminationFailed(result, treeKillRequired),
+  );
+  const terminationFailureByLabel = new Map<string, string>([
+    ...terminationFailures.map(({ label, result }) => [
+      label,
+      result.error || 'managed process-tree termination could not be confirmed',
+    ] as const),
+    ...retainedTerminationFailures.map(({ label, error }) => [label, error] as const),
+  ]);
   for (const companion of companions.values()) {
     if (companion.child) closeCompanionLog(companion, companion.child);
-    companion.child = undefined;
+    const terminationError = terminationFailureByLabel.get(companion.name);
+    companion.processTreeCleanupError = terminationError;
+    if (!terminationError) {
+      companion.child = undefined;
+      companion.actualPid = undefined;
+      companion.hostPid = undefined;
+      companion.processGroupId = undefined;
+    }
     companion.phase = companion.enabled ? 'stopped' : 'disabled';
   }
   for (const service of services.values()) {
     if (service.child) closeServiceLog(service, service.child);
-    service.child = undefined;
+    const terminationError = terminationFailureByLabel.get(service.spec.name);
+    service.processTreeCleanupError = terminationError;
+    if (!terminationError) {
+      service.child = undefined;
+      service.actualPid = undefined;
+      service.hostPid = undefined;
+      service.processGroupId = undefined;
+    }
     service.phase = 'stopped';
   }
   stackBrainToken = null;
@@ -1575,6 +1849,36 @@ export async function stopUnifiedStack(): Promise<void> {
     error: 'Manager compatibility has not been checked',
   };
   managerCompatibilityLastCheckedAt = 0;
+  if (terminationFailures.length || retainedTerminationFailures.length) {
+    processTreeShutdownError = [
+        ...terminationFailures.map(({ label, result }) => ({
+          label,
+          error: result.error,
+        })),
+        ...retainedTerminationFailures,
+      ]
+        .map(({ label, error }) => `${label}${error ? ` (${error})` : ''}`)
+        .join(', ');
+    throw new Error(`managed process-tree shutdown failed for ${processTreeShutdownError}`);
+  }
+  processTreeShutdownError = null;
+}
+
+export function stopUnifiedStack(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownInProgress = true;
+  const attempt = stopUnifiedStackOnce();
+  shutdownPromise = attempt;
+  void attempt.then(
+    () => {
+      shutdownInProgress = false;
+    },
+    () => {
+      shutdownInProgress = false;
+      if (shutdownPromise === attempt) shutdownPromise = null;
+    },
+  );
+  return attempt;
 }
 
 export async function restartUnifiedStackService(name: ServiceName): Promise<UnifiedStackStatus> {
@@ -1587,10 +1891,15 @@ export async function restartUnifiedStackService(name: ServiceName): Promise<Uni
   service.fuseUntil = undefined;
   service.restartAttempts = 0;
   service.crashTimes = [];
+  if (service.processTreeCleanupError) {
+    throw new Error(
+      `cannot restart ${name} while its prior process tree is unconfirmed: ${service.processTreeCleanupError}`,
+    );
+  }
   if (isChildAlive(service) && service.child) {
     service.manualRestart = true;
     service.terminationReason = 'manual restart';
-    terminateUnhealthyService(service, 'manual restart');
+    await terminateUnhealthyService(service, 'manual restart');
   } else {
     await launchService(service);
   }
@@ -1610,7 +1919,7 @@ export interface UnifiedStackStatus {
 
 function publicServiceState(service: ManagedService): ServiceState {
   const health = service.lastHealth ?? failedHealth('health has not been checked');
-  const running = isChildAlive(service);
+  const running = isChildAlive(service) && service.processTreeCleanupError === undefined;
   return {
     name: service.spec.name,
     url: service.spec.url,
@@ -1620,7 +1929,10 @@ function publicServiceState(service: ManagedService): ServiceState {
     identity: health.identity,
     identityVerified: health.identityVerified,
     phase: service.phase,
-    pid: running ? service.child?.pid : undefined,
+    pid: running ? service.actualPid : undefined,
+    supervisorPid: running && service.hostPid !== service.actualPid
+      ? service.hostPid
+      : undefined,
     version: service.spec.expectedVersion,
     serviceId: service.spec.serviceId,
     expectedVersion: service.spec.expectedVersion,
@@ -1638,7 +1950,8 @@ function publicServiceState(service: ManagedService): ServiceState {
 }
 
 function publicCompanionState(companion: ManagedCompanion): CompanionState {
-  const running = isCompanionAlive(companion);
+  const running =
+    isCompanionAlive(companion) && companion.processTreeCleanupError === undefined;
   return {
     name: companion.name,
     enabled: companion.enabled,
@@ -1647,7 +1960,10 @@ function publicCompanionState(companion: ManagedCompanion): CompanionState {
       healthy: running && companion.statusHealthy === true,
     } : {}),
     phase: companion.phase,
-    pid: running ? companion.child?.pid : undefined,
+    pid: running ? companion.actualPid : undefined,
+    supervisorPid: running && companion.hostPid !== companion.actualPid
+      ? companion.hostPid
+      : undefined,
     restartCount: companion.restartAttempts,
     nextStartAt: companion.nextStartAt ? new Date(companion.nextStartAt).toISOString() : undefined,
     fuseUntil: companion.fuseUntil ? new Date(companion.fuseUntil).toISOString() : undefined,

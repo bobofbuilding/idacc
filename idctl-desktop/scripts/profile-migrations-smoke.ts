@@ -931,6 +931,14 @@ try {
       'helper-host-error',
     ],
     [
+      'embedded native helper',
+      () => ({
+        status: 1,
+        stdout: 'IDACC_WINDOWS_PROFILE_ACL_FAILED:load-native',
+      }),
+      'load-native',
+    ],
+    [
       'missing marker',
       () => ({ status: 1 }),
       'helper-no-marker',
@@ -975,6 +983,11 @@ try {
   assert.doesNotMatch(privacySource, /'-Command',\s*'-'/);
   assert.match(privacySource, /'-Command',\s*WINDOWS_PROFILE_ACL_BOOTSTRAP/);
   assert.match(privacySource, /input:\s*WINDOWS_PROFILE_ACL_SCRIPT/);
+  assert.match(WINDOWS_PROFILE_ACL_SCRIPT, /\$nativeBundleMode = 'raw-source'/);
+  assert.match(
+    WINDOWS_PROFILE_ACL_SCRIPT,
+    /\$nativeBundleMode -eq 'raw-source'[\s\S]*Add-Type -TypeDefinition/,
+  );
   assert.match(WINDOWS_PROFILE_ACL_BOOTSTRAP, /Console\]::In\.ReadToEnd\(\)/);
   assert.match(
     WINDOWS_PROFILE_ACL_BOOTSTRAP,
@@ -1331,6 +1344,151 @@ try {
   assert.equal(second.appliedMigrations.length, 5);
   assert.match(readFileSync(profile.config, 'utf8'), /custom/);
   assert.doesNotMatch(readFileSync(join(profile.root, 'config', 'agent-signers.json'), 'utf8'), /changed/);
+
+  // A stopped v1 import may leave only its private staging directory. The
+  // uncommitted schema-0 marker makes the next launch rebuild and atomically
+  // publish that directory. A genuinely preexisting destination remains
+  // wholly authoritative and must receive no legacy descendants.
+  const interruptedLegacy = join(temp, 'interrupted-legacy');
+  const interruptedProfile = paths(join(temp, 'interrupted-profile'));
+  mkdirSync(join(interruptedLegacy, 'goals', 'nested'), { recursive: true });
+  writeFileSync(
+    join(interruptedLegacy, 'goals', 'existing.json'),
+    '{"owner":"legacy"}\n',
+  );
+  writeFileSync(
+    join(interruptedLegacy, 'goals', 'missing.json'),
+    '{"owner":"legacy","state":"must-not-enter-existing-destination"}\n',
+  );
+  writeFileSync(
+    join(interruptedLegacy, 'goals', 'nested', 'existing.txt'),
+    'legacy nested collision\n',
+  );
+  writeFileSync(
+    join(interruptedLegacy, 'goals', 'nested', 'missing.txt'),
+    'legacy nested must not enter existing destination\n',
+  );
+  mkdirSync(join(interruptedLegacy, 'plans', 'nested'), { recursive: true });
+  writeFileSync(
+    join(interruptedLegacy, 'plans', 'already-staged.json'),
+    '{"owner":"legacy","state":"staged-before-crash"}\n',
+  );
+  writeFileSync(
+    join(interruptedLegacy, 'plans', 'missing.json'),
+    '{"owner":"legacy","state":"completed-on-retry"}\n',
+  );
+  writeFileSync(
+    join(interruptedLegacy, 'plans', 'nested', 'missing.txt'),
+    'legacy nested completed on retry\n',
+  );
+
+  const interruptedGoals = join(
+    interruptedProfile.root,
+    'config',
+    'goals',
+  );
+  mkdirSync(join(interruptedGoals, 'nested'), { recursive: true });
+  writeFileSync(
+    join(interruptedGoals, 'existing.json'),
+    '{"owner":"consumer"}\n',
+  );
+  writeFileSync(
+    join(interruptedGoals, 'consumer-only.json'),
+    '{"owner":"consumer","source":"new-profile"}\n',
+  );
+  writeFileSync(
+    join(interruptedGoals, 'nested', 'existing.txt'),
+    'consumer nested collision\n',
+  );
+  const interruptedPlansStaging = join(
+    interruptedProfile.root,
+    'config',
+    '.plans.import-legacy-idctl-profile.staging',
+  );
+  mkdirSync(interruptedPlansStaging, { recursive: true });
+  writeFileSync(
+    join(interruptedPlansStaging, 'already-staged.json'),
+    '{"owner":"legacy","state":"staged-before-crash"}\n',
+  );
+  writeFileSync(
+    join(interruptedProfile.root, 'profile.json'),
+    JSON.stringify({
+      schemaVersion: 0,
+      profile: 'default',
+      createdAt: '2026-07-26T00:00:00.000Z',
+      updatedAt: '2026-07-26T00:00:01.000Z',
+      migratedFrom: interruptedLegacy,
+      appliedMigrations: [],
+      failedMigration: {
+        version: 1,
+        id: 'import-legacy-idctl-profile',
+        failedAt: '2026-07-26T00:00:01.000Z',
+        error: 'simulated process interruption',
+      },
+    }) + '\n',
+  );
+
+  const resumedInterrupted = migrateAppProfile(interruptedProfile, {
+    profileName: 'default',
+    legacyConfigDir: interruptedLegacy,
+  });
+  assert.equal(resumedInterrupted.schemaVersion, PROFILE_SCHEMA_VERSION);
+  assert.equal(resumedInterrupted.failedMigration, undefined);
+  assert.equal(
+    readFileSync(join(interruptedGoals, 'existing.json'), 'utf8'),
+    '{"owner":"consumer"}\n',
+    'retry must not overwrite a destination file that already won the import race',
+  );
+  assert.equal(
+    readFileSync(join(interruptedGoals, 'consumer-only.json'), 'utf8'),
+    '{"owner":"consumer","source":"new-profile"}\n',
+    'retry must retain destination-only consumer data',
+  );
+  assert.equal(
+    existsSync(join(interruptedGoals, 'missing.json')),
+    false,
+    'a preexisting destination must not gain a missing legacy descendant',
+  );
+  assert.equal(
+    readFileSync(join(interruptedGoals, 'nested', 'existing.txt'), 'utf8'),
+    'consumer nested collision\n',
+    'retry must preserve an existing nested destination file',
+  );
+  assert.equal(
+    existsSync(join(interruptedGoals, 'nested', 'missing.txt')),
+    false,
+    'a preexisting destination must not gain a missing nested legacy descendant',
+  );
+  const interruptedPlans = join(
+    interruptedProfile.root,
+    'config',
+    'plans',
+  );
+  assert.equal(
+    readFileSync(join(interruptedPlans, 'already-staged.json'), 'utf8'),
+    '{"owner":"legacy","state":"staged-before-crash"}\n',
+    'retry must republish a complete copy after an interrupted staging attempt',
+  );
+  assert.equal(
+    readFileSync(join(interruptedPlans, 'missing.json'), 'utf8'),
+    '{"owner":"legacy","state":"completed-on-retry"}\n',
+    'retry must complete a missing top-level staged descendant',
+  );
+  assert.equal(
+    readFileSync(join(interruptedPlans, 'nested', 'missing.txt'), 'utf8'),
+    'legacy nested completed on retry\n',
+    'retry must complete a missing nested staged descendant',
+  );
+  assert.equal(
+    existsSync(interruptedPlansStaging),
+    false,
+    'successful publication must not leave migration staging behind',
+  );
+  assert.equal(
+    readFileSync(join(interruptedLegacy, 'goals', 'missing.json'), 'utf8'),
+    '{"owner":"legacy","state":"must-not-enter-existing-destination"}\n',
+    'recovery must retain the legacy rollback source',
+  );
 
   // Named and explicitly isolated profiles never inherit another profile's
   // goals, config, or former app-global signer vault.

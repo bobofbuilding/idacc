@@ -69,7 +69,9 @@ try {
     /function loadAgentTokens\(\): void \{\s*[\s\S]*?agentTokens\.clear\(\);/,
     'loading a profile token store must replace rather than merge the bearer map',
   );
-  const stopSource = brokerSource.slice(brokerSource.indexOf('export function stopBroker()'));
+  const stopSource = brokerSource.slice(
+    brokerSource.indexOf('export function stopBroker(): Promise<void>'),
+  );
   assert.match(stopSource, /agentTokens\.clear\(\)/);
   assert.match(stopSource, /resetComputerUseAuditProfileState\(\)/);
 } finally {

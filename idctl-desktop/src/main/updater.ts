@@ -48,6 +48,8 @@ let focusHandler: (() => void) | null = null;
 let eventsBound = false;
 let lastFocusCheck = 0;
 let lastNotifiedVersion: string | null = null;
+let stagedInstallPrepared = false;
+let activeUpdateCheck: Promise<UpdateStatus> | null = null;
 
 /** Numeric semver compare: prerelease labels are treated as lower than release. */
 export function compareVersions(a: string, b: string): number {
@@ -250,7 +252,7 @@ export function getStatus(): UpdateStatus {
 }
 
 /** Check signed release metadata and optionally download its exact platform asset. */
-export async function checkForUpdate(): Promise<UpdateStatus> {
+async function checkForUpdateInternal(): Promise<UpdateStatus> {
   const readiness = updateTargetReadiness();
   if (!readiness.ok) {
     updateUnavailable(readiness);
@@ -294,12 +296,29 @@ export async function checkForUpdate(): Promise<UpdateStatus> {
   return { ...status };
 }
 
+export function checkForUpdate(): Promise<UpdateStatus> {
+  if (activeUpdateCheck) return activeUpdateCheck;
+  const check = checkForUpdateInternal();
+  activeUpdateCheck = check;
+  void check.then(
+    () => { if (activeUpdateCheck === check) activeUpdateCheck = null; },
+    () => { if (activeUpdateCheck === check) activeUpdateCheck = null; },
+  );
+  return check;
+}
+
+export async function drainUpdater(): Promise<void> {
+  const check = activeUpdateCheck;
+  if (!check) return;
+  await check.then(() => undefined, () => undefined);
+}
+
 /**
  * Install only an update that electron-updater has fully downloaded and
  * verified. The updater owns the platform-specific atomic replacement and
  * rollback behavior.
  */
-export function applyStagedAndRelaunch(): boolean {
+export function prepareStagedUpdateInstall(): boolean {
   const readiness = updateTargetReadiness();
   if (!readiness.ok) {
     updateUnavailable(readiness);
@@ -307,8 +326,21 @@ export function applyStagedAndRelaunch(): boolean {
     return false;
   }
   if (!status.staged) return false;
-  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+  stagedInstallPrepared = true;
   return true;
+}
+
+/**
+ * Hand the already-verified update to electron-updater. The application
+ * shutdown coordinator is the only caller and invokes this after local
+ * services and background work have stopped.
+ */
+export function installPreparedUpdateAndQuit(): void {
+  if (!stagedInstallPrepared || !status.staged) {
+    throw new Error('No verified update is prepared for installation.');
+  }
+  stagedInstallPrepared = false;
+  autoUpdater.quitAndInstall(false, true);
 }
 
 export function startUpdater(win: BrowserWindow): void {

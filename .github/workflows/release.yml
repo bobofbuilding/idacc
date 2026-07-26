@@ -259,6 +259,8 @@ jobs:
         run: |
           npm run typecheck --prefix idctl-desktop
           npm run build:integration --prefix idctl-desktop
+          npm run test:app-shutdown --prefix idctl-desktop
+          npm run test:computer-use-shutdown --prefix idctl-desktop
           npm run test:dashboard-command-surface --prefix idctl-desktop
           npm run test:dashboard-coordination --prefix idctl-desktop
           npm run test:dashboard-activity-filter --prefix idctl-desktop
@@ -292,6 +294,7 @@ jobs:
           npm run test:goals-plan-separation --prefix idctl-desktop
           npm run test:dream-view-polish --prefix idctl-desktop
           npm run test:consumer-onboarding --prefix idctl-desktop
+          npm run test:consumer-onboarding-integration --prefix idctl-desktop
           npm run test:unified-stack-policy --prefix idctl-desktop
           npm run test:unified-runtime-contract --prefix idctl-desktop
           xvfb-run -a npm run test:unified-stack-integration --prefix idctl-desktop
@@ -592,6 +595,22 @@ jobs:
           npm audit --prefix idctl-desktop/resources/idacc-runtime/manager --omit=dev --audit-level=high
           npm audit --prefix idctl-desktop/resources/idacc-runtime/brain --omit=dev --audit-level=high
 
+      - name: Build and exercise unsigned Windows native helpers
+        if: matrix.platform == 'win'
+        shell: bash
+        working-directory: idctl-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_LINK: ""
+          CSC_KEY_PASSWORD: ""
+          WIN_CSC_LINK: ""
+          WIN_CSC_KEY_PASSWORD: ""
+          WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ""
+        run: |
+          npm run build
+          npm run test:windows-job-host
+          npm run test:windows-profile-native-build
+
       - name: Prepare Apple notarization key
         id: apple-key
         if: matrix.platform == 'mac'
@@ -708,11 +727,15 @@ jobs:
           WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ${{ secrets.WINDOWS_EXPECTED_PUBLISHER_SUBJECT }}
         run: |
           $app = "idctl-desktop/release/${{ matrix.unpacked }}/ID Agents Control Center.exe"
+          $jobHost = "idctl-desktop/release/${{ matrix.unpacked }}/resources/app.asar.unpacked/out/native/idacc-job-host.exe"
+          $bootstrap = "idctl-desktop/release/${{ matrix.unpacked }}/resources/app.asar.unpacked/out/main/managed-service-bootstrap.cjs"
           $installer = Get-ChildItem "idctl-desktop/release/*.exe" | Where-Object { $_.FullName -ne (Resolve-Path $app) } | Select-Object -First 1
           if (-not (Test-Path $app)) { throw "Packaged application executable is missing" }
+          if (-not (Test-Path $jobHost)) { throw "Packaged Windows Job Host is missing" }
+          if (-not (Test-Path $bootstrap)) { throw "Packaged managed-service bootstrap is missing" }
           if (-not $installer) { throw "NSIS installer is missing" }
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_EXPECTED_PUBLISHER_SUBJECT)) { throw "WINDOWS_EXPECTED_PUBLISHER_SUBJECT is required" }
-          foreach ($file in @($app, $installer.FullName)) {
+          foreach ($file in @($app, $installer.FullName, $jobHost)) {
             $signature = Get-AuthenticodeSignature $file
             if ($signature.Status -ne "Valid") {
               throw "Invalid Authenticode signature for $file`: $($signature.StatusMessage)"

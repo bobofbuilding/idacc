@@ -200,9 +200,3 @@ export async function openPermissionSettings(which: CuPermissionPane): Promise<v
   const url = `x-apple.systempreferences:com.apple.preference.security?${panes[which]}`;
   await shell.openExternal(url);
 }
-
-/** Relaunch the app (Screen Recording grants only take effect after a restart). */
-export function relaunchApp(): void {
-  app.relaunch();
-  app.exit(0);
-}

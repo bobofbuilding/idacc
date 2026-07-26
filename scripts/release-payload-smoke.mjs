@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -68,7 +69,14 @@ const NOTICES_FIXTURE = [
   '',
 ].join('\n');
 
-async function writePackagedApp(parent, name, mainSource) {
+async function writePackagedApp(parent, name, mainSource, buildMode = {
+  mode: 'production',
+  windowsJobHost: {
+    buildPlatform: process.platform,
+    available: false,
+    verificationMode: 'unavailable',
+  },
+}) {
   const appRoot = join(parent, name);
   const resources = join(appRoot, 'resources');
   const source = join(parent, `${name}-asar-source`);
@@ -77,6 +85,7 @@ async function writePackagedApp(parent, name, mainSource) {
   writeRuntime(join(resources, 'idacc-runtime'));
   write(join(source, 'package.json'), '{"name":"idacc","version":"0.0.0","main":"out/main/main.cjs"}\n');
   write(join(source, 'out', 'main', 'main.cjs'), mainSource);
+  write(join(source, 'out', 'build-mode.json'), `${JSON.stringify(buildMode)}\n`);
   write(join(source, 'out', 'preload', 'preload.cjs'), 'globalThis.IDACC = true;\n');
   write(join(source, 'out', 'renderer', 'renderer.js'), 'document.title = "IDACC";\n');
   await createPackage(source, join(resources, 'app.asar'));
@@ -264,6 +273,106 @@ try {
     'const product = { name: "IDACC", localState: false };\n',
   );
   assert.equal(run(neutralApp).status, 0, 'a complete consumer-neutral packaged application should pass');
+
+  const jobHostFixture = Buffer.alloc(4_096);
+  jobHostFixture[0] = 0x4d;
+  jobHostFixture[1] = 0x5a;
+  const bootstrapFixture = `'use strict';\n${'// managed containment bootstrap\n'.repeat(12)}`;
+  const windowsBuildMode = {
+    mode: 'production',
+    windowsJobHost: {
+      buildPlatform: 'win32',
+      available: true,
+      verificationMode: 'sha256',
+      executableSha256: createHash('sha256').update(jobHostFixture).digest('hex'),
+      bootstrapSha256: createHash('sha256').update(bootstrapFixture).digest('hex'),
+    },
+  };
+  const windowsMissingContainmentApp = await writePackagedApp(
+    dir,
+    'windows-missing-containment-app',
+    'const product = { name: "IDACC", localState: false };\n',
+    windowsBuildMode,
+  );
+  write(join(windowsMissingContainmentApp, 'ID Agents Control Center.exe'), 'MZ');
+  const windowsMissingContainmentResult = run(windowsMissingContainmentApp);
+  assert.notEqual(
+    windowsMissingContainmentResult.status,
+    0,
+    'a Windows package without its Job Host and managed bootstrap must fail',
+  );
+  assert.match(
+    `${windowsMissingContainmentResult.stdout}\n${windowsMissingContainmentResult.stderr}`,
+    /Missing required (?:Windows Job Host|managed-service bootstrap) payload/,
+  );
+
+  const windowsContainedApp = await writePackagedApp(
+    dir,
+    'windows-contained-app',
+    'const product = { name: "IDACC", localState: false };\n',
+    windowsBuildMode,
+  );
+  write(join(windowsContainedApp, 'ID Agents Control Center.exe'), 'MZ');
+  write(
+    join(
+      windowsContainedApp,
+      'resources',
+      'app.asar.unpacked',
+      'out',
+      'native',
+      'idacc-job-host.exe',
+    ),
+    jobHostFixture,
+  );
+  write(
+    join(
+      windowsContainedApp,
+      'resources',
+      'app.asar.unpacked',
+      'out',
+      'main',
+      'managed-service-bootstrap.cjs',
+    ),
+    bootstrapFixture,
+  );
+  assert.equal(
+    run(windowsContainedApp).status,
+    0,
+    'a Windows package with its unpacked containment payload should pass',
+  );
+  const containedBootstrapPath = join(
+    windowsContainedApp,
+    'resources',
+    'app.asar.unpacked',
+    'out',
+    'main',
+    'managed-service-bootstrap.cjs',
+  );
+  write(containedBootstrapPath, `${bootstrapFixture}\n// mutated after build\n`);
+  const mutatedBootstrapResult = run(windowsContainedApp);
+  assert.notEqual(mutatedBootstrapResult.status, 0);
+  assert.match(
+    `${mutatedBootstrapResult.stdout}\n${mutatedBootstrapResult.stderr}`,
+    /bootstrap does not match build provenance/,
+  );
+  write(containedBootstrapPath, bootstrapFixture);
+  const containedJobHostPath = join(
+    windowsContainedApp,
+    'resources',
+    'app.asar.unpacked',
+    'out',
+    'native',
+    'idacc-job-host.exe',
+  );
+  const mutatedJobHost = Buffer.from(jobHostFixture);
+  mutatedJobHost[mutatedJobHost.length - 1] ^= 0x01;
+  write(containedJobHostPath, mutatedJobHost);
+  const mutatedJobHostResult = run(windowsContainedApp);
+  assert.notEqual(mutatedJobHostResult.status, 0);
+  assert.match(
+    `${mutatedJobHostResult.stdout}\n${mutatedJobHostResult.stderr}`,
+    /Job Host does not match unsigned build provenance/,
+  );
 
   const asarSecretApp = await writePackagedApp(
     dir,

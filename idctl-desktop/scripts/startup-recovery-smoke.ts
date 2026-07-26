@@ -687,7 +687,10 @@ try {
   assert.match(mainSource, /Choose Another Profile/);
   assert.match(mainSource, /Start Fresh Profile/);
   assert.match(mainSource, /async function restartWithRecoveryProfile\(/);
-  assert.match(mainSource, /writeAppProfilePreference\(app\.getPath\('userData'\), preference\);[\s\S]*app\.relaunch\(\);/);
+  assert.match(
+    mainSource,
+    /writeAppProfilePreference\(app\.getPath\('userData'\), preference\);[\s\S]*appShutdown\.request\(\{ kind: 'relaunch' \}\)/,
+  );
   assert.match(mainSource, /function privateUserDataDirectory\(\): string/);
   assert.match(mainSource, /return ensurePrivateAppDirectory\(app\.getPath\('userData'\)\)/);
   assert.match(mainSource, /appendPrivateAppTextFile\(path,[\s\S]*rendererSafeMode/);
@@ -704,7 +707,7 @@ try {
   assert.doesNotMatch(mainSource, /rememberRecoveryProfile/);
   assert.match(mainSource, /if \(startupRecoveryActive \|\| BrowserWindow\.getAllWindows\(\)\.length > 0\) return/);
   assert.match(mainSource, /validateRecoveryProfileFolder\(/);
-  assert.match(mainSource, /async function createWindow\(\): Promise<void>/);
+  assert.match(mainSource, /async function createWindow\(\): Promise<BrowserWindow>/);
   assert.match(mainSource, /const initialRendererLoad = loadRendererApp\(win\)/);
   assert.match(mainSource, /await initialRendererLoad/);
   assert.match(mainSource, /await createWindow\(\)/);

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname, join } from 'node:path';
 import { brain } from '../../../idctl/src/api/brain.ts';
 import { resolveConfigPath } from '../../../idctl/src/settings/paths.ts';
+import { createSingleFlightBackgroundGate } from './backgroundActivity.ts';
 
 export type AutomatableBrainApproval = {
   id: number | string;
@@ -476,23 +477,36 @@ export function runBrainApprovalAutomationOnce(): Promise<BrainApprovalAutomatio
   return running;
 }
 
-export function startBrainApprovalAutomationLoop(onChange: (result: BrainApprovalAutomationRun) => void = () => {}): () => void {
-  let stopped = false;
+export function startBrainApprovalAutomationLoop(onChange: (result: BrainApprovalAutomationRun) => void = () => {}): () => Promise<void> {
+  const gate = createSingleFlightBackgroundGate();
   let timer: ReturnType<typeof setTimeout> | null = null;
   const schedule = (delayMs: number) => {
-    if (stopped) return;
+    if (gate.isStopped()) return;
     timer = setTimeout(() => void tick(), delayMs);
     timer.unref?.();
   };
-  const tick = async () => {
+  const tick = (): Promise<void> => gate.run(async () => {
     try {
       const result = await runBrainApprovalAutomationOnce();
-      if (result.started || result.resolved || result.routedToRepair || result.escalated) onChange(result);
+      if (
+        !gate.isStopped()
+        && (result.started || result.resolved || result.routedToRepair || result.escalated)
+      ) {
+        onChange(result);
+      }
       schedule(result.pending || result.started ? 15_000 : 60_000);
     } catch {
       schedule(60_000);
     }
-  };
+  });
   schedule(5_000);
-  return () => { stopped = true; if (timer) clearTimeout(timer); };
+  return () => {
+    if (timer) clearTimeout(timer);
+    const loopDrain = gate.stop();
+    const immediateRun = running;
+    return Promise.all([
+      loopDrain,
+      immediateRun ?? Promise.resolve(),
+    ]).then(() => undefined);
+  };
 }

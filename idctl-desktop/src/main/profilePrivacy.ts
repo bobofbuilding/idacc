@@ -12,6 +12,33 @@ import { win32 } from 'node:path';
 import { CONTEXT_BUDGET_RETENTION } from './contextBudgetRetention.ts';
 import { copyFilePrivateSync } from './privateFileCopy.ts';
 
+declare const __IDACC_WINDOWS_PROFILE_HELPER_EMBEDDED__: boolean;
+declare const __IDACC_WINDOWS_PROFILE_HELPER_BASE64__: string;
+declare const __IDACC_WINDOWS_PROFILE_HELPER_SHA256__: string;
+declare const __IDACC_WINDOWS_PROFILE_HELPER_SOURCE_SHA256__: string;
+
+// Direct TypeScript smoke tests do not pass through the desktop bundler and
+// intentionally retain the source-compilation path. Every built bundle defines
+// the sentinel; a built Windows app must never silently fall back to compiling
+// native code at consumer startup.
+const WINDOWS_PROFILE_HELPER_BUILD_DEFINED =
+  typeof __IDACC_WINDOWS_PROFILE_HELPER_EMBEDDED__ !== 'undefined';
+const WINDOWS_PROFILE_HELPER_EMBEDDED = WINDOWS_PROFILE_HELPER_BUILD_DEFINED
+  ? __IDACC_WINDOWS_PROFILE_HELPER_EMBEDDED__
+  : false;
+const WINDOWS_PROFILE_HELPER_BASE64 = WINDOWS_PROFILE_HELPER_BUILD_DEFINED
+  && typeof __IDACC_WINDOWS_PROFILE_HELPER_BASE64__ === 'string'
+  ? __IDACC_WINDOWS_PROFILE_HELPER_BASE64__
+  : '';
+const WINDOWS_PROFILE_HELPER_SHA256 = WINDOWS_PROFILE_HELPER_BUILD_DEFINED
+  && typeof __IDACC_WINDOWS_PROFILE_HELPER_SHA256__ === 'string'
+  ? __IDACC_WINDOWS_PROFILE_HELPER_SHA256__
+  : '';
+const WINDOWS_PROFILE_HELPER_SOURCE_SHA256 = WINDOWS_PROFILE_HELPER_BUILD_DEFINED
+  && typeof __IDACC_WINDOWS_PROFILE_HELPER_SOURCE_SHA256__ === 'string'
+  ? __IDACC_WINDOWS_PROFILE_HELPER_SOURCE_SHA256__
+  : '';
+
 const WINDOWS_PROFILE_ACL_OK = 'IDACC_WINDOWS_PROFILE_ACL_OK';
 const WINDOWS_PROFILE_ACL_FAILED = 'IDACC_WINDOWS_PROFILE_ACL_FAILED';
 const WINDOWS_PROFILE_ACL_PARSE_LINE = 'IDACC_WINDOWS_PROFILE_ACL_PARSE_LINE';
@@ -25,6 +52,7 @@ const WINDOWS_PROFILE_ACL_DIAGNOSTIC_PHASES = [
   'validate-volume',
   'configure-output',
   'compile-native',
+  'load-native',
   'configure-policy',
   'single-object-type',
   'single-ancestors',
@@ -883,8 +911,88 @@ public static class IdaccProfileFileProbe {
   }
 }
 '@
-  $script:diagnosticPhase = 'compile-native'
-  Add-Type -TypeDefinition $nativeSource -Language CSharp
+  $nativeBundleMode = '${WINDOWS_PROFILE_HELPER_BUILD_DEFINED
+    ? (WINDOWS_PROFILE_HELPER_EMBEDDED ? 'embedded' : 'unavailable')
+    : 'raw-source'}'
+  if ($nativeBundleMode -eq 'embedded') {
+    $script:diagnosticPhase = 'load-native'
+    $nativeAssemblyBase64 = '${WINDOWS_PROFILE_HELPER_BASE64}'
+    $nativeAssemblySha256 = '${WINDOWS_PROFILE_HELPER_SHA256}'
+    $nativeSourceSha256 = '${WINDOWS_PROFILE_HELPER_SOURCE_SHA256}'
+    if (
+      [string]::IsNullOrWhiteSpace($nativeAssemblyBase64) -or
+      $nativeAssemblyBase64.Length -gt 8388608 -or
+      $nativeAssemblySha256 -notmatch '^[0-9a-f]{64}$' -or
+      $nativeSourceSha256 -notmatch '^[0-9a-f]{64}$'
+    ) {
+      throw 'embedded native helper metadata is invalid'
+    }
+    $nativeSourceHasher = [Security.Cryptography.SHA256]::Create()
+    try {
+      $nativeSourceBytes = [Text.UTF8Encoding]::new($false).GetBytes(
+        $nativeSource
+      )
+      $nativeSourceDigest = [BitConverter]::ToString(
+        $nativeSourceHasher.ComputeHash($nativeSourceBytes)
+      ).Replace('-', '').ToLowerInvariant()
+    } finally {
+      $nativeSourceHasher.Dispose()
+    }
+    if (-not [string]::Equals(
+      $nativeSourceDigest,
+      $nativeSourceSha256,
+      [StringComparison]::Ordinal
+    )) {
+      throw 'embedded native helper source verification failed'
+    }
+    $nativeAssemblyBytes = [Convert]::FromBase64String($nativeAssemblyBase64)
+    if (
+      $nativeAssemblyBytes.Length -lt 1024 -or
+      $nativeAssemblyBytes.Length -gt 4194304
+    ) {
+      throw 'embedded native helper size is invalid'
+    }
+    $nativeHasher = [Security.Cryptography.SHA256]::Create()
+    try {
+      $nativeDigest = [BitConverter]::ToString(
+        $nativeHasher.ComputeHash($nativeAssemblyBytes)
+      ).Replace('-', '').ToLowerInvariant()
+    } finally {
+      $nativeHasher.Dispose()
+    }
+    if (-not [string]::Equals(
+      $nativeDigest,
+      $nativeAssemblySha256,
+      [StringComparison]::Ordinal
+    )) {
+      throw 'embedded native helper integrity verification failed'
+    }
+    $nativeAssembly = [Reflection.Assembly]::Load($nativeAssemblyBytes)
+    $nativeType = $nativeAssembly.GetType(
+      'IdaccProfileFileProbe',
+      $false,
+      $false
+    )
+    if (
+      $null -eq $nativeType -or
+      $nativeType.Assembly -ne $nativeAssembly -or
+      -not $nativeType.IsAbstract -or
+      -not $nativeType.IsSealed -or
+      $null -eq $nativeType.GetMethod('OpenLockedObject') -or
+      $null -eq $nativeType.GetMethod('GetObjectIdentity') -or
+      $null -eq $nativeType.GetMethod('AssertLockedPath') -or
+      $null -eq $nativeType.GetMethod('ReadLockedSecurityDescriptor') -or
+      $null -eq $nativeType.GetMethod('SetSecurityWithoutPropagation')
+    ) {
+      throw 'embedded native helper contract is invalid'
+    }
+  } elseif ($nativeBundleMode -eq 'raw-source') {
+    $script:diagnosticPhase = 'compile-native'
+    Add-Type -TypeDefinition $nativeSource -Language CSharp
+  } else {
+    $script:diagnosticPhase = 'load-native'
+    throw 'this Windows bundle does not contain its native privacy helper'
+  }
 
   $script:diagnosticPhase = 'configure-policy'
   $reparseFlag = [System.IO.FileAttributes]::ReparsePoint
@@ -1813,11 +1921,18 @@ public static class IdaccProfileFileProbe {
 
 function windowsPowerShellPath(): string {
   const systemRoot = String(process.env.SystemRoot || process.env.WINDIR || '').trim();
-  if (!systemRoot || !win32.isAbsolute(systemRoot) || systemRoot.startsWith('\\\\')) {
+  const normalized = win32.normalize(systemRoot);
+  if (
+    !systemRoot
+    || !win32.isAbsolute(normalized)
+    || !/^[A-Za-z]:\\/.test(normalized)
+    || normalized.startsWith('\\\\')
+    || normalized.slice(win32.parse(normalized).root.length).includes(':')
+  ) {
     throw profilePrivacyError();
   }
   return win32.join(
-    systemRoot,
+    normalized,
     'System32',
     'WindowsPowerShell',
     'v1.0',

@@ -35,6 +35,9 @@
     "release:linux": "node scripts/release-preflight.mjs --platform linux && npm run stage:runtimes && npm run build:release && node scripts/run-production-builder.mjs --platform linux -- --linux AppImage deb --publish never",
     "dmg": "npm run release:mac",
     "typecheck": "tsc --noEmit",
+    "test:app-shutdown": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/app-shutdown-coordinator-smoke.ts",
+    "test:computer-use-shutdown": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/computer-use-shutdown-smoke.ts",
+    "test:windows-job-host": "node scripts/windows-job-host-integration-smoke.mjs",
     "test:chat-failure": "node scripts/chat-terminal-failure-smoke.mjs",
     "test:background-policy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/background-policy-smoke.mjs",
     "test:release-payload": "node ../scripts/release-payload-smoke.mjs",
@@ -44,7 +47,7 @@
     "test:release-preflight": "node scripts/release-preflight-smoke.mjs",
     "test:unified-stack": "node ../scripts/unified-stack-release-smoke.mjs \"release/mac-arm64/ID Agents Control Center.app\"",
     "test:unified-stack-policy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/unified-stack-supervisor-smoke.mjs",
-    "test:unified-stack-integration": "node scripts/unified-stack-supervisor-integration.mjs",
+    "test:unified-stack-integration": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/unified-stack-supervisor-integration.mjs",
     "test:unified-runtime-contract": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/unified-runtime-contract-smoke.ts",
     "test:runtime-profile-isolation": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/runtime-profile-isolation-smoke.ts",
     "test:release-cleanup": "node ../scripts/release-artifact-cleanup-smoke.mjs",
@@ -101,8 +104,10 @@
     "test:goals-plan-separation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/goals-plan-separation-smoke.mjs",
     "test:brain-plans-profile": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/brain-plans-profile-smoke.ts",
     "test:profile-migrations": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/profile-migrations-smoke.ts",
+    "test:windows-profile-native-build": "node scripts/windows-profile-native-build-smoke.mjs",
     "test:startup-recovery": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/startup-recovery-smoke.ts",
     "test:consumer-onboarding": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/consumer-onboarding-smoke.ts",
+    "test:consumer-onboarding-integration": "node scripts/consumer-onboarding-integration-smoke.mjs",
     "test:team-agent-groups": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/team-agent-groups-smoke.mjs",
     "test:plans-routing": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/plans-routing-smoke.mjs",
     "test:plans-inbox": "node scripts/plans-inbox-recovery-smoke.mjs",
@@ -140,7 +145,9 @@
       "out/**/*"
     ],
     "asarUnpack": [
-      "**/*.node"
+      "**/*.node",
+      "out/native/idacc-job-host.exe",
+      "out/main/managed-service-bootstrap.cjs"
     ],
     "extraResources": [
       {

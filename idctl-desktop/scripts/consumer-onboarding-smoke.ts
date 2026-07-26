@@ -12,6 +12,7 @@ import {
 import {
   evaluateConsumerReadiness,
   missingStarterAgentDefinitions,
+  onboardingAssignmentAvailable,
   orchestrateMissingStarterAgents,
   orchestratePreservedStarterRepairs,
   preservedStarterRepairCandidates,
@@ -60,6 +61,28 @@ async function main(): Promise<void> {
   }
   assert.equal(STARTER_FLEET_AGENTS.find((agent) => agent.name === 'lead')?.skills.includes('team-coordinator'), true);
   assert.equal(STARTER_FLEET_AGENTS.find((agent) => agent.name === 'coder')?.skills.includes('team-coordinator'), false);
+  const exactLocalOption = {
+    runtime: 'provider:ollama',
+    label: 'Local · Ollama',
+    models: ['tool-model'],
+    source: 'provider',
+    requiresModel: true,
+  };
+  assert.equal(
+    onboardingAssignmentAvailable(
+      { name: 'lead', team: STARTER_TEAM, runtime: 'provider:ollama' },
+      [exactLocalOption],
+    ),
+    false,
+    'an implicit local default must not satisfy model-specific starter evidence',
+  );
+  assert.equal(
+    onboardingAssignmentAvailable(
+      { name: 'lead', team: STARTER_TEAM, runtime: 'provider:ollama', model: 'tool-model' },
+      [exactLocalOption],
+    ),
+    true,
+  );
 
   const onlyLead = [{ name: 'lead', team: STARTER_TEAM }];
   assert.deepEqual(

@@ -149,7 +149,7 @@ export function FirstRunWizard({
   }
 
   async function createStarterTeam() {
-    if (!runtime) return;
+    if (!runtime || (selectedOption?.requiresModel && !model)) return;
     setBusy('fleet');
     setMessage('');
     try {
@@ -381,7 +381,11 @@ export function FirstRunWizard({
               {setupFinished ? (
                 <button className="btn primary" onClick={onClose}>Enter IDACC</button>
               ) : status.phase !== 'limited' ? (
-                <button className="btn primary" disabled={working || !runtime} onClick={() => void createStarterTeam()}>
+                <button
+                  className="btn primary"
+                  disabled={working || !runtime || Boolean(selectedOption?.requiresModel && !model)}
+                  onClick={() => void createStarterTeam()}
+                >
                   {busy === 'fleet' ? 'Building & verifying…' : status.state.startedAt ? 'Retry setup' : 'Create starter workspace'}
                 </button>
               ) : null}

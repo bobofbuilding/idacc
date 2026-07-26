@@ -31,6 +31,14 @@ account's private application profile.
   allowlisted IPC bridge from the trusted application document.
 - Bundled Manager and Brain files are verified against the signed application's
   runtime manifest before either service starts.
+- Managed roots and their descendants have an operating-system lifetime
+  boundary independent of the root's continued health: retained process groups
+  on POSIX and kill-on-close Job Objects on Windows. A replacement is not
+  started unless cleanup of the prior boundary is confirmed.
+- Quit, relaunch, and update installation share one early shutdown coordinator.
+  It rejects new renderer work, stops background loops, and completes bounded
+  process-tree cleanup before Electron hands control to the operating system or
+  updater.
 
 ## Same-user trust boundary
 

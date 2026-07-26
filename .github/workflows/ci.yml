@@ -65,6 +65,10 @@ jobs:
         run: |
           npm run typecheck --prefix idctl-desktop
           npm run build --prefix idctl-desktop
+          npm run test:app-shutdown --prefix idctl-desktop
+          npm run test:computer-use-shutdown --prefix idctl-desktop
+          npm run test:windows-job-host --prefix idctl-desktop
+          npm run test:windows-profile-native-build --prefix idctl-desktop
           npm run test:dashboard-command-surface --prefix idctl-desktop
           npm run test:dashboard-coordination --prefix idctl-desktop
           npm run test:dashboard-activity-filter --prefix idctl-desktop
@@ -98,6 +102,7 @@ jobs:
           npm run test:goals-plan-separation --prefix idctl-desktop
           npm run test:dream-view-polish --prefix idctl-desktop
           npm run test:consumer-onboarding --prefix idctl-desktop
+          npm run test:consumer-onboarding-integration --prefix idctl-desktop
           npm run test:unified-stack-policy --prefix idctl-desktop
           npm run test:unified-runtime-contract --prefix idctl-desktop
           npm run test:selftest-result-file --prefix idctl-desktop

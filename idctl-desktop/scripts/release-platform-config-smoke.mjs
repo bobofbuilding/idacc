@@ -21,6 +21,18 @@ const root = resolve(desktop, '..');
 const require = createRequire(import.meta.url);
 const pkg = JSON.parse(readFileSync(join(desktop, 'package.json'), 'utf8'));
 const build = pkg.build || {};
+assert.ok(
+  build.asarUnpack?.includes('out/native/idacc-job-host.exe'),
+  'the Windows Job Host must be executable outside app.asar',
+);
+assert.ok(
+  build.asarUnpack?.includes('out/main/managed-service-bootstrap.cjs'),
+  'the managed-service bootstrap path must match the unpacked runtime contract',
+);
+assert.equal(
+  pkg.scripts?.['test:windows-job-host'],
+  'node scripts/windows-job-host-integration-smoke.mjs',
+);
 const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
 const tauriConfig = JSON.parse(
   readFileSync(join(desktop, 'src-tauri', 'tauri.conf.json'), 'utf8'),
@@ -531,6 +543,33 @@ assert.match(
   /- name: Verify real Windows profile ACL hardening\s+if: matrix\.platform == 'win'\s+shell: bash\s+run: npm run test:profile-migrations --prefix idctl-desktop/,
   'the exact signed Windows release commit must pass the real ACL migration smoke before packaging',
 );
+const unsignedWindowsNativeStep =
+  nativeReleaseBuildJob.indexOf('- name: Build and exercise unsigned Windows native helpers');
+const signedNativeBuildStep =
+  nativeReleaseBuildJob.indexOf('- name: Build native consumer artifacts');
+assert.ok(
+  unsignedWindowsNativeStep >= 0
+    && signedNativeBuildStep > unsignedWindowsNativeStep,
+  'the native release job must exercise an unsigned Windows build before its signed build',
+);
+for (const command of [
+  'npm run build',
+  'npm run test:windows-job-host',
+  'npm run test:windows-profile-native-build',
+]) {
+  assert.ok(
+    nativeReleaseBuildJob.slice(
+      unsignedWindowsNativeStep,
+      signedNativeBuildStep,
+    ).includes(command),
+    `the unsigned Windows native release step is missing: ${command}`,
+  );
+}
+assert.match(
+  nativeReleaseBuildJob.slice(unsignedWindowsNativeStep, signedNativeBuildStep),
+  /if: matrix\.platform == 'win'[\s\S]*CSC_IDENTITY_AUTO_DISCOVERY: "false"[\s\S]*WIN_CSC_LINK: ""[\s\S]*WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ""/,
+  'the Windows native helper regression must run without production signing inputs',
+);
 assert.match(releaseWorkflow, /WINDOWS_CODESIGN_P12/);
 assert.match(releaseWorkflow, /MACOS_DEVELOPER_ID_P12/);
 assert.match(releaseWorkflow, /MACOS_EXPECTED_TEAM_ID/);
@@ -539,6 +578,16 @@ assert.match(releaseWorkflow, /WINDOWS_EXPECTED_PUBLISHER_SUBJECT/);
 assert.match(releaseWorkflow, /node scripts\/run-production-builder\.mjs/);
 assert.match(releaseWorkflow, /node idctl-desktop\/scripts\/verify-packaged-publisher\.mjs/);
 assert.match(releaseWorkflow, /SignerCertificate\.Subject -cne \$env:WINDOWS_EXPECTED_PUBLISHER_SUBJECT/);
+assert.match(
+  releaseWorkflow,
+  /resources\/app\.asar\.unpacked\/out\/native\/idacc-job-host\.exe/,
+  'production release must explicitly locate the packaged Job Host',
+);
+assert.match(
+  releaseWorkflow,
+  /foreach \(\$file in @\(\$app, \$installer\.FullName, \$jobHost\)\)/,
+  'production release must Authenticode-verify the packaged Job Host',
+);
 assert.match(releaseWorkflow, /TeamIdentifier=\/\//);
 assert.match(releaseWorkflow, /Developer ID Application: \$MACOS_EXPECTED_SIGNING_IDENTITY/);
 assert.match(releaseWorkflow, /certificate leaf\[subject\.OU\] =/);
@@ -550,6 +599,7 @@ assert.match(releaseWorkflow, /npm run test:update-descriptor-contract --prefix 
 assert.match(releaseWorkflow, /npm run test:updater-public-provider --prefix idctl-desktop/);
 assert.match(workflow, /npm run test:update-descriptor-contract --prefix idctl-desktop/);
 assert.match(workflow, /npm run test:updater-public-provider --prefix idctl-desktop/);
+assert.match(workflow, /npm run test:windows-job-host --prefix idctl-desktop/);
 assert.match(releaseWorkflow, /RUNTIME_SOURCE_TOKEN/);
 assert.match(releaseWorkflow, /runtime-source-tests:/);
 assert.match(releaseWorkflow, /Require GitHub-enforced immutable releases/);
@@ -606,7 +656,11 @@ for (const source of [workflow, releaseWorkflow]) {
   }
 }
 assert.doesNotMatch(releaseWorkflow, /RUNTIME_READ_TOKEN|--allow-dirty-application/);
-assert.doesNotMatch(releaseWorkflow, /npm run build(?:\s|$)/, 'production workflow builds must use build:release');
+assert.equal(
+  (releaseWorkflow.match(/npm run build(?:\s|$)/g) || []).length,
+  1,
+  'the only development build in production workflow must be the verified unsigned Windows native regression',
+);
 assert.match(releaseWorkflow, /publish\/latest-mac\.yml/);
 assert.equal(
   (releaseWorkflow.match(/uses: actions\/checkout@/g) || []).length,

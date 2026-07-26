@@ -95,15 +95,29 @@ companions, or agents. A separate Brain credential is confined to Manager's
 Brain transport, app-owned companions, and the private MCP process attached only
 to agents configured with the Brain skill. Core services and the continuous
 listener are supervised with health/liveness checks, bounded logs, restart
-backoff, a crash fuse, and graceful shutdown. The deterministic maintenance
-cycle is off on a fresh profile and starts only after explicit opt-in in
-Settings. Once enabled, its schedule is stored in the profile and can be
-changed or disabled without disabling event learning.
+backoff, a crash fuse, and graceful shutdown. POSIX services run in app-owned
+process groups; Windows services run inside per-service Job Objects whose
+kernel-enforced lifetime remains bounded even if a service or the desktop
+process crashes. A single-instance lock is acquired before profile selection,
+migration, or crash-state persistence. A secondary launch never starts services
+or mutates a profile; it restores and focuses the existing primary window unless
+that instance is already shutting down. Every quit, relaunch, and update-install
+path passes through one early shutdown gate before Electron is allowed to exit.
+New work is refused synchronously, and already-admitted startup/background work
+shares a 45-second aggregate drain deadline before process trees stop. A missed
+deadline fails closed into a generic Retry Shutdown dialog; no force-exit,
+restart, or update bypass is offered. The deterministic
+maintenance cycle is off on a fresh profile and starts only after explicit
+opt-in in Settings. Once enabled, its schedule is stored in the profile and
+can be changed or disabled without disabling event learning.
 
-All bundled processes remain children of IDACC and stop when the application
-exits. Manager schedules and the opt-in maintenance cycle run only while IDACC
-is open, then resume from profile-owned state after the next launch. The
-consumer application does not install a separate background service.
+During an orderly quit, IDACC confirms that every bundled process group has
+stopped before Electron exits. On POSIX, bundled roots also watch the desktop
+parent and request self-shutdown after an abrupt parent exit; this is a
+best-effort safeguard rather than the Windows Job Object's kernel guarantee.
+Manager schedules and the opt-in maintenance cycle run only while IDACC is
+open, then resume from profile-owned state after the next launch. The consumer
+application does not install a separate background service.
 
 Loopback services share the current operating-system user's trust boundary;
 random ports do not isolate IDACC from hostile same-user processes. The exact
@@ -117,6 +131,7 @@ npm run typecheck
 npm run test:profile-migrations
 npm run test:brain-plans-profile
 npm run test:consumer-onboarding
+npm run test:consumer-onboarding-integration
 npm run test:unified-stack-policy
 npm run test:unified-stack-integration
 npm run test:runtime-profile-isolation

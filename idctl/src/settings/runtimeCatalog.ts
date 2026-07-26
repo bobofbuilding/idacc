@@ -133,14 +133,10 @@ export type RuntimeCapability = 'mcp' | 'plugins' | 'portablePlugins' | 'skills'
  * table as a blanket "can select target" gate for portable capabilities.
  *
  * MCP — hard runtime feature: the Claude runtimes embed the SDK/CLI MCP client,
- * codex received `-c mcp_servers.*` config injection (2026-06), and ollama now
- * ships the agentic tool-calling loop (id-agents OllamaHarness.runWithTools +
- * McpToolHub) so local models with tool support can call MCP tools. A non-tool
- * ollama model degrades gracefully to plain text. The bundled Grok, Copilot,
- * and Kiro harnesses integrate their vendor MCP surfaces. Legacy Amazon Q is a
- * linked/current-only lane without a bundled Manager harness. cursor-cli,
- * Antigravity, Kimi, and the remote runtime still do not consume our
- * McpServerSpec directly.
+ * codex receives `mcp_servers.*` config injection, ollama ships the manager's
+ * tool-calling loop, and concrete `provider:*` lanes resolve to the bundled
+ * provider-api harness. The current bundled Cursor, Grok, Antigravity, Copilot,
+ * Kiro, Kimi, and remote harnesses do not consume our McpServerSpec directly.
  *
  * skills — the manager deploys SKILL.md files to a runtime-aware dir for every
  * LOCAL runtime (`.claude/skills`, `.agents/skills` for codex/grok/antigravity/
@@ -154,7 +150,7 @@ export type RuntimeCapability = 'mcp' | 'plugins' | 'portablePlugins' | 'skills'
  * adapters still gate independently through MCP or native plugin support.
  */
 const RUNTIME_CAPABILITIES: Record<RuntimeCapability, string[]> = {
-  mcp: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'grok', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
+  mcp: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'ollama'],
   skills: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'kimi-cli', 'q', 'ollama'],
   plugins: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local'],
   portablePlugins: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'kimi-cli', 'q', 'ollama'],
@@ -171,7 +167,42 @@ const CAPABILITY_DENY_REASON: Record<RuntimeCapability, string> = {
 /** Does this runtime support the given capability? Unknown runtime → false. */
 export function runtimeSupports(runtime: string | undefined, cap: RuntimeCapability): boolean {
   if (!runtime) return false;
+  if (runtime.startsWith('provider:') && runtime.length > 'provider:'.length) {
+    return cap === 'mcp' || cap === 'skills' || cap === 'portablePlugins';
+  }
   return RUNTIME_CAPABILITIES[cap]?.includes(runtime) ?? false;
+}
+
+/**
+ * Starter setup has a stricter contract than the general agent picker.
+ *
+ * A runtime-level MCP client (Claude/Codex) is enough evidence for every model
+ * exposed by that route. Ollama needs model-specific `capabilities: ["tools"]`
+ * evidence from its native `/api/show` endpoint. The generic provider-api
+ * harness is structurally able to translate MCP tools, but an arbitrary
+ * OpenAI-compatible model may reject tool calls, so provider lanes other than a
+ * native Ollama lane stay out of the starter picker until a deterministic
+ * per-model capability probe exists.
+ */
+export type StarterMcpCapabilityPolicy = 'runtime' | 'ollama-model' | 'unverified' | 'unsupported';
+
+export function starterMcpCapabilityPolicy(
+  runtime: string | undefined,
+  providerKind?: ProviderKind,
+): StarterMcpCapabilityPolicy {
+  if (!runtimeSupports(runtime, 'mcp')) return 'unsupported';
+  if (
+    runtime === 'claude-agent-sdk'
+    || runtime === 'claude-code-cli'
+    || runtime === 'claude-code-local'
+    || runtime === 'codex'
+  ) {
+    return 'runtime';
+  }
+  if (runtime === 'ollama' || (runtime?.startsWith('provider:') && providerKind === 'ollama')) {
+    return 'ollama-model';
+  }
+  return 'unverified';
 }
 
 /** Human-readable reason a runtime lacks a capability (empty if it has it). */

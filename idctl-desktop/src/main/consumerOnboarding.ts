@@ -53,6 +53,11 @@ type RuntimeFreshnessRow = {
   source?: string;
   provider?: string;
   selectable?: boolean;
+  supportsMcp?: boolean;
+  mcpModels?: string[];
+  mcpEvidence?: 'runtime' | 'ollama-show' | 'none';
+  mcpExcludedModels?: string[];
+  mcpDetail?: string;
   detail?: string;
 };
 type RuntimeVerification = {
@@ -106,12 +111,19 @@ function normalizedRuntimeOptions(rows: RuntimeFreshnessRow[]): OnboardingRuntim
   const byRuntime = new Map<string, OnboardingRuntimeOption>();
   for (const row of rows) {
     const runtime = String(row.runtime ?? '').trim();
-    if (!runtime || row.selectable !== true) continue;
-    const models = Array.from(new Set(
+    if (!runtime || row.selectable !== true || row.supportsMcp !== true) continue;
+    const catalogModels = Array.from(new Set(
       (Array.isArray(row.models) ? row.models : [])
         .map((model) => String(model ?? '').trim())
         .filter(Boolean),
     ));
+    const verifiedMcpModels = Array.isArray(row.mcpModels)
+      ? new Set(row.mcpModels.map((candidate) => String(candidate ?? '').trim()).filter(Boolean))
+      : null;
+    const models = verifiedMcpModels
+      ? catalogModels.filter((model) => verifiedMcpModels.has(model))
+      : catalogModels;
+    if (catalogModels.length > 0 && models.length === 0) continue;
     const option: OnboardingRuntimeOption = {
       runtime,
       label: String(row.label ?? runtime).trim() || runtime,
@@ -119,6 +131,7 @@ function normalizedRuntimeOptions(rows: RuntimeFreshnessRow[]): OnboardingRuntim
       source: String(row.source ?? 'verified'),
       ...(row.provider ? { provider: String(row.provider) } : {}),
       ...(row.detail ? { detail: String(row.detail).slice(0, 500) } : {}),
+      ...(row.mcpEvidence === 'ollama-show' ? { requiresModel: true } : {}),
     };
     const existing = byRuntime.get(runtime);
     if (!existing || option.models.length > existing.models.length) byRuntime.set(runtime, option);
@@ -211,7 +224,7 @@ async function buildStatus(force = false): Promise<ConsumerOnboardingStatus> {
         diagnostics.push(`Could not read the team hierarchy: ${safeError(error)}`);
         return null;
       }),
-      bridgeCall('runtime:freshness', []).catch((error) => {
+      bridgeCall('runtime:freshness', force ? [{ force: true }] : []).catch((error) => {
         diagnostics.push(`Could not verify model routes: ${safeError(error)}`);
         return [] as RuntimeFreshnessRow[];
       }),
@@ -221,7 +234,44 @@ async function buildStatus(force = false): Promise<ConsumerOnboardingStatus> {
     hierarchy = hierarchyResult && typeof hierarchyResult === 'object'
       ? hierarchyResult as OnboardingHierarchySnapshot
       : null;
-    assignments = normalizedRuntimeOptions(Array.isArray(runtimeResult) ? runtimeResult as RuntimeFreshnessRow[] : []);
+    const runtimeRows = Array.isArray(runtimeResult) ? runtimeResult as RuntimeFreshnessRow[] : [];
+    assignments = normalizedRuntimeOptions(runtimeRows);
+    const incompatibleStarterRoutes = runtimeRows.filter(
+      (row) => row.selectable === true && row.supportsMcp !== true,
+    );
+    for (const row of incompatibleStarterRoutes) {
+      const label = String(row.label ?? row.runtime ?? 'Model route').trim() || 'Model route';
+      diagnostics.push(
+        `${label} is connected for general agent work but not offered for the starter workspace because it does not have authoritative Brain tool-call capability.${
+          row.mcpDetail ? ` ${String(row.mcpDetail).slice(0, 500)}` : ''
+        }`,
+      );
+    }
+    for (const row of runtimeRows.filter((candidate) => (
+      candidate.selectable === true
+      && candidate.supportsMcp === true
+      && Array.isArray(candidate.mcpModels)
+    ))) {
+      const catalog = Array.from(new Set(
+        (row.models ?? []).map((model) => String(model ?? '').trim()).filter(Boolean),
+      ));
+      const allowed = new Set((row.mcpModels ?? []).map((model) => String(model ?? '').trim()).filter(Boolean));
+      const excluded = catalog.filter((model) => !allowed.has(model));
+      if (!excluded.length) continue;
+      const shown = excluded.slice(0, 5);
+      diagnostics.push(
+        `${String(row.label ?? row.runtime ?? 'Model route')} remains available for general agents, but starter setup excludes ${
+          shown.join(', ')
+        }${excluded.length > shown.length ? ` and ${excluded.length - shown.length} more` : ''} because ${
+          excluded.length === 1 ? 'that model lacks' : 'those models lack'
+        } authoritative Brain tool-call capability.${row.mcpDetail ? ` ${String(row.mcpDetail).slice(0, 500)}` : ''}`,
+      );
+    }
+    if (assignments.length === 0) {
+      diagnostics.push(
+        'No currently connected model route has authoritative Brain tool-call capability for the starter workspace. You can connect a Claude/Codex route, use a tool-capable Ollama model, or continue in Limited mode.',
+      );
+    }
     subscriptions = safeSubscriptions(subscriptionResult as unknown as Record<string, unknown>);
   }
 
@@ -300,6 +350,9 @@ function validateAssignment(input: unknown, options: OnboardingRuntimeOption[]):
   const model = String(raw.model ?? '').trim();
   const option = options.find((row) => row.runtime === runtime);
   if (!option) throw new Error('The selected model route is no longer available. Refresh and choose another route.');
+  if (option.requiresModel && !model) {
+    throw new Error('Choose an Ollama model whose tool capability was verified for the starter workspace.');
+  }
   if (model && option.models.length && !option.models.includes(model)) {
     throw new Error('The selected model is not in the latest verified catalog.');
   }
@@ -487,10 +540,25 @@ async function runStarterFleetOnboardingOnce(input: unknown): Promise<ConsumerOn
           .map((skill) => String(skill).trim())
           .filter(Boolean),
       );
+      const brainMcpReady = agent.brainTools?.skillInstalled === true
+        && agent.brainTools?.mcpAttached === true
+        && agent.brainTools?.activeToolAccess === true;
       let changed = false;
+      let installedBrainThisPass = false;
       for (const skill of definition.skills) {
         if (installed.has(skill)) continue;
         await bridgeCall('installSkill', [skill, definition.name, STARTER_TEAM]);
+        installed.add(skill);
+        if (skill === 'brain') installedBrainThisPass = true;
+        changed = true;
+      }
+      // Metadata can retain the Brain skill name while an upgraded or repaired
+      // agent has lost the effective MCP attachment. Re-applying the idempotent
+      // library install repairs the live skill files; rebuild then regenerates
+      // the runtime MCP configuration. A subsequent healthy pass remains a
+      // mutation-free no-op.
+      if (!brainMcpReady && !installedBrainThisPass) {
+        await bridgeCall('installSkill', ['brain', definition.name, STARTER_TEAM]);
         changed = true;
       }
       if (changed) await bridgeCall('rebuildAgent', [definition.name, STARTER_TEAM]);

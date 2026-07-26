@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -14,9 +14,10 @@ import {
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import electronPath from 'electron';
+import { terminateManagedProcessTree } from '../src/main/managedProcessTree.ts';
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const builtMain = join(desktop, 'out', 'main', 'main.cjs');
@@ -136,6 +137,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 const marker = join(process.env.IDACC_DATA_DIR, 'manager-attempts.txt');
+writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-runtime-pid.txt'), String(process.pid));
 let attempt = 0;
 try { attempt = Number(readFileSync(marker, 'utf8')) || 0; } catch {}
 attempt += 1;
@@ -147,6 +149,8 @@ writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-plugins-root.txt'), proc
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-agent-log-root.txt'), process.env.IDACC_AGENT_LOG_DIR || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-mcp-command.txt'), process.env.BRAIN_MCP_COMMAND || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-mcp-args-json.txt'), process.env.BRAIN_MCP_ARGS_JSON || '');
+writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-auto-attach-brain.txt'), process.env.ID_AUTO_ATTACH_BRAIN_MCP || '');
+writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-brain-context-disabled.txt'), process.env.BRAIN_CONTEXT_DISABLED || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-database-url.txt'), process.env.DATABASE_URL || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-sqlite-path.txt'), process.env.SQLITE_PATH || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-workspace-path.txt'), process.env.AGENT_MANAGER_WORKDIR || '');
@@ -312,6 +316,7 @@ const brainSource = `
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+writeFileSync(join(process.env.IDACC_DATA_DIR, 'brain-runtime-pid.txt'), String(process.pid));
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'brain-token.txt'), process.env.BRAIN_TOKEN || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'brain-admin-token.txt'), process.env.IDACC_ADMIN_TOKEN || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'brain-skills-root.txt'), process.env.IDACC_SKILLS_DIR || '');
@@ -395,8 +400,21 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
 
 const brainMcpSource = `
 import { createInterface } from 'node:readline';
+import { writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { join } from 'node:path';
 const reply = message => process.stdout.write(JSON.stringify(message) + '\\n');
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+// Keep a real descendant resource alive after stdio closes. A supervisor that
+// kills only Manager's direct PID will leak this MCP process on Windows.
+const sentinel = createServer();
+sentinel.listen(0, '127.0.0.1', () => {
+  const address = sentinel.address();
+  writeFileSync(
+    join(process.env.IDACC_DATA_DIR, 'manager-mcp-process.json'),
+    JSON.stringify({ pid: process.pid, port: address.port }),
+  );
+});
 lines.on('line', async line => {
   if (!line.trim()) return;
   const request = JSON.parse(line);
@@ -445,6 +463,7 @@ lines.on('line', async line => {
   }
   reply({ jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'method not found' } });
 });
+process.on('SIGTERM', () => sentinel.close(() => process.exit(0)));
 `;
 
 const brainListenerSource = `
@@ -650,6 +669,202 @@ function canBind(port) {
   });
 }
 
+function appendBoundedOutput(chunks, state, chunk, maxBytes) {
+  const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+  const remaining = Math.max(0, maxBytes - state.bytes);
+  if (remaining > 0) {
+    chunks.push(value.subarray(0, remaining));
+    state.bytes += Math.min(value.length, remaining);
+  }
+  return value.length <= remaining;
+}
+
+async function terminateWindowsHarnessTree(child, timeoutMs = 5_000) {
+  const systemRoot = win32.normalize(String(process.env.SystemRoot || process.env.WINDIR || ''));
+  const pid = Number(child.pid);
+  if (
+    !/^[A-Za-z]:\\/.test(systemRoot)
+    || systemRoot.startsWith('\\\\')
+    || systemRoot.slice(3).includes(':')
+    || !Number.isSafeInteger(pid)
+    || pid <= 0
+    || pid === process.pid
+  ) {
+    return false;
+  }
+  const taskkill = win32.join(systemRoot, 'System32', 'taskkill.exe');
+  if (!existsSync(taskkill)) return false;
+  const killed = await new Promise((resolveKill) => {
+    let timeout;
+    const killer = spawn(taskkill, ['/PID', String(pid), '/T', '/F'], {
+      cwd: win32.dirname(taskkill),
+      env: {
+        SystemRoot: process.env.SystemRoot || process.env.WINDIR,
+        WINDIR: process.env.WINDIR || process.env.SystemRoot,
+      },
+      shell: false,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolveKill(value);
+    };
+    killer.once('error', () => finish(false));
+    killer.once('exit', (code, signal) => finish(code === 0 && signal === null));
+    timeout = setTimeout(() => {
+      try { killer.kill('SIGKILL'); } catch { /* helper already stopped */ }
+      finish(false);
+    }, timeoutMs);
+  });
+  if (!killed && child.exitCode === null && child.signalCode === null) {
+    try { child.kill('SIGKILL'); } catch { /* exact child already stopped */ }
+  }
+  const deadline = Date.now() + 2_000;
+  while (
+    Date.now() < deadline
+    && child.exitCode === null
+    && child.signalCode === null
+  ) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+  }
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function runElectronSelftest(electronArgs, options) {
+  const {
+    cwd,
+    env,
+    timeoutMs,
+    maxBuffer = 4 * 1024 * 1024,
+  } = options;
+  const detachedProcessGroup = process.platform === 'linux';
+  return new Promise((resolveRun) => {
+    const child = spawn(electron, electronArgs, {
+      cwd,
+      env,
+      // A detached Electron application aborts under macOS LaunchServices.
+      // Linux can use an isolated process group. The Windows test harness uses
+      // exact System32 taskkill against only its retained app PID and /T.
+      detached: detachedProcessGroup,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let owned = true;
+    let settled = false;
+    let aborting = false;
+    let timeout;
+    const stdout = [];
+    const stderr = [];
+    const stdoutState = { bytes: 0 };
+    const stderrState = { bytes: 0 };
+
+    const result = (error) => ({
+      status: child.exitCode,
+      signal: child.signalCode,
+      stdout: Buffer.concat(stdout).toString('utf8'),
+      stderr: Buffer.concat(stderr).toString('utf8'),
+      ...(error ? { error } : {}),
+    });
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      owned = false;
+      clearTimeout(timeout);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      resolveRun(result(error));
+    };
+    const abort = (error) => {
+      if (settled || aborting) return;
+      aborting = true;
+      clearTimeout(timeout);
+      if (process.platform === 'win32') {
+        void terminateWindowsHarnessTree(child).then((terminated) => {
+          finish(terminated
+            ? error
+            : new Error(`${error.message}; Windows test tree cleanup was unconfirmed`));
+        });
+        return;
+      }
+      void terminateManagedProcessTree(
+        child,
+        () => owned,
+        {
+          detachedProcessGroup,
+          graceMs: 2_000,
+          forceWaitMs: 2_000,
+        },
+      ).then(
+        () => finish(error),
+        () => finish(error),
+      );
+    };
+
+    child.stdout?.on('data', (chunk) => {
+      if (!appendBoundedOutput(stdout, stdoutState, chunk, maxBuffer)) {
+        const error = new Error(`stdout exceeded ${maxBuffer} bytes`);
+        error.code = 'ENOBUFS';
+        abort(error);
+      }
+    });
+    child.stderr?.on('data', (chunk) => {
+      if (!appendBoundedOutput(stderr, stderrState, chunk, maxBuffer)) {
+        const error = new Error(`stderr exceeded ${maxBuffer} bytes`);
+        error.code = 'ENOBUFS';
+        abort(error);
+      }
+    });
+    child.once('error', (error) => finish(error));
+    child.once('close', () => {
+      if (!aborting) finish();
+    });
+    timeout = setTimeout(() => {
+      const error = new Error(`Electron selftest exceeded ${timeoutMs}ms`);
+      error.code = 'ETIMEDOUT';
+      abort(error);
+    }, timeoutMs);
+    timeout.unref?.();
+  });
+}
+
+function processIsAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+async function assertManagerMcpStopped(profileRoot, label) {
+  const observationPath = join(profileRoot, 'manager-mcp-process.json');
+  assert.equal(existsSync(observationPath), true, `${label} did not publish its MCP process observation`);
+  const observation = JSON.parse(readFileSync(observationPath, 'utf8'));
+  const deadline = Date.now() + 3_000;
+  let pidAlive = processIsAlive(Number(observation.pid));
+  let portAvailable = await canBind(Number(observation.port));
+  while (Date.now() < deadline && (pidAlive || !portAvailable)) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    pidAlive = processIsAlive(Number(observation.pid));
+    portAvailable = await canBind(Number(observation.port));
+  }
+  assert.equal(
+    pidAlive,
+    false,
+    `${label} left MCP descendant PID ${observation.pid} running`,
+  );
+  assert.equal(
+    portAvailable,
+    true,
+    `${label} left MCP descendant port ${observation.port} occupied`,
+  );
+}
+
 try {
   const isGitHubActionsLinux = process.platform === 'linux'
     && process.env.CI === 'true'
@@ -695,15 +910,15 @@ try {
     BRAIN_SQLITE_VEC_EXTENSION: join(runtime, 'brain', 'hostile-vector-extension.node'),
     BRAIN_SYNC_ONCHAIN: 'true',
     BRAIN_SYNC_ONCHAIN_SCRIPT: join(runtime, 'brain', 'sync-onchain.mjs'),
+    ID_AUTO_ATTACH_BRAIN_MCP: '0',
+    BRAIN_CONTEXT_DISABLED: 'true',
   };
   delete env.ELECTRON_RUN_AS_NODE;
   const positiveStartedAt = Date.now();
-  const result = spawnSync(electron, electronArgs, {
+  const result = await runElectronSelftest(electronArgs, {
     cwd: desktop,
     env,
-    encoding: 'utf8',
-    timeout: positiveSelftestTimeoutMs,
-    killSignal: 'SIGKILL',
+    timeoutMs: positiveSelftestTimeoutMs,
     maxBuffer: 4 * 1024 * 1024,
   });
   const positiveElapsedMs = Date.now() - positiveStartedAt;
@@ -772,6 +987,30 @@ try {
   const brain = status.services.find((service) => service.name === 'brain');
   assert.ok(manager);
   assert.ok(brain);
+  assert.equal(
+    manager.pid,
+    Number(readFileSync(join(profile, 'manager-runtime-pid.txt'), 'utf8')),
+    'manager status must publish the runtime PID',
+  );
+  assert.equal(
+    brain.pid,
+    Number(readFileSync(join(profile, 'brain-runtime-pid.txt'), 'utf8')),
+    'Brain status must publish the runtime PID',
+  );
+  if (process.platform === 'win32') {
+    for (const managedProcess of [manager, brain, listener]) {
+      assert.ok(Number.isSafeInteger(managedProcess.pid) && managedProcess.pid > 0);
+      assert.ok(
+        Number.isSafeInteger(managedProcess.supervisorPid)
+          && managedProcess.supervisorPid > 0,
+      );
+      assert.notEqual(managedProcess.pid, managedProcess.supervisorPid);
+    }
+  } else {
+    assert.equal(manager.supervisorPid, undefined);
+    assert.equal(brain.supervisorPid, undefined);
+    assert.equal(listener.supervisorPid, undefined);
+  }
   assert.notEqual(new URL(manager.url).port, '4110');
   assert.notEqual(new URL(brain.url).port, '4210');
   assert.equal(manager.identity, 'attested');
@@ -799,6 +1038,16 @@ try {
   assert.equal(readFileSync(join(profile, 'brain-onchain-script.txt'), 'utf8'), '');
   assert.equal(readFileSync(join(profile, 'brain-embed-phase.txt'), 'utf8'), '0');
   assert.equal(readFileSync(join(profile, 'brain-sqlite-extension.txt'), 'utf8'), '');
+  assert.equal(
+    readFileSync(join(profile, 'manager-auto-attach-brain.txt'), 'utf8'),
+    '1',
+    'Manager inherited a shell flag that disabled the shipped Brain MCP attachment',
+  );
+  assert.equal(
+    readFileSync(join(profile, 'manager-brain-context-disabled.txt'), 'utf8'),
+    'false',
+    'Manager inherited a shell flag that disabled shipped Brain context/control paths',
+  );
   assert.equal(managerLibraryRoot, join(profile, 'manager', 'library', 'configs'));
   assert.equal(managerPluginsRoot, join(profile, 'manager', 'library', 'plugins', 'claude-code'));
   assert.equal(managerAgentLogRoot, join(profile, 'logs', 'agents'));
@@ -917,6 +1166,7 @@ try {
   }
   assert.equal(await canBind(Number(new URL(manager.url).port)), true, 'manager port remained occupied after shutdown');
   assert.equal(await canBind(Number(new URL(brain.url).port)), true, 'Brain port remained occupied after shutdown');
+  await assertManagerMcpStopped(profile, 'positive selftest');
 
   for (const [mode, expectedError] of [
     ['missing', /not present/],
@@ -938,7 +1188,7 @@ try {
       },
     }, null, 2), { mode: 0o600 });
     const negativeStartedAt = Date.now();
-    const negative = spawnSync(electron, electronArgs, {
+    const negative = await runElectronSelftest(electronArgs, {
       cwd: desktop,
       env: {
         ...env,
@@ -951,9 +1201,7 @@ try {
         IDACC_TEST_SKIP_STARTUP_CRASHES: '1',
         IDACC_TEST_LISTENER_STATUS_MODE: mode,
       },
-      encoding: 'utf8',
-      timeout: negativeSelftestTimeoutMs,
-      killSignal: 'SIGKILL',
+      timeoutMs: negativeSelftestTimeoutMs,
       maxBuffer: 4 * 1024 * 1024,
     });
     const negativeElapsedMs = Date.now() - negativeStartedAt;
@@ -982,6 +1230,7 @@ try {
       mode !== 'missing',
       `${mode} case published an unexpected listener status file state`,
     );
+    await assertManagerMcpStopped(negativeProfile, `${mode} listener selftest`);
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });

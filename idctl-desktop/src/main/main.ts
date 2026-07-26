@@ -13,13 +13,26 @@ import {
   configureManagedManager,
   configureSettingsSecretCodec,
   migrateSettingsSecrets,
+  resetDraftDispatcherWork,
   startDraftDispatcher,
   startGoalDriver,
   startOrgSync,
   startModelRefreshLoop,
+  stopDraftDispatcherWork,
 } from './bridge.ts';
-import { recordControlAction } from './controlLog.ts';
-import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
+import {
+  configureControlWriteScheduler,
+  recordControlAction,
+} from './controlLog.ts';
+import {
+  startUpdater,
+  stopUpdater,
+  checkForUpdate,
+  getStatus,
+  drainUpdater,
+  prepareStagedUpdateInstall,
+  installPreparedUpdateAndQuit,
+} from './updater.ts';
 import { assignmentSubsStatus, cachedSubsStatus, invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubsStatusOptions, type SubProvider } from './subscriptions.ts';
 import { ollamaTags, ollamaPull, ollamaRemove, ollamaCatalogCheck, catalogModelToLocalEntry, type InstalledModelInput } from './ollama.ts';
 import { backgroundStackStatus, dockerStatus, getHardware, localStackInstallStatus, runInTerminal, startBackgroundStack, stopBackgroundStack } from './system.ts';
@@ -51,7 +64,7 @@ import {
 } from '../../../idctl/src/keys/types.ts';
 import { startBroker, armBroker, disarmBroker, setWatching, setBrokerDisplay, brokerStatus, auditTail, panicBroker, setSupervised, setPaused, confirmAction, pendingActions, setPanicHotkey, mintAgentToken, brokerUrl, stopBroker, legacyAgentTokenReport } from './computeruse/broker.ts';
 import { configureComputerUseAuditManager } from './computeruse/audit.ts';
-import { getPermissions, openPermissionSettings, relaunchApp, type CuPermissionPane } from './computeruse/permissions.ts';
+import { getPermissions, openPermissionSettings, type CuPermissionPane } from './computeruse/permissions.ts';
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
 import { initializeAppProfile, updateManagedManagerProfileUrl } from './appProfile.ts';
@@ -124,29 +137,90 @@ import {
   runUnifiedRuntimeContractSelftest,
   type UnifiedRuntimeContractSelftestResult,
 } from './unifiedRuntimeContractSelftest.ts';
+import {
+  cleanupOwnedPrimaryInstance,
+  createAppShutdownCoordinator,
+  createBoundedWorkDrain,
+  shutdownReentryDisposition,
+  workSettledWithin,
+} from './appShutdown.ts';
+import {
+  createDelayedBackgroundWork,
+  createSingleFlightBackgroundGate,
+  createTrackedBackgroundWork,
+} from './backgroundActivity.ts';
+import {
+  focusExistingPrimaryWindow,
+  guardActivationWindowCreation,
+} from './singleInstance.ts';
 
 // Bundled as CommonJS → __dirname is the output dir (out/main/).
 declare const __dirname: string;
 
 let win: BrowserWindow | null = null;
 let brainDashboardWin: BrowserWindow | null = null;
-let stopGoalDriver: (() => void) | null = null;
-let stopLearnQueueRunner: (() => void) | null = null;
-let stopLearnBrainBackfillRunner: (() => void) | null = null;
-let stopMaterialChangeBridge: (() => void) | null = null;
+type BackgroundStop = () => void | Promise<void>;
+let stopGoalDriver: BackgroundStop | null = null;
+let stopLearnQueueRunner: BackgroundStop | null = null;
+let stopLearnBrainBackfillRunner: BackgroundStop | null = null;
+let stopMaterialChangeBridge: BackgroundStop | null = null;
 let kickLearnQueueRunner: ((delayMs?: number) => void) | null = null;
 let kickLearnBrainBackfillRunner: ((delayMs?: number) => void) | null = null;
-let stopDraftDispatcher: (() => void) | null = null;
-let stopBrainApprovalAutomation: (() => void) | null = null;
-let stopScheduledDreamArchive: (() => void) | null = null;
+let stopDraftDispatcher: BackgroundStop | null = null;
+let stopBrainApprovalAutomation: BackgroundStop | null = null;
+let stopScheduledDreamArchive: BackgroundStop | null = null;
+let stopOrgSyncRunner: BackgroundStop | null = null;
+let stopModelRefreshRunner: BackgroundStop | null = null;
 let rendererSafeMode = false;
 let rendererRecoveryFirstAt = 0;
 let rendererRecoveryAttempts = 0;
 let rendererStableTimer: ReturnType<typeof setTimeout> | null = null;
 let storeChangeTimer: ReturnType<typeof setTimeout> | null = null;
 let keyProviderConfigurationError = '';
+let consumerStartupPromise: Promise<void> | null = null;
+let shutdownFailureDialog: Promise<void> | null = null;
+let shutdownCleanupFailureReport: StartupFailureReport | null = null;
+let pendingSecondInstanceFocus = false;
+let pendingConsumerActivation = false;
+let consumerActivationReady = false;
 const pendingStoreChangeDomains = new Set<string>();
 const pendingStoreChangeMethods = new Set<string>();
+const pendingRendererRecoveryTimers = new Set<ReturnType<typeof setTimeout>>();
+const activeBrainApprovalInboxSyncs = new Set<Promise<void>>();
+const pendingBackgroundStops: Array<{ promise: Promise<void>; error?: unknown }> = [];
+const activeIpcWork = createBoundedWorkDrain(3_000);
+let delayedGoalDriverWork = createDelayedBackgroundWork();
+let activationWindowWork = createSingleFlightBackgroundGate();
+let controlLogBackgroundWork = createTrackedBackgroundWork();
+const CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS = 45_000;
+let ownsSingleInstanceLock = false;
+
+configureControlWriteScheduler((work) => {
+  void controlLogBackgroundWork.run(work);
+});
+
+const appShutdown = createAppShutdownCoordinator({
+  app,
+  cleanup: cleanupForThisInstance,
+  installPreparedUpdate: installPreparedUpdateAndQuit,
+  onError: (error) => {
+    const report = startupFailureReport(error);
+    logStartupRecoveryFailure('shutdown', report);
+    if (appShutdown.status().phase === 'cleanup-failed') {
+      showShutdownCleanupFailure(report);
+    }
+  },
+});
+
+// Acquire the process-wide consumer lock before profile selection, migration,
+// crash-state persistence, or any startup branch can mutate local state.
+ownsSingleInstanceLock = app.requestSingleInstanceLock();
+if (!ownsSingleInstanceLock) {
+  void appShutdown.request({ kind: 'quit' });
+} else {
+  app.on('second-instance', handleSecondInstanceRequest);
+  if (process.platform === 'darwin') app.on('activate', handleConsumerAppActivation);
+}
 
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
 type BrainDashboardTab = 'fleet' | 'health' | 'skills' | 'learning' | 'agents' | 'graph';
@@ -198,6 +272,58 @@ const RENDERER_RECOVERY_WINDOW_MS = 5 * 60 * 1000;
 const RENDERER_RECOVERY_MAX_RELOADS = 3;
 const RENDERER_STABLE_RESET_MS = 2 * 60 * 1000;
 const STORE_CHANGE_FLUSH_MS = 150;
+
+class ConsumerStartupCancelledError extends Error {
+  constructor() {
+    super('Application shutdown was requested during consumer startup.');
+    this.name = 'ConsumerStartupCancelledError';
+  }
+}
+
+function requireConsumerStartupActive(): void {
+  if (appShutdown.isQuiescing()) throw new ConsumerStartupCancelledError();
+}
+
+function prepareConsumerBackgroundActivitiesForStartup(): void {
+  if (delayedGoalDriverWork.isStopped()) {
+    if (delayedGoalDriverWork.activeCount() !== 0) {
+      throw new Error('Delayed goal-driver work is still draining and cannot be restarted.');
+    }
+    delayedGoalDriverWork = createDelayedBackgroundWork();
+  }
+  if (activationWindowWork.isStopped()) {
+    activationWindowWork = createSingleFlightBackgroundGate();
+  }
+  if (controlLogBackgroundWork.isStopped()) {
+    if (controlLogBackgroundWork.activeCount() !== 0) {
+      throw new Error('Control-log work is still draining and cannot be restarted.');
+    }
+    controlLogBackgroundWork = createTrackedBackgroundWork();
+  }
+  resetDraftDispatcherWork();
+}
+
+function remainingShutdownDrainMs(deadlineAt: number): number {
+  return Math.max(0, deadlineAt - Date.now());
+}
+
+async function drainConsumerStartup(deadlineAt: number): Promise<void> {
+  const activeStartup = consumerStartupPromise;
+  if (!activeStartup) return;
+  const settled = await workSettledWithin(
+    activeStartup,
+    remainingShutdownDrainMs(deadlineAt),
+  );
+  if (!settled) {
+    throw new Error('Application startup did not stop before the guarded shutdown deadline.');
+  }
+  try {
+    await activeStartup;
+  } catch {
+    // The startup chain reports genuine failures itself. Shutdown-triggered
+    // cancellation is intentionally quiet and still proceeds to cleanup.
+  }
+}
 
 function envFlagEnabled(value: string | undefined): boolean {
   return /^(1|true|yes|on)$/i.test(String(value || '').trim());
@@ -489,6 +615,7 @@ function rendererCrashFallbackHtml(state: RendererCrashState | null, details: El
 }
 
 function scheduleRendererRecovery(target: BrowserWindow, details: Electron.RenderProcessGoneDetails, state: RendererCrashState | null): void {
+  if (appShutdown.isQuiescing()) return;
   const now = Date.now();
   if (!rendererRecoveryFirstAt || now - rendererRecoveryFirstAt > RENDERER_RECOVERY_WINDOW_MS) {
     rendererRecoveryFirstAt = now;
@@ -497,7 +624,9 @@ function scheduleRendererRecovery(target: BrowserWindow, details: Electron.Rende
   rendererRecoveryAttempts += 1;
   const attempt = rendererRecoveryAttempts;
   const delayMs = Math.min(1000 + attempt * 750, 4000);
-  setTimeout(() => {
+  const timer = setTimeout(() => {
+    pendingRendererRecoveryTimers.delete(timer);
+    if (appShutdown.isQuiescing()) return;
     try {
       if (target.isDestroyed()) return;
       if (attempt <= RENDERER_RECOVERY_MAX_RELOADS) {
@@ -511,6 +640,7 @@ function scheduleRendererRecovery(target: BrowserWindow, details: Electron.Rende
       console.warn('[renderer-crash] recovery failed:', e);
     }
   }, delayMs);
+  pendingRendererRecoveryTimers.add(timer);
 }
 
 function scheduleRendererStableReset(): void {
@@ -535,6 +665,102 @@ function logStartupRecoveryFailure(scope: string, report: StartupFailureReport):
     diagnosticId: report.diagnosticId,
     ...(report.systemCode ? { systemCode: report.systemCode } : {}),
   });
+}
+
+function showShutdownCleanupFailure(report: StartupFailureReport): void {
+  shutdownCleanupFailureReport = report;
+  if (shutdownFailureDialog) return;
+  const prompt = app.whenReady()
+    .then(() => dialog.showMessageBox({
+      type: 'error',
+      title: 'IDACC is still stopping safely',
+      message: 'IDACC kept the application open because shutdown cleanup could not be confirmed.',
+      detail: `No restart, update, or forced exit was attempted. Retry the guarded cleanup, or keep the application open and try Quit again later.\n\nDiagnostic ID: ${report.diagnosticId}`,
+      buttons: ['Retry Shutdown', 'Keep App Open'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    }))
+    .then((choice) => {
+      if (shutdownFailureDialog === prompt) shutdownFailureDialog = null;
+      if (choice.response === 0) void appShutdown.retry();
+    })
+    .catch((error) => {
+      if (shutdownFailureDialog === prompt) shutdownFailureDialog = null;
+      logStartupRecoveryFailure('shutdown-dialog', startupFailureReport(error));
+    });
+  shutdownFailureDialog = prompt;
+}
+
+function presentShutdownCleanupRecovery(): boolean {
+  if (appShutdown.status().phase !== 'cleanup-failed') return false;
+  showShutdownCleanupFailure(
+    shutdownCleanupFailureReport
+      ?? startupFailureReport(new Error('Guarded application cleanup is still incomplete.')),
+  );
+  return true;
+}
+
+function handleSecondInstanceRequest(): void {
+  const disposition = shutdownReentryDisposition(appShutdown.status().phase);
+  if (disposition === 'recover-cleanup') {
+    presentShutdownCleanupRecovery();
+    return;
+  }
+  if (disposition === 'ignore') return;
+  pendingSecondInstanceFocus = true;
+  focusPrimaryConsumerWindow();
+}
+
+function handleConsumerAppActivation(): void {
+  const disposition = shutdownReentryDisposition(appShutdown.status().phase);
+  if (disposition === 'recover-cleanup') {
+    presentShutdownCleanupRecovery();
+    return;
+  }
+  if (disposition === 'ignore') return;
+  if (!consumerActivationReady) {
+    pendingConsumerActivation = true;
+    return;
+  }
+  if (BrowserWindow.getAllWindows().length !== 0) return;
+  void activationWindowWork.run(async () => {
+    if (appShutdown.isQuiescing()) return;
+    const creation = createWindow();
+    const target = win;
+    let readyTarget: BrowserWindow | null;
+    try {
+      readyTarget = await guardActivationWindowCreation(
+        creation,
+        target,
+        () => appShutdown.isQuiescing(),
+        (lateTarget) => {
+          if (win === lateTarget) win = null;
+        },
+      );
+    } catch (error) {
+      // Renderer loading may reject because terminal shutdown destroyed the
+      // guarded late window. That expected cancellation has already been
+      // contained and must not turn a clean shutdown into cleanup-failed.
+      if (appShutdown.isQuiescing()) return;
+      throw error;
+    }
+    if (readyTarget && !readyTarget.isDestroyed()) {
+      startUpdaterSafely(readyTarget);
+    }
+  }).catch((error) => handleUnrecoverableStartupFailure(error));
+}
+
+function focusPrimaryConsumerWindow(): void {
+  if (appShutdown.isQuiescing()) return;
+  try {
+    const target = win && !win.isDestroyed()
+      ? win
+      : BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed()) ?? null;
+    if (focusExistingPrimaryWindow(target)) pendingSecondInstanceFocus = false;
+  } catch (error) {
+    logStartupRecoveryFailure('second-instance-focus', startupFailureReport(error));
+  }
 }
 
 function startUpdaterSafely(target: BrowserWindow): void {
@@ -591,7 +817,7 @@ async function restartWithRecoveryProfile(
   }
   try {
     writeAppProfilePreference(app.getPath('userData'), preference);
-    app.relaunch();
+    void appShutdown.request({ kind: 'relaunch' });
     return true;
   } catch (error) {
     if (previousDataDir === undefined) delete process.env.IDACC_DATA_DIR;
@@ -614,11 +840,62 @@ async function restartWithRecoveryProfile(
   }
 }
 
-async function cleanupFailedConsumerStartup(): Promise<void> {
-  try { stopUpdater(); } catch { /* updater may not have started */ }
-  try { stopBroker(); } catch { /* no broker may have started */ }
-  try { globalShortcut.unregisterAll(); } catch { /* shortcuts may be unavailable */ }
+function trackBackgroundStop(result: void | Promise<void>): void {
+  if (!result || typeof (result as Promise<void>).then !== 'function') return;
+  const record: { promise: Promise<void>; error?: unknown } = {
+    promise: Promise.resolve(),
+  };
+  record.promise = Promise.resolve(result).catch((error) => {
+    record.error = error;
+  });
+  pendingBackgroundStops.push(record);
+}
+
+async function drainConsumerBackgroundActivities(deadlineAt: number): Promise<void> {
+  const errors: unknown[] = [];
+  while (pendingBackgroundStops.length > 0) {
+    const batch = pendingBackgroundStops.slice();
+    const settled = await workSettledWithin(
+      Promise.all(batch.map((record) => record.promise)),
+      remainingShutdownDrainMs(deadlineAt),
+    );
+    if (!settled) {
+      throw new Error(
+        `Shutdown could not confirm ${batch.length} background stop operation(s) before the guarded deadline.`,
+      );
+    }
+    pendingBackgroundStops.splice(0, batch.length);
+    errors.push(...batch.flatMap((record) => record.error === undefined ? [] : [record.error]));
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'One or more background activities did not stop cleanly.');
+  }
+}
+
+function quiesceConsumerBackgroundActivities(): void {
+  consumerActivationReady = false;
+  pendingConsumerActivation = false;
+  if (rendererStableTimer) clearTimeout(rendererStableTimer);
+  rendererStableTimer = null;
+  if (storeChangeTimer) clearTimeout(storeChangeTimer);
+  storeChangeTimer = null;
+  pendingStoreChangeDomains.clear();
+  pendingStoreChangeMethods.clear();
+  for (const timer of pendingRendererRecoveryTimers) clearTimeout(timer);
+  pendingRendererRecoveryTimers.clear();
+  trackBackgroundStop(activationWindowWork.stop());
+  trackBackgroundStop(controlLogBackgroundWork.stop());
+  trackBackgroundStop(stopDraftDispatcherWork());
+  trackBackgroundStop(delayedGoalDriverWork.stop());
+  if (activeBrainApprovalInboxSyncs.size > 0) {
+    trackBackgroundStop(Promise.all([...activeBrainApprovalInboxSyncs]).then(() => undefined));
+  }
+
+  // Clear references before calling userland stop closures so re-entrant
+  // shutdown paths cannot invoke a partially stopped loop twice.
   const stops = [
+    stopOrgSyncRunner,
+    stopModelRefreshRunner,
     stopGoalDriver,
     stopLearnQueueRunner,
     stopLearnBrainBackfillRunner,
@@ -627,6 +904,8 @@ async function cleanupFailedConsumerStartup(): Promise<void> {
     stopDraftDispatcher,
     stopScheduledDreamArchive,
   ];
+  stopOrgSyncRunner = null;
+  stopModelRefreshRunner = null;
   stopGoalDriver = null;
   stopLearnQueueRunner = null;
   stopLearnBrainBackfillRunner = null;
@@ -637,8 +916,57 @@ async function cleanupFailedConsumerStartup(): Promise<void> {
   kickLearnQueueRunner = null;
   kickLearnBrainBackfillRunner = null;
   for (const stop of stops) {
-    try { stop?.(); } catch { /* best-effort optional background service */ }
+    try { trackBackgroundStop(stop?.()); } catch (error) {
+      trackBackgroundStop(Promise.reject(error));
+    }
   }
+}
+
+function quiesceConsumerOwnedServices(): void {
+  try { stopUpdater(); } catch (error) { trackBackgroundStop(Promise.reject(error)); }
+  trackBackgroundStop(drainUpdater());
+  try { trackBackgroundStop(stopBroker()); } catch (error) {
+    trackBackgroundStop(Promise.reject(error));
+  }
+  try { globalShortcut.unregisterAll(); } catch { /* shortcuts may be unavailable */ }
+  quiesceConsumerBackgroundActivities();
+}
+
+function cleanupForThisInstance(): Promise<void> {
+  // A process that lost the single-instance lock never initialized a profile,
+  // broker, background driver, or managed service. Its terminal cleanup must
+  // therefore remain a strict no-op and must not touch the primary's resources.
+  return cleanupOwnedPrimaryInstance(
+    ownsSingleInstanceLock,
+    cleanupForTerminalShutdown,
+  );
+}
+
+async function cleanupForTerminalShutdown(): Promise<void> {
+  try {
+    if (win && !win.isDestroyed()) saveWinState(win);
+  } catch { /* geometry persistence must not block service shutdown */ }
+  // Close every source of future work before yielding to an in-flight drain.
+  quiesceConsumerOwnedServices();
+  // Startup and all background stop handles share one aggregate deadline. A
+  // timeout fails closed into the guarded Retry Shutdown flow; a retry gets a
+  // fresh deadline while preserving the original terminal intent.
+  const activityDrainDeadline = Date.now() + CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS;
+  const ipcDrained = await activeIpcWork.drain();
+  if (!ipcDrained) {
+    throw new Error(`Shutdown could not drain ${activeIpcWork.activeCount()} active application request(s).`);
+  }
+  await drainConsumerStartup(activityDrainDeadline);
+  // Startup may have crossed an asynchronous boundary before observing
+  // quiescence; collect any stop handle it published in that interval.
+  quiesceConsumerOwnedServices();
+  await drainConsumerBackgroundActivities(activityDrainDeadline);
+  await stopUnifiedStack();
+}
+
+async function cleanupFailedConsumerStartup(): Promise<void> {
+  quiesceConsumerOwnedServices();
+  const activityDrainDeadline = Date.now() + CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS;
   try {
     if (brainDashboardWin && !brainDashboardWin.isDestroyed()) brainDashboardWin.destroy();
   } catch { /* recovery can continue without the optional dashboard window */ }
@@ -648,6 +976,7 @@ async function cleanupFailedConsumerStartup(): Promise<void> {
   } catch { /* recovery dialog does not depend on the renderer window */ }
   win = null;
   try {
+    await drainConsumerBackgroundActivities(activityDrainDeadline);
     await stopUnifiedStack();
   } catch (error) {
     logStartupRecoveryFailure('startup-cleanup', startupFailureReport(error));
@@ -656,6 +985,7 @@ async function cleanupFailedConsumerStartup(): Promise<void> {
 
 async function promptForStartupRecovery(report: StartupFailureReport): Promise<StartupRecoveryDecision> {
   for (;;) {
+    if (appShutdown.isQuiescing()) return 'quit';
     const choice = await dialog.showMessageBox({
       type: 'error',
       title: report.title,
@@ -672,6 +1002,7 @@ async function promptForStartupRecovery(report: StartupFailureReport): Promise<S
       cancelId: 4,
       noLink: true,
     });
+    if (appShutdown.isQuiescing()) return 'quit';
     if (choice.response === 0) return 'retry';
     if (choice.response === 1) {
       const openError = await shell.openPath(recoveryFolderToOpen());
@@ -740,19 +1071,29 @@ async function promptForStartupRecovery(report: StartupFailureReport): Promise<S
 async function handleConsumerStartupFailure(
   report: StartupFailureReport,
 ): Promise<StartupRecoveryDecision> {
+  if (appShutdown.isQuiescing()) {
+    startupRecoveryActive = false;
+    return 'quit';
+  }
   startupRecoveryActive = true;
   logStartupRecoveryFailure('startup', report);
   await cleanupFailedConsumerStartup();
+  if (appShutdown.isQuiescing()) {
+    startupRecoveryActive = false;
+    return 'quit';
+  }
   const decision = await promptForStartupRecovery(report);
   if (decision === 'quit') startupRecoveryActive = false;
   return decision;
 }
 
 async function handleUnrecoverableStartupFailure(error: unknown): Promise<void> {
+  if (appShutdown.isQuiescing()) return;
   startupRecoveryActive = true;
   const report = startupFailureReport(error);
   logStartupRecoveryFailure('startup-recovery', report);
   await cleanupFailedConsumerStartup();
+  if (appShutdown.isQuiescing()) return;
   try {
     dialog.showErrorBox(
       'IDACC could not open recovery',
@@ -761,10 +1102,10 @@ async function handleUnrecoverableStartupFailure(error: unknown): Promise<void> 
   } catch {
     // The safe report above is still available in the process log.
   }
-  app.exit(1);
+  void appShutdown.request({ kind: 'exit', code: 1 });
 }
 
-configureChromiumStability();
+if (ownsSingleInstanceLock) configureChromiumStability();
 
 async function syncGoalInstructionsAfterMutation(action: string): Promise<void> {
   try {
@@ -775,12 +1116,22 @@ async function syncGoalInstructionsAfterMutation(action: string): Promise<void> 
 }
 
 function kickGoalDriverAfterMutation(goal: Goal | null | undefined, action: string): void {
-  if (!goal || goal.status !== 'active' || goal.autopilot !== true) return;
-  setTimeout(() => {
-    void bridgeCall('goalDriver:runOnce', []).catch((e) => {
+  if (
+    appShutdown.isQuiescing()
+    || !goal
+    || goal.status !== 'active'
+    || goal.autopilot !== true
+  ) {
+    return;
+  }
+  delayedGoalDriverWork.schedule(250, async () => {
+    if (appShutdown.isQuiescing()) return;
+    try {
+      await bridgeCall('goalDriver:runOnce', []);
+    } catch (e) {
       console.warn(`[goals] ${action}: saved locally, but immediate Autopilot run failed:`, e);
-    });
-  }, 250).unref?.();
+    }
+  });
 }
 
 function planHasTag(plan: Plan, tag: string): boolean {
@@ -910,6 +1261,7 @@ async function armComputerUseFromCurrentAttached(teamArg: unknown, expectedAttac
 }
 
 function publishStoreChange(method: string): void {
+  if (appShutdown.isQuiescing()) return;
   const domains = syncDomainsForMethod(method);
   if (!domains.length) return;
   for (const domain of domains) pendingStoreChangeDomains.add(domain);
@@ -933,22 +1285,18 @@ function publishStoreChange(method: string): void {
   storeChangeTimer.unref?.();
 }
 
-function startLearnQueueRunner(): () => void {
-  let stopped = false;
-  let running = false;
+function startLearnQueueRunner(): () => Promise<void> {
+  const gate = createSingleFlightBackgroundGate();
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const schedule = (delayMs = LEARN_QUEUE_RUNNER_DELAYS.idleMs) => {
-    if (stopped) return;
+    if (gate.isStopped()) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void tick(), Math.max(0, delayMs));
     timer.unref?.();
   };
 
-  const tick = async () => {
-    if (stopped) return;
-    if (running) { schedule(LEARN_QUEUE_RUNNER_DELAYS.alreadyRunningMs); return; }
-    running = true;
+  const tick = (): Promise<void> => gate.run(async () => {
     try {
       recoverStaleMaterials();
       const current = listMaterials();
@@ -961,18 +1309,23 @@ function startLearnQueueRunner(): () => void {
       if (hasQueued) {
         const material = await processNextMaterial(await learnProcessContext());
         if (material) {
-          publishStoreChange('materials:processNext');
-          recordControlAction('materials:processNext', ['background'], material);
+          if (!appShutdown.isQuiescing()) {
+            publishStoreChange('materials:processNext');
+            recordControlAction('materials:processNext', ['background'], material);
+          }
           if (material.status === 'ready' || material.status === 'blocked') kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialReadyKickMs);
         }
       }
       const taskBackfill = await autoCreatePendingLearnTasks({ limit: hasQueued ? 2 : 6 });
-      if (taskBackfill.created || taskBackfill.deferred || taskBackfill.failed) {
+      if (
+        !appShutdown.isQuiescing()
+        && (taskBackfill.created || taskBackfill.deferred || taskBackfill.failed)
+      ) {
         publishStoreChange('materials:tasks');
         recordControlAction('materials:tasks', ['background'], taskBackfill);
       }
       const routeBackfill = await routePendingLearnMaterials({ limit: hasQueued ? 1 : 3 });
-      if (routeBackfill.dispatched || routeBackfill.failed) {
+      if (!appShutdown.isQuiescing() && (routeBackfill.dispatched || routeBackfill.failed)) {
         publishStoreChange('materials:tasks');
         recordControlAction('materials:routeLeads', ['background'], routeBackfill);
       }
@@ -981,17 +1334,15 @@ function startLearnQueueRunner(): () => void {
     } catch (e) {
       console.warn('[learn] auto-process queue failed:', e);
       schedule(LEARN_QUEUE_RUNNER_DELAYS.retryMs);
-    } finally {
-      running = false;
     }
-  };
+  });
 
   kickLearnQueueRunner = schedule;
   schedule(LEARN_QUEUE_RUNNER_DELAYS.bootMs);
   return () => {
-    stopped = true;
     kickLearnQueueRunner = null;
     if (timer) clearTimeout(timer);
+    return gate.stop();
   };
 }
 
@@ -1048,40 +1399,36 @@ async function learnProcessContext(): Promise<ProcessMaterialContext> {
   }, liveTeams);
 }
 
-function startLearnBrainBackfillRunner(): () => void {
-  let stopped = false;
-  let running = false;
+function startLearnBrainBackfillRunner(): () => Promise<void> {
+  const gate = createSingleFlightBackgroundGate();
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const schedule = (delayMs = LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.idleMs) => {
-    if (stopped) return;
+    if (gate.isStopped()) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void tick(), Math.max(0, delayMs));
     timer.unref?.();
   };
 
-  const tick = async () => {
-    if (stopped) return;
-    if (running) { schedule(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.alreadyRunningMs); return; }
-    running = true;
+  const tick = (): Promise<void> => gate.run(async () => {
     try {
       const result = await syncUnsyncedMaterialsToBrain({ limit: 2 });
-      if (result.attempted > 0) publishStoreChange('materials:brainSync');
+      if (!appShutdown.isQuiescing() && result.attempted > 0) {
+        publishStoreChange('materials:brainSync');
+      }
       schedule(result.remaining > 0 ? LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.activeMs : LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.idleMs);
     } catch (e) {
       console.warn('[learn] brain backfill failed:', e);
       schedule(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.retryMs);
-    } finally {
-      running = false;
     }
-  };
+  });
 
   kickLearnBrainBackfillRunner = schedule;
   schedule(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.bootMs);
   return () => {
-    stopped = true;
     kickLearnBrainBackfillRunner = null;
     if (timer) clearTimeout(timer);
+    return gate.stop();
   };
 }
 
@@ -1804,10 +2151,10 @@ function isOnScreen(s: WinState): boolean {
   });
 }
 
-async function createWindow(): Promise<void> {
+async function createWindow(): Promise<BrowserWindow> {
   const st = loadWinState();
   const placeAt = isOnScreen(st) && typeof st.x === 'number' && typeof st.y === 'number';
-  win = new BrowserWindow({
+  const target = new BrowserWindow({
     width: st.width,
     height: st.height,
     ...(placeAt ? { x: st.x, y: st.y } : {}),
@@ -1824,13 +2171,21 @@ async function createWindow(): Promise<void> {
       spellcheck: !rendererSafeMode, // safe mode favors stability over text-service integrations
     },
   });
+  win = target;
 
   if (st.fullScreen) win.setFullScreen(true);
   // Persist geometry (debounced on move/resize; immediate on close + before-quit) so the next
   // launch — including after a self-update relaunch — reopens at the same size/position.
   let saveT: ReturnType<typeof setTimeout> | null = null;
-  const saveNow = () => { if (saveT) { clearTimeout(saveT); saveT = null; } if (win) saveWinState(win); };
-  const scheduleSave = () => { if (saveT) clearTimeout(saveT); saveT = setTimeout(saveNow, 400); };
+  const saveNow = () => {
+    if (saveT) { clearTimeout(saveT); saveT = null; }
+    if (!appShutdown.isQuiescing() && win) saveWinState(win);
+  };
+  const scheduleSave = () => {
+    if (appShutdown.isQuiescing()) return;
+    if (saveT) clearTimeout(saveT);
+    saveT = setTimeout(saveNow, 400);
+  };
   win.on('resize', scheduleSave);
   win.on('move', scheduleSave);
   win.on('close', saveNow);
@@ -1840,8 +2195,7 @@ async function createWindow(): Promise<void> {
     if (details.reason === 'crashed' || details.reason === 'oom') {
       crashState = recordRendererCrash(details);
       if (!rendererSafeMode) {
-        app.relaunch();
-        app.exit(0);
+        void appShutdown.request({ kind: 'relaunch' });
         return;
       }
     }
@@ -1934,11 +2288,13 @@ async function createWindow(): Promise<void> {
         } catch (err) {
           console.error('screenshot failed:', err);
         }
-        app.quit();
+        void appShutdown.request({ kind: 'quit' });
       }, 3500);
     });
   }
   await initialRendererLoad;
+  if (pendingSecondInstanceFocus) focusPrimaryConsumerWindow();
+  return target;
 }
 
 async function archiveScheduledDreams(team: string): Promise<{ archived: number; discovered: number }> {
@@ -1973,19 +2329,17 @@ async function archiveAllScheduledDreams(): Promise<number> {
   return archived;
 }
 
-function startScheduledDreamArchiveLoop(): () => void {
-  let running = false;
-  const run = async () => {
-    if (running) return;
-    running = true;
-    try { await archiveAllScheduledDreams(); }
-    finally { running = false; }
-  };
+function startScheduledDreamArchiveLoop(): () => Promise<void> {
+  const gate = createSingleFlightBackgroundGate();
+  const run = (): Promise<void> => gate.run(async () => {
+    await archiveAllScheduledDreams();
+  });
   const initial = setTimeout(() => void run(), 5_000);
   const interval = setInterval(() => void run(), 5 * 60 * 1000);
   return () => {
     clearTimeout(initial);
     clearInterval(interval);
+    return gate.stop();
   };
 }
 
@@ -1999,7 +2353,11 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'update:check':
       return checkForUpdate();
     case 'update:applyNow':
-      return { applying: applyStagedAndRelaunch() };
+      {
+        const applying = prepareStagedUpdateInstall();
+        if (applying) void appShutdown.request({ kind: 'install-update' });
+        return { applying };
+      }
     case 'update:getSettings':
       return loadSettings().update ?? null;
     case 'update:setSettings':
@@ -2365,38 +2723,53 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'cu:openPermission':
       return openPermissionSettings(args[0] as CuPermissionPane);
     case 'cu:relaunch':
-      relaunchApp();
+      void appShutdown.request({ kind: 'relaunch' });
       return { ok: true };
     default:
       return bridgeCall(method, args);
   }
 }
 
-// Single IPC entry point → app methods + allowlisted bridge methods.
-ipcMain.handle('idagents:call', async (event, method: string, args: unknown[]) => {
-  try {
-    requireTrustedIpcSender(event);
-    const result = await appCall(method, args);
-    // Mirror successful control actions to the self-learning brain (best-effort, fire-and-forget):
-    // this is the single choke point every renderer mutation flows through, so the brain learns
-    // config/org/project changes that never reach the manager. Never awaited — can't delay the reply.
-    const safeArgs = sanitizeSecretPayload(Array.isArray(args) ? args : []);
-    const safeResult = sanitizeSecretPayload(result);
-    recordControlAction(method, safeArgs, safeResult);
-    publishStoreChange(method);
-    return { ok: true, result: safeResult };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-});
+if (ownsSingleInstanceLock) {
+  // Single IPC entry point → app methods + allowlisted bridge methods.
+  ipcMain.handle('idagents:call', async (event, method: string, args: unknown[]) => {
+    try {
+      requireTrustedIpcSender(event);
+      if (appShutdown.isQuiescing()) {
+        throw new Error('IDACC is shutting down and cannot accept new requests.');
+      }
+      const finishIpcCall = activeIpcWork.begin();
+      try {
+        const result = await appCall(method, args);
+        const safeResult = sanitizeSecretPayload(result);
+        if (!appShutdown.isQuiescing()) {
+          // Mirror successful control actions to the self-learning brain (best-effort,
+          // fire-and-forget). Once shutdown starts, do not create fresh learning,
+          // audit, or renderer-sync work behind the cleanup barrier.
+          const safeArgs = sanitizeSecretPayload(Array.isArray(args) ? args : []);
+          recordControlAction(method, safeArgs, safeResult);
+          publishStoreChange(method);
+        }
+        return { ok: true, result: safeResult };
+      } finally {
+        finishIpcCall();
+      }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
-// Write-only clipboard channel for user-invoked copy actions. Keep this separate
-// from idagents:call so copied communication text never enters the control log.
-ipcMain.handle('idagents:clipboardWrite', (event, value: unknown) => {
-  requireTrustedIpcSender(event);
-  clipboard.writeText(String(value ?? ''));
-  return true;
-});
+  // Write-only clipboard channel for user-invoked copy actions. Keep this separate
+  // from idagents:call so copied communication text never enters the control log.
+  ipcMain.handle('idagents:clipboardWrite', (event, value: unknown) => {
+    requireTrustedIpcSender(event);
+    if (appShutdown.isQuiescing()) {
+      throw new Error('IDACC is shutting down and cannot accept new requests.');
+    }
+    clipboard.writeText(String(value ?? ''));
+    return true;
+  });
+}
 
 // Headless self-test of the update flow (no window). IDCTL_UPDATE_SELFTEST=
 //   check → run a manifest check, print status, quit.
@@ -2408,8 +2781,11 @@ ipcMain.handle('idagents:clipboardWrite', (event, value: unknown) => {
 // Dev-only (never in the packaged app) so the shipped build can't be coaxed into
 // serving screenshots headlessly via an env var.
 const cuSelftest = !app.isPackaged && process.env.IDCTL_CU_SELFTEST;
-if (cuSelftest) {
-  setTimeout(() => { console.log('CU_SELFTEST_TIMEOUT'); app.exit(1); }, 15000).unref?.();
+if (ownsSingleInstanceLock && cuSelftest) {
+  setTimeout(() => {
+    console.log('CU_SELFTEST_TIMEOUT');
+    void appShutdown.request({ kind: 'exit', code: 1 });
+  }, 15000).unref?.();
   app.whenReady().then(async () => {
     await startBroker(() => {});
     setWatching(true);
@@ -2444,7 +2820,7 @@ if (cuSelftest) {
     } catch (e) {
       console.log('CU_SELFTEST_ERR ' + (e instanceof Error ? e.message : String(e)));
     }
-    app.quit();
+    void appShutdown.request({ kind: 'quit' });
   });
 }
 
@@ -2453,20 +2829,24 @@ if (cuSelftest) {
 const driverProbe = process.env.IDCTL_CU_DRIVERPROBE;
 const selftest = process.env.IDCTL_UPDATE_SELFTEST;
 const stackSelftest = process.env.IDACC_STACK_SELFTEST;
-if (cuSelftest) { /* handled above */ } else if (driverProbe) {
+if (!ownsSingleInstanceLock) {
+  // The shutdown request was issued immediately after the lock attempt. The
+  // secondary process deliberately performs no ready/startup/profile work.
+} else if (cuSelftest) { /* handled above */ } else if (driverProbe) {
   app.whenReady().then(() => {
     console.log('CU_DRIVER ' + JSON.stringify({ cap: driverCapability(), mouse: getMousePos() }));
-    app.exit(0);
+    void appShutdown.request({ kind: 'exit', code: 0 });
   });
 } else if (selftest) {
   app.whenReady().then(async () => {
     const st = await checkForUpdate();
     console.log('SELFTEST_STATUS ' + JSON.stringify(st));
     if (selftest === 'apply' && st.staged) {
-      const applied = applyStagedAndRelaunch(); // spawns detached swapper, then quits
+      const applied = prepareStagedUpdateInstall();
       console.log('SELFTEST_APPLY ' + applied);
+      if (applied) void appShutdown.request({ kind: 'install-update' });
     } else {
-      app.quit();
+      void appShutdown.request({ kind: 'quit' });
     }
   });
 } else if (stackSelftest) {
@@ -2627,22 +3007,33 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
     }
 
     try {
-      await stopUnifiedStack();
+      const firstStop = stopUnifiedStack();
+      const concurrentStop = stopUnifiedStack();
+      if (firstStop !== concurrentStop) {
+        throw new Error('unified stack shutdown was not single-flight');
+      }
+      await firstStop;
     } catch (error) {
       resultPublished = false;
       console.error('IDACC_STACK_SELFTEST_STOP_ERROR ' + (
         error instanceof Error ? error.message : String(error)
       ));
     }
-    app.exit(status.ready && authPassed && !selftestError && resultPublished ? 0 : 1);
+    void appShutdown.request({
+      kind: 'exit',
+      code: status.ready && authPassed && !selftestError && resultPublished ? 0 : 1,
+    });
   });
 } else {
-  void app.whenReady()
+  const startup = app.whenReady()
     .then(() => runStartupRecoveryLoop(async () => {
+      requireConsumerStartupActive();
+      prepareConsumerBackgroundActivitiesForStartup();
       startupRecoveryActive = true;
       const profile = initializeAppProfile();
       configureSecureSettings();
       const startedStack = await startUnifiedStack(profile);
+      requireConsumerStartupActive();
       const managerUrl = startedStack.services.find((service) => service.name === 'manager')?.url;
       if (managerUrl) updateManagedManagerProfileUrl(profile.config, managerUrl);
       const activeManagerUrl = managerUrl || process.env.MANAGER_URL || 'http://127.0.0.1:4110';
@@ -2651,6 +3042,7 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
       configureComputerUseAuditManager(activeManagerUrl, adminToken);
       configureKeyProviderFromSettings();
       await createWindow();
+      requireConsumerStartupActive();
       // Treat the app-owned Computer Use controller as part of startup. If its
       // private loopback listener cannot bind, recovery closes the new window
       // and stops the unified stack before any long-lived handlers are added.
@@ -2658,26 +3050,16 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
         (frame) => { try { win?.webContents.send('computeruse:frame', frame); } catch { /* window gone */ } },
         (evt) => { try { win?.webContents.send('computeruse:pending', evt); } catch { /* window gone */ } },
       );
-      // Persist window geometry on EVERY quit path (Cmd-Q, menu, and the self-update relaunch,
-      // which calls app.quit()) before the window is destroyed — registered once, app-wide.
-      app.on('before-quit', () => { if (win && !win.isDestroyed()) saveWinState(win); });
-      let stackShutdownStarted = false;
-      let stackShutdownComplete = false;
-      app.on('before-quit', (event) => {
-        if (stackShutdownComplete) return;
-        event.preventDefault();
-        if (stackShutdownStarted) return;
-        stackShutdownStarted = true;
-        void stopUnifiedStack().finally(() => {
-          stackShutdownComplete = true;
-          app.quit();
-        });
-      });
+      requireConsumerStartupActive();
       // Reactive org-sync: keep every agent's goals & instructions file composed from the lead
       // hierarchy + brain team-instructions (first pass ~15s after boot, then every 5 min).
-      try { startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }
+      try { stopOrgSyncRunner = startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }
       // Keep model lanes current and notify mounted pickers after each bounded refresh pass.
-      try { startModelRefreshLoop(() => publishStoreChange('runtime:probe')); } catch (e) { console.warn('[model-refresh] failed to start:', e); }
+      try {
+        stopModelRefreshRunner = startModelRefreshLoop(() => publishStoreChange('runtime:probe'));
+      } catch (e) {
+        console.warn('[model-refresh] failed to start:', e);
+      }
       // Globally available by default, but only active goals whose own Autopilot
       // switch is enabled can gap-fill fleet tasks.
       try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
@@ -2687,16 +3069,25 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
       try {
         configureAutomaticBrainApprovalReview();
         stopBrainApprovalAutomation = startBrainApprovalAutomationLoop((result) => {
-          void syncBrainApprovalInbox({ force: true }).finally(() => {
-            publishStoreChange('brainApproval:autoReview');
-            recordControlAction('brainApproval:autoReview', ['background'], result);
-          });
+          if (appShutdown.isQuiescing()) return;
+          const publish = () => {
+            if (!appShutdown.isQuiescing()) {
+              publishStoreChange('brainApproval:autoReview');
+              recordControlAction('brainApproval:autoReview', ['background'], result);
+            }
+          };
+          const sync = syncBrainApprovalInbox({ force: true })
+            .then(publish, publish)
+            .then(() => undefined);
+          activeBrainApprovalInboxSyncs.add(sync);
+          void sync.then(() => { activeBrainApprovalInboxSyncs.delete(sync); });
         });
         void runBrainApprovalAutomationOnce();
       } catch (e) { console.warn('[brain-approval-review] failed to start:', e); }
       // Work > Learn queue: process newly-added materials even when the Learn tab is not mounted.
       try {
         stopMaterialChangeBridge = subscribeMaterialChanges((reason, material) => {
+          if (appShutdown.isQuiescing()) return;
           publishStoreChange(reason === 'tasks' ? 'materials:tasks' : 'materials:changed');
           if (reason === 'write' && 'status' in material && material.status === 'queued') {
             kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.queuedWriteKickMs);
@@ -2727,36 +3118,32 @@ if (cuSelftest) { /* handled above */ } else if (driverProbe) {
         setPanicHotkey(ok);
         if (!ok) console.warn('[cu] PANIC hotkey not registered (already taken); use the on-screen button');
       } catch { /* the on-screen PANIC button is the fallback */ }
-      app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length !== 0) return;
-        void createWindow()
-          .then(() => { if (win && !win.isDestroyed()) startUpdaterSafely(win); })
-          .catch((error) => handleUnrecoverableStartupFailure(error));
-      });
+      consumerActivationReady = true;
+      if (pendingConsumerActivation) {
+        pendingConsumerActivation = false;
+        handleConsumerAppActivation();
+      }
       if (win && !win.isDestroyed()) startUpdaterSafely(win);
       startupRecoveryActive = false;
     }, handleConsumerStartupFailure))
     .then((started) => {
-      if (!started) app.quit();
+      if (!started) void appShutdown.request({ kind: 'quit' });
     })
     .catch((error) => handleUnrecoverableStartupFailure(error));
+  consumerStartupPromise = startup;
+  const clearStartupPromise = () => {
+    if (consumerStartupPromise === startup) consumerStartupPromise = null;
+  };
+  void startup.then(clearStartupPromise, clearStartupPromise);
 }
 
-app.on('will-quit', stopUpdater);
-app.on('will-quit', stopBroker);
-app.on('will-quit', () => { try { stopGoalDriver?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { stopLearnQueueRunner?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { stopLearnBrainBackfillRunner?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { stopMaterialChangeBridge?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { stopBrainApprovalAutomation?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { stopDraftDispatcher?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { stopScheduledDreamArchive?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* */ } });
-app.on('child-process-gone', (_event, details) => {
-  logProcessExit('child-process', details as unknown as Record<string, unknown>);
-});
+if (ownsSingleInstanceLock) {
+  app.on('child-process-gone', (_event, details) => {
+    logProcessExit('child-process', details as unknown as Record<string, unknown>);
+  });
 
-app.on('window-all-closed', () => {
-  if (startupRecoveryActive || BrowserWindow.getAllWindows().length > 0) return;
-  if (process.platform !== 'darwin') app.quit();
-});
+  app.on('window-all-closed', () => {
+    if (startupRecoveryActive || BrowserWindow.getAllWindows().length > 0) return;
+    if (process.platform !== 'darwin') void appShutdown.request({ kind: 'quit' });
+  });
+}

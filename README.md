@@ -58,7 +58,12 @@ IDACC. On first launch, IDACC:
 1. verifies and starts its bundled Manager and Brain on private random loopback
    ports;
 2. lets you connect an existing subscription CLI, a local model server, or an
-   API provider;
+   API provider, while clearly identifying which verified routes can expose the
+   Brain MCP required by the starter workspace. Claude/Codex routes are proven
+   at the runtime level; each Ollama starter model must report `tools` through
+   the bounded native `/api/show` check. Other provider models remain available
+   for general agents but are not presented as starter-ready without
+   deterministic tool-capability evidence;
 3. validates the live model route before creating anything;
 4. preserves existing agents and creates only missing starter roles; and
 5. verifies the lead, coder, researcher, hierarchy, instructions, and health
@@ -71,6 +76,14 @@ The bundled Manager, Brain, listener, agents, and scheduled workers are
 supervised children of IDACC and stop when the application exits. Recurring
 work resumes from profile-owned state on the next launch; IDACC does not install
 a background daemon or promise execution while the application is closed.
+
+IDACC allows one consumer application instance per operating-system user. It
+acquires that lock before selecting or migrating a profile. Opening IDACC again
+restores and focuses the existing window; the secondary process does not touch
+profile data. During quit, restart, or update installation, new work is refused
+and admitted startup/background work shares a 45-second drain deadline. If
+cleanup cannot be confirmed, IDACC stays open and offers a guarded retry instead
+of forcing an exit or applying an update over live local services.
 
 Provider subscription CLIs are intentionally not bundled. IDACC can detect and
 open visible vendor install/sign-in flows, but provider credentials stay with

@@ -141,6 +141,12 @@ and verifies them, typechecks the application, audits every production
 dependency tree, builds an unpacked application, runs the clean-stack release
 smoke test, and uploads short-lived provenance evidence.
 
+Windows builds also compile the app-owned Job Host twice from the committed C#
+source, require byte-identical output, and record its source/compiler/binary
+digests in the build evidence. Production packaging Authenticode-signs that
+host and verifies its exact publisher alongside the desktop executable and
+installer; unsigned CI builds remain pinned to the deterministic binary digest.
+
 The Manager source repository is public; the Brain source repository is
 private. The IDACC repository must provide `RUNTIME_SOURCE_TOKEN` as a
 **repository-level Actions secret**, using a fine-grained personal access token

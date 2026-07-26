@@ -9,6 +9,7 @@
 import type { ManagerClient } from '../../../idctl/src/api/client.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
 import { defaultGoalDriverSettings } from '../../../idctl/src/settings/schema.ts';
+import { createSingleFlightBackgroundGate } from './backgroundActivity.ts';
 import { getGoal, goalPriorityRank, listGoals, normalizeGoalPriority, type Goal } from './goalstore.ts';
 
 export interface GoalDriverConfig {
@@ -247,34 +248,29 @@ export async function runGoalDriverOnce(getClient: () => ManagerClient, rawCfg: 
   return summary;
 }
 
-export function startGoalDriverLoop(getClient: () => ManagerClient, getCfg: () => Partial<GoalDriverConfig>): () => void {
-  let stopped = false;
-  let running = false;
+export function startGoalDriverLoop(getClient: () => ManagerClient, getCfg: () => Partial<GoalDriverConfig>): () => Promise<void> {
+  const gate = createSingleFlightBackgroundGate();
   let lastConfigStamp = '';
 
-  const tick = async () => {
-    if (stopped || running) return;
+  const tick = (): Promise<void> => gate.run(async () => {
     const cfg = normalizeGoalDriverConfig(getCfg());
     const stamp = JSON.stringify(goalDriverControlValue(cfg));
     if (stamp === lastConfigStamp) return;
-    running = true;
     try {
       await syncGoalDriverConfig(getClient(), cfg);
       lastConfigStamp = stamp;
     } catch (e) {
       console.warn('[goaldriver] manager cadence sync failed:', e);
-    } finally {
-      running = false;
     }
-  };
+  });
 
   const t0 = setTimeout(() => void tick(), 5_000);
   const iv = setInterval(() => void tick(), 60_000);
   (t0 as { unref?: () => void }).unref?.();
   (iv as { unref?: () => void }).unref?.();
   return () => {
-    stopped = true;
     clearTimeout(t0);
     clearInterval(iv);
+    return gate.stop();
   };
 }

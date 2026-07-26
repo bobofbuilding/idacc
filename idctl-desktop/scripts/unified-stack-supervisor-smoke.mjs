@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import {
   chmodSync,
   mkdirSync,
@@ -32,9 +34,359 @@ import {
   normalizeBrainAutomationSettings,
 } from '../../idctl/src/settings/schema.ts';
 import {
+  createManagedProcessLaunchCoordinator,
+  managedProcessTreeTerminationFailed,
+  terminateManagedProcessTree,
+} from '../src/main/managedProcessTree.ts';
+import {
   loadSettings,
   setBrainAutomationSettings,
 } from '../../idctl/src/settings/store.ts';
+
+class FakeManagedChild extends EventEmitter {
+  constructor(pid, onKill = () => {}) {
+    super();
+    this.pid = pid;
+    this.exitCode = null;
+    this.signalCode = null;
+    this.killCalls = [];
+    this.onKill = onKill;
+  }
+
+  kill(signal) {
+    this.killCalls.push(signal);
+    this.onKill(signal, this);
+    return true;
+  }
+
+  exit(code = 0, signal = null) {
+    this.exitCode = code;
+    this.signalCode = signal;
+    this.emit('exit', code, signal);
+  }
+}
+
+const managedProcessTreeSource = readFileSync(
+  new URL('../src/main/managedProcessTree.ts', import.meta.url),
+  'utf8',
+);
+const unifiedStackSource = readFileSync(
+  new URL('../src/main/unifiedStack.ts', import.meta.url),
+  'utf8',
+);
+const supervisorIntegrationSource = readFileSync(
+  new URL('./unified-stack-supervisor-integration.mjs', import.meta.url),
+  'utf8',
+);
+const windowsJobHostSource = readFileSync(
+  new URL('../src/native/IdaccJobHost.cs', import.meta.url),
+  'utf8',
+);
+const managedBootstrapSource = readFileSync(
+  new URL('../src/main/managed-service-bootstrap.cjs', import.meta.url),
+  'utf8',
+);
+const desktopBuildSource = readFileSync(
+  new URL('./build.mjs', import.meta.url),
+  'utf8',
+);
+assert.match(managedProcessTreeSource, /shell:\s*false/);
+assert.match(managedProcessTreeSource, /windowsHide:\s*true/);
+assert.match(managedProcessTreeSource, /Get-AuthenticodeSignature/);
+assert.match(managedProcessTreeSource, /SignerCertificate\.Subject -cne/);
+assert.match(managedProcessTreeSource, /windowsManagedJobs = new WeakMap/);
+assert.doesNotMatch(
+  managedProcessTreeSource,
+  /env:\s*process\.env/,
+  'the system process-tree helper must not inherit application credentials',
+);
+assert.match(
+  supervisorIntegrationSource,
+  /win32\.join\(systemRoot, 'System32', 'taskkill\.exe'\)/,
+  'the Windows test harness must resolve its cleanup helper from System32',
+);
+assert.match(
+  supervisorIntegrationSource,
+  /\['\/PID', String\(pid\), '\/T', '\/F'\]/,
+  'the Windows test harness must clean only its retained app PID and descendants',
+);
+assert.doesNotMatch(
+  managedProcessTreeSource,
+  /\btaskkill(?:\.exe)?\b/i,
+  'Windows process-tree cleanup must not escape its retained Job Host',
+);
+assert.match(windowsJobHostSource, /PROC_THREAD_ATTRIBUTE_JOB_LIST/);
+assert.match(windowsJobHostSource, /PROC_THREAD_ATTRIBUTE_HANDLE_LIST/);
+assert.match(windowsJobHostSource, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE/);
+assert.match(windowsJobHostSource, /ReadBoundedLine\(Console\.In, MAX_CONFIG_CHARS\)/);
+assert.match(windowsJobHostSource, /QueryInformationJobObject/);
+assert.match(
+  windowsJobHostSource,
+  /AcknowledgementOutcome\.StopRequested[\s\S]*TerminateAndDrainJob[\s\S]*DRAIN_FAILED_EXIT_CODE/,
+  'a pre-STARTED STOP must produce a queried-empty result before launch rejection',
+);
+assert.match(
+  windowsJobHostSource,
+  /!managedChildCreated[\s\S]*NO_CHILD_CREATED_EXIT_CODE[\s\S]*managedJobEmptyConfirmed[\s\S]*CREATED_JOB_DRAINED_EXIT_CODE/,
+  'pre-READY failures must distinguish no child from a created and queried-empty Job',
+);
+assert.match(
+  managedProcessTreeSource,
+  /actualPid === undefined[\s\S]*WINDOWS_JOB_HOST_NO_CHILD_EXIT_CODE/,
+  'the no-child proof must be accepted only before a READY runtime identity exists',
+);
+assert.match(
+  managedProcessTreeSource,
+  /host\.stderr\?\.pause\(\)[\s\S]*host\.stderr\?\.unshift\(bufferedStderr\)/,
+  'runtime stderr racing the STARTED handshake must be buffered and restored',
+);
+assert.match(managedBootstrapSource, /process\.stdin\.once\('end', requestManagedStop\)/);
+assert.match(managedBootstrapSource, /process\.emit\('SIGTERM', 'SIGTERM'\)/);
+assert.doesNotMatch(
+  unifiedStackSource,
+  /\bchild\.kill\(['"]SIG(?:TERM|KILL)['"]\)/,
+  'unified services must terminate through the managed process-tree boundary',
+);
+assert.equal(
+  (unifiedStackSource.match(/spawnManagedProcessTree\(process\.execPath/g) ?? []).length,
+  2,
+  'service and companion roots must each launch through the managed process boundary',
+);
+assert.equal(
+  (unifiedStackSource.match(/retainedManagedProcessTreeLaunchFailure\(error\)/g) ?? []).length,
+  2,
+  'service and companion launch failures must retain every unconfirmed Windows Job',
+);
+assert.equal(
+  (unifiedStackSource.match(/replacement is blocked/g) ?? []).length,
+  2,
+  'an unconfirmed launch cleanup must block service and companion replacement',
+);
+assert.match(
+  managedProcessTreeSource,
+  /windowsAbortAfterReadyForTest[\s\S]*fail\('Windows Job Host launch aborted after READY/,
+  'the Windows integration seam must fail after CreateProcess and before STARTED',
+);
+assert.match(
+  desktopBuildSource,
+  /__IDACC_WINDOWS_JOB_HOST_ABORT_AFTER_READY_TEST__:\s*'false'/,
+  'packaged builds must compile the post-CreateProcess fault injection inert',
+);
+assert.doesNotMatch(
+  unifiedStackSource,
+  /windows(?:AbortAfterReady|ForceLaunchCleanupTimeout)ForTest/,
+  'profile, service, companion, and renderer inputs must not activate Job Host fault injection',
+);
+assert.equal(
+  (
+    unifiedStackSource.match(
+      /process\.platform !== 'win32'\s*&& !is(?:CompanionAlive|ChildAlive)\(/g,
+    ) ?? []
+  ).length,
+  2,
+  'Windows shutdown retries must re-evaluate an exact retained host instead of pre-recording a stale failure',
+);
+assert.equal(
+  (managedProcessTreeSource.match(/detached:\s*true/g) ?? []).length,
+  1,
+  'POSIX managed roots must create one isolated process group at the boundary',
+);
+assert.match(
+  unifiedStackSource,
+  /pid:\s*running \? service\.actualPid/,
+  'service status must publish the runtime PID rather than the Windows host PID',
+);
+assert.match(
+  unifiedStackSource,
+  /if \(shutdownPromise\) return shutdownPromise/,
+  'concurrent shutdown calls must share one attempt',
+);
+assert.match(
+  unifiedStackSource,
+  /ID_AUTO_ATTACH_BRAIN_MCP:\s*'1'/,
+  'managed Manager must pin automatic Brain MCP attachment on',
+);
+assert.match(
+  unifiedStackSource,
+  /BRAIN_CONTEXT_DISABLED:\s*'false'/,
+  'managed Manager must pin Brain context/control integration on',
+);
+assert.match(
+  unifiedStackSource,
+  /stopping = true;[\s\S]*await managedLaunches\.drain\(\);[\s\S]*for \(const companion of companions\.values\(\)\)/,
+  'shutdown must drain admitted launches before enumerating owned children',
+);
+assert.match(
+  unifiedStackSource,
+  /if \(processTreeError\) \{\s*service\.phase = 'unhealthy';\s*return;\s*\}\s*if \(manualRestart\)/,
+  'a service replacement must stay blocked when prior-tree cleanup fails',
+);
+assert.match(
+  unifiedStackSource,
+  /if \(processTreeError\) \{\s*companion\.phase = 'unhealthy';\s*return;\s*\}\s*companion\.restartAttempts/,
+  'a companion replacement must stay blocked when prior-tree cleanup fails',
+);
+
+{
+  const coordinator = createManagedProcessLaunchCoordinator();
+  const owner = {};
+  let releaseLaunch;
+  const launchGate = new Promise((resolve) => { releaseLaunch = resolve; });
+  let installed = false;
+  const first = coordinator.run(owner, async () => {
+    await launchGate;
+    installed = true;
+  });
+  const duplicate = coordinator.run(owner, async () => {
+    throw new Error('a duplicate owner launch must never run');
+  });
+  assert.equal(first, duplicate, 'managed launches must be single-flight per owner');
+  assert.equal(coordinator.activeCount(), 1);
+  const drained = coordinator.drain();
+  let drainSettled = false;
+  void drained.then(() => { drainSettled = true; });
+  await Promise.resolve();
+  assert.equal(drainSettled, false, 'shutdown drain must wait for an admitted launch');
+  releaseLaunch();
+  await drained;
+  assert.equal(installed, true);
+  assert.equal(coordinator.activeCount(), 0);
+}
+
+{
+  const child = new FakeManagedChild(7272);
+  const groupSignals = [];
+  let groupAlive = true;
+  const result = await terminateManagedProcessTree(
+    child,
+    () => true,
+    {
+      platform: 'linux',
+      currentPid: 100,
+      detachedProcessGroup: true,
+      graceMs: 1,
+      forceWaitMs: 5,
+      killProcess: (pid, signal) => {
+        if (signal === 0) return groupAlive;
+        groupSignals.push([pid, signal]);
+        if (signal === 'SIGTERM') {
+          // The root exits gracefully while an inherited descendant remains.
+          child.exit(0);
+        } else if (signal === 'SIGKILL') {
+          groupAlive = false;
+        }
+        return true;
+      },
+    },
+  );
+  assert.deepEqual(groupSignals, [
+    [-7272, 'SIGTERM'],
+    [-7272, 'SIGKILL'],
+  ]);
+  assert.deepEqual(child.killCalls, []);
+  assert.equal(result.treeKillSucceeded, true);
+  assert.equal(result.exited, true);
+}
+
+{
+  const child = new FakeManagedChild(7373);
+  child.exit(0);
+  const groupSignals = [];
+  const result = await terminateManagedProcessTree(
+    child,
+    () => true,
+    {
+      platform: 'linux',
+      currentPid: 100,
+      detachedProcessGroup: true,
+      ownedProcessGroupId: 7374,
+      killProcess: (pid, signal) => {
+        groupSignals.push([pid, signal]);
+        return true;
+      },
+    },
+  );
+  assert.equal(result.accepted, false);
+  assert.deepEqual(groupSignals, []);
+}
+
+if (process.platform !== 'win32') {
+  const fixture = mkdtempSync(join(tmpdir(), 'idacc-process-group-'));
+  const descendantPidPath = join(fixture, 'descendant.pid');
+  let processGroupId;
+  try {
+    const descendantSource = `
+      process.on('SIGTERM', () => {});
+      if (process.send) process.send('ready');
+      setInterval(() => {}, 1_000);
+    `;
+    const rootSource = `
+      const { spawn } = require('node:child_process');
+      const { writeFileSync } = require('node:fs');
+      const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantSource)}], {
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      });
+      descendant.once('message', () => {
+        writeFileSync(process.env.IDACC_TEST_DESCENDANT_PID_FILE, String(descendant.pid), {
+          mode: 0o600,
+        });
+        process.exit(0);
+      });
+      setTimeout(() => process.exit(2), 5_000).unref();
+    `;
+    const root = spawn(process.execPath, ['-e', rootSource], {
+      detached: true,
+      stdio: 'ignore',
+      env: {
+        ...process.env,
+        IDACC_TEST_DESCENDANT_PID_FILE: descendantPidPath,
+      },
+    });
+    processGroupId = Number(root.pid);
+    assert.equal(Number.isSafeInteger(processGroupId) && processGroupId > 0, true);
+    await new Promise((resolve, reject) => {
+      root.once('error', reject);
+      root.once('exit', (code, signal) => {
+        if (code === 0 && signal === null) resolve();
+        else reject(new Error(`process-group fixture root exited with ${code ?? signal}`));
+      });
+    });
+
+    const descendantPid = Number(readFileSync(descendantPidPath, 'utf8').trim());
+    assert.equal(Number.isSafeInteger(descendantPid) && descendantPid > 0, true);
+    assert.doesNotThrow(
+      () => process.kill(descendantPid, 0),
+      'the fixture descendant must survive its process-group root',
+    );
+
+    const result = await terminateManagedProcessTree(
+      root,
+      () => true,
+      {
+        platform: process.platform,
+        currentPid: process.pid,
+        detachedProcessGroup: true,
+        ownedProcessGroupId: processGroupId,
+        graceMs: 100,
+        forceWaitMs: 3_000,
+      },
+    );
+    assert.equal(result.accepted, true);
+    assert.equal(result.exited, true);
+    assert.equal(result.treeKillAttempted, true);
+    assert.equal(result.treeKillSucceeded, true);
+    assert.throws(
+      () => process.kill(descendantPid, 0),
+      (error) => error?.code === 'ESRCH',
+      'tree termination must remove a descendant after its root has exited',
+    );
+  } finally {
+    if (Number.isSafeInteger(processGroupId) && processGroupId > 0) {
+      try { process.kill(-processGroupId, 'SIGKILL'); } catch { /* group is already gone */ }
+    }
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}
 
 assert.deepEqual(defaultBrainAutomationSettings(), {
   cycleEnabled: false,

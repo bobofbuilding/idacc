@@ -4,6 +4,7 @@
  * never a developer's local Brain database, Learn blobs, or app/user session data.
  */
 import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -99,36 +100,125 @@ function checkAsar(resources, hits) {
   const asar = join(resources, 'app.asar');
   if (!existsSync(asar) || !lstatSync(asar).isFile()) {
     hits.push(`Missing packaged application archive: ${rel(asar)}`);
-    return;
+    return null;
   }
   const api = asarApi();
   if (!api) {
     hits.push(`Could not inspect app.asar because the asar tool is unavailable: ${rel(asar)}`);
-    return;
+    return null;
   }
   let entries;
   try {
     entries = api.listPackage(asar);
   } catch (error) {
     hits.push(`Could not read packaged application archive ${rel(asar)}: ${error instanceof Error ? error.message : String(error)}`);
-    return;
+    return null;
   }
+  let buildMode = null;
   for (const listedPath of entries) {
     const nativeEntry = String(listedPath).replace(/^[\\/]+/, '');
     const entry = portableArchiveEntry(listedPath);
     if (!entry || !nativeEntry) continue;
     checkPath(join(asar, ...entry.split('/')), hits);
-    if (!/^(?:out\/(?:main|preload|renderer)(?:\/|$)|package\.json$)/i.test(entry)) continue;
+    if (
+      !/^(?:out\/(?:main|preload|renderer)(?:\/|$)|out\/build-mode\.json$|package\.json$)/i
+        .test(entry)
+    ) continue;
     try {
       const stat = api.statFile(asar, nativeEntry, false);
       if (stat && typeof stat === 'object' && 'files' in stat) continue;
       const content = api.extractFile(asar, nativeEntry);
+      if (entry.toLowerCase() === 'out/build-mode.json') {
+        try {
+          buildMode = JSON.parse(content.toString('utf8'));
+        } catch {
+          hits.push(`Packaged build provenance is invalid JSON: ${rel(asar)}/out/build-mode.json`);
+        }
+      }
       for (const error of inspectConsumerTextEntry(`app.asar/${entry}`, content)) {
         hits.push(`Application bundle policy: ${error}`);
       }
     } catch (error) {
       hits.push(`Could not inspect first-party application entry ${entry}: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+  return buildMode;
+}
+
+function checkWindowsContainmentPayload(appPath, resources, hits, buildMode) {
+  if (!existsSync(join(appPath, 'ID Agents Control Center.exe'))) return;
+  const jobHost = join(
+    resources,
+    'app.asar.unpacked',
+    'out',
+    'native',
+    'idacc-job-host.exe',
+  );
+  const bootstrap = join(
+    resources,
+    'app.asar.unpacked',
+    'out',
+    'main',
+    'managed-service-bootstrap.cjs',
+  );
+  for (const [label, path, minimum, maximum] of [
+    ['Windows Job Host', jobHost, 4_096, 8 * 1024 * 1024],
+    ['managed-service bootstrap', bootstrap, 256, 256 * 1024],
+  ]) {
+    if (!existsSync(path)) {
+      hits.push(`Missing required ${label} payload: ${rel(path)}`);
+      continue;
+    }
+    const stat = lstatSync(path);
+    if (
+      stat.isSymbolicLink()
+      || !stat.isFile()
+      || stat.size < minimum
+      || stat.size > maximum
+    ) {
+      hits.push(`Invalid required ${label} payload: ${rel(path)}`);
+    }
+  }
+  if (existsSync(jobHost) && lstatSync(jobHost).isFile()) {
+    const magic = readFileSync(jobHost).subarray(0, 2);
+    if (magic.length !== 2 || magic[0] !== 0x4d || magic[1] !== 0x5a) {
+      hits.push(`Invalid Windows Job Host executable header: ${rel(jobHost)}`);
+    }
+  }
+  const provenance = buildMode?.windowsJobHost;
+  if (
+    !provenance
+    || provenance.buildPlatform !== 'win32'
+    || provenance.available !== true
+  ) {
+    hits.push('Packaged Windows build provenance does not enable its Job Host');
+    return;
+  }
+  const bootstrapSha256 = String(provenance.bootstrapSha256 || '');
+  if (!/^[0-9a-f]{64}$/.test(bootstrapSha256)) {
+    hits.push('Packaged Windows build provenance is missing the bootstrap SHA-256');
+  } else if (existsSync(bootstrap) && lstatSync(bootstrap).isFile()) {
+    const actual = createHash('sha256').update(readFileSync(bootstrap)).digest('hex');
+    if (actual !== bootstrapSha256) {
+      hits.push('Packaged managed-service bootstrap does not match build provenance');
+    }
+  }
+  if (provenance.verificationMode === 'sha256') {
+    const executableSha256 = String(provenance.executableSha256 || '');
+    if (!/^[0-9a-f]{64}$/.test(executableSha256)) {
+      hits.push('Packaged Windows build provenance is missing the Job Host SHA-256');
+    } else if (existsSync(jobHost) && lstatSync(jobHost).isFile()) {
+      const actual = createHash('sha256').update(readFileSync(jobHost)).digest('hex');
+      if (actual !== executableSha256) {
+        hits.push('Packaged Windows Job Host does not match unsigned build provenance');
+      }
+    }
+  } else if (
+    provenance.verificationMode !== 'authenticode-publisher'
+    || typeof provenance.expectedPublisher !== 'string'
+    || !provenance.expectedPublisher.trim()
+  ) {
+    hits.push('Packaged Windows Job Host verification policy is invalid');
   }
 }
 
@@ -149,7 +239,8 @@ for (const input of inputs) {
     if (!existsSync(resources) || !lstatSync(resources).isDirectory()) {
       hits.push(`Missing packaged application resources directory: ${rel(resources)}`);
     }
-    checkAsar(resources, hits);
+    const buildMode = checkAsar(resources, hits);
+    checkWindowsContainmentPayload(input, resources, hits, buildMode);
     const manifestRelative = join('idacc-runtime', 'manifest.json');
     for (const required of ['IDACC-LICENSE.txt', 'THIRD_PARTY_NOTICES.md', manifestRelative]) {
       if (!existsSync(join(resources, required))) hits.push(`Missing required application payload: ${rel(join(resources, required))}`);
