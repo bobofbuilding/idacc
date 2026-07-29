@@ -31,12 +31,14 @@ import {
 } from '../idctl-desktop/scripts/main-process-startup-policy.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const workflow = readFileSync(join(root, '.github', 'workflows', 'review-build.yml'), 'utf8');
-const ciWorkflow = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+const workflow = readFileSync(join(root, '.github', 'workflows', 'review-build.yml'), 'utf8')
+  .replace(/\r\n?/g, '\n');
+const ciWorkflow = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8')
+  .replace(/\r\n?/g, '\n');
 const productionWorkflow = readFileSync(
   join(root, '.github', 'workflows', 'release.yml'),
   'utf8',
-);
+).replace(/\r\n?/g, '\n');
 const pkg = JSON.parse(readFileSync(join(root, 'idctl-desktop', 'package.json'), 'utf8'));
 const builder = readFileSync(join(root, 'idctl-desktop', 'scripts', 'build.mjs'), 'utf8');
 const productionBuilder = readFileSync(

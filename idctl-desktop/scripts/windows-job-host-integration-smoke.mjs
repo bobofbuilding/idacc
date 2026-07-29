@@ -101,6 +101,21 @@ async function forceStopTestChild(child) {
   child.stderr?.destroy();
 }
 
+async function removeScratchDirectory(path) {
+  let lastError;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(error?.code)) throw error;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+    }
+  }
+  throw lastError;
+}
+
 async function expectLaunchFailure(
   module,
   overrides,
@@ -669,12 +684,7 @@ process.exit(0);
     await forceStopTestChild(host);
   }
   // Windows can keep a just-exited process's cwd or a newly written fixture
-  // under a short-lived scanner/stdio handle. fs.rm's bounded EBUSY retry is
-  // the platform-supported teardown path; a persistent lock still fails.
-  rmSync(scratch, {
-    recursive: true,
-    force: true,
-    maxRetries: 20,
-    retryDelay: 100,
-  });
+  // under a short-lived scanner/stdio handle. Retry the whole recursive
+  // cleanup so transient top-level rmdir locks are covered as well.
+  await removeScratchDirectory(scratch);
 }
