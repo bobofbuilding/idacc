@@ -3632,6 +3632,11 @@ if (ownsSingleInstanceLock) {
   });
 
   app.on('window-all-closed', () => {
+    // The headless stack self-test deliberately creates and destroys an
+    // isolated Brain dashboard window. On Linux and Windows, closing that
+    // fixture must not terminate Electron before the result is published and
+    // the supervised Manager/Brain shutdown has completed.
+    if (stackSelftest) return;
     if (startupRecoveryActive || BrowserWindow.getAllWindows().length > 0) return;
     if (process.platform !== 'darwin') void appShutdown.request({ kind: 'quit' });
   });
