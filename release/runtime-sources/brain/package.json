@@ -1,0 +1,36 @@
+{
+  "name": "@idagents/brain",
+  "version": "0.1.6",
+  "description": "Persistent skill knowledge graph and agent memory store",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node brain.mjs",
+    "mcp:serve": "node brain-mcp.mjs",
+    "graph:app": "electron electron/graph-app-main.mjs",
+    "graph:app:spawn": "env BRAIN_GRAPH_APP_START_SERVER=1 electron electron/graph-app-main.mjs",
+    "seed": "node brain.mjs seed seeds/skills.json",
+    "deploy:check": "node operator-tools/deploy-brain.mjs",
+    "route-skew": "node brain-client.mjs route-skew",
+    "validate:connectors": "node brain-connector-validate.mjs --registry",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "node --test test/e2e-self-improving-loop.test.mjs",
+    "test:curator": "node --test test/curator-workflow.test.mjs",
+    "test:eval-gates": "node --test test/eval-replay-gates.test.mjs",
+    "eval:retrieval": "node brain-eval.mjs retrieval-metrics"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.11",
+    "fast-uri": "3.1.4"
+  },
+  "devDependencies": {
+    "electron": "^42.5.0"
+  }
+}

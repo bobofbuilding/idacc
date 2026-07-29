@@ -77,12 +77,12 @@ assert.equal(incrementSemverPatch('v0.1.684'), '');
 
 const active = evaluateLegacyReleaseCutover(marker, {
   repository: 'bobofbuilding/idacc',
-  latestPublishedTag: 'v0.1.684',
+  latestPublishedTag: 'v0.1.619',
   tagRefs: exactRefs,
   releaseRecords: exactReleaseRecords,
 });
 assert.equal(active.active, true);
-assert.equal(active.changelogBaselineTag, 'v0.1.684');
+assert.equal(active.changelogBaselineTag, 'v0.1.619');
 assert.equal(active.firstCanonicalVersionMustExceed, 'v0.1.684');
 assert.deepEqual(active.allowTags, marker.legacyTags.map(({ tag }) => tag));
 assert.equal(active.legacyTagCount, 65);
@@ -300,7 +300,17 @@ assert.throws(
     tagRefs: exactRefs,
     releaseRecords: exactReleaseRecords,
   }),
-  /inside the recorded legacy range and cannot be GitHub Latest/,
+  /inside or at the recorded legacy range.*cannot replace.*v0\.1\.619/,
+);
+assert.throws(
+  () => evaluateLegacyReleaseCutover(marker, {
+    repository: 'bobofbuilding/idacc',
+    latestPublishedTag: 'v0.1.684',
+    tagRefs: exactRefs,
+    releaseRecords: exactReleaseRecords,
+  }),
+  /inside or at the recorded legacy range.*cannot replace.*v0\.1\.619/,
+  'the historical version floor must never silently become the changelog baseline',
 );
 assert.throws(
   () => evaluateLegacyReleaseCutover(marker, {

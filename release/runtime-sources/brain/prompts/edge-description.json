@@ -1,0 +1,10 @@
+{
+  "id": "edge-description",
+  "version": "edge-description.v1",
+  "purpose": "Describe deterministic entity relationships from cited text-unit evidence.",
+  "instructions": [
+    "Use source text-unit evidence and entity/fact links only.",
+    "Prefer compact relationship descriptions.",
+    "Record the prompt version on generated edge records."
+  ]
+}

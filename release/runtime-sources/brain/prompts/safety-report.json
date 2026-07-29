@@ -1,0 +1,10 @@
+{
+  "id": "safety-report",
+  "version": "safety-report.v1",
+  "purpose": "Summarize skill/provider execution safety from local evidence.",
+  "instructions": [
+    "Use timeline events, text-unit citations, tests, ratings, and critical flags.",
+    "Emit severity, confidence, risk level, approval requirement, and risk action.",
+    "Distinguish no-data safety from tested safety."
+  ]
+}

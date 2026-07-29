@@ -108,7 +108,10 @@ export function App() {
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const inboxSyncVersion = useSyncVersion(['questions', 'inbox']);
   const nav = DEFAULT_NAV;
-  // ⌘K command palette + right-side control drawer — the "drive everything" surface.
+  const commandPaletteShortcut = /Mac|iPhone|iPad|iPod/i.test(navigator.platform)
+    ? '⌘K'
+    : 'Ctrl+K';
+  // Cross-platform command palette + right-side control drawer — the "drive everything" surface.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerPanel, setDrawerPanel] = useState<string | null>(null);
   const drawerReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -226,7 +229,13 @@ export function App() {
     <div className="app">
       <div className="titlebar">
         <span className="titlebar-name">ID Agents Control Center{version ? ` · v${version}` : ''}</span>
-        <button className="cmdk-trigger" title="Command palette (⌘K)" onClick={() => setPaletteOpen(true)}>⌘K</button>
+        <button
+          className="cmdk-trigger"
+          title={`Command palette (${commandPaletteShortcut})`}
+          onClick={() => setPaletteOpen(true)}
+        >
+          {commandPaletteShortcut}
+        </button>
       </div>
       <div className="body">
         <nav className="sidebar">

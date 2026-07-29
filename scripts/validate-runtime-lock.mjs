@@ -9,6 +9,7 @@ import {
   readJson,
   validateRuntimeLock,
 } from './lib/runtime-provenance.mjs';
+import { verifyRuntimeSourceCapsule } from './lib/runtime-source-capsule.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const args = process.argv.slice(2);
@@ -21,6 +22,8 @@ function option(name, fallback = '') {
 const lockPath = resolve(option('--lock', join(root, 'release', 'runtime-lock.json')));
 const noSources = args.includes('--no-sources');
 const json = args.includes('--json');
+const explicitBrainSource = args.includes('--brain-source')
+  || Boolean(process.env.IDACC_BRAIN_SOURCE);
 const pinnedSources = join(root, '.runtime-sources');
 const managerSource = resolve(option(
   '--manager-source',
@@ -45,11 +48,33 @@ const inspections = {};
 if (!noSources && !errors.length) {
   for (const name of COMPONENT_NAMES) {
     const source = name === 'manager' ? managerSource : brainSource;
+    const component = lock.components[name];
+    if (component.distributionSource?.mode === 'vendored-capsule') {
+      const capsuleRoot = resolve(root, component.distributionSource.path);
+      const manifestPath = resolve(root, component.distributionSource.manifest);
+      inspections[name] = verifyRuntimeSourceCapsule({
+        root: capsuleRoot,
+        manifestPath,
+        component,
+        componentName: name,
+        containmentRoot: root,
+      });
+      errors.push(...inspections[name].errors);
+      if (name === 'brain' && explicitBrainSource) {
+        if (!existsSync(source)) {
+          errors.push(`${name} upstream source not found at ${source}`);
+        } else {
+          inspections.brainUpstream = inspectComponentSource(name, component, source);
+          errors.push(...inspections.brainUpstream.errors);
+        }
+      }
+      continue;
+    }
     if (!existsSync(source)) {
       errors.push(`${name} source not found at ${source}`);
       continue;
     }
-    inspections[name] = inspectComponentSource(name, lock.components[name], source);
+    inspections[name] = inspectComponentSource(name, component, source);
     errors.push(...inspections[name].errors);
   }
 }

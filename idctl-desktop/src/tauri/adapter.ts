@@ -420,8 +420,8 @@ function recoverPersonalSignAddress(message: string, signature: string): string 
   const v = bytes[64];
   const recovery = v >= 35 ? (v - 35) % 2 : v >= 27 ? v - 27 : v;
   if (recovery !== 0 && recovery !== 1) throw new Error('Controller signature has an unsupported recovery id.');
-  const sig = secp256k1.Signature.fromCompact(bytes.slice(0, 64)).addRecoveryBit(recovery);
-  const publicKey = sig.recoverPublicKey(personalSignHash(message)).toRawBytes(false);
+  const sig = secp256k1.Signature.fromBytes(bytes.slice(0, 64), 'compact').addRecoveryBit(recovery);
+  const publicKey = sig.recoverPublicKey(personalSignHash(message)).toBytes(false);
   return `0x${bytesToHex(keccak_256(publicKey.slice(1)).slice(-20))}`;
 }
 

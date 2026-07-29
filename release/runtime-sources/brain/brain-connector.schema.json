@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idacc.app/schemas/brain-connector.schema.json",
+  "title": "brain-connector.json",
+  "description": "Universal Brain Connector Protocol v1 (Plan 06). Declares how a project feeds Brain. Reverse-engineered from brain-connector-runner.mjs (the runner is the source of truth for which fields are honored), so this schema is a faithful authoring contract, not an aspirational one.",
+  "type": "object",
+  "required": ["project", "feeds"],
+  "additionalProperties": false,
+  "properties": {
+    "project": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable project identifier, e.g. \"catalog-service\" or \"agent-manager\". Exported to adapters as BRAIN_CONNECTOR_PROJECT."
+    },
+    "version": {
+      "type": "string",
+      "enum": ["1"],
+      "description": "Connector protocol version. Only \"1\" is defined. Runner defaults a missing value to \"1\"."
+    },
+    "brain_url": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Base URL of the Brain server. Runner defaults to $BRAIN_URL or http://127.0.0.1:4200 and exports it to adapters as BRAIN_URL."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-form operator notes. Ignored by the runner."
+    },
+    "feeds": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One entry per data feed. Feeds with no name are dropped by the runner.",
+      "items": { "$ref": "#/$defs/feed" }
+    }
+  },
+  "$defs": {
+    "feed": {
+      "type": "object",
+      "required": ["name", "type", "produces"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Feed name, unique within the connector. Exported as BRAIN_CONNECTOR_FEED_NAME and used in cursor-state filenames."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["poll", "event"],
+          "description": "\"poll\" runs the script on interval_seconds. \"event\" long-polls an event stream and hands each batch to the script (unless managed_by is set, in which case it is register-only)."
+        },
+        "produces": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Brain ingest data-kinds this feed writes. Each maps to a verified POST endpoint (see brain-connector-adapter-contract.md).",
+          "items": {
+            "type": "string",
+            "enum": ["graph/nodes", "graph/edges", "entities", "facts", "timeline"]
+          }
+        },
+        "source": {
+          "type": "string",
+          "description": "Logical source tag written into Brain rows (entities.source, timeline.source, facts.source). Exported as BRAIN_CONNECTOR_FEED_SOURCE."
+        },
+        "script": {
+          "type": "string",
+          "description": "Adapter script path (relative to the connector file, or absolute). Required for poll feeds; for event feeds, either script OR an event stream URL is required. *.mjs/*.cjs/*.js/*.ts run under node; anything else is exec'd directly."
+        },
+        "interval_seconds": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Poll cadence in seconds (default 3600). Runner clamps to >= 1."
+        },
+        "intervalSeconds": {
+          "type": "number",
+          "minimum": 1,
+          "description": "camelCase alias for interval_seconds (runner accepts both)."
+        },
+        "event_stream": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Event stream URL for event feeds. Runner long-polls it with the cursor param (default \"since\" for /events URLs, else \"cursor\") plus &wait=. Canonical field honored by the runner's eventStreamUrl() resolver."
+        },
+        "eventStream": { "type": "string", "minLength": 1, "description": "camelCase alias for event_stream (runner-recognized)." },
+        "url":         { "type": "string", "minLength": 1, "description": "Alias for event_stream (runner-recognized)." },
+        "stream_url":  { "type": "string", "minLength": 1, "description": "Alias for event_stream (runner-recognized)." },
+        "streamUrl":   { "type": "string", "minLength": 1, "description": "Alias for event_stream (runner-recognized)." },
+        "managed_by": {
+          "type": "string",
+          "description": "launchd unit (or other supervisor) that already runs this feed externally. The runner treats such event feeds as register-only (logs event_feed_managed_externally; does NOT start a second consumer)."
+        },
+        "managedBy": { "type": "string", "description": "camelCase alias for managed_by (runner-recognized)." },
+        "cursor": {
+          "type": ["string", "number"],
+          "description": "Initial cursor for event long-poll. Overridden by persisted cursor state once the feed has run."
+        },
+        "since":        { "type": ["string", "number"], "description": "Alias for cursor (runner reads cursor ?? since ?? start_cursor ?? startCursor)." },
+        "start_cursor": { "type": ["string", "number"], "description": "Alias for cursor (runner-recognized)." },
+        "startCursor":  { "type": ["string", "number"], "description": "camelCase alias for start_cursor (runner-recognized)." },
+        "cursor_param": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Override the query-param name used to send the cursor (default \"since\" for /events URLs, else \"cursor\")."
+        },
+        "cursorParam": { "type": "string", "minLength": 1, "description": "camelCase alias for cursor_param (runner-recognized)." },
+        "wait_seconds": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 120,
+          "description": "Long-poll wait window in seconds for event feeds. Runner clamps to [1,120] (default 30)."
+        },
+        "waitSeconds": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 120,
+          "description": "camelCase alias for wait_seconds."
+        },
+        "placeholder": {
+          "type": "boolean",
+          "description": "Mark a feed as an intentional stub that has no runner yet (no script / no event stream). When true, the runner-required check is waived; the runner skips it cleanly (adapter_skipped / event_skipped) until its source exists. Makes 'not wired yet' explicit so an accidental omission is still flagged."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "placeholder": { "const": true } }, "required": ["placeholder"] },
+          "else": {
+            "allOf": [
+              {
+                "if": { "properties": { "type": { "const": "poll" } }, "required": ["type"] },
+                "then": {
+                  "required": ["script"],
+                  "description": "Poll feeds must declare a script to run on interval (or be marked placeholder: true)."
+                }
+              },
+              {
+                "if": { "properties": { "type": { "const": "event" } }, "required": ["type"] },
+                "then": {
+                  "anyOf": [
+                    { "required": ["script"] },
+                    { "required": ["event_stream"] },
+                    { "required": ["eventStream"] },
+                    { "required": ["url"] },
+                    { "required": ["stream_url"] },
+                    { "required": ["streamUrl"] }
+                  ],
+                  "description": "Event feeds must declare a supervised script OR a runner-recognized event stream URL (or be marked placeholder: true)."
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

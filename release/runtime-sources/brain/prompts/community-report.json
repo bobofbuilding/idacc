@@ -1,0 +1,10 @@
+{
+  "id": "community-report",
+  "version": "deterministic-v1",
+  "purpose": "Generate auditable deterministic community reports.",
+  "instructions": [
+    "Do not generate a report without source text-unit IDs or fact IDs.",
+    "Include ranked findings, source text-unit IDs, fact IDs, rank, and confidence.",
+    "Keep summaries derived from deterministic community membership and cited evidence."
+  ]
+}

@@ -168,7 +168,9 @@ assert.match(workflow, /Promote draft matching an immutable successful-run artif
 assert.match(workflow, /runtime-source-tests:/);
 assert.match(workflow, /npm run ci:preflight --prefix \.runtime-sources\/manager/);
 assert.match(workflow, /npm run test:local-agent-lifecycle --prefix \.runtime-sources\/manager/);
-assert.match(workflow, /npm test --prefix \.runtime-sources\/brain/);
+assert.match(workflow, /node scripts\/runtime-source-capsule\.mjs materialize/);
+assert.match(workflow, /npm ci --omit=dev --prefix \.runtime-sources\/brain/);
+assert.doesNotMatch(workflow, /RUNTIME_SOURCE_TOKEN/);
 assert.match(workflow, /ref:\s*\$\{\{\s*needs\.validate\.outputs\.release_commit\s*\}\}/);
 assert.match(workflow, /Verify GitHub locked the published release/);
 assert.match(workflow, /Verify GitHub locked the promoted release/);
@@ -179,7 +181,8 @@ assert.match(workflow, /verify-public-release:/);
 assert.match(workflow, /node scripts\/verify-public-release\.mjs/);
 assert.match(workflow, /node scripts\/verify-update-descriptors\.mjs/);
 assert.match(workflow, /Revalidate updater semantics before immutable promotion/);
-assert.match(provenance, /repository-level Actions secret[\s\S]*RUNTIME_SOURCE_TOKEN|RUNTIME_SOURCE_TOKEN[\s\S]*repository-level/);
+assert.match(provenance, /vendored runtime capsule/i);
+assert.match(provenance, /do not require a\s+private runtime-source credential/i);
 assert.match(provenance, /RELEASE_ADMIN_TOKEN[\s\S]*Administration/);
 assert.equal(cutoverMarker.baselinePublishedTag, 'v0.1.619');
 assert.equal(cutoverMarker.firstCanonicalVersionMustExceed, 'v0.1.684');
@@ -199,6 +202,19 @@ assert.deepEqual(
 assert.match(gitignore, /^!release\/legacy-release-cutover\.json$/m);
 assert.match(contributing, /RELEASE_CUTOVER\.md/);
 assert.match(provenance, /RELEASE_CUTOVER\.md/);
+const documentedFrontier = `GitHub Latest and the changelog baseline remain \`${
+  cutoverMarker.baselinePublishedTag
+}\`; \`${cutoverMarker.firstCanonicalVersionMustExceed}\` is the historical version floor that the first canonical signed release must exceed.`;
+for (const [name, source] of [
+  ['RELEASE_CUTOVER.md', cutoverDocumentation],
+  ['RELEASE_PROVENANCE.md', provenance],
+  ['PRODUCT_SPEC.md', productSpec],
+]) {
+  assert.ok(
+    source.replace(/\s+/g, ' ').includes(documentedFrontier),
+    `${name} must distinguish the public changelog baseline from the historical version floor`,
+  );
+}
 assert.match(productSpec, /v0\.1\.620.*v0\.1\.684/s);
 assert.match(productSpec, /62.*published.*3.*absent/s);
 

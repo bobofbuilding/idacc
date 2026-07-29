@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 
 const main = await readFile(new URL('../src/main/main.ts', import.meta.url), 'utf8');
 const subscriptions = await readFile(new URL('../src/main/subscriptions.ts', import.meta.url), 'utf8');
+const onboarding = await readFile(new URL('../src/main/consumerOnboarding.ts', import.meta.url), 'utf8');
 const bridge = await readFile(new URL('../src/main/bridge.ts', import.meta.url), 'utf8');
+const readCallCache = await readFile(new URL('../src/shared/readCallCache.ts', import.meta.url), 'utf8');
 const settings = await readFile(new URL('../src/renderer/views/Settings.tsx', import.meta.url), 'utf8');
 const teams = await readFile(new URL('../src/renderer/views/Teams.tsx', import.meta.url), 'utf8');
 
@@ -36,6 +38,29 @@ assert.ok(
 assert.ok(
   subscriptions.includes('now - subsStatusCache.at < maxAgeMs'),
   'subscription status cache should honor caller-provided maxAgeMs',
+);
+assert.ok(
+  subscriptions.includes('latestSubsStatusRequestSequence === requestSequence')
+    && subscriptions.includes('latestAssignmentSubsStatusRequestSequence === requestSequence')
+    && subscriptions.includes('subsStatusGeneration === generation'),
+  'both subscription cache lanes must publish only their newest request generation',
+);
+assert.ok(
+  subscriptions.includes('if (subsStatusInflight === request) subsStatusInflight = null')
+    && subscriptions.includes('if (assignmentSubsStatusInflight === request) assignmentSubsStatusInflight = null')
+    && subscriptions.includes('subsStatusInflight = null;')
+    && subscriptions.includes('assignmentSubsStatusInflight = null;'),
+  'subscription invalidation and completion must not retain or clear the wrong overlapping request',
+);
+assert.ok(
+  onboarding.includes('latestStatusRequestSequence === requestSequence')
+    && onboarding.includes('if (options.force) cachedStatus = null'),
+  'forced onboarding must supersede older cached/in-flight status publication',
+);
+assert.ok(
+  readCallCache.includes("if (method === 'subs:status') return [];")
+    && readCallCache.includes("(first as { force?: unknown }).force === true"),
+  'both legacy and object-form forced subscription reads must supersede the canonical outer cache',
 );
 assert.ok(
   main.includes("case 'subs:cachedStatus':") && main.includes('cachedSubsStatus() ?? {}'),

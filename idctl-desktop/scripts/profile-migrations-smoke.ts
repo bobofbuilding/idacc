@@ -95,10 +95,12 @@ function windowsPowerShellForTest(script: string, profileRoot: string): string {
     },
     input: script,
     maxBuffer: 1024 * 1024,
+    timeout: 30_000,
     windowsHide: true,
   });
+  assert.equal(result.error, undefined, 'Windows ACL test helper must not time out');
   assert.equal(result.status, 0, 'Windows ACL test helper must complete successfully');
-  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null, 'Windows ACL test helper must not be terminated');
   return String(result.stdout || '').replaceAll('\u0000', '');
 }
 
@@ -134,6 +136,7 @@ function windowsProfileAclBootstrapStatusForTest(script: string): number | null 
     },
     input: script,
     maxBuffer: 1024 * 1024,
+    timeout: 30_000,
     windowsHide: true,
   });
   assert.equal(result.error, undefined, 'Windows ACL bootstrap must launch');

@@ -46,6 +46,12 @@ const PUMP_MAX_WIDTH = 1280;  // downscale the pane stream; agent screenshots st
 const PUMP_QUALITY = 55;
 const ACTION_FRAME_MAX_AGE_MS = 60_000;
 const BROKER_STOP_TIMEOUT_MS = 3_000;
+const COMPUTER_USE_UNAVAILABLE_REASON =
+  'Computer Use is currently available only on macOS. This Windows/Linux review build does not include the macOS screen-control driver.';
+
+function computerUseAvailable(): boolean {
+  return process.platform === 'darwin';
+}
 
 function cuDir(): string {
   const d = process.env.IDACC_DATA_DIR?.trim()
@@ -501,6 +507,15 @@ async function handleAction(
 export function auditTail(n?: number): AuditEntry[] { return recentAudit(n); }
 
 export async function startBroker(onFrame: BrokerState['onFrame'], onPending?: BrokerState['onPending']): Promise<void> {
+  if (!computerUseAvailable()) {
+    S.armed = false;
+    S.watching = false;
+    S.paused = false;
+    S.blessed.clear();
+    S.onFrame = onFrame;
+    if (onPending) S.onPending = onPending;
+    return;
+  }
   if (brokerStopPromise) await brokerStopPromise;
   if (S.stopping) await stopBroker();
   if (S.server) { S.onFrame = onFrame; if (onPending) S.onPending = onPending; return; }
@@ -637,7 +652,15 @@ function reconcilePump(): void {
   else if (!want && S.pump) { clearInterval(S.pump); S.pump = null; }
 }
 
-export function armBroker(blessed?: string[]): { ok: boolean; port: number; blessed: string[] } {
+export function armBroker(blessed?: string[]): { ok: boolean; port: number; blessed: string[]; error?: string } {
+  if (!computerUseAvailable()) {
+    return {
+      ok: false,
+      port: 0,
+      blessed: [],
+      error: COMPUTER_USE_UNAVAILABLE_REASON,
+    };
+  }
   if (S.stopping || !requestLifecycle.isAccepting()) {
     return { ok: false, port: 0, blessed: [] };
   }
@@ -670,12 +693,15 @@ export function panicBroker(): { ok: boolean } {
 
 /** The renderer calls this when the Computer Use view mounts (true) / unmounts (false). */
 export function setWatching(on: boolean): { ok: boolean } {
-  S.watching = !S.stopping && !!on;
+  S.watching = computerUseAvailable() && !S.stopping && !!on;
   reconcilePump();
-  return { ok: true };
+  return { ok: computerUseAvailable() };
 }
 
 export function setBrokerDisplay(displayId: number): { ok: boolean; display: Frame['display'] } {
+  if (!computerUseAvailable()) {
+    throw new Error(COMPUTER_USE_UNAVAILABLE_REASON);
+  }
   const displays = displayInfos();
   const selected = displays.find((display) => display.id === Number(displayId));
   if (!selected) throw new Error('The selected display is no longer connected.');
@@ -690,6 +716,29 @@ export function setBrokerDisplay(displayId: number): { ok: boolean; display: Fra
 }
 
 export function brokerStatus() {
+  if (!computerUseAvailable()) {
+    return {
+      available: false,
+      unavailableReason: COMPUTER_USE_UNAVAILABLE_REASON,
+      armed: false,
+      watching: false,
+      port: 0,
+      url: '',
+      lastAgent: '',
+      actions: S.actions,
+      serverStaged: false,
+      captureFailing: false,
+      display: undefined,
+      displays: [],
+      blessed: [],
+      driverOk: false,
+      accessibility: false,
+      supervised: S.supervised,
+      paused: false,
+      pending: [],
+      panicHotkey: false,
+    };
+  }
   const displays = displayInfos();
   const display = selectedDisplayInfo(S.displayId);
   if (!displays.some((row) => row.id === S.displayId)) {
@@ -698,7 +747,7 @@ export function brokerStatus() {
     S.lastShot = null;
     S.lastSig = 0;
   }
-  return { armed: S.armed, watching: S.watching, port: S.port, url: S.port ? `http://127.0.0.1:${S.port}` : '', lastAgent: S.lastAgent, actions: S.actions, serverStaged: existsSync(brokerServerPath()), captureFailing: S.captureFailing, display, displays, blessed: [...S.blessed], driverOk: driver.driverCapability().ok, accessibility: accessibilityGranted(), supervised: S.supervised, paused: S.paused, pending: pendingList(), panicHotkey: panicHotkeyOk };
+  return { available: true, armed: S.armed, watching: S.watching, port: S.port, url: S.port ? `http://127.0.0.1:${S.port}` : '', lastAgent: S.lastAgent, actions: S.actions, serverStaged: existsSync(brokerServerPath()), captureFailing: S.captureFailing, display, displays, blessed: [...S.blessed], driverOk: driver.driverCapability().ok, accessibility: accessibilityGranted(), supervised: S.supervised, paused: S.paused, pending: pendingList(), panicHotkey: panicHotkeyOk };
 }
 
 export function stopBroker(): Promise<void> {

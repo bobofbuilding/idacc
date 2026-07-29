@@ -1249,7 +1249,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   async function setTeamCoordinator(team: string, agent: string) {
     if (!agent) return;
     if (hier.controlStateSource === 'local-compat') {
-      setMsg('Coordinator assignment needs the compatible ID Agents manager. Install and connect it from this panel, then choose the coordinator again.');
+      setMsg('Coordinator assignment needs a newer bundled service. Update or repair the unified IDACC application from Settings, then choose the coordinator again.');
       return;
     }
     if (team === PRIMARY_TEAM && !isDefaultLead(team, agent)) {

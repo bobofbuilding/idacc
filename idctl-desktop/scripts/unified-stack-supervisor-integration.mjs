@@ -144,6 +144,7 @@ attempt += 1;
 writeFileSync(marker, String(attempt));
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-brain-token.txt'), process.env.BRAIN_TOKEN || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-admin-token.txt'), process.env.IDACC_ADMIN_TOKEN || '');
+writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-service-token.txt'), process.env.IDACC_MANAGER_SERVICE_TOKEN || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-library-root.txt'), process.env.ID_LIBRARY_ROOT || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-plugins-root.txt'), process.env.ID_PLUGINS_ROOT || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-agent-log-root.txt'), process.env.IDACC_AGENT_LOG_DIR || '');
@@ -167,13 +168,15 @@ async function probeBrainMcp() {
     const command = process.env.BRAIN_MCP_COMMAND;
     const args = JSON.parse(process.env.BRAIN_MCP_ARGS_JSON || '[]');
     if (!command || !Array.isArray(args) || args.length !== 1) throw new Error('invalid Brain MCP launch contract');
+    const mcpEnv = {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+      BRAIN_MCP_BASE_URL: process.env.BRAIN_URL,
+      BRAIN_TOKEN: process.env.BRAIN_TOKEN,
+    };
+    delete mcpEnv.IDACC_MANAGER_SERVICE_TOKEN;
     mcpChild = spawn(command, args, {
-      env: {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: '1',
-        BRAIN_MCP_BASE_URL: process.env.BRAIN_URL,
-        BRAIN_TOKEN: process.env.BRAIN_TOKEN,
-      },
+      env: mcpEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     writeFileSync(join(process.env.IDACC_DATA_DIR, 'manager-mcp-electron-node.txt'), '1');
@@ -241,7 +244,7 @@ const server = createServer((req, res) => {
       runtimeVersion: process.env.IDACC_RUNTIME_VERSION,
       instanceNonce: process.env.IDACC_INSTANCE_NONCE,
       protocolVersion: 'idacc.health.v1',
-      agents: 0,
+      ready: true,
     }));
     return;
   }
@@ -249,6 +252,19 @@ const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify(capabilities));
     return;
+  }
+  const managerPath = new URL(req.url || '/', 'http://127.0.0.1').pathname;
+  const managerSensitiveRead = req.method === 'GET'
+    && ['/events', '/teams', '/agents'].includes(managerPath);
+  if (managerSensitiveRead) {
+    const serviceAuthorized = req.headers.authorization
+      === 'Bearer ' + (process.env.IDACC_MANAGER_SERVICE_TOKEN || '')
+      && req.headers['x-id-service'] === 'brain';
+    if (!serviceAuthorized) {
+      res.writeHead(401, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ error: 'Manager service bearer required' }));
+      return;
+    }
   }
   if (req.url?.startsWith('/events')) {
     const since = Number(new URL(req.url, 'http://127.0.0.1').searchParams.get('since') || 0);
@@ -319,6 +335,7 @@ import { createServer } from 'node:http';
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'brain-runtime-pid.txt'), String(process.pid));
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'brain-token.txt'), process.env.BRAIN_TOKEN || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'brain-admin-token.txt'), process.env.IDACC_ADMIN_TOKEN || '');
+writeFileSync(join(process.env.IDACC_DATA_DIR, 'brain-manager-service-token.txt'), process.env.IDACC_MANAGER_SERVICE_TOKEN || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'brain-skills-root.txt'), process.env.IDACC_SKILLS_DIR || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'brain-onchain-sync.txt'), process.env.BRAIN_SYNC_ONCHAIN || '');
 writeFileSync(join(process.env.IDACC_DATA_DIR, 'brain-onchain-script.txt'), process.env.BRAIN_SYNC_ONCHAIN_SCRIPT || '');
@@ -348,8 +365,6 @@ const server = createServer(async (req, res) => {
       runtimeVersion: process.env.IDACC_RUNTIME_VERSION,
       instanceNonce: process.env.IDACC_INSTANCE_NONCE,
       protocolVersion: 'idacc.health.v1',
-      nodes: 0,
-      edges: 0,
     }));
     return;
   }
@@ -391,6 +406,32 @@ const server = createServer(async (req, res) => {
     res.end(JSON.stringify({ ok: true }));
     return;
   }
+  if (req.method === 'GET' && req.url === '/dashboard-retired-probe') {
+    writeFileSync(
+      join(process.env.IDACC_DATA_DIR, 'brain-retired-probe.json'),
+      JSON.stringify({
+        authorization: req.headers.authorization || '',
+        count: 1,
+      }),
+      { mode: 0o600 },
+    );
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  if (req.method === 'GET' && req.url?.startsWith('/dashboard')) {
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+    });
+    res.end('<!doctype html><html><head><title>Brain Dashboard Fixture</title></head><body></body></html>');
+    return;
+  }
+  if (req.method === 'GET') {
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
   res.writeHead(404);
   res.end();
 });
@@ -404,6 +445,10 @@ import { writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 const reply = message => process.stdout.write(JSON.stringify(message) + '\\n');
+writeFileSync(
+  join(process.env.IDACC_DATA_DIR, 'manager-mcp-service-token.txt'),
+  process.env.IDACC_MANAGER_SERVICE_TOKEN || '',
+);
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 // Keep a real descendant resource alive after stdio closes. A supervisor that
 // kills only Manager's direct PID will leak this MCP process on Windows.
@@ -477,6 +522,7 @@ attempts += 1;
 writeFileSync(attemptsPath, String(attempts), { mode: 0o600 });
 writeFileSync(join(root, 'brain-listener-brain-token.txt'), process.env.BRAIN_TOKEN || '', { mode: 0o600 });
 writeFileSync(join(root, 'brain-listener-admin-token.txt'), process.env.IDACC_ADMIN_TOKEN || '', { mode: 0o600 });
+writeFileSync(join(root, 'brain-listener-manager-service-token.txt'), process.env.IDACC_MANAGER_SERVICE_TOKEN || '', { mode: 0o600 });
 const cursorPath = process.env.BRAIN_LISTENER_CURSOR_FILE;
 const statusPath = process.env.BRAIN_LISTENER_STATUS_FILE;
 const statusNonce = process.env.BRAIN_LISTENER_INSTANCE_NONCE || '';
@@ -486,8 +532,13 @@ if (cursorPath && existsSync(cursorPath)) {
   cursor = Number(JSON.parse(readFileSync(cursorPath, 'utf8')).seq || 0);
 }
 const eventsResponse = await fetch(process.env.MANAGER_URL + '/events?since=' + cursor + '&limit=50', {
-  headers: { 'X-Id-Team': process.env.ID_TEAM || 'default' },
+  headers: {
+    'X-Id-Team': process.env.ID_TEAM || 'default',
+    'X-Id-Service': 'brain',
+    authorization: 'Bearer ' + (process.env.IDACC_MANAGER_SERVICE_TOKEN || ''),
+  },
 });
+if (!eventsResponse.ok) throw new Error('manager event read failed: ' + eventsResponse.status);
 const events = (await eventsResponse.json()).events || [];
 for (const event of events) {
   const response = await fetch(process.env.BRAIN_URL + '/listener-ingest', {
@@ -568,6 +619,7 @@ state.environment = {
 writeFileSync(statePath, JSON.stringify(state), { mode: 0o600 });
 writeFileSync(join(root, 'brain-cycle-brain-token.txt'), process.env.BRAIN_TOKEN || '', { mode: 0o600 });
 writeFileSync(join(root, 'brain-cycle-admin-token.txt'), process.env.IDACC_ADMIN_TOKEN || '', { mode: 0o600 });
+writeFileSync(join(root, 'brain-cycle-manager-service-token.txt'), process.env.IDACC_MANAGER_SERVICE_TOKEN || '', { mode: 0o600 });
 setTimeout(() => {
   state = JSON.parse(readFileSync(statePath, 'utf8'));
   state.active -= 1;
@@ -841,6 +893,14 @@ function processIsAlive(pid) {
   }
 }
 
+async function waitForPath(path, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !existsSync(path)) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+  return existsSync(path);
+}
+
 async function assertManagerMcpStopped(profileRoot, label) {
   const observationPath = join(profileRoot, 'manager-mcp-process.json');
   assert.equal(existsSync(observationPath), true, `${label} did not publish its MCP process observation`);
@@ -884,6 +944,7 @@ try {
     IDACC_STACK_SELFTEST: '1',
     IDACC_STACK_CONTRACT_SELFTEST: '0',
     IDACC_STACK_AUTH_SELFTEST: '1',
+    IDACC_STACK_DASHBOARD_SELFTEST: '1',
     IDACC_STACK_SELFTEST_ENABLE_BRAIN_CYCLE: '1',
     IDACC_STACK_SELFTEST_CYCLE_OBSERVE_MS: '1200',
     IDACC_STACK_SELFTEST_RESULT_FILE: selftestResult,
@@ -898,6 +959,7 @@ try {
     IDACC_BRAIN_URL: '',
     BRAIN_TOKEN: 'caller-token-must-not-be-reused',
     IDACC_ADMIN_TOKEN: 'caller-admin-token-must-not-be-reused',
+    IDACC_MANAGER_SERVICE_TOKEN: 'caller-manager-service-token-must-not-be-reused',
     DATABASE_URL: 'postgres://hostile.invalid/embedded-state',
     BRAIN_PLANS_DIR: join(runtime, 'brain', 'plans'),
     BRAIN_CYCLE_REPO_DIGEST: '1',
@@ -934,18 +996,33 @@ try {
   const line = String(result.stdout)
     .split(/\r?\n/)
     .find((candidate) => candidate.startsWith('IDACC_STACK_SELFTEST '));
-  assert.ok(line, `stack selftest did not report status\n${result.stdout}`);
   const authLine = String(result.stdout)
     .split(/\r?\n/)
     .find((candidate) => candidate.startsWith('IDACC_STACK_AUTH_SELFTEST '));
   assert.ok(authLine, `stack selftest did not report admin authentication\n${result.stdout}`);
   const auth = JSON.parse(authLine.slice('IDACC_STACK_AUTH_SELFTEST '.length));
-  assert.equal(auth.forgedStatus, 403);
+  assert.equal([401, 403].includes(auth.forgedStatus), true);
+  assert.equal(auth.forgedAdminRejected, true);
   assert.equal(auth.desktopAuthenticated, true);
-  const status = JSON.parse(line.slice('IDACC_STACK_SELFTEST '.length));
-  assert.equal(existsSync(selftestResult), true, 'stack selftest did not publish its private result file');
+  assert.equal(auth.brainAnonymousHealthMinimal, true);
+  assert.equal(auth.brainSensitiveReadsProtected, true);
+  assert.equal(auth.brainAuthenticatedReadsSucceeded, true);
+  assert.equal(auth.managerSensitiveReadsProtected, true);
+  assert.equal(auth.managerBrainServiceReadsSucceeded, true);
+  assert.equal(Object.values(auth.brainAnonymousStatuses).every((status) => status === 401), true);
+  assert.equal(Object.values(auth.brainAuthenticatedStatuses).every((status) => status === 200), true);
+  assert.equal(Object.values(auth.managerAnonymousStatuses).every((status) => status === 401), true);
+  assert.equal(Object.values(auth.managerBrainServiceStatuses).every((status) => status === 200), true);
+  assert.equal(
+    await waitForPath(selftestResult, 5_000),
+    true,
+    'stack selftest did not publish its private result file',
+  );
   const selftestResultText = readFileSync(selftestResult, 'utf8');
-  assert.deepEqual(JSON.parse(selftestResultText), status);
+  const status = JSON.parse(selftestResultText);
+  if (line) {
+    assert.deepEqual(JSON.parse(line.slice('IDACC_STACK_SELFTEST '.length)), status);
+  }
   if (process.platform !== 'win32') {
     assert.equal(statSync(selftestResult).mode & 0o777, 0o600);
   }
@@ -955,6 +1032,20 @@ try {
   );
   assert.equal(status.ready, true);
   assert.equal(status.authPassed, true);
+  assert.deepEqual(status.brainDashboardLifecycle, {
+    childCreated: true,
+    childTracked: true,
+    childUsedIsolatedSession: true,
+    childDestroyed: true,
+    retiredRequestCancelled: true,
+    sessionRotated: true,
+    allPassed: true,
+  });
+  assert.equal(
+    existsSync(join(profile, 'brain-retired-probe.json')),
+    false,
+    'retired dashboard session reached Brain instead of cancelling locally',
+  );
   assert.equal(status.services.length, 2);
   assert.equal(status.companions.length, 2);
   assert.deepEqual(status.brainAutomation, {
@@ -1023,6 +1114,11 @@ try {
   const brainToken = readFileSync(join(profile, 'brain-token.txt'), 'utf8');
   const managerAdminToken = readFileSync(join(profile, 'manager-admin-token.txt'), 'utf8');
   const brainAdminToken = readFileSync(join(profile, 'brain-admin-token.txt'), 'utf8');
+  const managerServiceToken = readFileSync(join(profile, 'manager-service-token.txt'), 'utf8');
+  const brainManagerServiceToken = readFileSync(
+    join(profile, 'brain-manager-service-token.txt'),
+    'utf8',
+  );
   const managerLibraryRoot = readFileSync(join(profile, 'manager-library-root.txt'), 'utf8');
   const managerPluginsRoot = readFileSync(join(profile, 'manager-plugins-root.txt'), 'utf8');
   const managerAgentLogRoot = readFileSync(join(profile, 'manager-agent-log-root.txt'), 'utf8');
@@ -1034,6 +1130,18 @@ try {
   assert.notEqual(managerAdminToken, 'caller-admin-token-must-not-be-reused');
   assert.notEqual(managerAdminToken, brainToken, 'Manager admin and Brain credentials must be distinct');
   assert.equal(brainAdminToken, '', 'Brain inherited the Manager admin bearer');
+  assert.match(managerServiceToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(
+    brainManagerServiceToken,
+    managerServiceToken,
+    'Manager and Brain did not receive the same Manager service bearer',
+  );
+  assert.notEqual(
+    managerServiceToken,
+    'caller-manager-service-token-must-not-be-reused',
+  );
+  assert.notEqual(managerServiceToken, managerAdminToken);
+  assert.notEqual(managerServiceToken, brainToken);
   assert.equal(readFileSync(join(profile, 'brain-onchain-sync.txt'), 'utf8'), 'false');
   assert.equal(readFileSync(join(profile, 'brain-onchain-script.txt'), 'utf8'), '');
   assert.equal(readFileSync(join(profile, 'brain-embed-phase.txt'), 'utf8'), '0');
@@ -1081,6 +1189,11 @@ try {
   assert.deepEqual(mcpResult.args, [brainMcpEntry]);
   assert.equal(mcpResult.args[0].includes(' '), true, 'MCP fixture did not exercise a path containing spaces');
   assert.equal(readFileSync(join(profile, 'manager-mcp-electron-node.txt'), 'utf8'), '1');
+  assert.equal(
+    readFileSync(join(profile, 'manager-mcp-service-token.txt'), 'utf8'),
+    '',
+    'Manager leaked its base service bearer to a worker MCP process',
+  );
   assert.equal(existsSync(join(profile, 'manager-mcp-error.txt')), false);
 
   assert.equal(readFileSync(join(profile, 'brain-listener-attempts.txt'), 'utf8'), '2');
@@ -1090,6 +1203,11 @@ try {
     'Brain listener did not receive the managed Brain bearer',
   );
   assert.equal(readFileSync(join(profile, 'brain-listener-admin-token.txt'), 'utf8'), '');
+  assert.equal(
+    readFileSync(join(profile, 'brain-listener-manager-service-token.txt'), 'utf8'),
+    managerServiceToken,
+    'Brain listener did not receive the Manager service bearer',
+  );
   const cursorFile = join(profile, 'brain', 'brain-listener-cursor.json');
   const listenerCursor = JSON.parse(readFileSync(cursorFile, 'utf8'));
   assert.equal(listenerCursor.seq, 1);
@@ -1138,6 +1256,11 @@ try {
     'Brain cycle did not receive the managed Brain bearer',
   );
   assert.equal(readFileSync(join(profile, 'brain-cycle-admin-token.txt'), 'utf8'), '');
+  assert.equal(
+    readFileSync(join(profile, 'brain-cycle-manager-service-token.txt'), 'utf8'),
+    '',
+    'Brain cycle inherited the Manager base service bearer',
+  );
   const cycleStateFile = join(profile, 'brain', 'brain-cycle-state.json');
   const cycleState = JSON.parse(readFileSync(cycleStateFile, 'utf8'));
   assert.equal(cycleState.schemaVersion, 1);
@@ -1151,8 +1274,10 @@ try {
 
   assert.equal(line.includes(brainToken), false, 'stack status exposed the session token');
   assert.equal(line.includes(managerAdminToken), false, 'stack status exposed the Manager admin bearer');
+  assert.equal(line.includes(managerServiceToken), false, 'stack status exposed the Manager service bearer');
   assert.equal(line.includes(listenerStatus.instanceNonce), false, 'stack status exposed the listener process nonce');
   assert.equal(authLine.includes(managerAdminToken), false, 'auth smoke exposed the Manager admin bearer');
+  assert.equal(authLine.includes(managerServiceToken), false, 'auth smoke exposed the Manager service bearer');
   if (process.platform !== 'win32') {
     // Windows protects these files with the profile directory's ACL; POSIX
     // mode bits are not a meaningful privacy assertion there.

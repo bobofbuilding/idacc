@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState, type JSX } from 'react';
 import { call, useSyncVersion, type FleetStore } from '../store.ts';
 import type { LibrarySkillEntry, LibraryPluginEntry, LibraryPluginInspection, McpServerSpec, SetMcpResult, CreateSkillInput, ProjectPluginSkillResult } from '../../../../idctl/src/api/client.ts';
 import {

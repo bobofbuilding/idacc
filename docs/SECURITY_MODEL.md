@@ -29,6 +29,12 @@ account's private application profile.
   permissions where the operating system supports POSIX modes.
 - The renderer is sandboxed, has no Node integration, and can use only the
   allowlisted IPC bridge from the trusted application document.
+- Linux review and production entry points enable Electron's sandbox before
+  bundled application modules load and fail closed if a sandbox-disabling
+  switch is present. The Debian installer uses its pinned user-namespace probe
+  to configure the Chromium sandbox helper and conditionally installs the
+  pinned AppArmor profile when AppArmor is enabled with the supported ABI;
+  release gates inspect those files and scripts from the built package.
 - Bundled Manager and Brain files are verified against the signed application's
   runtime manifest before either service starts.
 - Managed roots and their descendants have an operating-system lifetime

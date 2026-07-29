@@ -49,6 +49,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const view = readFileSync(join(root, 'src', 'renderer', 'views', 'ComputerUse.tsx'), 'utf8');
 const broker = readFileSync(join(root, 'src', 'main', 'computeruse', 'broker.ts'), 'utf8');
 const capture = readFileSync(join(root, 'src', 'main', 'computeruse', 'capture.ts'), 'utf8');
+const permissions = readFileSync(join(root, 'src', 'main', 'computeruse', 'permissions.ts'), 'utf8');
 const main = readFileSync(join(root, 'src', 'main', 'main.ts'), 'utf8');
 
 assert.doesNotMatch(view, /function mcpCapable|\/claude\|codex\//);
@@ -62,5 +63,12 @@ assert.match(broker, /S\.lastShot !== actionShot/);
 assert.match(broker, /flushPending\(false\)/);
 assert.match(capture, /screen\.getAllDisplays\(\)/);
 assert.match(main, /case 'cu:setDisplay'/);
+assert.match(broker, /process\.platform === 'darwin'/);
+assert.match(broker, /available: false/);
+assert.match(broker, /Windows\/Linux review build does not include the macOS screen-control driver/);
+assert.match(view, /if \(cuUnavailable\)/);
+assert.match(view, /Unavailable on this operating system/);
+assert.match(view, /permission links, and agent blessing are not started or shown here/);
+assert.match(permissions, /if \(process\.platform !== 'darwin'\)/);
 
 console.log('computer use policy smoke: ok');

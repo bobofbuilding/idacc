@@ -44,6 +44,7 @@ import {
   terminateManagedProcessTree,
 } from './managedProcessTree.ts';
 import { subscriptionRuntimeEnvironment } from './subscriptions.ts';
+import { evaluateRuntimeApplicationVersionContract } from './runtimeApplicationVersion.ts';
 import {
   manifestDigestMatches,
   parseRuntimeManifest,
@@ -61,9 +62,22 @@ import {
 } from './unifiedStackPolicy.ts';
 
 declare const __IDACC_RUNTIME_MANIFEST_SHA256__: string;
+declare const __IDACC_REVIEW_BUILD__: boolean;
+declare const __IDACC_SOURCE_PACKAGE_VERSION__: string;
+declare const __IDACC_PACKAGED_APPLICATION_VERSION__: string;
 const COMPILED_RUNTIME_MANIFEST_SHA256 = typeof __IDACC_RUNTIME_MANIFEST_SHA256__ === 'string'
   ? __IDACC_RUNTIME_MANIFEST_SHA256__
   : '';
+const COMPILED_REVIEW_BUILD = typeof __IDACC_REVIEW_BUILD__ !== 'undefined'
+  && __IDACC_REVIEW_BUILD__ === true;
+const COMPILED_SOURCE_PACKAGE_VERSION =
+  typeof __IDACC_SOURCE_PACKAGE_VERSION__ === 'string'
+    ? __IDACC_SOURCE_PACKAGE_VERSION__
+    : '';
+const COMPILED_PACKAGED_APPLICATION_VERSION =
+  typeof __IDACC_PACKAGED_APPLICATION_VERSION__ === 'string'
+    ? __IDACC_PACKAGED_APPLICATION_VERSION__
+    : '';
 
 type ServiceName = UnifiedServiceName;
 type ServicePhase = 'missing' | 'starting' | 'running' | 'unhealthy' | 'backoff' | 'fused' | 'stopping' | 'stopped';
@@ -171,6 +185,7 @@ interface ManagedService {
   processTreeCleanupError?: string;
   terminationReason?: string;
   manualRestart: boolean;
+  readyNotificationKey?: string;
 }
 
 interface ManagedCompanion {
@@ -233,6 +248,16 @@ const COMPANION_STOP_GRACE_MS = 10_000;
 
 const services = new Map<ServiceName, ManagedService>();
 const companions = new Map<CompanionName, ManagedCompanion>();
+export interface UnifiedStackServiceReadyEvent {
+  name: UnifiedServiceName;
+  url: string;
+  pid: number;
+  startedAt: number;
+}
+type UnifiedStackServiceReadyListener = (
+  event: UnifiedStackServiceReadyEvent,
+) => void | Promise<void>;
+const serviceReadyListeners = new Set<UnifiedStackServiceReadyListener>();
 const managedLaunches = createManagedProcessLaunchCoordinator();
 let profile: AppProfilePaths | null = null;
 let stopping = false;
@@ -243,6 +268,7 @@ let shutdownInProgress = false;
 let companionStartPromise: Promise<void> | null = null;
 let stackBrainToken: string | null = null;
 let stackAdminToken: string | null = null;
+let stackManagerServiceToken: string | null = null;
 let brainAutomationSettings: BrainAutomationSettings = defaultBrainAutomationSettings();
 let brainCatalogState: BrainCatalogState = {
   healthy: false,
@@ -256,6 +282,85 @@ let managerCompatibilityState: ManagerCompatibilityState = {
   error: 'Manager compatibility has not been checked',
 };
 let managerCompatibilityLastCheckedAt = 0;
+
+function clearStackCredentials(): void {
+  stackBrainToken = null;
+  stackAdminToken = null;
+  stackManagerServiceToken = null;
+}
+
+function serviceReadyEvent(service: ManagedService): UnifiedStackServiceReadyEvent | null {
+  if (
+    !isChildAlive(service)
+    || service.lastHealth?.healthy !== true
+    || !service.actualPid
+    || !service.lastStartedAt
+  ) {
+    return null;
+  }
+  return {
+    name: service.spec.name,
+    url: service.spec.url,
+    pid: service.actualPid,
+    startedAt: service.lastStartedAt,
+  };
+}
+
+function notifyServiceReady(service: ManagedService): void {
+  const event = serviceReadyEvent(service);
+  if (!event) return;
+  const key = `${event.pid}:${event.startedAt}`;
+  if (service.readyNotificationKey === key) return;
+  service.readyNotificationKey = key;
+  for (const listener of serviceReadyListeners) {
+    try {
+      void Promise.resolve(listener(event)).catch(() => {
+        console.warn(`[unified-stack] ${event.name} ready listener failed`);
+      });
+    } catch {
+      console.warn(`[unified-stack] ${event.name} ready listener failed`);
+    }
+  }
+}
+
+/**
+ * Observe verified service generations, including supervised restarts. Each
+ * subscriber receives at most one callback per service process and receives a
+ * safe replay if it subscribes after the current generation became healthy.
+ */
+export function subscribeUnifiedStackServiceReady(
+  listener: UnifiedStackServiceReadyListener,
+): () => void {
+  const seen = new Set<string>();
+  let active = true;
+  const invoke: UnifiedStackServiceReadyListener = (event) => {
+    if (!active) return;
+    const key = `${event.name}:${event.pid}:${event.startedAt}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    return listener(event);
+  };
+  serviceReadyListeners.add(invoke);
+  queueMicrotask(() => {
+    if (!active) return;
+    for (const service of services.values()) {
+      const event = serviceReadyEvent(service);
+      if (event) {
+        try {
+          void Promise.resolve(invoke(event)).catch(() => {
+            console.warn(`[unified-stack] ${event.name} ready listener failed`);
+          });
+        } catch {
+          console.warn(`[unified-stack] ${event.name} ready listener failed`);
+        }
+      }
+    }
+  });
+  return () => {
+    active = false;
+    serviceReadyListeners.delete(invoke);
+  };
+}
 
 function runtimeRoot(): string {
   const testRoot = process.env.IDACC_RUNTIME_ROOT?.trim();
@@ -329,10 +434,15 @@ function readRuntimeManifest(root: string): { manifest?: RuntimeManifest; error?
     if (app.isPackaged && manifest.application.dirty) {
       return { error: 'runtime manifest was staged from a dirty application checkout' };
     }
-    if (app.isPackaged && manifest.application.version !== app.getVersion()) {
-      return {
-        error: `runtime manifest targets application ${manifest.application.version}, not ${app.getVersion()}`,
-      };
+    if (app.isPackaged) {
+      const versionContract = evaluateRuntimeApplicationVersionContract({
+        applicationVersion: app.getVersion(),
+        compiledApplicationVersion: COMPILED_PACKAGED_APPLICATION_VERSION,
+        compiledSourceVersion: COMPILED_SOURCE_PACKAGE_VERSION,
+        manifestVersion: manifest.application.version,
+        reviewBuild: COMPILED_REVIEW_BUILD,
+      });
+      if (!versionContract.ok) return { error: versionContract.error };
     }
     const payloadErrors = verifyRuntimePayload(root, manifest);
     if (payloadErrors.length) {
@@ -702,9 +812,14 @@ function companionEnvironment(companion: ManagedCompanion): NodeJS.ProcessEnv {
       } : {}),
     } : {}),
   };
-  // The Manager bearer never crosses into Brain, agents, or app-owned Brain
-  // companions. Companions need only the narrower Brain service credential.
+  // App-owned control-plane credentials never come from ambient state.
   delete env.IDACC_ADMIN_TOKEN;
+  delete env.IDACC_MANAGER_SERVICE_TOKEN;
+  // Only the listener is a trusted Manager read client. The cycle and any
+  // future generic companions must not inherit the base Manager service token.
+  if (name === 'brain-listener' && stackManagerServiceToken) {
+    env.IDACC_MANAGER_SERVICE_TOKEN = stackManagerServiceToken;
+  }
   delete env.BRAIN_SYNC_ONCHAIN_SCRIPT;
   delete env.BRAIN_CYCLE_REPO_PROJECT;
   delete env.BRAIN_SQLITE_VEC_EXTENSION;
@@ -1260,6 +1375,7 @@ async function watchdogTick(service: ManagedService, child: ChildProcess): Promi
       service.healthFailures = 0;
       service.phase = 'running';
       service.error = service.logError;
+      notifyServiceReady(service);
       if (service.lastStartedAt && now - service.lastStartedAt >= STABLE_RUNTIME_MS) {
         service.restartAttempts = 0;
         service.crashTimes = [];
@@ -1410,6 +1526,11 @@ async function launchServiceOnce(service: ManagedService): Promise<void> {
     service.error ||= 'runtime cannot be started from this build';
     return;
   }
+  if (service.spec.name === 'manager' && !stackManagerServiceToken) {
+    service.phase = 'unhealthy';
+    service.error = 'managed Manager service credential is unavailable';
+    return;
+  }
 
   const logPath = join(profile.logs, `${service.spec.name}.log`);
   rotateActiveLog(service);
@@ -1457,11 +1578,18 @@ async function launchServiceOnce(service: ManagedService): Promise<void> {
       childEnv.BRAIN_DB_PATH = join(profile.brain, 'brain.db');
     }
   }
-  // The Manager bearer is a control-plane credential. Never let caller state
-  // or generic environment inheritance expose it to Brain (or its agents).
+  // Never reuse caller credentials. The app creates distinct per-run Manager
+  // control and service-read credentials inside this module.
   delete childEnv.IDACC_ADMIN_TOKEN;
+  delete childEnv.IDACC_MANAGER_SERVICE_TOKEN;
   if (service.spec.name === 'manager' && stackAdminToken) {
     childEnv.IDACC_ADMIN_TOKEN = stackAdminToken;
+  }
+  if (
+    (service.spec.name === 'manager' || service.spec.name === 'brain')
+    && stackManagerServiceToken
+  ) {
+    childEnv.IDACC_MANAGER_SERVICE_TOKEN = stackManagerServiceToken;
   }
   if (service.spec.name === 'brain') {
     childEnv.BRAIN_EMBED_PHASE = '0';
@@ -1518,6 +1646,7 @@ async function launchServiceOnce(service: ManagedService): Promise<void> {
   service.lastHealthAt = undefined;
   service.healthFailures = 0;
   service.error = undefined;
+  service.readyNotificationKey = undefined;
   child.stdout?.pipe(log, { end: false });
   child.stderr?.pipe(log, { end: false });
 
@@ -1577,6 +1706,15 @@ async function startUnifiedStackInternal(paths: AppProfilePaths): Promise<Unifie
   managerCompatibilityLastCheckedAt = 0;
   stackBrainToken = randomBytes(32).toString('base64url');
   stackAdminToken = randomBytes(32).toString('base64url');
+  stackManagerServiceToken = randomBytes(32).toString('base64url');
+  if (new Set([
+    stackBrainToken,
+    stackAdminToken,
+    stackManagerServiceToken,
+  ]).size !== 3) {
+    clearStackCredentials();
+    throw new Error('generated runtime credentials were not distinct');
+  }
   const root = runtimeRoot();
   let manifestResult = readRuntimeManifest(root);
   let managerRuntimeProfile: ManagerRuntimeProfile | undefined;
@@ -1653,22 +1791,61 @@ export function unifiedStackAdminToken(): string {
   return stackAdminToken;
 }
 
-/** Check serialized main-process output without revealing either runtime bearer. */
+export type UnifiedBrainRequestAccess = {
+  origin: string;
+  authorizationHeader: string;
+};
+
+/** Main-process-only Brain origin and bearer header; never expose through IPC. */
+export function unifiedStackBrainRequestAccess(): UnifiedBrainRequestAccess {
+  const brain = services.get('brain');
+  if (!brain || !stackBrainToken) {
+    throw new Error('unified Brain request credential is not available');
+  }
+  const endpoint = canonicalLoopbackServiceUrl(brain.spec.url);
+  return {
+    origin: endpoint.url,
+    authorizationHeader: `Bearer ${stackBrainToken}`,
+  };
+}
+
+export type UnifiedManagerServiceRequestAccess = {
+  origin: string;
+  authorizationHeader: string;
+  serviceHeader: 'brain';
+};
+
+/** Main-process-only Brain service access to Manager's exact read allowlist. */
+export function unifiedStackManagerServiceRequestAccess(): UnifiedManagerServiceRequestAccess {
+  const manager = services.get('manager');
+  if (!manager || !stackManagerServiceToken) {
+    throw new Error('unified Manager service credential is not available');
+  }
+  const endpoint = canonicalLoopbackServiceUrl(manager.spec.url);
+  return {
+    origin: endpoint.url,
+    authorizationHeader: `Bearer ${stackManagerServiceToken}`,
+    serviceHeader: 'brain',
+  };
+}
+
+/** Check serialized main-process output without revealing any runtime bearer. */
 export function unifiedStackPayloadContainsCredential(serialized: string): boolean {
   const payload = String(serialized);
-  return [stackBrainToken, stackAdminToken].some(
+  return [stackBrainToken, stackAdminToken, stackManagerServiceToken].some(
     (credential) => Boolean(credential && credential.length >= 8 && payload.includes(credential)),
   );
 }
 
 /**
  * Positive control for stack self-tests: prove the leak detector recognizes
- * both live credentials while keeping their values inside this module.
+ * all live credentials while keeping their values inside this module.
  */
 export function unifiedStackCredentialGuardSelftest(): boolean {
-  const credentials = [stackBrainToken, stackAdminToken]
+  const credentials = [stackBrainToken, stackAdminToken, stackManagerServiceToken]
     .filter((credential): credential is string => Boolean(credential && credential.length >= 8));
-  return credentials.length === 2
+  return credentials.length === 3
+    && new Set(credentials).size === 3
     && credentials.every((credential) => unifiedStackPayloadContainsCredential(`sentinel:${credential}`));
 }
 
@@ -1841,8 +2018,7 @@ async function stopUnifiedStackOnce(): Promise<void> {
     }
     service.phase = 'stopped';
   }
-  stackBrainToken = null;
-  stackAdminToken = null;
+  clearStackCredentials();
   companionStartPromise = null;
   managerCompatibilityState = {
     ...evaluateControlCenterCapabilities(null, { exactSurface: true }),
@@ -1989,6 +2165,7 @@ export async function unifiedStackStatus(): Promise<UnifiedStackStatus> {
       if (health.healthy) {
         service.phase = 'running';
         service.error = service.logError;
+        notifyServiceReady(service);
       } else if (service.phase === 'running') {
         service.phase = 'unhealthy';
         service.error = health.error;

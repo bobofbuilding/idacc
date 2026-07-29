@@ -3,7 +3,8 @@
  * id-agents manager, and loads the React renderer.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage, clipboard } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage, clipboard, session, type Session } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
@@ -13,6 +14,7 @@ import {
   configureManagedManager,
   configureSettingsSecretCodec,
   migrateSettingsSecrets,
+  resumeManagedProviderAgentsAfterRestart,
   resetDraftDispatcherWork,
   startDraftDispatcher,
   startGoalDriver,
@@ -20,6 +22,10 @@ import {
   startModelRefreshLoop,
   stopDraftDispatcherWork,
 } from './bridge.ts';
+import {
+  providerRehydrationActionMessage,
+  type ProviderRehydrationReport,
+} from './providerRuntimeRehydration.ts';
 import {
   configureControlWriteScheduler,
   recordControlAction,
@@ -37,7 +43,17 @@ import {
 } from './updater.ts';
 import { assignmentSubsStatus, cachedSubsStatus, invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubsStatusOptions, type SubProvider } from './subscriptions.ts';
 import { ollamaTags, ollamaPull, ollamaRemove, ollamaCatalogCheck, catalogModelToLocalEntry, type InstalledModelInput } from './ollama.ts';
-import { backgroundStackStatus, dockerStatus, getHardware, localStackInstallStatus, runInTerminal, startBackgroundStack, stopBackgroundStack } from './system.ts';
+import {
+  backgroundStackStatus,
+  dockerStatus,
+  getHardware,
+  localStackInstallStatus,
+  openBackgroundStackAdmission,
+  runInTerminal,
+  startBackgroundStack,
+  stopAllBackgroundStacks,
+  stopBackgroundStack,
+} from './system.ts';
 import { pickProjectFolder, openProjectFolder, projectReadme, projectGit, projectGitRun, githubMeta, cloneGithub, projectDiff, createGithubRepo, linkGithubRepo, forkGithub, commitProject, detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { pickChatFiles, saveChatFiles, savePastedFile } from './chatfiles.ts';
 import { listChats, listInflightChats, getChat, saveChat, renameChat, removeChat, genTitle, genReason, unreadChatCount, markChatRead, patchChat, type ChatSession, type ChatPatch } from './chatstore.ts';
@@ -69,7 +85,7 @@ import { configureComputerUseAuditManager } from './computeruse/audit.ts';
 import { getPermissions, openPermissionSettings, type CuPermissionPane } from './computeruse/permissions.ts';
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
-import { initializeAppProfile, updateManagedManagerProfileUrl } from './appProfile.ts';
+import { appProfilePaths, initializeAppProfile, updateManagedManagerProfileUrl } from './appProfile.ts';
 import { normalizeAppProfileName } from './appProfileSelection.ts';
 import {
   readAppProfilePreference,
@@ -95,11 +111,21 @@ import {
   configureUnifiedBrainAutomation,
   startUnifiedStack,
   stopUnifiedStack,
+  subscribeUnifiedStackServiceReady,
   unifiedStackAdminToken,
+  unifiedStackBrainRequestAccess,
+  unifiedStackManagerServiceRequestAccess,
   unifiedStackCredentialGuardSelftest,
   unifiedStackPayloadContainsCredential,
   unifiedStackStatus,
 } from './unifiedStack.ts';
+import {
+  BrainDashboardChildWindowRegistry,
+  authorizeBrainDashboardRequest,
+  brainDashboardNavigationAllowed,
+  canonicalBrainDashboardOrigin,
+  denyBrainDashboardRequest,
+} from './brainDashboardSession.ts';
 import {
   configureOnboardingProvider,
   consumerOnboardingStatus,
@@ -155,12 +181,44 @@ import {
   focusExistingPrimaryWindow,
   guardActivationWindowCreation,
 } from './singleInstance.ts';
+import {
+  configureMcpProbeRuntime,
+  openMcpProbeAdmission,
+  stopActiveMcpProbes,
+} from './mcpTest.ts';
 
 // Bundled as CommonJS → __dirname is the output dir (out/main/).
 declare const __dirname: string;
 
+const unpackedMainRuntimeDirectory = app.isPackaged
+  ? join(process.resourcesPath, 'app.asar.unpacked', 'out', 'main')
+  : __dirname;
+configureMcpProbeRuntime({
+  runnerPath: join(unpackedMainRuntimeDirectory, 'mcp-probe-runner.cjs'),
+  ...(process.platform === 'win32'
+    ? {
+        jobHostPath: app.isPackaged
+          ? join(
+              process.resourcesPath,
+              'app.asar.unpacked',
+              'out',
+              'native',
+              'idacc-job-host.exe',
+            )
+          : join(__dirname, '..', 'native', 'idacc-job-host.exe'),
+        bootstrapPath: join(
+          unpackedMainRuntimeDirectory,
+          'managed-service-bootstrap.cjs',
+        ),
+      }
+    : {}),
+});
+
 let win: BrowserWindow | null = null;
 let brainDashboardWin: BrowserWindow | null = null;
+let brainDashboardSession: Session | null = null;
+let brainDashboardSessionBinding = '';
+const brainDashboardChildWindows = new BrainDashboardChildWindowRegistry();
 type BackgroundStop = () => void | Promise<void>;
 let stopGoalDriver: BackgroundStop | null = null;
 let stopLearnQueueRunner: BackgroundStop | null = null;
@@ -173,6 +231,10 @@ let stopBrainApprovalAutomation: BackgroundStop | null = null;
 let stopScheduledDreamArchive: BackgroundStop | null = null;
 let stopOrgSyncRunner: BackgroundStop | null = null;
 let stopModelRefreshRunner: BackgroundStop | null = null;
+let stopProviderRuntimeRehydrationListener: BackgroundStop | null = null;
+let providerRuntimeRehydrationWork: Promise<void> | null = null;
+let providerRuntimeRehydrationPending = false;
+let providerRuntimeRehydrationAbort: AbortController | null = null;
 let rendererSafeMode = false;
 let rendererRecoveryFirstAt = 0;
 let rendererRecoveryAttempts = 0;
@@ -287,6 +349,8 @@ function requireConsumerStartupActive(): void {
 }
 
 function prepareConsumerBackgroundActivitiesForStartup(): void {
+  openMcpProbeAdmission();
+  openBackgroundStackAdmission();
   if (delayedGoalDriverWork.isStopped()) {
     if (delayedGoalDriverWork.activeCount() !== 0) {
       throw new Error('Delayed goal-driver work is still draining and cannot be restarted.');
@@ -892,12 +956,21 @@ function quiesceConsumerBackgroundActivities(): void {
   if (activeBrainApprovalInboxSyncs.size > 0) {
     trackBackgroundStop(Promise.all([...activeBrainApprovalInboxSyncs]).then(() => undefined));
   }
+  providerRuntimeRehydrationAbort?.abort();
+  providerRuntimeRehydrationAbort = null;
+  const activeProviderRuntimeRehydration = providerRuntimeRehydrationWork;
+  providerRuntimeRehydrationWork = null;
+  providerRuntimeRehydrationPending = false;
+  if (activeProviderRuntimeRehydration) {
+    trackBackgroundStop(activeProviderRuntimeRehydration);
+  }
 
   // Clear references before calling userland stop closures so re-entrant
   // shutdown paths cannot invoke a partially stopped loop twice.
   const stops = [
     stopOrgSyncRunner,
     stopModelRefreshRunner,
+    stopProviderRuntimeRehydrationListener,
     stopGoalDriver,
     stopLearnQueueRunner,
     stopLearnBrainBackfillRunner,
@@ -908,6 +981,7 @@ function quiesceConsumerBackgroundActivities(): void {
   ];
   stopOrgSyncRunner = null;
   stopModelRefreshRunner = null;
+  stopProviderRuntimeRehydrationListener = null;
   stopGoalDriver = null;
   stopLearnQueueRunner = null;
   stopLearnBrainBackfillRunner = null;
@@ -927,11 +1001,51 @@ function quiesceConsumerBackgroundActivities(): void {
 function quiesceConsumerOwnedServices(): void {
   try { stopUpdater(); } catch (error) { trackBackgroundStop(Promise.reject(error)); }
   trackBackgroundStop(drainUpdater());
+  try { trackBackgroundStop(stopActiveMcpProbes()); } catch (error) {
+    trackBackgroundStop(Promise.reject(error));
+  }
+  try { trackBackgroundStop(stopAllBackgroundStacks()); } catch (error) {
+    trackBackgroundStop(Promise.reject(error));
+  }
   try { trackBackgroundStop(stopBroker()); } catch (error) {
     trackBackgroundStop(Promise.reject(error));
   }
   try { globalShortcut.unregisterAll(); } catch { /* shortcuts may be unavailable */ }
   quiesceConsumerBackgroundActivities();
+}
+
+function retireBrainDashboardSession(isolatedSession: Session | null): void {
+  if (!isolatedSession) return;
+  isolatedSession.webRequest.onBeforeRequest(
+    { urls: ['<all_urls>'] },
+    (_details, callback) => callback({ cancel: true }),
+  );
+  isolatedSession.webRequest.onBeforeSendHeaders(
+    { urls: ['<all_urls>'] },
+    (details, callback) => {
+      const denied = denyBrainDashboardRequest(details.requestHeaders);
+      callback({
+        cancel: true,
+        requestHeaders: denied.requestHeaders,
+      });
+    },
+  );
+  trackBackgroundStop(isolatedSession.clearStorageData().catch(() => {
+    // The in-memory session remains deny-all if storage cleanup fails.
+  }));
+}
+
+function closeBrainDashboard(): void {
+  const currentWindow = brainDashboardWin;
+  brainDashboardWin = null;
+  try {
+    if (currentWindow && !currentWindow.isDestroyed()) currentWindow.destroy();
+  } catch { /* shutdown continues through the isolated session cleanup */ }
+  brainDashboardChildWindows.destroyAll();
+  const isolatedSession = brainDashboardSession;
+  brainDashboardSession = null;
+  brainDashboardSessionBinding = '';
+  retireBrainDashboardSession(isolatedSession);
 }
 
 function cleanupForThisInstance(): Promise<void> {
@@ -949,6 +1063,7 @@ async function cleanupForTerminalShutdown(): Promise<void> {
     if (win && !win.isDestroyed()) saveWinState(win);
   } catch { /* geometry persistence must not block service shutdown */ }
   // Close every source of future work before yielding to an in-flight drain.
+  closeBrainDashboard();
   quiesceConsumerOwnedServices();
   // Startup and all background stop handles share one aggregate deadline. A
   // timeout fails closed into the guarded Retry Shutdown flow; a retry gets a
@@ -967,12 +1082,9 @@ async function cleanupForTerminalShutdown(): Promise<void> {
 }
 
 async function cleanupFailedConsumerStartup(): Promise<void> {
+  closeBrainDashboard();
   quiesceConsumerOwnedServices();
   const activityDrainDeadline = Date.now() + CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS;
-  try {
-    if (brainDashboardWin && !brainDashboardWin.isDestroyed()) brainDashboardWin.destroy();
-  } catch { /* recovery can continue without the optional dashboard window */ }
-  brainDashboardWin = null;
   try {
     if (win && !win.isDestroyed()) win.destroy();
   } catch { /* recovery dialog does not depend on the renderer window */ }
@@ -1191,34 +1303,121 @@ function normalizeBrainDashboardTab(value: unknown): BrainDashboardTab {
   throw new Error(`Unsupported Brain dashboard tab "${tab}"`);
 }
 
+function brainDashboardWebPreferences(isolatedSession: Session) {
+  return {
+    contextIsolation: true,
+    sandbox: true,
+    nodeIntegration: false,
+    webSecurity: true,
+    devTools: false,
+    session: isolatedSession,
+  };
+}
+
+function configureBrainDashboardWindow(
+  window: BrowserWindow,
+  origin: string,
+  isolatedSession: Session,
+): void {
+  window.webContents.setWindowOpenHandler(({ url: target }) => {
+    if (brainDashboardNavigationAllowed(target, origin)) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          webPreferences: brainDashboardWebPreferences(isolatedSession),
+        },
+      };
+    }
+    // This bearer-authorized surface cannot prove that an external window was
+    // requested by a trusted user gesture rather than stored/scripted content.
+    // Keep it fail-closed instead of turning the system browser into an
+    // authenticated-data exfiltration channel.
+    return { action: 'deny' };
+  });
+  window.webContents.on('did-create-window', (childWindow) => {
+    const release = brainDashboardChildWindows.track(childWindow);
+    childWindow.on('closed', release);
+    configureBrainDashboardWindow(childWindow, origin, isolatedSession);
+  });
+  window.webContents.on('will-navigate', (event, target) => {
+    if (brainDashboardNavigationAllowed(target, origin)) return;
+    event.preventDefault();
+  });
+}
+
+function ensureBrainDashboardSession(
+  origin: string,
+  authorizationHeader: string,
+): Session {
+  const canonicalOrigin = canonicalBrainDashboardOrigin(origin);
+  const binding = `${canonicalOrigin}\0${authorizationHeader}`;
+  if (brainDashboardSession && brainDashboardSessionBinding === binding) {
+    return brainDashboardSession;
+  }
+  closeBrainDashboard();
+
+  const isolatedSession = session.fromPartition(
+    `idacc-brain-dashboard-${randomUUID()}`,
+    { cache: false },
+  );
+  const requestDecision = (
+    url: string,
+    requestHeaders: Record<string, string> = {},
+  ) => authorizeBrainDashboardRequest(
+    url,
+    canonicalOrigin,
+    authorizationHeader,
+    requestHeaders,
+  );
+  isolatedSession.webRequest.onBeforeRequest(
+    { urls: ['<all_urls>'] },
+    (details, callback) => {
+      callback({ cancel: !requestDecision(details.url).allowed });
+    },
+  );
+  isolatedSession.webRequest.onBeforeSendHeaders(
+    { urls: ['<all_urls>'] },
+    (details, callback) => {
+      const decision = requestDecision(details.url, details.requestHeaders);
+      callback({
+        cancel: !decision.allowed,
+        requestHeaders: decision.requestHeaders,
+      });
+    },
+  );
+  brainDashboardSession = isolatedSession;
+  brainDashboardSessionBinding = binding;
+  return isolatedSession;
+}
+
 async function openBrainDashboard(value: unknown): Promise<{ ok: true; tab: BrainDashboardTab; url: string }> {
   const tab = normalizeBrainDashboardTab(value);
   const cfg = BRAIN_DASHBOARD_TABS[tab];
-  const url = `${process.env.BRAIN_URL || 'http://127.0.0.1:4210'}${cfg.path}`;
+  const access = unifiedStackBrainRequestAccess();
+  const origin = canonicalBrainDashboardOrigin(access.origin);
+  const url = `${origin}${cfg.path}`;
+  const isolatedSession = ensureBrainDashboardSession(
+    origin,
+    access.authorizationHeader,
+  );
   if (!brainDashboardWin || brainDashboardWin.isDestroyed()) {
-    brainDashboardWin = new BrowserWindow({
+    const createdWindow = new BrowserWindow({
       width: 1100,
       height: 800,
       title: cfg.title,
-      webPreferences: {
-        contextIsolation: true,
-        sandbox: true,
-        nodeIntegration: false,
-      },
+      webPreferences: brainDashboardWebPreferences(isolatedSession),
     });
-    const allowedOrigin = new URL(url).origin;
-    brainDashboardWin.webContents.setWindowOpenHandler(({ url: target }) => {
-      openExternalHttpUrl(target);
-      return { action: 'deny' };
+    brainDashboardWin = createdWindow;
+    configureBrainDashboardWindow(createdWindow, origin, isolatedSession);
+    createdWindow.on('closed', () => {
+      if (brainDashboardWin !== createdWindow) return;
+      brainDashboardWin = null;
+      brainDashboardChildWindows.destroyAll();
+      const retiredSession = brainDashboardSession;
+      brainDashboardSession = null;
+      brainDashboardSessionBinding = '';
+      retireBrainDashboardSession(retiredSession);
     });
-    brainDashboardWin.webContents.on('will-navigate', (event, target) => {
-      try {
-        if (new URL(target).origin === allowedOrigin) return;
-      } catch { /* reject below */ }
-      event.preventDefault();
-      openExternalHttpUrl(target);
-    });
-    brainDashboardWin.on('closed', () => { brainDashboardWin = null; });
   }
   brainDashboardWin.setTitle(cfg.title);
   brainDashboardWin.show();
@@ -1227,6 +1426,85 @@ async function openBrainDashboard(value: unknown): Promise<{ ok: true; tab: Brai
     await brainDashboardWin.loadURL(url);
   }
   return { ok: true, tab, url };
+}
+
+type BrainDashboardLifecycleSelftestResult = {
+  childCreated: boolean;
+  childTracked: boolean;
+  childUsedIsolatedSession: boolean;
+  childDestroyed: boolean;
+  retiredRequestCancelled: boolean;
+  sessionRotated: boolean;
+  allPassed: boolean;
+};
+
+async function runBrainDashboardLifecycleSelftest(): Promise<BrainDashboardLifecycleSelftestResult> {
+  let child: BrowserWindow | null = null;
+  let originalSession: Session | null = null;
+  try {
+    const opened = await openBrainDashboard('graph');
+    const parent = brainDashboardWin;
+    originalSession = brainDashboardSession;
+    if (!parent || !originalSession) {
+      throw new Error('Brain dashboard did not create its isolated window and session');
+    }
+    const childPromise = new Promise<BrowserWindow>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error('Brain dashboard window.open child was not created')),
+        5_000,
+      );
+      parent.webContents.once('did-create-window', (createdChild) => {
+        clearTimeout(timeout);
+        resolve(createdChild);
+      });
+    });
+    await parent.webContents.executeJavaScript(
+      `Boolean(window.open(${JSON.stringify(`${opened.url}/child`)}, '_blank'))`,
+      true,
+    );
+    child = await childPromise;
+    const childCreated = !child.isDestroyed();
+    const childTracked = brainDashboardChildWindows.size() === 1;
+    const childUsedIsolatedSession = child.webContents.session === originalSession;
+
+    closeBrainDashboard();
+    const childDestroyed = child.isDestroyed();
+    let retiredRequestCancelled = false;
+    try {
+      const response = await originalSession.fetch(
+        `${new URL(opened.url).origin}/dashboard-retired-probe`,
+        {
+          headers: { Authorization: 'Bearer must-be-stripped' },
+          signal: AbortSignal.timeout(3_000),
+        },
+      );
+      await response.body?.cancel();
+    } catch {
+      retiredRequestCancelled = true;
+    }
+
+    await openBrainDashboard('graph');
+    const sessionRotated = Boolean(
+      brainDashboardSession
+      && brainDashboardSession !== originalSession,
+    );
+    closeBrainDashboard();
+    const result = {
+      childCreated,
+      childTracked,
+      childUsedIsolatedSession,
+      childDestroyed,
+      retiredRequestCancelled,
+      sessionRotated,
+      allPassed: false,
+    };
+    result.allPassed = Object.entries(result)
+      .filter(([key]) => key !== 'allPassed')
+      .every(([, value]) => value === true);
+    return result;
+  } finally {
+    closeBrainDashboard();
+  }
 }
 
 type ComputerUseAttachedAgent = { id?: string; name?: string; team?: string; authority?: string };
@@ -1470,6 +1748,74 @@ function configureSecureSettings(): void {
     // unlocks. Existing data remains untouched and migration retries next boot.
     console.warn('[settings] secure secret migration deferred:', error);
   }
+}
+
+function presentProviderRehydrationStatus(report: ProviderRehydrationReport): void {
+  const detail = providerRehydrationActionMessage(report);
+  if (!detail) return;
+
+  // Deliberately log only aggregate counts and stable reason codes. Provider
+  // credentials and Manager exception text never enter startup diagnostics.
+  console.warn('[provider-runtime] managed restart left provider agents safely paused', {
+    attempted: report.attempted,
+    resumed: report.resumed,
+    issues: report.issues.map((issue) => issue.reason),
+  });
+
+  const options = {
+    type: 'warning' as const,
+    title: 'Some agents are paused',
+    message: 'IDACC kept API-connected agents paused until their provider access can be restored safely.',
+    detail,
+    buttons: ['OK'],
+    defaultId: 0,
+    noLink: true,
+  };
+  const prompt = win && !win.isDestroyed()
+    ? dialog.showMessageBox(win, options)
+    : dialog.showMessageBox(options);
+  void prompt.catch((error) => {
+    logStartupRecoveryFailure('provider-runtime-status', startupFailureReport(error));
+  });
+}
+
+function rehydrateProviderAgentsForReadyManager(): Promise<void> {
+  if (providerRuntimeRehydrationWork) {
+    providerRuntimeRehydrationPending = true;
+    return providerRuntimeRehydrationWork;
+  }
+  providerRuntimeRehydrationPending = false;
+  const abort = new AbortController();
+  providerRuntimeRehydrationAbort = abort;
+  const work = resumeManagedProviderAgentsAfterRestart(abort.signal)
+    .then((report) => {
+      if (!appShutdown.isQuiescing()) presentProviderRehydrationStatus(report);
+    })
+    .catch(() => {
+      if (appShutdown.isQuiescing()) return;
+      presentProviderRehydrationStatus({
+        attempted: 0,
+        resumed: 0,
+        issues: [{
+          team: 'all teams',
+          reason: 'fleet_inventory_unavailable',
+        }],
+      });
+    })
+    .finally(() => {
+      if (providerRuntimeRehydrationWork === work) {
+        providerRuntimeRehydrationWork = null;
+      }
+      if (providerRuntimeRehydrationAbort === abort) {
+        providerRuntimeRehydrationAbort = null;
+      }
+      if (providerRuntimeRehydrationPending && !appShutdown.isQuiescing()) {
+        providerRuntimeRehydrationPending = false;
+        void rehydrateProviderAgentsForReadyManager();
+      }
+    });
+  providerRuntimeRehydrationWork = work;
+  return work;
 }
 
 function evmKeySourceOf(rpc: EvmRpcProfile): EvmRpcKeySource {
@@ -2164,7 +2510,9 @@ async function createWindow(): Promise<BrowserWindow> {
     minHeight: 600,
     title: 'ID Agents Control Center',
     backgroundColor: '#0e1116',
-    titleBarStyle: 'hiddenInset', // native traffic lights over our custom chrome
+    // hiddenInset is a macOS-only frame treatment. Windows and Linux keep
+    // their native title bar so minimize, maximize, and close remain present.
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: join(__dirname, '../preload/preload.cjs'),
       contextIsolation: true,
@@ -2464,7 +2812,7 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'stack:backgroundStatus':
       return backgroundStackStatus(Array.isArray(args[0]) ? args[0] as string[] : []);
     case 'stack:startBackground':
-      return startBackgroundStack(args[0], args[1], app.getPath('userData'));
+      return startBackgroundStack(args[0], args[1], appProfilePaths().logs);
     case 'stack:stopBackground':
       return stopBackgroundStack(args[0]);
     case 'stack:dockerStatus':
@@ -2900,6 +3248,7 @@ if (!ownsSingleInstanceLock) {
       persisted: boolean;
     } | undefined;
     let runtimeContract: UnifiedRuntimeContractSelftestResult | undefined;
+    let brainDashboardLifecycle: BrainDashboardLifecycleSelftestResult | undefined;
     try {
       const startedStack = await startUnifiedStack(profile);
       const managerUrl = startedStack.services.find((service) => service.name === 'manager')?.url;
@@ -2957,6 +3306,11 @@ if (!ownsSingleInstanceLock) {
       if (process.env.IDACC_STACK_AUTH_SELFTEST === '1') {
         let forgedStatus = 0;
         let desktopAuthenticated = false;
+        let brainAnonymousHealthMinimal = false;
+        const brainAnonymousStatuses: Record<string, number> = {};
+        const brainAuthenticatedStatuses: Record<string, number> = {};
+        const managerAnonymousStatuses: Record<string, number> = {};
+        const managerBrainServiceStatuses: Record<string, number> = {};
         try {
           const forged = await fetch(new URL('/control/brain', activeManagerUrl), {
             method: 'POST',
@@ -2969,11 +3323,130 @@ if (!ownsSingleInstanceLock) {
           forgedStatus = forged.status;
           await forged.body?.cancel();
           desktopAuthenticated = Boolean(await bridgeCall('brain:coreHealth', []));
+          const brainAccess = unifiedStackBrainRequestAccess();
+          const sensitiveReads = [
+            '/memory/shared',
+            '/timeline',
+            '/facts/export',
+            '/approvals?status=pending&limit=1',
+            '/learning-tasks?limit=1',
+            '/dashboard',
+            '/graph/app/data?limit=1',
+          ];
+          const anonymousHealth = await fetch(`${brainAccess.origin}/health`, {
+            redirect: 'error',
+            signal: AbortSignal.timeout(5_000),
+            headers: { accept: 'application/json' },
+          });
+          const anonymousHealthPayload = await anonymousHealth.json() as Record<string, unknown>;
+          const sensitiveHealthKeys = [
+            'nodes',
+            'edges',
+            'memories',
+            'entities',
+            'timelineEvents',
+            'facts',
+            'factStatus',
+            'factEntityIntegrity',
+            'routeInventory',
+          ];
+          brainAnonymousHealthMinimal = anonymousHealth.status === 200
+            && anonymousHealthPayload.ok === true
+            && sensitiveHealthKeys.every((key) => !(key in anonymousHealthPayload));
+          for (const path of sensitiveReads) {
+            const anonymous = await fetch(`${brainAccess.origin}${path}`, {
+              redirect: 'error',
+              signal: AbortSignal.timeout(5_000),
+              headers: { accept: 'application/json' },
+            });
+            brainAnonymousStatuses[path] = anonymous.status;
+            await anonymous.body?.cancel();
+            const authenticated = await fetch(`${brainAccess.origin}${path}`, {
+              redirect: 'error',
+              signal: AbortSignal.timeout(5_000),
+              headers: {
+                accept: 'application/json',
+                authorization: brainAccess.authorizationHeader,
+              },
+            });
+            brainAuthenticatedStatuses[path] = authenticated.status;
+            await authenticated.body?.cancel();
+          }
+          const managerAccess = unifiedStackManagerServiceRequestAccess();
+          const managerSensitiveReads = [
+            '/teams',
+            '/agents?team=default',
+            '/events?since=0&limit=1',
+          ];
+          for (const path of managerSensitiveReads) {
+            const anonymous = await fetch(`${managerAccess.origin}${path}`, {
+              redirect: 'error',
+              signal: AbortSignal.timeout(5_000),
+              headers: {
+                accept: 'application/json',
+                'x-id-team': 'default',
+              },
+            });
+            managerAnonymousStatuses[path] = anonymous.status;
+            await anonymous.body?.cancel();
+            const brainService = await fetch(`${managerAccess.origin}${path}`, {
+              redirect: 'error',
+              signal: AbortSignal.timeout(5_000),
+              headers: {
+                accept: 'application/json',
+                authorization: managerAccess.authorizationHeader,
+                'x-id-service': managerAccess.serviceHeader,
+                'x-id-team': 'default',
+              },
+            });
+            managerBrainServiceStatuses[path] = brainService.status;
+            await brainService.body?.cancel();
+          }
         } catch {
           desktopAuthenticated = false;
         }
-        authPassed = forgedStatus === 403 && desktopAuthenticated;
-        console.log('IDACC_STACK_AUTH_SELFTEST ' + JSON.stringify({ forgedStatus, desktopAuthenticated }));
+        const brainSensitiveReadsProtected = Object.values(brainAnonymousStatuses)
+          .every((status) => status === 401)
+          && Object.keys(brainAnonymousStatuses).length === 7;
+        const brainAuthenticatedReadsSucceeded = Object.values(brainAuthenticatedStatuses)
+          .every((status) => status === 200)
+          && Object.keys(brainAuthenticatedStatuses).length === 7;
+        const managerSensitiveReadsProtected = Object.values(managerAnonymousStatuses)
+          .every((status) => status === 401)
+          && Object.keys(managerAnonymousStatuses).length === 3;
+        const managerBrainServiceReadsSucceeded = Object.values(managerBrainServiceStatuses)
+          .every((status) => status === 200)
+          && Object.keys(managerBrainServiceStatuses).length === 3;
+        // The managed Manager rejects a missing bearer in its authentication
+        // middleware with 401. A compatible route-level implementation may
+        // reject the same forged legacy admin header with 403. Both are
+        // explicit authentication failures; no other status is accepted.
+        const forgedAdminRejected = forgedStatus === 401 || forgedStatus === 403;
+        authPassed = forgedAdminRejected
+          && desktopAuthenticated
+          && brainAnonymousHealthMinimal
+          && brainSensitiveReadsProtected
+          && brainAuthenticatedReadsSucceeded
+          && managerSensitiveReadsProtected
+          && managerBrainServiceReadsSucceeded;
+        console.log('IDACC_STACK_AUTH_SELFTEST ' + JSON.stringify({
+          forgedStatus,
+          forgedAdminRejected,
+          desktopAuthenticated,
+          brainAnonymousHealthMinimal,
+          brainSensitiveReadsProtected,
+          brainAuthenticatedReadsSucceeded,
+          managerSensitiveReadsProtected,
+          managerBrainServiceReadsSucceeded,
+          brainAnonymousStatuses,
+          brainAuthenticatedStatuses,
+          managerAnonymousStatuses,
+          managerBrainServiceStatuses,
+        }));
+      }
+      if (process.env.IDACC_STACK_DASHBOARD_SELFTEST === '1') {
+        brainDashboardLifecycle = await runBrainDashboardLifecycleSelftest();
+        authPassed = authPassed && brainDashboardLifecycle.allPassed;
       }
     } catch (error) {
       authPassed = false;
@@ -2986,6 +3459,7 @@ if (!ownsSingleInstanceLock) {
       authPassed,
       ...(runtimeContract ? { runtimeContract } : {}),
       ...(brainCycleOptIn ? { brainCycleOptIn } : {}),
+      ...(brainDashboardLifecycle ? { brainDashboardLifecycle } : {}),
       ...(selftestError ? { selftestError } : {}),
     });
     try {
@@ -3000,6 +3474,7 @@ if (!ownsSingleInstanceLock) {
         adminToken,
         process.env.BRAIN_TOKEN,
         process.env.IDACC_ADMIN_TOKEN,
+        process.env.IDACC_MANAGER_SERVICE_TOKEN,
       ].filter((value): value is string => Boolean(value && value.length >= 8));
       if (secretCandidates.some((secret) => serialized.includes(secret))) {
         throw new Error('stack self-test result contained a runtime credential');
@@ -3051,6 +3526,10 @@ if (!ownsSingleInstanceLock) {
       configureManagedManager(activeManagerUrl, adminToken);
       configureComputerUseAuditManager(activeManagerUrl, adminToken);
       configureKeyProviderFromSettings();
+      stopProviderRuntimeRehydrationListener = subscribeUnifiedStackServiceReady((event) => {
+        if (event.name !== 'manager' || appShutdown.isQuiescing()) return;
+        return rehydrateProviderAgentsForReadyManager();
+      });
       await createWindow();
       requireConsumerStartupActive();
       // Treat the app-owned Computer Use controller as part of startup. If its
@@ -3153,6 +3632,11 @@ if (ownsSingleInstanceLock) {
   });
 
   app.on('window-all-closed', () => {
+    // The headless stack self-test deliberately creates and destroys an
+    // isolated Brain dashboard window. On Linux and Windows, closing that
+    // fixture must not terminate Electron before the result is published and
+    // the supervised Manager/Brain shutdown has completed.
+    if (stackSelftest) return;
     if (startupRecoveryActive || BrowserWindow.getAllWindows().length > 0) return;
     if (process.platform !== 'darwin') void appShutdown.request({ kind: 'quit' });
   });

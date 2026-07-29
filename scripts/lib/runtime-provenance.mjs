@@ -14,13 +14,30 @@ import {
   sep,
 } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
 
 export const RUNTIME_LOCK_SCHEMA_VERSION = 1;
 export const RUNTIME_MANIFEST_SCHEMA_VERSION = 2;
 export const COMPONENT_NAMES = ['manager', 'brain'];
+// The immutable runtime is the dominant installed-size contributor. Keep a
+// deliberate headroom budget over the audited consumer payload so optional
+// capabilities cannot silently turn a desktop update into an unbounded image.
+export const MAX_RUNTIME_PAYLOAD_BYTES = 450 * 1024 * 1024;
 
 const HEX_40 = /^[0-9a-f]{40}$/;
 const HEX_64 = /^[0-9a-f]{64}$/;
+
+function safeRepositoryRelativePath(value) {
+  return Boolean(
+    typeof value === 'string'
+    && value
+    && !value.startsWith('/')
+    && !value.includes('\\')
+    && !value.includes('\0')
+    && !/^[A-Za-z]:/.test(value)
+    && value.split('/').every((part) => part && part !== '.' && part !== '..')
+  );
+}
 
 export function sha256(input) {
   return createHash('sha256').update(input).digest('hex');
@@ -78,6 +95,66 @@ export function validateRuntimeLock(lock) {
     }
     if (typeof component.serviceId !== 'string' || !/^[a-z][a-z0-9-]{2,63}$/.test(component.serviceId)) {
       errors.push(`components.${name}.serviceId must be a stable lowercase service id`);
+    }
+    if (component.distributionSource !== undefined) {
+      const source = component.distributionSource;
+      if (name !== 'brain') {
+        errors.push(
+          `components.${name}.distributionSource is unsupported; only Brain capsules are supported`,
+        );
+      }
+      if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        errors.push(`components.${name}.distributionSource must be an object`);
+      } else {
+        const supportedFields = new Set([
+          'mode',
+          'path',
+          'manifest',
+          'manifestSha256',
+          'treeSha256',
+        ]);
+        const extraFields = Object.keys(source).filter((field) => !supportedFields.has(field));
+        if (extraFields.length) {
+          errors.push(
+            `components.${name}.distributionSource has unsupported field(s): ${extraFields.join(', ')}`,
+          );
+        }
+        if (source.mode !== 'vendored-capsule') {
+          errors.push(
+            `components.${name}.distributionSource.mode must be vendored-capsule`,
+          );
+        }
+        if (!safeRepositoryRelativePath(source.path)) {
+          errors.push(
+            `components.${name}.distributionSource.path must be a safe repository-relative path`,
+          );
+        }
+        if (!safeRepositoryRelativePath(source.manifest)) {
+          errors.push(
+            `components.${name}.distributionSource.manifest must be a safe repository-relative path`,
+          );
+        } else if (
+          typeof source.path === 'string'
+          && (
+            source.manifest === source.path
+            || source.manifest.startsWith(`${source.path.replace(/\/+$/, '')}/`)
+          )
+        ) {
+          errors.push(
+            `components.${name}.distributionSource.manifest must be outside the capsule directory`,
+          );
+        }
+        if (!HEX_64.test(source.manifestSha256 || '')) {
+          errors.push(
+            `components.${name}.distributionSource.manifestSha256 must be a lowercase SHA-256`,
+          );
+        }
+        if (!HEX_64.test(source.treeSha256 || '')) {
+          errors.push(
+            `components.${name}.distributionSource.treeSha256 must be a lowercase SHA-256`,
+          );
+        }
+      }
     }
   }
   const extras = Object.keys(lock.components).filter((name) => !COMPONENT_NAMES.includes(name));
@@ -339,6 +416,12 @@ export function verifyRuntimeManifest(runtimeRoot, manifest, runtimeLock) {
     seenPaths.add(path);
     expectedRecords.push(record);
   }
+  const expectedBytes = expectedRecords.reduce((total, record) => total + record.size, 0);
+  if (expectedBytes > MAX_RUNTIME_PAYLOAD_BYTES) {
+    errors.push(
+      `runtime manifest payload is ${expectedBytes} bytes; maximum is ${MAX_RUNTIME_PAYLOAD_BYTES} bytes`,
+    );
+  }
 
   let actual = [];
   try {
@@ -346,6 +429,12 @@ export function verifyRuntimeManifest(runtimeRoot, manifest, runtimeLock) {
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
     return errors;
+  }
+  const actualBytes = actual.reduce((total, record) => total + record.size, 0);
+  if (actualBytes > MAX_RUNTIME_PAYLOAD_BYTES) {
+    errors.push(
+      `runtime payload is ${actualBytes} bytes; maximum is ${MAX_RUNTIME_PAYLOAD_BYTES} bytes`,
+    );
   }
   const expectedLines = expectedRecords.map((record) => canonicalRecord(record));
   const actualLines = actual.map((record) => canonicalRecord(record));
@@ -374,6 +463,9 @@ export function verifyRuntimeManifest(runtimeRoot, manifest, runtimeLock) {
         if (recorded?.[field] !== locked[field]) {
           errors.push(`manifest components.${name}.${field} does not match runtime lock`);
         }
+      }
+      if (!isDeepStrictEqual(recorded?.distributionSource, locked.distributionSource)) {
+        errors.push(`manifest components.${name}.distributionSource does not match runtime lock`);
       }
     }
   }

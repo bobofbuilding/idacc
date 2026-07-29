@@ -14,6 +14,7 @@ const ambient: NodeJS.ProcessEnv = {
   BRAIN_TOKEN: 'ambient-brain',
   brain_bearer_token: 'ambient-brain-alias',
   IDACC_ADMIN_TOKEN: 'ambient-admin',
+  IDACC_MANAGER_SERVICE_TOKEN: 'ambient-manager-service',
   IDACC_BRAIN_TOKEN: 'ambient-idacc-brain',
   IDACC_SERVICE_BEARER: 'ambient-service',
   IDCTL_MANAGER_TOKEN: 'ambient-legacy-manager',
@@ -25,6 +26,7 @@ for (const key of [
   'BRAIN_TOKEN',
   'brain_bearer_token',
   'IDACC_ADMIN_TOKEN',
+  'IDACC_MANAGER_SERVICE_TOKEN',
   'IDACC_BRAIN_TOKEN',
   'IDACC_SERVICE_BEARER',
   'IDCTL_MANAGER_TOKEN',
@@ -73,6 +75,7 @@ const mcpLaunch = resolveMcpStdioLaunch(process.execPath, {
   env: ambient,
 });
 assert.equal(mcpLaunch.env.IDACC_ADMIN_TOKEN, undefined);
+assert.equal(mcpLaunch.env.IDACC_MANAGER_SERVICE_TOKEN, undefined);
 assert.equal(mcpLaunch.env.IDACC_BRAIN_TOKEN, undefined);
 assert.equal(mcpLaunch.env.ID_CU_TOKEN, undefined);
 assert.equal(
@@ -108,8 +111,20 @@ assert.doesNotMatch(
   'the generated Brain bearer must remain module-local',
 );
 assert.match(unifiedStack, /export function unifiedStackPayloadContainsCredential\(/);
-assert.match(unifiedStack, /\[stackBrainToken,\s*stackAdminToken\]\.some/);
+assert.match(
+  unifiedStack,
+  /\[stackBrainToken,\s*stackAdminToken,\s*stackManagerServiceToken\]\.some/,
+);
 assert.match(unifiedStack, /export function unifiedStackCredentialGuardSelftest\(/);
+assert.match(unifiedStack, /stackManagerServiceToken = randomBytes\(32\)\.toString\('base64url'\)/);
+assert.match(
+  unifiedStack,
+  /name === 'brain-listener' && stackManagerServiceToken[\s\S]*env\.IDACC_MANAGER_SERVICE_TOKEN = stackManagerServiceToken/,
+);
+assert.match(
+  unifiedStack,
+  /\(service\.spec\.name === 'manager' \|\| service\.spec\.name === 'brain'\)[\s\S]*childEnv\.IDACC_MANAGER_SERVICE_TOKEN = stackManagerServiceToken/,
+);
 assert.match(unifiedStack, /\.\.\.externalChildEnvironment\(\)[\s\S]*BRAIN_TOKEN:\s*stackBrainToken\s*\?\?\s*''/);
 assert.match(unifiedStack, /subscriptionRuntimeEnvironment\(\)[\s\S]*BRAIN_TOKEN:\s*stackBrainToken\s*\?\?\s*''/);
 

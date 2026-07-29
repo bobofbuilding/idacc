@@ -729,6 +729,25 @@ export function ComputerUse({ store }: { store: FleetStore }) {
 
   const liveStale = frame && Date.now() - lastFrameAt.current > 4000;
 
+  if (cuUnavailable) {
+    return (
+      <div className="view cu-view">
+        <header className="view-head">
+          <h1>Computer Use</h1>
+          <span className="cu-armpill">Unavailable on this operating system</span>
+        </header>
+        <section className="card">
+          <h3>macOS-only capability</h3>
+          <p>{cuUnavailableReason}</p>
+          <p className="muted small">
+            The rest of IDACC, Manager, and Brain remains available in this review build.
+            Screen capture, input control, permission links, and agent blessing are not started or shown here.
+          </p>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="view cu-view">
       <header className="view-head">

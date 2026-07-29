@@ -276,14 +276,17 @@ export function evaluateLegacyReleaseCutover(markerInput, {
   if (baselineComparison < 0) {
     fail(`GitHub latest ${latestPublishedTag} predates recorded baseline ${marker.baselinePublishedTag}`);
   }
-  if (baselineComparison > 0 && cutoffComparison < 0) {
-    fail(`${latestPublishedTag} is inside the recorded legacy range and cannot be GitHub Latest`);
+  if (baselineComparison > 0 && cutoffComparison <= 0) {
+    fail(
+      `${latestPublishedTag} is inside or at the recorded legacy range and cannot replace `
+      + `the audited GitHub Latest baseline ${marker.baselinePublishedTag}`,
+    );
   }
 
-  // The exact cutoff may be GitHub Latest while the first canonical release is
-  // being prepared. Once a version above the cutoff is Latest, the exception
-  // automatically becomes dormant and cannot authorize any future tag gap.
-  const active = baselineComparison === 0 || cutoffComparison === 0;
+  // The exception is active only while the exact audited public baseline is
+  // GitHub Latest. Once a signed canonical version above the cutoff is Latest,
+  // it automatically becomes dormant and cannot authorize any future tag gap.
+  const active = baselineComparison === 0;
   if (!active) {
     validateCanonicalLatestTag(latestPublishedTag, tagRefs, canonicalTagVerification);
   }

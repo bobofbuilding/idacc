@@ -5,11 +5,13 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const main = readFileSync(join(root, 'src', 'main', 'main.ts'), 'utf8');
+const bridge = readFileSync(join(root, 'src', 'main', 'bridge.ts'), 'utf8');
 const settings = readFileSync(join(root, 'src', 'renderer', 'views', 'Settings.tsx'), 'utf8');
 const teams = readFileSync(join(root, 'src', 'renderer', 'views', 'Teams.tsx'), 'utf8');
 const syncDomains = readFileSync(join(root, 'src', 'shared', 'syncDomains.ts'), 'utf8');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const resources = JSON.stringify(pkg.build?.extraResources ?? []);
+const managerClient = readFileSync(join(root, '..', 'idctl', 'src', 'api', 'client.ts'), 'utf8');
 const terminalApp = readFileSync(join(root, '..', 'idctl', 'src', 'app', 'App.tsx'), 'utf8');
 const terminalCli = readFileSync(join(root, '..', 'idctl', 'src', 'cli.tsx'), 'utf8');
 const terminalUpgrade = readFileSync(join(root, '..', 'idctl', 'src', 'headless', 'upgrade-cmd.ts'), 'utf8');
@@ -32,6 +34,22 @@ assert.doesNotMatch(settings, /managerUpdate:|Check manager|Update & sync manage
 assert.doesNotMatch(teams, /managerUpdate:|Install & connect manager/);
 assert.doesNotMatch(syncDomains, /managerUpdate:/);
 assert.match(settings, /IDACC, Agent manager, and Brain ship and update together/);
+for (const [surface, source] of [
+  ['Teams', teams],
+  ['desktop bridge', bridge],
+  ['Manager client', managerClient],
+]) {
+  assert.doesNotMatch(
+    source,
+    /Install and connect it from this panel|Update id-agents to v[\d.]+ or newer|Update the manager you're pointed at/i,
+    `${surface} still tells consumers to install or update Manager separately`,
+  );
+  assert.match(
+    source,
+    /update or repair the unified IDACC application/i,
+    `${surface} must route compatibility recovery through unified IDACC`,
+  );
+}
 assert.doesNotMatch(resources, /install-idacc-stack|install-id-agents-manager/);
 assert.equal(existsSync(join(root, 'src', 'main', 'managerUpdater.ts')), false);
 assert.equal(existsSync(join(root, 'scripts', 'manager-updater-smoke.mjs')), false);

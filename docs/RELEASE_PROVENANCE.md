@@ -7,18 +7,21 @@ versioned components:
 - the ID Agents manager runtime; and
 - the Brain runtime.
 
-The manager and Brain are never copied from arbitrary local working trees.
+The Manager and Brain are never copied from arbitrary local working trees.
 [`release/runtime-lock.json`](../release/runtime-lock.json) records the exact
 repository, commit, Git tree, package-lock digest, version, entrypoint, and
-service identity for each bundled runtime.
+service identity for each bundled runtime. The Brain entry also pins the
+vendored runtime capsule, its manifest digest, and its content-tree digest.
 
 ## Reproducible staging
 
 Use the Node and npm versions declared by `.node-version`, `packageManager`,
 and `engines`. Install dependencies with `npm ci`.
 
-The staging command requires clean manager and Brain checkouts at the exact
-locked commits:
+The staging command requires a clean Manager checkout at the exact locked
+commit and a verified Brain runtime capsule. The capsule is committed with
+IDACC and materializes the locked, consumer-safe Brain subset without requiring
+access to the private upstream repository:
 
 ```sh
 npm run stage:runtimes --prefix idctl-desktop
@@ -35,20 +38,27 @@ npm run stage:runtimes --prefix idctl-desktop -- --allow-dirty-application
 The dirty state remains recorded in the manifest. CI ignores the override and
 packaged-release validation always rejects a dirty application manifest.
 
-`stage:runtimes` exports the locked Git commits, installs from their committed
-lockfiles, builds the manager, installs production-only runtime dependencies,
-rebuilds its Electron-native dependency, and atomically replaces the staged
-payload. It does not run dependency mutation commands such as `npm audit fix`.
+`stage:runtimes` exports the locked Manager commit, verifies and materializes
+the Brain capsule, installs from the committed lockfiles, builds the Manager,
+installs production-only runtime dependencies, rebuilds its Electron-native
+dependency, and atomically replaces the staged payload. It does not run
+dependency mutation commands such as `npm audit fix`.
 
 The resulting schema-v2 runtime manifest includes:
 
 - the desktop source commit and tree;
 - the locked identity of both services;
+- the Brain capsule distribution identity;
 - the build toolchain and target architecture;
 - a sorted inventory and SHA-256 for every runtime file or safe symlink; and
 - SHA-256 tree digests for the manager, Brain, and complete runtime.
 
 Verification rejects missing, altered, extra, or unsafe runtime content.
+Staging also removes foreign-platform XMTP native binaries while retaining the
+exact binding for the release target, and caps the logical Manager-plus-Brain
+payload at 450 MiB. Adding a large immutable capability therefore requires an
+explicit budget review rather than silently increasing every consumer
+installation.
 
 ## Consumer-neutral runtime boundary
 
@@ -79,6 +89,23 @@ The Brain payload contains:
 - the connector schema plus the five versioned runtime prompts used for
   community reports, edge descriptions, fact synthesis, follow-up questions,
   and safety reports.
+
+The vendored capsule contains only that first-party Brain runtime payload plus
+its committed package metadata, lockfile, and license. Its deterministic
+manifest records the exact path, mode, size, SHA-256, and Git blob identity of
+every file. Capsule verification rejects missing or extra paths, symlinks, path
+collisions, mode changes, digest changes, and a mismatched lock identity before
+materialization.
+
+The capsule intentionally does not embed raw private Git tree objects. Such
+objects would disclose the names and hashes of omitted private siblings even
+without disclosing their contents. The export tool verifies every recorded
+blob against an exact clean upstream checkout when the capsule is regenerated.
+For a credential-free unsigned review, the locked private commit/tree and each
+recorded Git blob identity are therefore publisher assertions; the committed
+capsule inventory and SHA-256 content tree remain independently reproducible
+and tamper-evident. A maintainer with private-source access can repeat the
+upstream comparison locally.
 
 The staging allowlist intentionally excludes source tests and documentation,
 operator plans and privileged tools, seed data, local databases and outputs,
@@ -120,26 +147,36 @@ Update a component only from its intended upstream repository:
 2. record its commit tree with `git rev-parse '<commit>^{tree}'`;
 3. record the SHA-256 of `package-lock.json` exactly as committed;
 4. copy the version from that commit's `package.json`;
-5. update the matching entry in `release/runtime-lock.json`; and
-6. run the lock validation and release-provenance smoke test.
+5. for Brain, regenerate the consumer-safe runtime capsule and its per-file
+   upstream audit records from that exact clean source;
+6. update the matching entry and, for Brain, the capsule distribution digests
+   in `release/runtime-lock.json`; and
+7. run lock, capsule, and release-provenance verification.
 
 ```sh
 node scripts/validate-runtime-lock.mjs \
-  --manager-source /path/to/clean/manager \
-  --brain-source /path/to/clean/brain
+  --manager-source /path/to/clean/manager
+node scripts/runtime-source-capsule.mjs verify \
+  --lock release/runtime-lock.json \
+  --component brain
 npm run test:release-provenance --prefix idctl-desktop
 ```
 
-The validation deliberately fails for dirty checkouts, the wrong repository,
-the wrong HEAD, an unavailable commit, a changed lockfile, or a version/tree
-mismatch.
+Maintainers performing the full private-upstream audit may additionally pass
+`--brain-source /path/to/clean/brain` to `validate-runtime-lock.mjs`. That
+optional audit verifies the commit-to-tree mapping directly. Source validation
+deliberately fails for dirty checkouts, the wrong repository, the wrong HEAD,
+an unavailable commit, a changed lockfile, or a version/tree mismatch. Capsule
+validation independently fails for an altered manifest, inventory, or
+payload.
 
 ## CI and production releases
 
-`.github/workflows/ci.yml` checks out both runtime pins independently, stages
-and verifies them, typechecks the application, audits every production
-dependency tree, builds an unpacked application, runs the clean-stack release
-smoke test, and uploads short-lived provenance evidence.
+`.github/workflows/ci.yml` checks out the public Manager pin, independently
+verifies the committed Brain capsule, stages both components, typechecks the
+application, audits every production dependency tree, builds an unpacked
+application, runs the clean-stack release smoke test, and uploads short-lived
+provenance evidence.
 
 Windows builds discover the installed Visual Studio Roslyn compiler through
 `vswhere` and require its Roslyn Compiler component plus the .NET Framework 4.8
@@ -153,20 +190,40 @@ Production packaging Authenticode-signs the Job Host and verifies its exact publ
 alongside the desktop executable and installer; unsigned CI builds remain
 pinned to the deterministic binary digest.
 
-The Manager source repository is public; the Brain source repository is
-private. The IDACC repository must provide `RUNTIME_SOURCE_TOKEN` as a
-**repository-level Actions secret**, using a fine-grained personal access token
-or GitHub App token with read-only `Contents` access to both pinned source
-repositories. Repository-level placement is required because CI and the
-release workflow's `runtime-source-tests` job intentionally do not enter the
-protected `production` environment. Runtime checkout jobs fail at preflight
-with an explicit error when this secret is unavailable; they never fall back
-to a developer checkout.
+### Credential-free unsigned review builds
 
-That credential is a build-time provenance control, not a consumer
-prerequisite. Published installers contain the exact verified Manager and Brain
-runtime payloads, and a downloaded application never needs source-repository
-access to start, onboard, update, or use the unified stack.
+`.github/workflows/review-build.yml` is a deliberately separate review-only
+path. It uses GitHub's scoped automatic `github.token` to read the public IDACC
+and Manager repositories and to write only the pending/final review status on
+the exact IDACC commit; checkout credential persistence is disabled and the
+workflow has no release-write permission. It verifies the vendored Brain
+capsule and materializes it independently in the runtime-source job and in
+every native matrix job. No user-supplied or private runtime-source credential,
+signing credential, notarization credential, or GitHub Release publishing
+credential is used.
+
+The runtime-source job installs the capsule's production dependencies, checks
+the syntax of its first-party modules, and starts the Brain service against a
+temporary clean state directory to verify its readiness endpoint. It does not
+claim to run the excluded private upstream test suite. Each native job then
+stages the exact Manager and capsule-backed Brain payload, verifies the unified
+runtime, audits shipped dependencies, and exercises clean-profile Manager and
+Brain startup from the packaged application.
+
+Review packages use a prerelease identity, are unsigned and unnotarized, keep
+self-update disabled, exclude updater descriptors and blockmaps, and are
+uploaded only as a short-lived Actions artifact. This path does not create or
+publish a GitHub Release, move `Latest`, or satisfy the signed consumer-release
+gates.
+
+The Manager source repository is public; the Brain source repository is
+private. CI, unsigned review builds, and production packaging do not require a
+private runtime-source credential. They use the exact public Manager pin and
+the digest-pinned vendored Brain capsule. Private Brain access is needed only
+when a maintainer intentionally regenerates the capsule or repeats the optional
+full-upstream audit. Published installers contain the verified Manager and
+Brain runtime payloads, and a downloaded application never needs
+source-repository access to start, onboard, update, or use the unified stack.
 
 The only supported production entrypoint is:
 
@@ -182,8 +239,9 @@ annotated tag objects—and the mixed GitHub Release state found by the
 releases (`v0.1.622`, `v0.1.624`, and `v0.1.625`). It does not authorize
 another range or state transition: a missing, changed, converted, unexpectedly
 published, unexpectedly unpublished, or additional incomplete ref fails
-closed. With `v0.1.684` as the audited legacy frontier and current GitHub
-Latest, the generated changelog is anchored to published `v0.1.684`.
+closed. GitHub Latest and the changelog baseline remain `v0.1.619`; `v0.1.684`
+is the historical version floor that the first canonical signed release must
+exceed.
 
 The command preflights `gh` authentication and Git signing, creates a signed
 annotated tag for the exact application commit, requires `git verify-tag` to
@@ -263,6 +321,13 @@ matrix:
 - Windows x64 EXE; and
 - Linux x64 AppImage and DEB.
 
+The Linux packaging gate extracts the actual AppImage, requires the exact
+lockfile-pinned conditional launcher, and verifies that its packaged main
+process starts with the matching fail-closed sandbox policy. It also inspects
+the actual Debian data and control archives, requiring the exact root-owned
+Chromium helper path, deterministic user-namespace/setuid post-install policy,
+and pinned AppArmor profile before either artifact can be published.
+
 Those seven installers are accompanied by:
 
 - platform update descriptors and blockmaps;
@@ -322,7 +387,8 @@ Production workflows never use `--allow-dirty-application`; that switch exists
 only for clearly marked local developer staging. CI and packaged-release
 validation reject dirty application provenance.
 
-Local release preparation may fail while a developer's manager or Brain
-working tree contains changes. That is an intentional release boundary; CI
-uses fresh exact-commit checkouts and does not require those developer changes
-to be discarded.
+Local capsule regeneration or the optional upstream audit fails while a
+developer's Brain working tree contains changes. Manager staging likewise
+requires a clean exact checkout. Those are intentional release boundaries; CI,
+review, and production packaging verify the committed capsule and never read a
+developer's Brain working tree.

@@ -8,6 +8,18 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.685] — 2026-07-28
+### What changed
+- Ship one unified IDACC application with exact bundled Manager and Brain provenance, profile-owned state and migrations, consumer onboarding, and one updater authority.
+- Add isolated unsigned native review artifacts for macOS, Windows, and Linux, and close review-only runtime-version and background-process containment gaps.
+- Bundle Manager 0.1.155 so a Windows graceful process-tree rejection continues
+  through an ownership-rechecked forced stop, and require the packaged review
+  gate to prove stopped state, PID exit, and exclusive loopback-port release.
+- Make Linux DEB review inspection consume member streams to archive EOF and
+  reap the complete bounded verifier process group on failure or timeout.
+- Keep the Linux SUID smoke copy root-owned and non-writable while exposing
+  read-only traversal in the required order for helper identity verification.
+
 ## [0.1.684] — 2026-07-25
 ### What changed
 - Bundle and supervise the ID Agents manager and Brain inside IDACC, isolate and migrate user state into app-owned profiles, add guided first-run readiness, and enforce clean-profile release verification.

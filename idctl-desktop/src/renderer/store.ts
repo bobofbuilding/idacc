@@ -183,7 +183,14 @@ const HIDDEN_POLL_MS = 30000;
 const EVENT_VIEW_REFRESH_MIN_MS = 5000;
 const EVENT_STREAM_BACKPRESSURE_MS = 750;
 const EVENT_STREAM_IDLE_BACKOFF_MS = 1000;
+// Keep reading/writing the original team-scoped numeric key so upgrades and
+// downgrades retain a useful cursor. New builds additionally bind that team
+// label to the Manager's profile-owned stream id and persist each stream
+// independently, preventing two profiles with a team named "default" from
+// overwriting one another.
 const EVENT_CURSOR_STORAGE_PREFIX = 'idacc:event-cursor:';
+const EVENT_STREAM_CURSOR_STORAGE_PREFIX = 'idacc:event-cursor:stream:';
+const EVENT_STREAM_BINDING_STORAGE_PREFIX = 'idacc:event-stream:';
 const VIEW_INVALIDATING_EVENT_PREFIXES = ['agent:', 'checkin:', 'goal:', 'learn:', 'schedule:', 'task:', 'team:'];
 const VIEW_EVENT_PREFIXES: Record<string, string[]> = {
   dashboard: VIEW_INVALIDATING_EVENT_PREFIXES,
@@ -270,19 +277,188 @@ function eventCursorKey(team?: string): string {
   return `${EVENT_CURSOR_STORAGE_PREFIX}${team || 'default'}`;
 }
 
-function readStoredEventCursor(team?: string): number {
+type EventCursorStorage = Pick<Storage, 'getItem' | 'setItem'>;
+
+export type EventStreamCursor = {
+  seq: number;
+  streamId?: string;
+};
+
+export type EventCursorResponse = {
+  next_seq: number;
+  stream_id?: string;
+  cursor_reset?: boolean;
+};
+
+export type EventCursorReconciliation = {
+  cursor: EventStreamCursor;
+  /** False means the response was only a stream/reset handshake and its event
+   * batch must not be rendered; the next request starts at `cursor.seq`. */
+  acceptEvents: boolean;
+  /** A changed/reset stream invalidates activity already rendered from the
+   * previous log, so the caller must clear its in-memory event buffer. */
+  clearEvents: boolean;
+};
+
+export function eventLoopEpochIsCurrent(
+  alive: boolean,
+  currentEpoch: number,
+  requestEpoch: number,
+): boolean {
+  return alive && currentEpoch === requestEpoch;
+}
+
+function cursorStorage(storage?: EventCursorStorage): EventCursorStorage | null {
+  if (storage) return storage;
   try {
-    const raw = localStorage.getItem(eventCursorKey(team));
-    const n = Number(raw);
-    return Number.isFinite(n) && n > 0 ? n : 0;
+    return typeof localStorage === 'undefined' ? null : localStorage;
   } catch {
-    return 0;
+    return null;
   }
 }
 
-function writeStoredEventCursor(team: string | undefined, seq: number): void {
-  if (!Number.isFinite(seq) || seq <= 0) return;
-  try { localStorage.setItem(eventCursorKey(team), String(Math.floor(seq))); } catch { /* storage unavailable */ }
+function eventStreamBindingKey(team?: string): string {
+  return `${EVENT_STREAM_BINDING_STORAGE_PREFIX}${encodeURIComponent(team || 'default')}`;
+}
+
+function eventStreamCursorKey(streamId: string): string {
+  return `${EVENT_STREAM_CURSOR_STORAGE_PREFIX}${encodeURIComponent(streamId)}`;
+}
+
+function normalizedStreamId(value: unknown): string | undefined {
+  const streamId = typeof value === 'string' ? value.trim() : '';
+  return streamId || undefined;
+}
+
+function normalizedCursorSeq(value: unknown, fallback: number): number {
+  const seq = Number(value);
+  return Number.isFinite(seq) && seq >= 0 ? Math.floor(seq) : fallback;
+}
+
+function readCursorSeq(storage: EventCursorStorage | null, key: string): number | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(key);
+    if (raw === null || raw.trim() === '') return null;
+    const seq = Number(raw);
+    return Number.isFinite(seq) && seq >= 0 ? Math.floor(seq) : null;
+  } catch {
+    return null;
+  }
+}
+
+function readBoundStreamId(team: string | undefined, storage: EventCursorStorage | null): string | undefined {
+  if (!storage) return undefined;
+  try {
+    return normalizedStreamId(storage.getItem(eventStreamBindingKey(team)));
+  } catch {
+    return undefined;
+  }
+}
+
+function readStoredEventCursor(team?: string, storageOverride?: EventCursorStorage): EventStreamCursor {
+  const storage = cursorStorage(storageOverride);
+  const streamId = readBoundStreamId(team, storage);
+  const streamSeq = streamId ? readCursorSeq(storage, eventStreamCursorKey(streamId)) : null;
+  const legacySeq = readCursorSeq(storage, eventCursorKey(team));
+  return {
+    seq: streamSeq ?? legacySeq ?? 0,
+    ...(streamId ? { streamId } : {}),
+  };
+}
+
+function writeStoredEventCursor(
+  team: string | undefined,
+  cursor: EventStreamCursor,
+  storageOverride?: EventCursorStorage,
+): void {
+  const storage = cursorStorage(storageOverride);
+  if (!storage || !Number.isFinite(cursor.seq) || cursor.seq < 0) return;
+  const seq = String(Math.floor(cursor.seq));
+  try {
+    // The legacy key is intentionally replaced too. A reset to zero must not
+    // leave an old numeric cursor waiting forever after a downgrade.
+    storage.setItem(eventCursorKey(team), seq);
+    if (cursor.streamId) {
+      storage.setItem(eventStreamCursorKey(cursor.streamId), seq);
+      storage.setItem(eventStreamBindingKey(team), cursor.streamId);
+    }
+  } catch {
+    // Storage is an optimization; the live stream continues without it.
+  }
+}
+
+/**
+ * Resolve a persisted cursor only after the Manager identifies the active
+ * stream. Exact stream cursors win. A legacy team-only cursor is migrated when
+ * there is no contradictory stream binding; a newly-seen profile starts at
+ * that stream's live tail.
+ */
+export function initializeEventStreamCursor(
+  team: string | undefined,
+  tail: EventCursorResponse,
+  storageOverride?: EventCursorStorage,
+): EventStreamCursor {
+  const storage = cursorStorage(storageOverride);
+  const streamId = normalizedStreamId(tail.stream_id);
+  const tailSeq = normalizedCursorSeq(tail.next_seq, 0);
+  if (!streamId) {
+    const cursor = { seq: readCursorSeq(storage, eventCursorKey(team)) ?? tailSeq };
+    writeStoredEventCursor(team, cursor, storageOverride);
+    return cursor;
+  }
+
+  const exactStreamSeq = readCursorSeq(storage, eventStreamCursorKey(streamId));
+  const boundStreamId = readBoundStreamId(team, storage);
+  const legacySeq = readCursorSeq(storage, eventCursorKey(team));
+  const canMigrateLegacy = !boundStreamId || boundStreamId === streamId;
+  const cursor: EventStreamCursor = {
+    seq: exactStreamSeq ?? (canMigrateLegacy ? legacySeq : null) ?? tailSeq,
+    streamId,
+  };
+  writeStoredEventCursor(team, cursor, storageOverride);
+  return cursor;
+}
+
+/**
+ * Apply one Manager event response. Normal reads remain monotonic within a
+ * stream. `cursor_reset` is authoritative and may move backwards, while a
+ * stream change restores only that exact stream's cursor (or re-queries from
+ * zero when it has never been seen).
+ */
+export function reconcileEventStreamCursor(
+  team: string | undefined,
+  current: EventStreamCursor,
+  response: EventCursorResponse,
+  storageOverride?: EventCursorStorage,
+): EventCursorReconciliation {
+  const storage = cursorStorage(storageOverride);
+  const responseStreamId = normalizedStreamId(response.stream_id);
+  const nextSeq = normalizedCursorSeq(response.next_seq, current.seq);
+
+  if (responseStreamId && current.streamId && responseStreamId !== current.streamId) {
+    const exactStreamSeq = readCursorSeq(storage, eventStreamCursorKey(responseStreamId));
+    const cursor = {
+      // A Manager reset always supersedes persisted state, including an exact
+      // stream record. Otherwise resume the known stream or safely re-query it.
+      seq: response.cursor_reset === true ? nextSeq : exactStreamSeq ?? 0,
+      streamId: responseStreamId,
+    };
+    writeStoredEventCursor(team, cursor, storageOverride);
+    return { cursor, acceptEvents: false, clearEvents: true };
+  }
+
+  const streamId = responseStreamId ?? current.streamId;
+  const cursor: EventStreamCursor = {
+    seq: response.cursor_reset === true ? nextSeq : Math.max(current.seq, nextSeq),
+    ...(streamId ? { streamId } : {}),
+  };
+  writeStoredEventCursor(team, cursor, storageOverride);
+  return {
+    cursor,
+    acceptEvents: response.cursor_reset !== true,
+    clearEvents: response.cursor_reset === true,
+  };
 }
 
 export function useFleet(activeView?: string): FleetStore {
@@ -409,24 +585,28 @@ export function useFleet(activeView?: string): FleetStore {
   // Event-stream cursor loop.
   useEffect(() => {
     let alive = true;
-    let since = readStoredEventCursor(teamRef.current);
+    const streamTeam = teamRef.current;
+    let cursor = readStoredEventCursor(streamTeam);
     const myEpoch = epoch.current;
     const loop = async () => {
-      if (!since) {
-        try {
-          const tail = await call<{ next_seq: number }>('events:tail');
-          if (!alive || epoch.current !== myEpoch) return;
-          since = Number(tail.next_seq) || 0;
-          writeStoredEventCursor(teamRef.current, since);
-        } catch {
-          since = readStoredEventCursor(teamRef.current);
-        }
+      // Resolve the Manager's profile-owned stream before trusting a persisted
+      // team-name cursor. Older Managers omit stream_id and retain the legacy
+      // numeric behavior.
+      try {
+        const tail = await call<EventCursorResponse>('events:tail');
+        if (!alive || epoch.current !== myEpoch) return;
+        cursor = initializeEventStreamCursor(streamTeam, tail);
+      } catch {
+        cursor = readStoredEventCursor(streamTeam);
       }
       while (alive && epoch.current === myEpoch) {
         try {
-          const resp = await call<{ events: ManagerEvent[]; next_seq: number }>('events', since);
-          if (!alive) return;
-          const hadEvents = !!resp.events?.length;
+          const resp = await call<{ events: ManagerEvent[] } & EventCursorResponse>('events', cursor.seq);
+          if (!eventLoopEpochIsCurrent(alive, epoch.current, myEpoch)) return;
+          const reconciled = reconcileEventStreamCursor(streamTeam, cursor, resp);
+          cursor = reconciled.cursor;
+          if (reconciled.clearEvents) setEvents([]);
+          const hadEvents = reconciled.acceptEvents && !!resp.events?.length;
           if (hadEvents) {
             // Stamp each event with its REAL wall-clock time (`occurred_at`, epoch
             // ms from the manager) so the activity feed shows correct ages — and
@@ -441,9 +621,6 @@ export function useFleet(activeView?: string): FleetStore {
               setLastUpdated(now);
             }
           }
-          const nextSeq = Number(resp.next_seq) || since;
-          since = Math.max(since, nextSeq);
-          writeStoredEventCursor(teamRef.current, since);
           await sleep(fleetPollDelay(hadEvents ? EVENT_STREAM_BACKPRESSURE_MS : EVENT_STREAM_IDLE_BACKOFF_MS));
         } catch {
           await sleep(3000);

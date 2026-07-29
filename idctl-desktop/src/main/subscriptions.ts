@@ -75,8 +75,13 @@ export interface SubStatus {
 }
 
 const SUB_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'kimi', 'q'];
+let subsStatusGeneration = 0;
+let subsStatusRequestSequence = 0;
+let latestSubsStatusRequestSequence = 0;
 let subsStatusCache: { at: number; rows: Record<SubProvider, SubStatus> } | null = null;
 let subsStatusInflight: Promise<Record<SubProvider, SubStatus>> | null = null;
+let assignmentSubsStatusRequestSequence = 0;
+let latestAssignmentSubsStatusRequestSequence = 0;
 let assignmentSubsStatusCache: { at: number; rows: Partial<Record<SubProvider, SubStatus>> } | null = null;
 let assignmentSubsStatusInflight: Promise<Partial<Record<SubProvider, SubStatus>>> | null = null;
 const ASSIGNMENT_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'kimi'];
@@ -669,8 +674,11 @@ async function providerStatus(provider: SubProvider): Promise<SubStatus> {
 }
 
 export function invalidateSubsStatusCache(): void {
+  subsStatusGeneration += 1;
   subsStatusCache = null;
+  subsStatusInflight = null;
   assignmentSubsStatusCache = null;
+  assignmentSubsStatusInflight = null;
 }
 
 export function cachedSubsStatus(): Record<SubProvider, SubStatus> | null {
@@ -684,14 +692,26 @@ export async function subsStatus(opts: SubsStatusOptions = {}): Promise<Record<S
     : SUBS_STATUS_CACHE_TTL_MS;
   if (!opts.force && subsStatusCache && (opts.staleOk || now - subsStatusCache.at < maxAgeMs)) return subsStatusCache.rows;
   if (!opts.force && subsStatusInflight) return subsStatusInflight;
-  subsStatusInflight = Promise.all(SUB_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const))
+  if (opts.force) subsStatusCache = null;
+  const generation = subsStatusGeneration;
+  const requestSequence = ++subsStatusRequestSequence;
+  latestSubsStatusRequestSequence = requestSequence;
+  const request = Promise.all(SUB_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const))
     .then((rows) => {
       const result = Object.fromEntries(rows) as Record<SubProvider, SubStatus>;
-      subsStatusCache = { at: Date.now(), rows: result };
+      if (
+        subsStatusGeneration === generation
+        && latestSubsStatusRequestSequence === requestSequence
+      ) {
+        subsStatusCache = { at: Date.now(), rows: result };
+      }
       return result;
     })
-    .finally(() => { subsStatusInflight = null; });
-  return subsStatusInflight;
+    .finally(() => {
+      if (subsStatusInflight === request) subsStatusInflight = null;
+    });
+  subsStatusInflight = request;
+  return request;
 }
 
 /** Authoritative readiness for subscription harnesses that Team Builder can assign. */
@@ -706,14 +726,26 @@ export async function assignmentSubsStatus(
     return assignmentSubsStatusCache.rows;
   }
   if (!opts.force && assignmentSubsStatusInflight) return assignmentSubsStatusInflight;
-  assignmentSubsStatusInflight = Promise.all(
+  if (opts.force) assignmentSubsStatusCache = null;
+  const generation = subsStatusGeneration;
+  const requestSequence = ++assignmentSubsStatusRequestSequence;
+  latestAssignmentSubsStatusRequestSequence = requestSequence;
+  const request = Promise.all(
     ASSIGNMENT_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const),
   ).then((rows) => {
     const result = Object.fromEntries(rows) as Partial<Record<SubProvider, SubStatus>>;
-    assignmentSubsStatusCache = { at: Date.now(), rows: result };
+    if (
+      subsStatusGeneration === generation
+      && latestAssignmentSubsStatusRequestSequence === requestSequence
+    ) {
+      assignmentSubsStatusCache = { at: Date.now(), rows: result };
+    }
     return result;
-  }).finally(() => { assignmentSubsStatusInflight = null; });
-  return assignmentSubsStatusInflight;
+  }).finally(() => {
+    if (assignmentSubsStatusInflight === request) assignmentSubsStatusInflight = null;
+  });
+  assignmentSubsStatusInflight = request;
+  return request;
 }
 
 /** Recheck only the managed subscription runtimes present in a pending assignment batch. */

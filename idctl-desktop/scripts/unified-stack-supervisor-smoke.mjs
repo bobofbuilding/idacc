@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -35,6 +36,7 @@ import {
 } from '../../idctl/src/settings/schema.ts';
 import {
   createManagedProcessLaunchCoordinator,
+  killExactSpawnedChild,
   managedProcessTreeTerminationFailed,
   terminateManagedProcessTree,
 } from '../src/main/managedProcessTree.ts';
@@ -42,6 +44,16 @@ import {
   loadSettings,
   setBrainAutomationSettings,
 } from '../../idctl/src/settings/store.ts';
+import {
+  evaluateRuntimeApplicationVersionContract,
+} from '../src/main/runtimeApplicationVersion.ts';
+import {
+  BrainDashboardChildWindowRegistry,
+  authorizeBrainDashboardRequest,
+  brainDashboardNavigationAllowed,
+  canonicalBrainDashboardOrigin,
+  denyBrainDashboardRequest,
+} from '../src/main/brainDashboardSession.ts';
 
 class FakeManagedChild extends EventEmitter {
   constructor(pid, onKill = () => {}) {
@@ -74,6 +86,23 @@ const unifiedStackSource = readFileSync(
   new URL('../src/main/unifiedStack.ts', import.meta.url),
   'utf8',
 );
+const desktopMainSource = readFileSync(
+  new URL('../src/main/main.ts', import.meta.url),
+  'utf8',
+);
+const dashboardWindowPolicySource = desktopMainSource.slice(
+  desktopMainSource.indexOf('function configureBrainDashboardWindow('),
+  desktopMainSource.indexOf('function ensureBrainDashboardSession('),
+);
+const managerPolicySourcePath = process.env.IDACC_MANAGER_SOURCE
+  ? join(process.env.IDACC_MANAGER_SOURCE, 'src', 'agent-manager-db.ts')
+  : new URL('../../.runtime-sources/manager/src/agent-manager-db.ts', import.meta.url);
+const managerSource = existsSync(managerPolicySourcePath)
+  ? readFileSync(managerPolicySourcePath, 'utf8')
+  : '';
+if (process.env.IDACC_REQUIRE_MANAGER_POLICY_SOURCE === '1' && !managerSource) {
+  throw new Error(`required pinned Manager policy source is unavailable at ${String(managerPolicySourcePath)}`);
+}
 const supervisorIntegrationSource = readFileSync(
   new URL('./unified-stack-supervisor-integration.mjs', import.meta.url),
   'utf8',
@@ -89,6 +118,86 @@ const managedBootstrapSource = readFileSync(
 const desktopBuildSource = readFileSync(
   new URL('./build.mjs', import.meta.url),
   'utf8',
+);
+assert.deepEqual(
+  evaluateRuntimeApplicationVersionContract({
+    applicationVersion: '1.2.3',
+    compiledApplicationVersion: '1.2.3',
+    compiledSourceVersion: '1.2.3',
+    manifestVersion: '1.2.3',
+    reviewBuild: false,
+  }),
+  { ok: true, runtimeVersion: '1.2.3' },
+  'production packages must retain exact application/source/runtime equality',
+);
+assert.equal(
+  evaluateRuntimeApplicationVersionContract({
+    applicationVersion: '1.2.3-review.7',
+    compiledApplicationVersion: '1.2.3-review.7',
+    compiledSourceVersion: '1.2.3',
+    manifestVersion: '1.2.3',
+    reviewBuild: true,
+  }).ok,
+  true,
+  'an exact compiled review prerelease may use the runtime staged from its stable source version',
+);
+for (const fixture of [
+  {
+    applicationVersion: '1.2.3-review.7',
+    compiledApplicationVersion: '1.2.3-review.7',
+    compiledSourceVersion: '1.2.3',
+    manifestVersion: '1.2.3',
+    reviewBuild: false,
+  },
+  {
+    applicationVersion: '1.2.3-review.0',
+    compiledApplicationVersion: '1.2.3-review.0',
+    compiledSourceVersion: '1.2.3',
+    manifestVersion: '1.2.3',
+    reviewBuild: true,
+  },
+  {
+    applicationVersion: '1.2.3-review.8',
+    compiledApplicationVersion: '1.2.3-review.7',
+    compiledSourceVersion: '1.2.3',
+    manifestVersion: '1.2.3',
+    reviewBuild: true,
+  },
+  {
+    applicationVersion: '1.2.3-review.7',
+    compiledApplicationVersion: '1.2.3-review.7',
+    compiledSourceVersion: '1.2.3',
+    manifestVersion: '1.2.3-review.7',
+    reviewBuild: true,
+  },
+  {
+    applicationVersion: '1.2.3-review.7',
+    compiledApplicationVersion: '1.2.3-review.7',
+    compiledSourceVersion: 'not-semver',
+    manifestVersion: 'not-semver',
+    reviewBuild: true,
+  },
+]) {
+  assert.equal(
+    evaluateRuntimeApplicationVersionContract(fixture).ok,
+    false,
+    `runtime application version contract must reject ${JSON.stringify(fixture)}`,
+  );
+}
+assert.match(
+  desktopBuildSource,
+  /__IDACC_SOURCE_PACKAGE_VERSION__:\s*JSON\.stringify\(sourcePackageVersion\)/,
+  'the packaged supervisor must compile the exact source package version',
+);
+assert.match(
+  desktopBuildSource,
+  /__IDACC_PACKAGED_APPLICATION_VERSION__:\s*JSON\.stringify\([\s\S]*reviewVersion \|\| sourcePackageVersion/,
+  'the packaged supervisor must compile the exact normal or review application identity',
+);
+assert.match(
+  unifiedStackSource,
+  /evaluateRuntimeApplicationVersionContract\(\{[\s\S]*manifestVersion:\s*manifest\.application\.version[\s\S]*reviewBuild:\s*COMPILED_REVIEW_BUILD/,
+  'runtime admission must enforce the compiled application/source version contract',
 );
 assert.match(managedProcessTreeSource, /shell:\s*false/);
 assert.match(managedProcessTreeSource, /windowsHide:\s*true/);
@@ -147,6 +256,46 @@ assert.doesNotMatch(
   /\bchild\.kill\(['"]SIG(?:TERM|KILL)['"]\)/,
   'unified services must terminate through the managed process-tree boundary',
 );
+assert.match(
+  unifiedStackSource,
+  /stackManagerServiceToken = randomBytes\(32\)\.toString\('base64url'\)/,
+  'the supervisor must generate a distinct per-run Manager service bearer',
+);
+assert.match(
+  unifiedStackSource,
+  /service\.spec\.name === 'manager' && !stackManagerServiceToken[\s\S]*managed Manager service credential is unavailable/,
+  'managed Manager startup must fail closed without its service bearer',
+);
+assert.match(
+  unifiedStackSource,
+  /name === 'brain-listener' && stackManagerServiceToken[\s\S]*env\.IDACC_MANAGER_SERVICE_TOKEN = stackManagerServiceToken/,
+  'only the Brain listener companion may receive the Manager service bearer',
+);
+assert.match(
+  unifiedStackSource,
+  /\(service\.spec\.name === 'manager' \|\| service\.spec\.name === 'brain'\)[\s\S]*childEnv\.IDACC_MANAGER_SERVICE_TOKEN = stackManagerServiceToken/,
+  'only the Manager and Brain services may receive the Manager service bearer',
+);
+assert.match(
+  unifiedStackSource,
+  /\[stackBrainToken,\s*stackAdminToken,\s*stackManagerServiceToken\]\.some/,
+  'credential leak guards must cover all three runtime bearers',
+);
+assert.match(
+  unifiedStackSource,
+  /new Set\(\[[\s\S]*stackBrainToken[\s\S]*stackAdminToken[\s\S]*stackManagerServiceToken[\s\S]*\]\)\.size !== 3/,
+  'startup must fail closed unless all three generated runtime bearers are pairwise distinct',
+);
+assert.match(
+  unifiedStackSource,
+  /credentials\.length === 3[\s\S]*new Set\(credentials\)\.size === 3/,
+  'the credential guard positive control must prove pairwise token distinction',
+);
+assert.match(
+  supervisorIntegrationSource,
+  /managerSensitiveReadsProtected[\s\S]*managerBrainServiceReadsSucceeded/,
+  'the integration smoke must prove the Manager anonymous and Brain-service read boundaries',
+);
 assert.equal(
   (unifiedStackSource.match(/spawnManagedProcessTree\(process\.execPath/g) ?? []).length,
   2,
@@ -201,6 +350,28 @@ assert.match(
   /if \(shutdownPromise\) return shutdownPromise/,
   'concurrent shutdown calls must share one attempt',
 );
+if (managerSource) {
+  assert.match(
+    managerSource,
+    /if \(!this\.startupReady\) \{\s*return res\.status\(503\)\.json\(\{\s*status: 'starting'/,
+    'the Manager health endpoint must not advertise readiness during asynchronous startup restoration',
+  );
+  assert.match(
+    managerSource,
+    /await this\.restoreManagerOwnedAgentsAtStartup\(\);[\s\S]*this\.startupReady = true;[\s\S]*settled = true;/,
+    'the Manager may become health-ready only after its bounded restart restoration passes complete',
+  );
+  assert.match(
+    managerSource,
+    /restoreManagerOwnedAgentsAtStartup[\s\S]*await this\.restoreManagerOwnedAgentsAfterRestart\(\);[\s\S]*await sleep\(graceMs\);[\s\S]*await this\.restoreManagerOwnedAgentsAfterRestart\(\);/,
+    'managed startup must make a bounded second marker pass after old workers run their parent-death watchdog',
+  );
+  assert.match(
+    managerSource,
+    /if \(process\.env\.IDACC_MANAGED_SERVICE !== '1'\) return 0;/,
+    'standalone Manager startup must not inherit the managed parent-watchdog grace delay',
+  );
+}
 assert.match(
   unifiedStackSource,
   /ID_AUTO_ATTACH_BRAIN_MCP:\s*'1'/,
@@ -226,6 +397,84 @@ assert.match(
   /if \(processTreeError\) \{\s*companion\.phase = 'unhealthy';\s*return;\s*\}\s*companion\.restartAttempts/,
   'a companion replacement must stay blocked when prior-tree cleanup fails',
 );
+
+{
+  const invalid = new FakeManagedChild(undefined);
+  assert.equal(killExactSpawnedChild(invalid, 'SIGKILL', 100), false);
+  assert.deepEqual(
+    invalid.killCalls,
+    [],
+    'a failed spawn without a PID must never cross ChildProcess.kill()',
+  );
+
+  const self = new FakeManagedChild(100);
+  assert.equal(killExactSpawnedChild(self, 'SIGKILL', 100), false);
+  assert.deepEqual(
+    self.killCalls,
+    [],
+    'a child handle that resolves to the caller PID must never be signalled',
+  );
+
+  const exact = new FakeManagedChild(101);
+  assert.equal(killExactSpawnedChild(exact, 'SIGTERM', 100), true);
+  assert.deepEqual(exact.killCalls, ['SIGTERM']);
+}
+
+{
+  // Keep the regression isolated: before the safe-identity boundary, Node can
+  // terminate this probe when ChildProcess.kill() is called after ENOENT with
+  // an undefined child.pid.
+  const managedProcessTreeUrl = new URL(
+    '../src/main/managedProcessTree.ts',
+    import.meta.url,
+  ).href;
+  const missingExecutable = join(
+    tmpdir(),
+    `idacc-managed-process-missing-${process.pid}`,
+  );
+  const source = `
+    import { spawnManagedProcessTree } from ${JSON.stringify(managedProcessTreeUrl)};
+    let uncaught = '';
+    process.on('uncaughtException', (error) => {
+      uncaught = error instanceof Error ? error.message : String(error);
+    });
+    let rejection = '';
+    try {
+      await spawnManagedProcessTree(${JSON.stringify(missingExecutable)}, [], {
+        cwd: ${JSON.stringify(tmpdir())},
+        env: {},
+        platform: 'linux',
+      });
+    } catch (error) {
+      rejection = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    if (!rejection || uncaught) {
+      console.error(JSON.stringify({ rejection, uncaught }));
+      process.exitCode = 2;
+    }
+  `;
+  const probe = spawnSync(process.execPath, [
+    '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON',
+    '--experimental-strip-types',
+    '--input-type=module',
+    '-e',
+    source,
+  ], {
+    encoding: 'utf8',
+    timeout: 5_000,
+  });
+  assert.equal(
+    probe.signal,
+    null,
+    `missing managed executable killed its caller: ${probe.stderr || probe.stdout}`,
+  );
+  assert.equal(
+    probe.status,
+    0,
+    `missing managed executable was not rejected cleanly: ${probe.stderr || probe.stdout}`,
+  );
+}
 
 {
   const coordinator = createManagedProcessLaunchCoordinator();
@@ -459,6 +708,13 @@ const manifestValue = {
       packageLockSha256: '6'.repeat(64),
       entrypoint: 'brain.mjs',
       serviceId: 'idacc-brain',
+      distributionSource: {
+        mode: 'vendored-capsule',
+        path: 'release/runtime-sources/brain',
+        manifest: 'release/runtime-sources/brain.capsule.json',
+        manifestSha256: '9'.repeat(64),
+        treeSha256: 'a'.repeat(64),
+      },
     },
   },
   trees: {
@@ -470,6 +726,32 @@ const manifestValue = {
 };
 const manifest = parseRuntimeManifest(manifestValue);
 assert.equal(manifest.components.manager.version, '1.2.3');
+assert.deepEqual(
+  manifest.components.brain.distributionSource,
+  manifestValue.components.brain.distributionSource,
+  'production manifest parsing must preserve Brain capsule provenance',
+);
+for (const distributionSource of [
+  { ...manifestValue.components.brain.distributionSource, path: '../brain' },
+  { ...manifestValue.components.brain.distributionSource, manifest: '/tmp/brain.json' },
+  { ...manifestValue.components.brain.distributionSource, manifestSha256: 'invalid' },
+  { ...manifestValue.components.brain.distributionSource, extra: 'untrusted' },
+]) {
+  assert.throws(
+    () => parseRuntimeManifest({
+      ...manifestValue,
+      components: {
+        ...manifestValue.components,
+        brain: {
+          ...manifestValue.components.brain,
+          distributionSource,
+        },
+      },
+    }),
+    /components\.brain is invalid/,
+    'production manifest parsing must reject malformed capsule provenance',
+  );
+}
 const npmBinTarget = '../which/bin/node-which';
 const symlinkFixtureFiles = [
   ...fixtureFiles,
@@ -768,6 +1050,120 @@ assert.deepEqual(
 assert.throws(() => canonicalLoopbackServiceUrl('https://127.0.0.1:49152'), /loopback HTTP origin/);
 assert.throws(() => canonicalLoopbackServiceUrl('http://example.com:49152'), /loopback HTTP origin/);
 assert.throws(() => canonicalLoopbackServiceUrl('http://127.0.0.1:49152/path'), /loopback HTTP origin/);
+
+const dashboardOrigin = canonicalBrainDashboardOrigin('http://127.0.0.1:49152');
+assert.equal(
+  brainDashboardNavigationAllowed(
+    'http://127.0.0.1:49152/dashboard/graph',
+    dashboardOrigin,
+  ),
+  true,
+);
+for (const target of [
+  'http://127.0.0.1:49153/dashboard/graph',
+  'https://127.0.0.1:49152/dashboard/graph',
+  'https://example.com/collect?profile=data',
+  'javascript:alert(1)',
+  'not a URL',
+]) {
+  assert.equal(
+    brainDashboardNavigationAllowed(target, dashboardOrigin),
+    false,
+    target,
+  );
+}
+const dashboardAuthorized = authorizeBrainDashboardRequest(
+  'http://127.0.0.1:49152/dashboard/graph',
+  dashboardOrigin,
+  `Bearer ${'a'.repeat(43)}`,
+  { authorization: 'Bearer stale', Accept: 'text/html' },
+);
+assert.equal(dashboardAuthorized.allowed, true);
+assert.equal(dashboardAuthorized.requestHeaders.Authorization, `Bearer ${'a'.repeat(43)}`);
+assert.equal(dashboardAuthorized.requestHeaders.authorization, undefined);
+assert.equal(dashboardAuthorized.requestHeaders.Accept, 'text/html');
+for (const target of [
+  'http://127.0.0.1:49153/dashboard/graph',
+  'https://127.0.0.1:49152/dashboard/graph',
+  'https://example.com/collect',
+  'not a URL',
+]) {
+  const rejected = authorizeBrainDashboardRequest(
+    target,
+    dashboardOrigin,
+    `Bearer ${'a'.repeat(43)}`,
+    { Authorization: 'Bearer stale' },
+  );
+  assert.equal(rejected.allowed, false, target);
+  assert.equal(
+    Object.keys(rejected.requestHeaders).some((name) => name.toLowerCase() === 'authorization'),
+    false,
+  );
+}
+assert.throws(
+  () => canonicalBrainDashboardOrigin('http://localhost:49152'),
+  /127\.0\.0\.1 HTTP origin/,
+);
+assert.throws(
+  () => canonicalBrainDashboardOrigin('http://secret@127.0.0.1:49152'),
+  /127\.0\.0\.1 HTTP origin/,
+);
+{
+  const destroyed = [];
+  const registry = new BrainDashboardChildWindowRegistry();
+  const released = {
+    isDestroyed: () => false,
+    destroy: () => destroyed.push('released'),
+  };
+  const surviving = {
+    isDestroyed: () => false,
+    destroy: () => destroyed.push('surviving'),
+  };
+  const release = registry.track(released);
+  registry.track(surviving);
+  release();
+  assert.equal(registry.size(), 1);
+  registry.destroyAll();
+  assert.deepEqual(destroyed, ['surviving']);
+  assert.equal(registry.size(), 0);
+
+  assert.deepEqual(
+    denyBrainDashboardRequest({
+      Authorization: 'Bearer stale',
+      Accept: 'application/json',
+    }),
+    {
+      allowed: false,
+      requestHeaders: { Accept: 'application/json' },
+    },
+  );
+  assert.match(desktopMainSource, /webContents\.on\('did-create-window'/);
+  assert.match(
+    dashboardWindowPolicySource,
+    /brainDashboardNavigationAllowed/,
+    'dashboard windows must allow navigation only inside the exact authorized origin',
+  );
+  assert.doesNotMatch(
+    dashboardWindowPolicySource,
+    /openExternalHttpUrl|shell\.openExternal/,
+    'privileged dashboard navigation must never hand a script-controlled URL to the system browser',
+  );
+  assert.match(
+    desktopMainSource,
+    /brainDashboardChildWindows\.destroyAll\(\);[\s\S]{0,300}retireBrainDashboardSession\(/,
+    'dashboard close/rotation must destroy every child before session retirement',
+  );
+  assert.match(
+    desktopMainSource,
+    /onBeforeRequest\([\s\S]{0,120}callback\(\{ cancel: true \}\)/,
+    'retired dashboard sessions must retain a deny-all request guard',
+  );
+  assert.doesNotMatch(
+    desktopMainSource,
+    /webRequest\.onBefore(?:Request|SendHeaders)\(null\)/,
+    'session retirement must not remove network guards while child WebContents can survive',
+  );
+}
 
 const folder = mkdtempSync(join(tmpdir(), 'idacc-supervisor-log-'));
 try {

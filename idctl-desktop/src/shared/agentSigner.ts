@@ -26,10 +26,16 @@ export function createAgentPrivateKey(): Uint8Array {
 /** Signs an already-hashed 32-byte EVM digest and returns r || s || v. */
 export function signEvmDigest(privateKey: Uint8Array, digest: Uint8Array): string {
   if (digest.length !== 32) throw new Error('EVM signing requires an exact 32-byte digest.');
-  const signature = secp256k1.sign(digest, privateKey, { prehash: false, lowS: true, extraEntropy: true });
-  const recovery = signature.recovery;
+  const signature = secp256k1.sign(digest, privateKey, {
+    prehash: false,
+    lowS: true,
+    extraEntropy: true,
+    format: 'recovered',
+  });
+  const recovery = signature[0];
   if (recovery !== 0 && recovery !== 1) throw new Error('Unsupported secp256k1 recovery id.');
-  return `0x${signature.toCompactHex()}${(27 + recovery).toString(16).padStart(2, '0')}`;
+  const compact = signature.slice(1);
+  return `0x${Buffer.from(compact).toString('hex')}${(27 + recovery).toString(16).padStart(2, '0')}`;
 }
 
 export function signEip1559Transaction(privateKey: Uint8Array, input: AgentEip1559Transaction): { rawTransaction: string; hash: string } {

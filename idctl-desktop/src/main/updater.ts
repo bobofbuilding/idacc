@@ -19,6 +19,17 @@ import { loadSettings } from '../../../idctl/src/settings/store.ts';
 import { DEFAULT_UPDATE_REPO, type UpdateSettings } from '../../../idctl/src/settings/schema.ts';
 import { evaluateUpdateTarget, type UpdateTargetReadiness } from '../shared/updateTarget.ts';
 
+declare const __IDACC_REVIEW_BUILD__: boolean;
+declare const __IDACC_UPDATE_CHANNEL_POLICY__: string;
+const REVIEW_UPDATE_POLICY = 'idacc-review-updater-disabled:v1';
+const UPDATE_CHANNEL_POLICY = typeof __IDACC_UPDATE_CHANNEL_POLICY__ === 'undefined'
+  ? REVIEW_UPDATE_POLICY
+  : __IDACC_UPDATE_CHANNEL_POLICY__;
+const REVIEW_BUILD_FLAG = typeof __IDACC_REVIEW_BUILD__ !== 'undefined'
+  && __IDACC_REVIEW_BUILD__ === true;
+const REVIEW_BUILD = REVIEW_BUILD_FLAG
+  || UPDATE_CHANNEL_POLICY === REVIEW_UPDATE_POLICY;
+
 export interface UpdateStatus {
   current: string;
   latest?: string;
@@ -102,6 +113,12 @@ function settings(): UpdateSettings {
 }
 
 function updateTargetReadiness(): UpdateTargetReadiness {
+  if (REVIEW_BUILD) {
+    return {
+      ok: false,
+      reason: 'this unsigned review-only build cannot use the production update channel',
+    };
+  }
   const bundle = process.platform === 'darwin'
     ? resolve(process.execPath, '..', '..', '..')
     : app.getAppPath();
