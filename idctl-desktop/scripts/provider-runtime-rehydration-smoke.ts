@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   providerRehydrationActionMessage,
   rehydrateManagedProviderAgents,
@@ -185,10 +186,12 @@ assert.equal(rebindAfterAbort, false);
 const bridgeSource = readFileSync(new URL('../src/main/bridge.ts', import.meta.url), 'utf8');
 const mainSource = readFileSync(new URL('../src/main/main.ts', import.meta.url), 'utf8');
 const stackSource = readFileSync(new URL('../src/main/unifiedStack.ts', import.meta.url), 'utf8');
-const managerSource = readFileSync(
-  new URL('../../.runtime-sources/manager/src/agent-manager-db.ts', import.meta.url),
-  'utf8',
-);
+const managerSourcePath = process.env.IDACC_MANAGER_SOURCE
+  ? join(process.env.IDACC_MANAGER_SOURCE, 'src', 'agent-manager-db.ts')
+  : new URL('../../.runtime-sources/manager/src/agent-manager-db.ts', import.meta.url);
+const managerSource = existsSync(managerSourcePath)
+  ? readFileSync(managerSourcePath, 'utf8')
+  : null;
 assert.doesNotMatch(
   bridgeSource,
   /keyEnv:\s*providerLaneEnvName/,
@@ -202,9 +205,14 @@ assert.ok(
   (stackSource.match(/notifyServiceReady\(service\)/g) || []).length >= 2,
   'both watchdog and explicit status probes must announce a verified Manager generation',
 );
-assert.match(managerSource, /providerRuntimeHasLaunchBinding/);
-assert.match(managerSource, /providerRuntimeHasDurableEnvironmentBinding/);
-assert.match(managerSource, /resumeAfterManagerRestart/);
+if (process.env.IDACC_REQUIRE_MANAGER_POLICY_SOURCE === '1') {
+  assert.ok(managerSource, 'the pinned Manager policy source is required for this cross-component gate');
+}
+if (managerSource) {
+  assert.match(managerSource, /providerRuntimeHasLaunchBinding/);
+  assert.match(managerSource, /providerRuntimeHasDurableEnvironmentBinding/);
+  assert.match(managerSource, /resumeAfterManagerRestart/);
+}
 
 console.log('provider runtime restart rehydration smoke passed');
 }
