@@ -893,6 +893,14 @@ function processIsAlive(pid) {
   }
 }
 
+async function waitForPath(path, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !existsSync(path)) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+  return existsSync(path);
+}
+
 async function assertManagerMcpStopped(profileRoot, label) {
   const observationPath = join(profileRoot, 'manager-mcp-process.json');
   assert.equal(existsSync(observationPath), true, `${label} did not publish its MCP process observation`);
@@ -1005,7 +1013,11 @@ try {
   assert.equal(Object.values(auth.brainAuthenticatedStatuses).every((status) => status === 200), true);
   assert.equal(Object.values(auth.managerAnonymousStatuses).every((status) => status === 401), true);
   assert.equal(Object.values(auth.managerBrainServiceStatuses).every((status) => status === 200), true);
-  assert.equal(existsSync(selftestResult), true, 'stack selftest did not publish its private result file');
+  assert.equal(
+    await waitForPath(selftestResult, 5_000),
+    true,
+    'stack selftest did not publish its private result file',
+  );
   const selftestResultText = readFileSync(selftestResult, 'utf8');
   const status = JSON.parse(selftestResultText);
   if (line) {
