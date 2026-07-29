@@ -985,3 +985,8 @@ assert.ok(
 );
 
 console.log('subscription portability smoke: ok');
+// On Windows, tsx retains a loader IPC handle after this synchronous policy
+// script has completed. All Windows process-tree behavior is covered by the
+// dedicated native Job Host integration gate, so return success explicitly
+// after every assertion above has run.
+if (process.platform === 'win32') process.exit(0);
