@@ -171,7 +171,11 @@ if (process.platform !== 'win32') {
   `);
 }
 
-{
+// Background MLX launch is an Apple Silicon-only feature. Exercising a
+// simulated detached POSIX shell spawn on a Windows host leaves Node's failed
+// process handle alive until the outer timeout, even though production rejects
+// Windows before reaching this launch boundary.
+if (process.platform !== 'win32') {
   const systemUrl = new URL('../src/main/system.ts', import.meta.url).href;
   const userData = mkdtempSync(join(tmpdir(), 'idacc-background-spawn-'));
   const missingShell = join(userData, 'missing-zsh');
