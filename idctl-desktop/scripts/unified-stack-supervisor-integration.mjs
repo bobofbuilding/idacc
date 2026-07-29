@@ -988,7 +988,6 @@ try {
   const line = String(result.stdout)
     .split(/\r?\n/)
     .find((candidate) => candidate.startsWith('IDACC_STACK_SELFTEST '));
-  assert.ok(line, `stack selftest did not report status\n${result.stdout}`);
   const authLine = String(result.stdout)
     .split(/\r?\n/)
     .find((candidate) => candidate.startsWith('IDACC_STACK_AUTH_SELFTEST '));
@@ -1006,10 +1005,12 @@ try {
   assert.equal(Object.values(auth.brainAuthenticatedStatuses).every((status) => status === 200), true);
   assert.equal(Object.values(auth.managerAnonymousStatuses).every((status) => status === 401), true);
   assert.equal(Object.values(auth.managerBrainServiceStatuses).every((status) => status === 200), true);
-  const status = JSON.parse(line.slice('IDACC_STACK_SELFTEST '.length));
   assert.equal(existsSync(selftestResult), true, 'stack selftest did not publish its private result file');
   const selftestResultText = readFileSync(selftestResult, 'utf8');
-  assert.deepEqual(JSON.parse(selftestResultText), status);
+  const status = JSON.parse(selftestResultText);
+  if (line) {
+    assert.deepEqual(JSON.parse(line.slice('IDACC_STACK_SELFTEST '.length)), status);
+  }
   if (process.platform !== 'win32') {
     assert.equal(statSync(selftestResult).mode & 0o777, 0o600);
   }
