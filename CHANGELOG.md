@@ -8,6 +8,115 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.686] — 2026-07-29
+### What changed
+- Unify IDACC, Manager, Brain, consumer profiles, and dependency updates
+- Unify IDACC, Manager, Brain, and consumer delivery
+- Harden Windows publisher verification
+- Complete updater and Windows stream handoff
+- Exercise retained Windows host cleanup
+- Complete Windows native build provenance
+- Use Roslyn for deterministic Windows helpers
+- Harden unified consumer runtime and onboarding
+- Allow Windows ACL integration to finish
+- Snapshot persisted Windows workspace ACL
+- Enforce Windows profile writer exclusion
+- Accept WinPS JSON numeric schema values
+- Refine bounded Windows compatibility diagnostics
+- Expose bounded Windows migration test phase
+- Use parsed stdin for Windows ACL test helpers
+- Execute Windows privacy helper through parsed stdin
+- Harden Windows privacy transport diagnostics
+- Add bounded Windows privacy diagnostics
+- Mirror Windows user data privacy in migration smoke
+- Stabilize hosted privacy and supervision checks
+- Harden cross-platform hosted verification
+- Complete production privacy and release guardrails
+- Complete unified consumer profile and release hardening
+- Use Windows ACL semantics in supervisor integration
+- Use the platform Electron executable in integration tests
+- Fix Windows rendered smoke file paths
+- Repin Manager after packaged worker fix
+- Ship the unified profile-isolated consumer runtime
+- Verify packaged runtime manifests with the production policy
+- Keep generated release notices outside application source state
+- Complete the consumer-ready unified IDACC application and release pipeline
+- Bundle and supervise the ID Agents manager and Brain inside IDACC, isolate and migrate user state into app-owned profiles, add guided first-run readiness, and enforce clean-profile release verification.
+- Automate evidence-based Brain proposal review through manager agents while preserving human review for unresolved or high-risk changes.\nHarden Learn processing and recursive goal comparison with idempotent task creation, source-level perspective tracking, and bounded retries.\nUnify goal cadence state between IDACC and the manager, deduplicate active-goal instructions, and expose clear cadence and fan-out controls.\nDiscover Claude CLI models from live local configuration and caches, preserve exact canonical model choices, and improve subscription and runtime catalog refresh behavior.
+- Outstanding changes in idctl-desktop/scripts/work-reconcile-smoke.mjs and idctl-desktop/src/renderer/views/Tasks.tsx.
+- Work: keep completed failures out of Holding and report all reconciled validation routes
+- Bound manual reconciliation batches
+- Reconcile holding tasks through manager
+- Fix manager updates from packaged macOS app
+- Work: show bounded stalled-recovery retries and their scheduled retry time
+- Recover fresh manager installation and preserve configured fleet state.
+- Rework HR Manage into Overview, Agents, Team ops, and Hierarchy surfaces; move instruction and goal editing into guarded team and agent administration.
+- HR Manager: clarify Structure path direction and layering
+- HR Manager: align Structure routing with the fleet delegation contract
+- HR Manager: make Structure a hierarchy-driven org chart
+- Team ops: add guarded fleet-wide lifecycle controls
+- HR Manager: recover missing manager before assigning team leads
+- Add guarded manager installer regression coverage for fresh clones, fast-forward updates, and dirty-worktree refusal
+- Keep manager update status monotonic when an installed manager is newer than published release metadata.
+- Add an authoritative all-workers capability scope that excludes the default team and every team lead.
+- Automatically refresh model lanes with bounded local and remote provider checks, cache expiry, and renderer invalidation.
+- Treat operations-team and ops-team as one manager-authoritative team across HR coverage, Build targeting, lead routing, and planner lookup
+- Assign explicit role-fit models during team creation and stage guarded recommendations for existing agents with unset models
+- Fix fresh installs by bundling a guarded current-manager bootstrap in Settings and adding direct Dashboard recovery actions
+- HR Manager: allow stopped roster agents to be assigned as team coordinators while preserving execution readiness guards
+- HR Manager: require manager-authoritative runtime preflight before team creation
+- HR Manager: require live Grok readiness before spawn
+- HR Manager: bound Claude and Codex readiness checks
+- Outstanding changes across docs/PRODUCT_SPEC.md, idctl-desktop/scripts/subs-status-cache-smoke.mjs, idctl-desktop/src/main/bridge.ts, and 5 more files.
+- Settings: add guarded ID Agents manager check, update, build, drain-aware activation, and post-activation state sync.
+- Make fresh provider setup actionable with Claude Code and Codex installers, broader packaged-app CLI discovery, and accurate loading states.
+- Govern workflow recovery and harden desktop setup
+- Filter low-value dashboard activity without hiding failures
+- Add SECURITY.md vulnerability reporting policy
+- Keep manager installations current with guarded tagged release updates and drain-aware activation.
+- Treat one failed fleet snapshot as a transient reconnect instead of declaring the manager offline, while preserving last-known fleet state and requiring consecutive failures before the offline transition.
+- Refresh the Settings hardware tile every 30 seconds and whenever the app regains focus so disk cleanup and model-capacity checks use current free-space data.
+- Keep successful control and Brain audit telemetry out of Dashboard activity while preserving failures and meaningful work events.
+- Bound release scratch storage and remove verified local build artifacts after publishing.
+- Release: authenticate the final publication check and cover token forwarding
+- Dashboard: replace the stale command-surface draft with the released operating contract and harden drawer keyboard focus
+- Keep Live Coordination visible across manager version drift and surface legacy hierarchy fallback instead of silently hiding the fleet.
+- Dashboard: add a Manager-routed command palette and control panels while retaining Work drill-downs.
+- Dashboard: surface public wallet addresses and add expandable, copyable communications
+- feat: expose and copy activity communications
+- Add guarded stack installer and persistent manager service
+- Identity & Keys: replace the desktop mock lifecycle with receipt-verified Safe 1.4.1 and Zodiac Roles proposals, atomic WalletConnect submission, and bounded zero-value contract/function authority.
+- Identity & Keys: repair persisted WalletConnect chain detection, keep Safe simulation off the signing session, and route guarded reads through the configured chain RPC.
+- Repair automatic updates by migrating the retired id-agent-control-center release channel to bobofbuilding/idacc while preserving custom repositories.
+- Fix WalletConnect root Safe pairing by loading the packaged QR module through its default export and surface retryable QR errors with pairing-URI fallback.
+- Settings and Identity & Keys: add WalletConnect/Reown setup, encrypted agent signer custody, Safe Roles execution and asset guards, align coordination hierarchy, and remove the in-app Wiki runtime.
+- Identity & Keys: standardize root-controlled per-agent Safes and portable release publishing
+- Goal Autopilot: delegate work creation to the manager and verify release publication
+- Release: prevent orphaned version tags
+- Identity & Keys: clarify readiness, authority boundaries, and capability path
+- idctl-desktop: extract signing guardrails smoke checks
+- docs: add identity keys verification note
+- feat(identity): add wallet binding and chain status
+- idctl: gate GPT-5.6 Codex model ids on installed CLI version
+- release.sh: synthesize notes for placeholder auto-release commits
+- Add GPT-5.6 Codex fallback models to curated runtime catalog
+- Learn: use native pdftotext for PDF extraction, quarantine raw PDF internals
+- Avoid HR subscription probe churn and make plan recovery actions resolve locally
+- Outstanding changes across idctl-desktop/src/renderer/views/Chat.tsx, idctl-desktop/src/renderer/views/Dashboard.tsx, and idctl-desktop/src/renderer/views/Modules.tsx.
+- Modules: MCP server attach/detach now defaults to the active team scope instead of requiring an explicit selection, so single-team attach/detach works without an extra arming step (cross-team/all-team MCP changes still require an explicit choice). Added a recommended-agents quick-attach action for skill recommendations. Skill install/uninstall now skip agents that already have or lack the skill and only reload the list when something changed. Row-level and bulk staleness checks moved from full capability-stamp comparison to agent id/name identity checks, with skill state re-verified at confirmation time. release.sh and validate-release-schema.mjs now reject placeholder release notes/changelog entries (e.g. Automated release of outstanding..., Maintenance release., Update.) and require a populated What changed section in CHANGELOG.md.
+- Outstanding changes across idctl-desktop/src/renderer/views/Modules.tsx, scripts/release.sh, and scripts/validate-release-schema.mjs.
+- Outstanding changes in docs/CONTROL_CENTER_WIKI.json.
+- Outstanding changes across idctl-desktop/src/renderer/styles.css, idctl-desktop/src/renderer/views/Modules.tsx, and idctl-desktop/src/renderer/views/Tasks.tsx.
+- Outstanding changes in idctl-desktop/src/main/mcpTest.ts and idctl-desktop/src/renderer/views/Modules.tsx.
+- Outstanding changes across idctl-desktop/src/main/bridge.ts, idctl-desktop/src/renderer/styles.css, idctl-desktop/src/renderer/views/Modules.tsx, and 2 more files.
+- Outstanding changes in idctl-desktop/src/main/goaldriver.ts and idctl-desktop/src/renderer/views/Tasks.tsx.
+- Keep transient plan preflight failures out of Inbox
+- Allow concurrent Work actions for separate Plans rows
+- Add guarded ID Agents manager source installer
+- Add guarded Identity contract console
+- Outstanding changes across idctl-desktop/src/main/bridge.ts, idctl-desktop/src/main/chatstore.ts, idctl-desktop/src/main/subscriptions.ts, and 3 more files.
+- Outstanding changes in scripts/release.sh and scripts/validate-release-schema.mjs.
+
 ## [0.1.685] — 2026-07-28
 ### What changed
 - Ship one unified IDACC application with exact bundled Manager and Brain provenance, profile-owned state and migrations, consumer onboarding, and one updater authority.
