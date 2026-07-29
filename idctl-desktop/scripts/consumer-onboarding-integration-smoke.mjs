@@ -17,9 +17,12 @@ const statePath = join(temporary, 'profile', 'onboarding', 'state.json');
 const bundlePath = join(temporary, 'consumer-onboarding-under-test.mjs');
 const capabilityBundlePath = join(temporary, 'starter-tool-capability-under-test.mjs');
 const readCacheBundlePath = join(temporary, 'read-call-cache-under-test.mjs');
+const refreshPolicyBundlePath = join(temporary, 'runtime-freshness-policy-under-test.mjs');
 const starterNames = ['lead', 'coder', 'researcher'];
 const requiredSkills = ['brain', 'catalog', 'identity', 'inter-agent', 'task-discipline'];
 const selectedAssignment = { runtime: 'codex', model: 'gpt-test' };
+const subscriptionRuntime = 'grok';
+const subscriptionModel = 'grok-subscription-fixture';
 const toolCapableLocalModel = 'qwen3-tools:fixture';
 const nonToolLocalModel = 'smollm-general:fixture';
 const malformedCapabilityModel = 'malformed-capability:fixture';
@@ -36,8 +39,15 @@ const instructionWrites = [];
 const verificationBatches = [];
 const probes = [];
 const ollamaShowRequests = [];
+const subscriptionRefreshCalls = [];
+const runtimeRefreshPolicies = [];
 let localToolEvidence = null;
 let failLeadBrainInstallOnce = true;
+let subscriptionAuthenticated = false;
+let runtimeSubscriptionCache = null;
+let displayedSubscriptionCache = null;
+let runtimeFreshnessPolicyModule = null;
+let heldRuntimeFreshness = null;
 let hierarchy = {
   primary: null,
   coordinators: {},
@@ -92,6 +102,32 @@ function findAgent(name) {
   return agent;
 }
 
+function fixtureSubscriptionStatus(cacheName, options = {}) {
+  const cached = cacheName === 'runtime' ? runtimeSubscriptionCache : displayedSubscriptionCache;
+  const next = options.force === true || cached === null
+    ? {
+        grok: {
+          provider: 'grok',
+          runtime: subscriptionRuntime,
+          label: 'Grok subscription fixture',
+          loggedIn: subscriptionAuthenticated,
+          linked: subscriptionAuthenticated,
+          installed: true,
+          loginSupported: true,
+          account: subscriptionAuthenticated ? 'post-login-fixture' : undefined,
+        },
+      }
+    : cached;
+  if (cacheName === 'runtime') runtimeSubscriptionCache = next;
+  else displayedSubscriptionCache = next;
+  subscriptionRefreshCalls.push({
+    cacheName,
+    force: options.force === true,
+    loggedIn: next.grok.loggedIn,
+  });
+  return structuredClone(next);
+}
+
 async function managerCall(method, args) {
   calls.push({ method, args: structuredClone(args) });
   switch (method) {
@@ -100,7 +136,11 @@ async function managerCall(method, args) {
     case 'org:hierarchy':
       return structuredClone(hierarchy);
     case 'runtime:freshness':
-      return [
+      if (!runtimeFreshnessPolicyModule) throw new Error('runtime freshness policy fixture is not loaded');
+      return runtimeFreshnessPolicyModule.handleRuntimeFreshnessRequest(args[0], async (policy) => {
+        runtimeRefreshPolicies.push(structuredClone(policy));
+        const managed = fixtureSubscriptionStatus('runtime', policy.subscriptions);
+        const result = [
         {
           runtime: selectedAssignment.runtime,
           label: 'Codex fixture',
@@ -142,7 +182,25 @@ async function managerCall(method, args) {
           mcpModels: [],
           mcpDetail: 'Structural provider MCP wiring is not deterministic per-model tool evidence.',
         },
-      ];
+        ...(managed.grok.loggedIn ? [{
+          runtime: subscriptionRuntime,
+          label: 'Grok subscription fixture',
+          models: [subscriptionModel],
+          source: 'subscription-fixture',
+          selectable: true,
+          supportsMcp: true,
+          mcpModels: [subscriptionModel],
+          mcpEvidence: 'runtime',
+        }] : []),
+        ];
+        const held = heldRuntimeFreshness;
+        if (held) {
+          heldRuntimeFreshness = null;
+          held.started();
+          await held.release;
+        }
+        return result;
+      });
     case 'agent:getInstructions':
       return findAgent(args[0]).instructions;
     case 'runtime:verifyAssignments': {
@@ -415,8 +473,9 @@ const fixturePlugin = {
     context.onLoad({ filter: /^subscriptions$/, namespace: 'onboarding-fixture' }, () => ({
       loader: 'js',
       contents: `
-        export async function subsStatus() {
-          return {};
+        export async function subsStatus(options = {}) {
+          const fixture = globalThis.__IDACC_ONBOARDING_INTEGRATION_FIXTURE__;
+          return fixture.subsStatus(options);
         }
       `,
     }));
@@ -445,7 +504,10 @@ process.env.IDACC_DATA_DIR = join(temporary, 'profile');
 
 try {
   managerUrl = await listen(manager);
-  globalThis.__IDACC_ONBOARDING_INTEGRATION_FIXTURE__ = { managerUrl };
+  globalThis.__IDACC_ONBOARDING_INTEGRATION_FIXTURE__ = {
+    managerUrl,
+    subsStatus: async (options) => fixtureSubscriptionStatus('display', options),
+  };
   await Promise.all([
     build({
       absWorkingDir: desktop,
@@ -478,8 +540,21 @@ try {
       target: 'node20',
       logLevel: 'silent',
     }),
+    build({
+      absWorkingDir: desktop,
+      entryPoints: ['src/main/runtimeFreshnessPolicy.ts'],
+      outfile: refreshPolicyBundlePath,
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      target: 'node20',
+      logLevel: 'silent',
+    }),
   ]);
 
+  runtimeFreshnessPolicyModule = await import(
+    `${pathToFileURL(refreshPolicyBundlePath).href}?run=${Date.now()}`
+  );
   const capability = await import(`${pathToFileURL(capabilityBundlePath).href}?run=${Date.now()}`);
   localToolEvidence = await capability.inspectOllamaStarterToolModels(
     managerUrl,
@@ -583,6 +658,70 @@ try {
     { generation: 2 },
     'forced freshness must replace the canonical normal-read cache entry',
   );
+  const racingReadCache = new readCacheModule.ReadCallCache();
+  let finishOldNormal;
+  const oldNormal = racingReadCache.run(
+    'runtime:freshness',
+    [],
+    () => new Promise((resolve) => {
+      finishOldNormal = () => resolve({ generation: 'old-normal' });
+    }),
+  );
+  assert.deepEqual(
+    await racingReadCache.run(
+      'runtime:freshness',
+      [{ force: true }],
+      async () => ({ generation: 'forced-fresh' }),
+    ),
+    { generation: 'forced-fresh' },
+  );
+  finishOldNormal();
+  assert.deepEqual(await oldNormal, { generation: 'old-normal' });
+  assert.deepEqual(
+    await racingReadCache.run(
+      'runtime:freshness',
+      [],
+      async () => ({ generation: 'must-not-run' }),
+    ),
+    { generation: 'forced-fresh' },
+    'an older normal completion must not overwrite the canonical forced result',
+  );
+  const bookkeepingReadCache = new readCacheModule.ReadCallCache();
+  for (let index = 0; index < 250; index += 1) {
+    await bookkeepingReadCache.run(
+      'query:poll',
+      [`completed-query-${index}`],
+      async () => ({ index }),
+    );
+  }
+  assert.equal(
+    bookkeepingReadCache.latestRequest.size,
+    0,
+    'completed high-cardinality reads must release newest-request bookkeeping',
+  );
+  const subscriptionReadCache = new readCacheModule.ReadCallCache();
+  let subscriptionCacheRuns = 0;
+  const forcedSubscriptionRead = () => subscriptionReadCache.run(
+    'subs:status',
+    [{ force: true, maxAgeMs: 0 }],
+    async () => ({ generation: ++subscriptionCacheRuns }),
+  );
+  assert.deepEqual(await forcedSubscriptionRead(), { generation: 1 });
+  assert.deepEqual(
+    await forcedSubscriptionRead(),
+    { generation: 2 },
+    'object-form subscription force must bypass the outer read cache',
+  );
+  assert.deepEqual(
+    await subscriptionReadCache.run(
+      'subs:status',
+      [{ force: false, maxAgeMs: 300_000 }],
+      async () => ({ generation: ++subscriptionCacheRuns }),
+    ),
+    { generation: 2 },
+    'the newest forced subscription read must supersede the canonical normal cache entry',
+  );
+  assert.equal(subscriptionCacheRuns, 2);
 
   const onboarding = await import(`${pathToFileURL(bundlePath).href}?run=${Date.now()}`);
   assert.equal(
@@ -590,7 +729,102 @@ try {
     'function',
     'the integration must invoke the real Electron onboarding orchestration wrapper',
   );
+  let releaseOldOnboarding;
+  let markOldOnboardingStarted;
+  const oldOnboardingStarted = new Promise((resolve) => {
+    markOldOnboardingStarted = resolve;
+  });
+  heldRuntimeFreshness = {
+    started: markOldOnboardingStarted,
+    release: new Promise((resolve) => {
+      releaseOldOnboarding = resolve;
+    }),
+  };
+  subscriptionAuthenticated = false;
+  const oldOnboarding = onboarding.consumerOnboardingStatus({ force: true });
+  await oldOnboardingStarted;
+  subscriptionAuthenticated = true;
+  const forcedFreshOnboarding = await onboarding.consumerOnboardingStatus({ force: true });
+  assert.equal(
+    forcedFreshOnboarding.assignments.some((row) => row.runtime === subscriptionRuntime),
+    true,
+  );
+  releaseOldOnboarding();
+  const completedOldOnboarding = await oldOnboarding;
+  assert.equal(
+    completedOldOnboarding.assignments.some((row) => row.runtime === subscriptionRuntime),
+    false,
+    'the held older request must retain its own original snapshot',
+  );
+  assert.equal(
+    (await onboarding.consumerOnboardingStatus()).assignments.some(
+      (row) => row.runtime === subscriptionRuntime,
+    ),
+    true,
+    'an older onboarding completion must not replace the latest forced cache entry',
+  );
+
+  subscriptionAuthenticated = false;
+  const beforeLogin = await onboarding.consumerOnboardingStatus({ force: true });
+  assert.equal(
+    beforeLogin.assignments.some((row) => row.runtime === subscriptionRuntime),
+    false,
+    'the logged-out evidence must prime both nested subscription caches',
+  );
+  const postLoginRefreshCheckpoint = subscriptionRefreshCalls.length;
+  subscriptionAuthenticated = true;
   const initialStatus = await onboarding.consumerOnboardingStatus({ force: true });
+  assert.equal(
+    initialStatus.assignments.some((row) => (
+      row.runtime === subscriptionRuntime
+      && row.models.includes(subscriptionModel)
+    )),
+    true,
+    'one forced post-login re-check must expose the newly authenticated assignment route',
+  );
+  assert.equal(
+    initialStatus.subscriptions.some((row) => (
+      row.runtime === subscriptionRuntime
+      && row.loggedIn
+      && row.account === 'post-login-fixture'
+    )),
+    true,
+    'the same re-check must display the fresh linked-account evidence',
+  );
+  assert.deepEqual(
+    new Set(
+      subscriptionRefreshCalls
+        .slice(postLoginRefreshCheckpoint)
+        .filter((row) => row.force && row.loggedIn)
+        .map((row) => row.cacheName),
+    ),
+    new Set(['runtime', 'display']),
+    'post-login force must bypass both the nested assignment cache and the displayed subscription cache',
+  );
+  assert.deepEqual(
+    runtimeRefreshPolicies.at(-1),
+    {
+      catalog: { refreshCli: true, refreshClaude: true },
+      subscriptions: { force: true },
+    },
+    'the authoritative re-check must refresh CLI discovery and subscription authentication together',
+  );
+  const bridgeSource = readFileSync(join(desktop, 'src', 'main', 'bridge.ts'), 'utf8');
+  assert.match(
+    bridgeSource,
+    /'runtime:freshness':\s*async\s*\(options\?:\s*\{\s*force\?:\s*boolean\s*\}\)\s*=>\s*\(\s*handleRuntimeFreshnessRequest\(options,\s*runtimeFreshness\)\s*\)/,
+    'the production runtime:freshness method must pass its request options into the shared force policy',
+  );
+  assert.match(
+    bridgeSource,
+    /runtimeCatalogWithLiveCliModels\(policy\.catalog\)/,
+    'production runtime freshness must consume the forced CLI catalog policy',
+  );
+  assert.match(
+    bridgeSource,
+    /subsStatus\(policy\.subscriptions\)/,
+    'production runtime freshness must consume the forced nested subscription policy',
+  );
   assert.ok(
     calls.some((row) => (
       row.method === 'runtime:freshness'
@@ -600,7 +834,7 @@ try {
   );
   assert.deepEqual(
     initialStatus.assignments.map((row) => row.runtime),
-    [selectedAssignment.runtime, 'provider:fixture-ollama'],
+    [selectedAssignment.runtime, subscriptionRuntime, 'provider:fixture-ollama'],
     'starter setup must exclude selectable runtimes that cannot expose effective Brain MCP',
   );
   assert.deepEqual(

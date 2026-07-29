@@ -21,6 +21,18 @@ const root = resolve(desktop, '..');
 const require = createRequire(import.meta.url);
 const pkg = JSON.parse(readFileSync(join(desktop, 'package.json'), 'utf8'));
 const build = pkg.build || {};
+const mainWindowSource = readFileSync(join(desktop, 'src', 'main', 'main.ts'), 'utf8');
+const rendererSource = readFileSync(join(desktop, 'src', 'renderer', 'App.tsx'), 'utf8');
+assert.match(
+  mainWindowSource,
+  /titleBarStyle:\s*process\.platform === 'darwin'\s*\?\s*'hiddenInset'\s*:\s*'default'/,
+  'macOS may use hiddenInset, but Windows and Linux must retain native window controls',
+);
+assert.match(
+  rendererSource,
+  /\/Mac\|iPhone\|iPad\|iPod\/i\.test\(navigator\.platform\)[\s\S]*\?\s*'⌘K'[\s\S]*:\s*'Ctrl\+K'/,
+  'the visible command-palette shortcut must match macOS versus Windows/Linux keyboards',
+);
 assert.ok(
   build.asarUnpack?.includes('out/native/idacc-job-host.exe'),
   'the Windows Job Host must be executable outside app.asar',
@@ -28,6 +40,10 @@ assert.ok(
 assert.ok(
   build.asarUnpack?.includes('out/main/managed-service-bootstrap.cjs'),
   'the managed-service bootstrap path must match the unpacked runtime contract',
+);
+assert.ok(
+  build.asarUnpack?.includes('out/main/mcp-probe-runner.cjs'),
+  'the managed MCP probe runner must be executable outside app.asar',
 );
 assert.equal(
   pkg.scripts?.['test:windows-job-host'],
@@ -108,6 +124,7 @@ assert.deepEqual(
     'test:identity-verification',
     'test:learn-brain-sync',
     'test:learn-queue',
+    'test:provider-runtime-rehydration',
     'test:runtime-profile-isolation',
     'test:secret-redaction',
     'test:startup-recovery',
@@ -223,6 +240,24 @@ assert.equal(build.linux?.executableName, 'idagents-control-center');
 assert.equal(pkg.desktopName, 'idagents-control-center.desktop');
 assert.equal(build.linux?.syncDesktopName, true);
 assert.equal(build.linux?.maintainer, 'IDACC Contributors', 'Linux package metadata must not embed a personal identity');
+assert.equal(
+  build.toolsets?.appimage,
+  '1.0.3',
+  'AppImage packaging must use the exact supported static-runtime toolset instead of the legacy FUSE2 default',
+);
+assert.deepEqual(
+  build.appImage?.executableArgs,
+  [],
+  'the shipped AppImage desktop launcher must not receive unconditional sandbox-disabling arguments',
+);
+assert.equal(
+  pkg.scripts?.['test:appimage-artifact'],
+  'node ../scripts/appimage-artifact-verifier-smoke.mjs',
+);
+assert.equal(
+  pkg.scripts?.['test:deb-artifact'],
+  'node ../scripts/deb-artifact-verifier-smoke.mjs',
+);
 
 assert.match(String(pkg.devDependencies?.electron || ''), /^41\.\d+\.\d+$/, 'Electron 41 is the newest line compatible with manager better-sqlite3 12.8');
 assert.match(String(pkg.dependencies?.['electron-updater'] || ''), /^\d+\.\d+\.\d+$/, 'electron-updater must be exact');
@@ -445,8 +480,14 @@ assert.match(
   /\n    defaults:\n      run:\n        shell: bash\n/,
   'cross-platform static commands must use the GitHub bash fail-fast/pipefail runner on Windows too',
 );
-assert.match(workflow, /RUNTIME_SOURCE_TOKEN/, 'CI must use the scoped runtime source token');
-assert.doesNotMatch(workflow, /RUNTIME_READ_TOKEN|--allow-dirty-application/);
+assert.doesNotMatch(
+  workflow,
+  /RUNTIME_SOURCE_TOKEN|RUNTIME_READ_TOKEN|--allow-dirty-application/,
+  'CI must use the committed Brain capsule and never depend on a private runtime-source token',
+);
+assert.match(workflow, /node scripts\/runtime-source-capsule\.mjs materialize/);
+assert.match(workflow, /npm run test:runtime-source-capsule --prefix idctl-desktop/);
+assert.match(workflow, /token:\s*\$\{\{\s*github\.token\s*\}\}/);
 assert.equal(
   (workflow.match(/uses: actions\/checkout@/g) || []).length,
   (workflow.match(/persist-credentials: false/g) || []).length,
@@ -494,7 +535,7 @@ assert.match(
 
 const releaseWorkflow = readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf8');
 const actionPins = [
-  ['checkout', '3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1', 7, 10],
+  ['checkout', '3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1', 5, 8],
   ['setup-node', '820762786026740c76f36085b0efc47a31fe5020 # v7.0.0', 3, 6],
   ['upload-artifact', '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1', 2, 2],
   ['download-artifact', '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1', 0, 5],
@@ -520,6 +561,31 @@ for (const [name, source] of [
   ['CI', workflow],
   ['production release', releaseWorkflow],
 ]) {
+  assert.match(
+    source,
+    /npm run test:appimage-artifact --prefix idctl-desktop/,
+    `${name} must run the AppImage verifier fixtures`,
+  );
+  assert.match(
+    source,
+    /npm run test:deb-artifact --prefix idctl-desktop/,
+    `${name} must run the Debian-package verifier fixtures`,
+  );
+  assert.equal(
+    (source.match(/node scripts\/verify-appimage-artifact\.mjs/g) || []).length,
+    1,
+    `${name} must inspect exactly one built Linux AppImage`,
+  );
+  assert.equal(
+    (source.match(/node scripts\/verify-deb-artifact\.mjs/g) || []).length,
+    1,
+    `${name} must inspect exactly one built Linux Debian package`,
+  );
+  assert.match(
+    source,
+    /- name: Verify the Linux installer sandbox policies\s+if: matrix\.platform == 'linux'[\s\S]*?node scripts\/verify-appimage-artifact\.mjs\s*\\\s*\n\s*--appimage "\$\{APPIMAGES\[0\]\}"[\s\S]*?node scripts\/verify-deb-artifact\.mjs\s*\\\s*\n\s*--deb "\$\{DEBS\[0\]\}"/,
+    `${name} must keep both installer artifact gates Linux-only`,
+  );
   const fullDesktopAudits = source.match(/npm audit --prefix idctl-desktop --audit-level=high/g) || [];
   const desktopAudits = source.match(/npm audit --prefix idctl-desktop --omit=dev --audit-level=high/g) || [];
   const idctlAudits = source.match(/npm audit --prefix idctl --omit=dev --audit-level=high/g) || [];
@@ -621,7 +687,10 @@ assert.match(releaseWorkflow, /npm run test:unified-updater-download --prefix id
 assert.match(workflow, /npm run test:unified-updater-integrity --prefix idctl-desktop/);
 assert.match(workflow, /npm run test:unified-updater-download --prefix idctl-desktop/);
 assert.match(workflow, /npm run test:windows-job-host --prefix idctl-desktop/);
-assert.match(releaseWorkflow, /RUNTIME_SOURCE_TOKEN/);
+assert.doesNotMatch(releaseWorkflow, /RUNTIME_SOURCE_TOKEN/);
+assert.match(releaseWorkflow, /node scripts\/runtime-source-capsule\.mjs materialize/);
+assert.match(releaseWorkflow, /npm run test:runtime-source-capsule --prefix idctl-desktop/);
+assert.match(releaseWorkflow, /token:\s*\$\{\{\s*github\.token\s*\}\}/);
 assert.match(releaseWorkflow, /runtime-source-tests:/);
 assert.match(releaseWorkflow, /Require GitHub-enforced immutable releases/);
 assert.match(releaseWorkflow, /repos\/\$GITHUB_REPOSITORY\/immutable-releases/);
@@ -644,7 +713,8 @@ assert.match(releaseWorkflow, /Verify the unauthenticated public release and upd
 assert.match(releaseWorkflow, /Verify GitHub locked the published release/);
 assert.match(releaseWorkflow, /Verify GitHub locked the promoted release/);
 assert.match(releaseWorkflow, /npm run ci:preflight --prefix \.runtime-sources\/manager/);
-assert.match(releaseWorkflow, /npm test --prefix \.runtime-sources\/brain/);
+assert.match(releaseWorkflow, /npm ci --omit=dev --prefix \.runtime-sources\/brain/);
+assert.match(releaseWorkflow, /xargs -0 -n1 node --check/);
 assert.equal(
   (releaseWorkflow.match(/uses: actions\/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4\.2\.0/g) || []).length,
   3,

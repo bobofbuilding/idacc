@@ -21,7 +21,14 @@ const digest = new Uint8Array(32).fill(7);
 const signature = signEvmDigest(privateKey, digest);
 assert.match(ethereumAddressForPrivateKey(privateKey), /^0x[0-9a-f]{40}$/);
 assert.match(signature, /^0x[0-9a-f]{130}$/);
-assert.equal(secp256k1.verify(signature.slice(2, 130), digest, publicKey, { prehash: false, lowS: true }), true);
+assert.equal(
+  secp256k1.verify(Buffer.from(signature.slice(2, 130), 'hex'), digest, publicKey, {
+    prehash: false,
+    lowS: true,
+    format: 'compact',
+  }),
+  true,
+);
 const signedTransaction = signEip1559Transaction(privateKey, {
   chainId: 11155111,
   nonce: 3,

@@ -21,9 +21,11 @@ import {
   desktopPackagedExclusionRoots,
   installedProductionPackageEntries,
 } from './lib/release-dependency-inventory.mjs';
+import { verifyRuntimeSourceCapsule } from './lib/runtime-source-capsule.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const args = process.argv.slice(2);
+const BRAIN_RUNTIME_CAPSULE_NAME = 'brain-runtime-capsule.json';
 
 function option(name, fallback = '') {
   const index = args.indexOf(name);
@@ -85,6 +87,29 @@ if (lockErrors.length || runtimeErrors.length) {
   console.error('release metadata generation failed: runtime provenance is invalid');
   for (const error of [...lockErrors, ...runtimeErrors]) console.error(`- ${error}`);
   process.exit(1);
+}
+let brainRuntimeCapsule = null;
+if (lock.components.brain.distributionSource?.mode === 'vendored-capsule') {
+  const distributionSource = lock.components.brain.distributionSource;
+  const capsuleRoot = resolve(root, distributionSource.path);
+  const capsuleManifestPath = resolve(root, distributionSource.manifest);
+  const verification = verifyRuntimeSourceCapsule({
+    root: capsuleRoot,
+    manifestPath: capsuleManifestPath,
+    component: lock.components.brain,
+    componentName: 'brain',
+    containmentRoot: root,
+  });
+  if (verification.errors.length) {
+    console.error('release metadata generation failed: Brain runtime capsule is invalid');
+    for (const error of verification.errors) console.error(`- ${error}`);
+    process.exit(1);
+  }
+  brainRuntimeCapsule = {
+    manifestPath: capsuleManifestPath,
+    manifestSha256: verification.manifestSha256,
+    treeSha256: verification.treeSha256,
+  };
 }
 const desktopPackage = readJson(join(root, 'idctl-desktop', 'package.json'), 'desktop package');
 const desktopPackageLock = readJson(join(root, 'idctl-desktop', 'package-lock.json'), 'desktop package lock');
@@ -299,6 +324,17 @@ const runtimeComponents = ['manager', 'brain'].map((name) => {
       { name: 'idacc:git-tree', value: locked.tree },
       { name: 'idacc:package-lock-sha256', value: locked.packageLockSha256 },
       { name: 'idacc:service-id', value: locked.serviceId },
+      ...(name === 'brain' && brainRuntimeCapsule ? [
+        { name: 'idacc:distribution-mode', value: 'vendored-capsule' },
+        {
+          name: 'idacc:capsule-manifest-sha256',
+          value: brainRuntimeCapsule.manifestSha256,
+        },
+        {
+          name: 'idacc:capsule-tree-sha256',
+          value: brainRuntimeCapsule.treeSha256,
+        },
+      ] : []),
     ],
   };
 });
@@ -366,6 +402,17 @@ const sbom = {
         { name: 'idacc:runtime-tree-sha256', value: runtimeManifest.trees.runtime },
         { name: 'idacc:manager-commit', value: lock.components.manager.commit },
         { name: 'idacc:brain-commit', value: lock.components.brain.commit },
+        ...(brainRuntimeCapsule ? [
+          { name: 'idacc:brain-distribution-mode', value: 'vendored-capsule' },
+          {
+            name: 'idacc:brain-capsule-manifest-sha256',
+            value: brainRuntimeCapsule.manifestSha256,
+          },
+          {
+            name: 'idacc:brain-capsule-tree-sha256',
+            value: brainRuntimeCapsule.treeSha256,
+          },
+        ] : []),
       ],
     },
   },
@@ -429,10 +476,23 @@ const sbomPath = join(output, 'SBOM.cdx.json');
 const noticesPath = join(output, 'THIRD_PARTY_NOTICES.md');
 const copiedLockPath = join(output, 'runtime-lock.json');
 const copiedRuntimeManifestPath = join(output, 'runtime-manifest.json');
+const copiedBrainRuntimeCapsulePath = brainRuntimeCapsule
+  ? join(output, BRAIN_RUNTIME_CAPSULE_NAME)
+  : '';
 writeFileSync(sbomPath, JSON.stringify(sbom, null, 2) + '\n');
 writeFileSync(noticesPath, noticesText);
 copyFileSync(lockPath, copiedLockPath);
 copyFileSync(runtimeManifestPath, copiedRuntimeManifestPath);
+if (brainRuntimeCapsule) {
+  copyFileSync(brainRuntimeCapsule.manifestPath, copiedBrainRuntimeCapsulePath);
+  const copiedCapsuleSha256 = sha256File(copiedBrainRuntimeCapsulePath);
+  if (copiedCapsuleSha256 !== brainRuntimeCapsule.manifestSha256) {
+    console.error(
+      'release metadata generation failed: Brain runtime capsule manifest changed while it was copied',
+    );
+    process.exit(1);
+  }
+}
 
 const artifacts = artifactPaths.map((path) => ({
   name: basename(path),
@@ -451,6 +511,12 @@ const releaseManifest = {
     runtimeManifest: { name: basename(copiedRuntimeManifestPath), sha256: sha256File(copiedRuntimeManifestPath) },
     sbom: { name: basename(sbomPath), sha256: sha256File(sbomPath) },
     thirdPartyNotices: { name: basename(noticesPath), sha256: sha256File(noticesPath) },
+    ...(brainRuntimeCapsule ? {
+      brainRuntimeCapsule: {
+        name: basename(copiedBrainRuntimeCapsulePath),
+        sha256: sha256File(copiedBrainRuntimeCapsulePath),
+      },
+    } : {}),
   },
   artifacts,
 };
@@ -463,6 +529,7 @@ const checksumInputs = [
   copiedRuntimeManifestPath,
   sbomPath,
   noticesPath,
+  ...(brainRuntimeCapsule ? [copiedBrainRuntimeCapsulePath] : []),
   releaseManifestPath,
 ];
 const checksumNames = checksumInputs.map((path) => basename(path));

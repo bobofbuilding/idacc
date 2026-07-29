@@ -4,6 +4,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  mainProcessStartupBanner,
+  mainProcessStartupPolicyMarker,
+} from './main-process-startup-policy.mjs';
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(desktop, 'out');
@@ -21,6 +25,7 @@ function walk(path) {
 for (const path of [
   'main/main.cjs',
   'main/managed-service-bootstrap.cjs',
+  'main/mcp-probe-runner.cjs',
   'preload/preload.cjs',
   'renderer/index.html',
   'renderer/renderer.js',
@@ -30,7 +35,64 @@ for (const path of [
   assert.ok(existsSync(join(out, path)), `release output is missing ${path}`);
 }
 const buildMode = JSON.parse(readFileSync(join(out, 'build-mode.json'), 'utf8'));
+const compiledMainProcess = readFileSync(join(out, 'main', 'main.cjs'), 'utf8');
 assert.equal(buildMode.mode, 'production');
+const sourcePackage = JSON.parse(readFileSync(join(desktop, 'package.json'), 'utf8'));
+const expectedReviewBuild = process.env.IDACC_REVIEW_BUILD === '1';
+const expectedStartupPolicyMode = buildMode.mode === 'development'
+  ? 'development'
+  : expectedReviewBuild ? 'review' : 'production';
+assert.equal(
+  buildMode.reviewOnly,
+  expectedReviewBuild,
+  'release build provenance must identify normal versus review-only output',
+);
+assert.equal(
+  buildMode.updaterEnabled,
+  !expectedReviewBuild,
+  'self-update must be disabled only in review-only output',
+);
+assert.equal(buildMode.sourceVersion, sourcePackage.version);
+assert.deepEqual(buildMode.mainProcessStartupPolicy, {
+  mode: expectedStartupPolicyMode,
+  marker: mainProcessStartupPolicyMarker(expectedStartupPolicyMode),
+  rejectsLinuxSandboxDisableSwitches: buildMode.mode === 'production',
+});
+assert.equal(
+  compiledMainProcess.startsWith(
+    mainProcessStartupBanner(expectedStartupPolicyMode),
+  ),
+  true,
+  'main process must begin with the exact deterministic startup policy banner',
+);
+assert.equal(
+  buildMode.applicationVersion,
+  expectedReviewBuild
+    ? process.env.IDACC_REVIEW_VERSION
+    : sourcePackage.version,
+  'build provenance must carry the exact packaged application identity',
+);
+if (expectedReviewBuild) {
+  assert.match(
+    String(buildMode.applicationVersion || ''),
+    new RegExp(`^${sourcePackage.version.replaceAll('.', '\\.')}\\-review\\.[1-9][0-9]*$`),
+  );
+}
+assert.ok(
+  compiledMainProcess.includes(
+    expectedReviewBuild
+      ? 'idacc-review-updater-disabled:v1'
+      : 'idacc-production-updater-enabled:v1',
+  ),
+  'the compiled updater must carry the expected fail-closed channel policy',
+);
+if (expectedReviewBuild) {
+  assert.equal(
+    compiledMainProcess.includes('idacc-production-updater-enabled:v1'),
+    false,
+    'review-only output must not compile the production updater policy',
+  );
+}
 assert.match(String(buildMode.runtimeManifestSha256 || ''), /^[0-9a-f]{64}$/, 'release output must bind to its runtime manifest');
 assert.equal(buildMode.windowsProfileNative?.buildPlatform, process.platform);
 assert.equal(buildMode.windowsJobHost?.buildPlatform, process.platform);
@@ -50,6 +112,23 @@ assert.equal(
     .digest('hex'),
   buildMode.windowsJobHost?.bootstrapSha256,
   'the shipped managed-service bootstrap must match build provenance',
+);
+assert.match(
+  String(buildMode.mcpProbeRunnerSha256 || ''),
+  /^[0-9a-f]{64}$/,
+  'release output must bind to its MCP probe runner',
+);
+assert.equal(
+  createHash('sha256')
+    .update(readFileSync(join(out, 'main', 'mcp-probe-runner.cjs')))
+    .digest('hex'),
+  buildMode.mcpProbeRunnerSha256,
+  'the shipped MCP probe runner must match build provenance',
+);
+assert.ok(
+  readFileSync(join(out, 'main', 'main.cjs'), 'utf8')
+    .includes(buildMode.mcpProbeRunnerSha256),
+  'the main-process bundle must embed the shipped MCP probe runner digest',
 );
 assert.match(
   String(buildMode.windowsProfileNative?.sourceSha256 || ''),

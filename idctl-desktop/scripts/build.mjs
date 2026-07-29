@@ -28,14 +28,42 @@ import {
   validateRuntimeLock,
   verifyRuntimeManifest,
 } from '../../scripts/lib/runtime-provenance.mjs';
+import {
+  mainProcessStartupBanner,
+  mainProcessStartupPolicyMarker,
+  mainProcessStartupPolicyMode,
+} from './main-process-startup-policy.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_ROOT = resolve(ROOT, '..');
 const runtimeManifestPath = resolve(ROOT, 'resources/idacc-runtime/manifest.json');
 const runtimeLockPath = resolve(SOURCE_ROOT, 'release/runtime-lock.json');
 const managedBootstrapPath = resolve(ROOT, 'src/main/managed-service-bootstrap.cjs');
+const mcpProbeRunnerPath = resolve(ROOT, 'src/main/mcp-probe-runner.cjs');
 const requireRuntime = process.argv.includes('--require-runtime');
 const releaseBuild = requireRuntime || process.argv.includes('--release');
+const reviewBuild = releaseBuild && process.env.IDACC_REVIEW_BUILD === '1';
+const mainProcessPolicyMode = mainProcessStartupPolicyMode({
+  releaseBuild,
+  reviewBuild,
+});
+const mainProcessPolicyMarker =
+  mainProcessStartupPolicyMarker(mainProcessPolicyMode);
+const sourcePackageVersion = JSON.parse(
+  readFileSync(resolve(ROOT, 'package.json'), 'utf8'),
+).version;
+const reviewVersion = reviewBuild
+  ? String(process.env.IDACC_REVIEW_VERSION || '').trim()
+  : null;
+if (
+  reviewBuild
+  && !new RegExp(`^${sourcePackageVersion.replaceAll('.', '\\.')}\\-review\\.[1-9][0-9]*$`)
+    .test(reviewVersion || '')
+) {
+  throw new Error(
+    'review builds require IDACC_REVIEW_VERSION=<source-version>-review.<positive-run-number>',
+  );
+}
 
 function extractWindowsProfileNativeSource() {
   const sourcePath = resolve(ROOT, 'src/main/profilePrivacy.ts');
@@ -817,8 +845,24 @@ const common = {
 
 await build({
   ...common,
+  entryPoints: [mcpProbeRunnerPath],
+  outfile: resolve(ROOT, 'out/main/mcp-probe-runner.cjs'),
+  platform: 'node',
+  format: 'cjs',
+  target: 'node20',
+  sourcemap: false,
+});
+const mcpProbeRunnerSha256 = createHash('sha256')
+  .update(readFileSync(resolve(ROOT, 'out/main/mcp-probe-runner.cjs')))
+  .digest('hex');
+
+await build({
+  ...common,
   entryPoints: [resolve(ROOT, 'src/main/main.ts')],
   outfile: resolve(ROOT, 'out/main/main.cjs'),
+  banner: {
+    js: mainProcessStartupBanner(mainProcessPolicyMode),
+  },
   platform: 'node',
   format: 'cjs',
   target: 'node20',
@@ -827,6 +871,16 @@ await build({
   external: ['electron', '@nut-tree-fork/libnut-darwin', 'bindings'],
   define: {
     ...common.define,
+    __IDACC_REVIEW_BUILD__: JSON.stringify(reviewBuild),
+    __IDACC_SOURCE_PACKAGE_VERSION__: JSON.stringify(sourcePackageVersion),
+    __IDACC_PACKAGED_APPLICATION_VERSION__: JSON.stringify(
+      reviewVersion || sourcePackageVersion,
+    ),
+    __IDACC_UPDATE_CHANNEL_POLICY__: JSON.stringify(
+      reviewBuild
+        ? 'idacc-review-updater-disabled:v1'
+        : 'idacc-production-updater-enabled:v1',
+    ),
     __IDACC_RUNTIME_MANIFEST_SHA256__: JSON.stringify(runtimeManifestSha256),
     __IDACC_WINDOWS_PROFILE_HELPER_EMBEDDED__: JSON.stringify(
       windowsProfileNative.embedded,
@@ -851,6 +905,9 @@ await build({
     ),
     __IDACC_MANAGED_SERVICE_BOOTSTRAP_SHA256__: JSON.stringify(
       managedBootstrapSha256,
+    ),
+    __IDACC_MCP_PROBE_RUNNER_SHA256__: JSON.stringify(
+      mcpProbeRunnerSha256,
     ),
     // Test-only post-CreateProcess abort injection must remain impossible to
     // activate from packaged application inputs.
@@ -887,7 +944,17 @@ cpSync(
 );
 writeFileSync(resolve(ROOT, 'out/build-mode.json'), JSON.stringify({
   mode: releaseBuild ? 'production' : 'development',
+  reviewOnly: reviewBuild,
+  updaterEnabled: !reviewBuild,
+  mainProcessStartupPolicy: {
+    mode: mainProcessPolicyMode,
+    marker: mainProcessPolicyMarker,
+    rejectsLinuxSandboxDisableSwitches: releaseBuild,
+  },
+  sourceVersion: sourcePackageVersion,
+  applicationVersion: reviewVersion || sourcePackageVersion,
   runtimeManifestSha256: runtimeManifestSha256 || null,
+  mcpProbeRunnerSha256,
   windowsProfileNative: {
     buildPlatform: process.platform,
     sourceSha256: windowsProfileNative.sourceSha256,

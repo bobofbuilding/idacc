@@ -73,6 +73,11 @@ import {
 import { buildOrgHierarchy, previewOrgSync, syncOrg, startOrgSyncLoop } from './orgSync.ts';
 import { createSingleFlightBackgroundGate } from './backgroundActivity.ts';
 import { inspectOllamaStarterToolModels } from './starterToolCapability.ts';
+import {
+  handleRuntimeFreshnessRequest,
+  runtimeFreshnessReadPolicy,
+  type RuntimeFreshnessReadPolicy,
+} from './runtimeFreshnessPolicy.ts';
 import { syncDomainsForMethod } from '../shared/syncDomains.ts';
 import { COALESCED_READ_METHODS, ReadCallCache } from '../shared/readCallCache.ts';
 import { mapTeamAgentGroups } from '../shared/teamAgentGroups.ts';
@@ -81,6 +86,10 @@ import { identityRegisterNoop } from '../shared/identityVerification.ts';
 import { isDreamSchedule, type ScheduledDreamNewsItem } from '../shared/dreamSchedule.ts';
 import { sanitizeSecretPayload } from './secretRedaction.ts';
 import { externalChildEnvironment } from './externalChildEnvironment.ts';
+import {
+  rehydrateManagedProviderAgents,
+  type ProviderRehydrationReport,
+} from './providerRuntimeRehydration.ts';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -405,8 +414,8 @@ function recoverPersonalSignAddress(message: string, signature: string): string 
   if (recovery !== 0 && recovery !== 1) {
     throw new Error('Controller signature has an unsupported recovery id.');
   }
-  const sig = secp256k1.Signature.fromCompact(bytes.slice(0, 64)).addRecoveryBit(recovery);
-  const publicKey = sig.recoverPublicKey(personalSignHash(message)).toRawBytes(false);
+  const sig = secp256k1.Signature.fromBytes(bytes.slice(0, 64), 'compact').addRecoveryBit(recovery);
+  const publicKey = sig.recoverPublicKey(personalSignHash(message)).toBytes(false);
   return `0x${bytesToHex(keccak_256(publicKey.slice(1)).slice(-20))}`;
 }
 
@@ -779,14 +788,16 @@ type RuntimeFreshness = {
   mcpDetail?: string;
   detail?: string;
 };
-async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
+async function runtimeFreshness(
+  policy: RuntimeFreshnessReadPolicy = runtimeFreshnessReadPolicy(),
+): Promise<RuntimeFreshness[]> {
   const providers = loadSettings().providers;
   const enrichedProviders = listProvidersEnriched();
-  const cat = runtimeCatalogWithLiveCliModels();
+  const cat = runtimeCatalogWithLiveCliModels(policy.catalog);
   const claudeInfo = cliModelInfo('claude');
   const grokInfo = cliModelInfo('grok');
   const antigravityInfo = cliModelInfo('antigravity');
-  const managed = await subsStatus().then((rows) => Object.values(rows)).catch(() => []);
+  const managed = await subsStatus(policy.subscriptions).then((rows) => Object.values(rows)).catch(() => []);
   const available = settingsAvailableRuntimeSet(enrichedProviders, managed);
   const managedByRuntime = new Map(managed.filter(managedRuntimeHasEvidence).map((s) => [s.runtime, s]));
   // Newest enabled provider that has synced models AND backs this runtime.
@@ -1146,11 +1157,7 @@ function providerLaneName(runtime: string): string | null {
   }
 }
 
-function providerLaneEnvName(name: string): string {
-  return `IDCTL_${name.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
-}
-
-function resolveProviderLaneAssignment(runtime: string): { providerName: string; provider: { name: string; kind?: string; baseUrl: string; apiKey?: string; keyEnv?: string } } | null {
+function resolveProviderLaneAssignment(runtime: string): { providerName: string; provider: { name: string; kind?: string; baseUrl: string; apiKey?: string } } | null {
   const providerName = providerLaneName(runtime);
   if (!providerName) return null;
   const p = loadSettings().providers.find((x) => x.name === providerName);
@@ -1165,7 +1172,6 @@ function resolveProviderLaneAssignment(runtime: string): { providerName: string;
       kind: p.kind,
       baseUrl: p.baseUrl,
       ...(apiKey ? { apiKey } : {}),
-      keyEnv: providerLaneEnvName(p.name),
     },
   };
 }
@@ -1183,6 +1189,35 @@ async function setAgentRuntimeFromSettings(agentId: string, runtime: string, tea
   const assignment = resolveProviderLaneAssignment(runtime);
   if (!assignment) return scoped.setAgentRuntime(String(agentId), String(runtime));
   return scoped.setAgentProviderRuntime(String(agentId), String(runtime), assignment.provider);
+}
+
+/**
+ * Restore only provider agents that the previous Manager deliberately marked
+ * for restart. Missing/decrypt-failed Settings leave those agents offline with
+ * their marker intact; unrelated desktop startup continues.
+ */
+export async function resumeManagedProviderAgentsAfterRestart(
+  signal?: AbortSignal,
+): Promise<ProviderRehydrationReport> {
+  return rehydrateManagedProviderAgents({
+    listTeams: async (activeSignal) => {
+      const teams = await client.teams(activeSignal);
+      return [...new Set([
+        PRIMARY_TEAM,
+        cfg.team ?? PRIMARY_TEAM,
+        ...teams.map((team) => team.name),
+      ])];
+    },
+    listAgents: (team, activeSignal) => client.withTeam(team).agents(activeSignal),
+    resolveAssignment: resolveProviderLaneAssignment,
+    rebindAndResume: (team, agentId, runtime, provider, activeSignal) =>
+      client.withTeam(team).rebindAndResumeAgentProviderRuntime(
+        agentId,
+        runtime,
+        provider,
+        activeSignal,
+      ),
+  }, signal);
 }
 
 async function prepareOnboardRuntime(plan: OnboardPlan): Promise<PreparedRuntime | undefined> {
@@ -1627,7 +1662,7 @@ async function managerOrgControl(options: { allowLegacyRead?: boolean } = {}): P
       return {
         value: orgControlSnapshot(),
         source: 'local-compat',
-        warning: 'Using the local organization cache because this manager does not expose control state. Update id-agents to v0.1.111 or newer.',
+        warning: 'Using the local organization cache because the bundled service does not expose control state. Update or repair the unified IDACC application from Settings, then retry.',
       };
     }
     throw error;
@@ -1808,22 +1843,44 @@ function goalDriverConfig(): GoalDriverConfig {
   return normalizeGoalDriverConfig(loadSettings().goalDriver);
 }
 
-async function eventTailCursor(scopedClient: ManagerClient): Promise<number> {
+type EventTailState = {
+  next_seq: number;
+  stream_id?: string;
+  cursor_reset?: boolean;
+};
+
+async function eventTailState(scopedClient: ManagerClient): Promise<EventTailState> {
   const requestedTail = await scopedClient.events(0, { wait: 0, limit: 1, tail: true });
-  if (!requestedTail.events?.length) return Number(requestedTail.next_seq) || 0;
+  if (!requestedTail.events?.length) {
+    return {
+      next_seq: Number(requestedTail.next_seq) || 0,
+      ...(requestedTail.stream_id ? { stream_id: requestedTail.stream_id } : {}),
+      ...(requestedTail.cursor_reset === true ? { cursor_reset: true } : {}),
+    };
+  }
 
   // Older managers ignore tail=1 and return the oldest retained event. Keep the
   // expensive catch-up inside the main process so React doesn't render thousands
   // of historical rows during startup. Patched managers return above immediately.
   let cursor = Number(requestedTail.next_seq) || 0;
+  let streamId = requestedTail.stream_id;
   for (let i = 0; i < 200; i += 1) {
     const page = await scopedClient.events(cursor, { wait: 0, limit: 1000 });
+    streamId = page.stream_id ?? streamId;
     const next = Number(page.next_seq) || cursor;
-    if (!page.events?.length || next <= cursor) return cursor;
+    if (!page.events?.length || next <= cursor) {
+      return { next_seq: cursor, ...(streamId ? { stream_id: streamId } : {}) };
+    }
     cursor = next;
-    if (page.events.length < 1000) return cursor;
+    if (page.events.length < 1000) {
+      return { next_seq: cursor, ...(streamId ? { stream_id: streamId } : {}) };
+    }
   }
-  return cursor;
+  return { next_seq: cursor, ...(streamId ? { stream_id: streamId } : {}) };
+}
+
+async function eventTailCursor(scopedClient: ManagerClient): Promise<number> {
+  return (await eventTailState(scopedClient)).next_seq;
 }
 
 async function strictAllTeamAgentGroups(): Promise<Array<{ team: string; agents: Agent[] }>> {
@@ -1860,7 +1917,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     return groups.filter((g) => g.agents.length > 0);
   },
   events: (since: number) => client.events(Number(since) || 0, { wait: 20, limit: 100 }),
-  'events:tail': () => eventTailCursor(client).then((next_seq) => ({ next_seq })),
+  'events:tail': () => eventTailState(client),
   // Holistic activity: merge every team's recent events into one stream (tagged with
   // team), newest last. Used by the "All teams" Dashboard feed.
   'events:multi': async (limit?: number) => {
@@ -2287,10 +2344,11 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'runtime:verifyAssignments': async (assignments: RuntimeAssignment[]) => verifyRuntimeAssignments(assignments),
   // Per-runtime model freshness (live list + source + when last refreshed) for the
   // "models stay up to date" panel.
-  // The optional force object is consumed by ReadCallCache. Explicit setup
-  // retries bypass the normal five-minute catalog cache and repopulate its
-  // canonical key with fresh per-model tool-capability evidence.
-  'runtime:freshness': async (_options?: { force?: boolean }) => runtimeFreshness(),
+  // Explicit setup retries bypass the outer five-minute read cache and every
+  // nested source cache used to construct authoritative assignment evidence.
+  'runtime:freshness': async (options?: { force?: boolean }) => (
+    handleRuntimeFreshnessRequest(options, runtimeFreshness)
+  ),
   // Runtime credential lane cooldowns (newer managers); empty on stock/older managers.
   'runtime:cooldowns': async () => client.runtimeCooldowns(),
 

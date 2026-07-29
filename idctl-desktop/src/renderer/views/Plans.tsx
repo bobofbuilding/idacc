@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import { useToast } from '../components/toast.tsx';
 import { buildPrimaryLeadPlanWork, mergePlanTaskRefs, planWorkGoalId } from '../../shared/planWork.ts';

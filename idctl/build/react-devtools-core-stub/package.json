@@ -1,6 +1,6 @@
 {
   "name": "react-devtools-core",
-  "version": "4.28.5",
+  "version": "6.1.2",
   "description": "Local no-op stub. ink imports react-devtools-core (an optional, dev-only dependency used only when DEV=true). It is not installed, so bundlers (bun --compile, esbuild) crash trying to resolve the static import. Linking this stub via file: makes the import resolve to a no-op everywhere.",
   "main": "index.js",
   "type": "commonjs",

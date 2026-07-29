@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -17,11 +18,13 @@ import { fileURLToPath } from 'node:url';
 import {
   isContainedRuntimeManifestSymlink,
   isContainedRuntimeSymlink,
+  MAX_RUNTIME_PAYLOAD_BYTES,
   sha256,
   sha256File,
   validateRuntimeLock,
   verifyRuntimeManifest,
 } from './lib/runtime-provenance.mjs';
+import { pruneXmtpNativeBindings } from './lib/runtime-native-pruning.mjs';
 import {
   desktopPackagedExclusionRoots,
   installedProductionPackageEntries,
@@ -29,6 +32,94 @@ import {
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const scratch = mkdtempSync(join(tmpdir(), 'idacc-release-provenance-'));
+
+const xmtpBindingNames = [
+  'bindings_node.darwin-arm64.node',
+  'bindings_node.darwin-x64.node',
+  'bindings_node.linux-arm64-gnu.node',
+  'bindings_node.linux-arm64-musl.node',
+  'bindings_node.linux-x64-gnu.node',
+  'bindings_node.linux-x64-musl.node',
+  'bindings_node.win32-x64-msvc.node',
+];
+const xmtpBindingDirectories = [
+  'node_modules/@xmtp/node-bindings/dist',
+  'node_modules/@xmtp/node-sdk/node_modules/@xmtp/node-bindings/dist',
+  'node_modules/@xmtp/node-sdk/node_modules/@xmtp/content-type-primitives/node_modules/@xmtp/node-bindings/dist',
+];
+const xmtpPruningFixture = join(scratch, 'xmtp-pruning');
+for (const directory of xmtpBindingDirectories) {
+  mkdirSync(join(xmtpPruningFixture, directory), { recursive: true });
+  for (const name of xmtpBindingNames) {
+    writeFileSync(join(xmtpPruningFixture, directory, name), `${name}\n`);
+  }
+}
+const xmtpPruning = pruneXmtpNativeBindings(xmtpPruningFixture, {
+  platform: 'linux',
+  arch: 'x64',
+});
+assert.equal(xmtpPruning.kept.length, xmtpBindingDirectories.length);
+assert.equal(
+  xmtpPruning.removed.length,
+  xmtpBindingDirectories.length * (xmtpBindingNames.length - 1),
+);
+for (const directory of xmtpBindingDirectories) {
+  assert.deepEqual(
+    readdirSync(join(xmtpPruningFixture, directory)).filter((name) => name.endsWith('.node')),
+    ['bindings_node.linux-x64-gnu.node'],
+  );
+}
+const unsupportedXmtpFixture = join(scratch, 'xmtp-unsupported');
+mkdirSync(join(unsupportedXmtpFixture, xmtpBindingDirectories[0]), { recursive: true });
+writeFileSync(
+  join(unsupportedXmtpFixture, xmtpBindingDirectories[0], 'bindings_node.linux-x64-gnu.node'),
+  'native\n',
+);
+assert.throws(
+  () => pruneXmtpNativeBindings(unsupportedXmtpFixture, {
+    platform: 'linux',
+    arch: 'arm64',
+  }),
+  /unsupported for linux-arm64/,
+);
+const incompleteXmtpFixture = join(scratch, 'xmtp-incomplete-copy');
+const completeXmtpDirectory = join(incompleteXmtpFixture, xmtpBindingDirectories[0]);
+const incompleteXmtpDirectory = join(incompleteXmtpFixture, xmtpBindingDirectories[1]);
+mkdirSync(completeXmtpDirectory, { recursive: true });
+mkdirSync(incompleteXmtpDirectory, { recursive: true });
+writeFileSync(
+  join(completeXmtpDirectory, 'bindings_node.darwin-arm64.node'),
+  'native\n',
+);
+writeFileSync(
+  join(incompleteXmtpDirectory, 'bindings_node.linux-x64-gnu.node'),
+  'foreign-only\n',
+);
+assert.throws(
+  () => pruneXmtpNativeBindings(incompleteXmtpFixture, {
+    platform: 'darwin',
+    arch: 'arm64',
+  }),
+  /is missing required bindings_node\.darwin-arm64\.node/,
+  'every installed XMTP binding package must retain its target-native binary',
+);
+const emptyXmtpFixture = join(scratch, 'xmtp-empty-copy');
+mkdirSync(
+  join(emptyXmtpFixture, xmtpBindingDirectories[0]),
+  { recursive: true },
+);
+writeFileSync(
+  join(emptyXmtpFixture, xmtpBindingDirectories[0], 'index.js'),
+  'export {};\n',
+);
+assert.throws(
+  () => pruneXmtpNativeBindings(emptyXmtpFixture, {
+    platform: 'darwin',
+    arch: 'arm64',
+  }),
+  /is missing required bindings_node\.darwin-arm64\.node/,
+  'an installed but empty XMTP binding package must not be treated as absent',
+);
 
 function run(command, args, cwd, { expectFailure = false } = {}) {
   const result = spawnSync(command, args, {
@@ -73,8 +164,42 @@ function initRepository(path, { name, version, remote, manager = false }) {
   const packageJson = {
     name,
     version,
+    description: `${name} fixture`,
     license: 'MIT',
-    ...(manager ? { scripts: { build: 'node build.mjs' } } : {}),
+    type: 'module',
+    repository: {
+      type: 'git',
+      url: remote,
+    },
+    homepage: 'https://example.invalid/runtime',
+    bugs: {
+      url: 'https://example.invalid/runtime/issues',
+    },
+    engines: {
+      node: '>=22',
+    },
+    dependencies: {},
+    optionalDependencies: {},
+    peerDependencies: {},
+    overrides: {},
+    ...(manager ? {
+      private: false,
+      main: 'dist/index.js',
+      module: 'dist/index.mjs',
+      types: 'dist/index.d.ts',
+      typings: 'dist/index.d.ts',
+      bin: {
+        'fixture-manager': './dist/interactive-agent-cli.js',
+        'fixture-manager-dashboard': './dist/tui/index.js',
+      },
+      exports: {
+        '.': './dist/index.js',
+        './cli': './dist/interactive-agent-cli.js',
+      },
+      scripts: { build: 'node build.mjs' },
+      files: ['dist/**/*'],
+      devDependencies: {},
+    } : {}),
   };
   writeFileSync(join(path, 'package.json'), JSON.stringify(packageJson, null, 2) + '\n');
   writeFileSync(join(path, 'package-lock.json'), JSON.stringify(packageLock(name, version), null, 2) + '\n');
@@ -83,8 +208,14 @@ function initRepository(path, { name, version, remote, manager = false }) {
     writeFileSync(join(path, 'build.mjs'), [
       "import { mkdirSync, writeFileSync } from 'node:fs';",
       "mkdirSync('dist/runtime', { recursive: true });",
+      "mkdirSync('dist/tui', { recursive: true });",
       "writeFileSync('dist/start-agent-manager.js', \"import './runtime/service.js';\\nconsole.log('fixture manager');\\n\");",
       "writeFileSync('dist/runtime/service.js', \"export const service = 'neutral';\\n\");",
+      "writeFileSync('dist/index.js', \"export const fixture = true;\\n\");",
+      "writeFileSync('dist/index.mjs', \"export const fixture = true;\\n\");",
+      "writeFileSync('dist/index.d.ts', \"export declare const fixture: true;\\n\");",
+      "writeFileSync('dist/interactive-agent-cli.js', \"console.log('fixture cli');\\n\");",
+      "writeFileSync('dist/tui/index.js', \"console.log('fixture dashboard');\\n\");",
       "writeFileSync('dist/operator-private.js', \"export const source = '/Users/fixture/private-manager';\\n\");",
       '',
     ].join('\n'));
@@ -301,6 +432,41 @@ try {
 
   assert.ok(existsSync(join(runtimeRoot, 'manager', manager.entrypoint)));
   assert.ok(existsSync(join(runtimeRoot, 'brain', brain.entrypoint)));
+  const stagedManagerPackage = JSON.parse(
+    readFileSync(join(runtimeRoot, 'manager', 'package.json'), 'utf8'),
+  );
+  assert.equal(stagedManagerPackage.name, '@fixture/manager');
+  assert.equal(stagedManagerPackage.version, '1.2.3');
+  assert.equal(stagedManagerPackage.description, '@fixture/manager fixture');
+  assert.equal(stagedManagerPackage.type, 'module');
+  assert.equal(stagedManagerPackage.license, 'MIT');
+  assert.deepEqual(stagedManagerPackage.repository, {
+    type: 'git',
+    url: 'https://example.invalid/fixture-manager.git',
+  });
+  assert.deepEqual(stagedManagerPackage.engines, { node: '>=22' });
+  assert.deepEqual(stagedManagerPackage.dependencies, {});
+  assert.deepEqual(stagedManagerPackage.optionalDependencies, {});
+  assert.deepEqual(stagedManagerPackage.peerDependencies, {});
+  assert.deepEqual(stagedManagerPackage.overrides, {});
+  assert.equal(stagedManagerPackage.private, true);
+  for (const field of [
+    'main',
+    'module',
+    'types',
+    'typings',
+    'bin',
+    'exports',
+    'scripts',
+    'files',
+    'devDependencies',
+  ]) {
+    assert.equal(
+      Object.hasOwn(stagedManagerPackage, field),
+      false,
+      `staged Manager must not advertise source-only package field ${field}`,
+    );
+  }
   assert.ok(existsSync(join(runtimeRoot, 'manager', 'dist', 'runtime', 'service.js')));
   assert.ok(existsSync(join(runtimeRoot, 'brain', 'routes', 'neutral.mjs')));
   assert.equal(existsSync(join(runtimeRoot, 'manager', 'dist', 'operator-private.js')), false);
@@ -340,6 +506,18 @@ try {
     }, lock).join('\n'),
     /runtime manifest files\[\d+\] is invalid/,
     'staging verification must reject a manifest the production parser would reject',
+  );
+  assert.match(
+    verifyRuntimeManifest(runtimeRoot, {
+      ...manifest,
+      files: manifest.files.map((record, index) => (
+        index === 0
+          ? { ...record, size: MAX_RUNTIME_PAYLOAD_BYTES + 1 }
+          : record
+      )),
+    }, lock).join('\n'),
+    /runtime manifest payload is \d+ bytes; maximum is \d+ bytes/,
+    'staging verification must reject an unreviewed runtime size regression',
   );
 
   run(process.execPath, [

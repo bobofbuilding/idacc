@@ -38,6 +38,14 @@ to install or update either service separately.
   IDACC does not traverse or rewrite ACLs inside an existing repository.
   Existing repository descendants retain their user-managed permissions, so
   their confidentiality remains the user's responsibility on every platform.
+- **Managed service boundary:** each app run generates three pairwise-distinct
+  credentials for Manager administration, Brain access, and Brain-to-Manager
+  service reads. The Manager service bearer reaches only Manager, the Brain
+  daemon, and `brain-listener`; Brain presents it with `X-Id-Service: brain`
+  only for `GET`/`HEAD` `/teams`, `/agents`, and `/events`. It never enters
+  renderer/IPC data, logs, URLs, workers, generic companions, or `brain-cycle`.
+  Consumer-managed consolidation takes remain disabled rather than widening
+  this read-only principal.
 - **Renderer** (`src/renderer/*`) is the React UI. `store.ts` (`useFleet`) polls the manager every
   ~3s (agents/teams/inbox snapshot) plus a long-poll event cursor, exposing `store.{agents, teams,
   team, coordinator, events, inbox, connection, …}`. Expensive catalog and observability reads
@@ -549,7 +557,9 @@ selection in the active team.
   read-only observation surfaces. They lead with `/fleet-report`'s IDACC manager authority when live,
   fall back to Brain cache only with explicit cache/partial warnings, expose redacted optional-provider
   identity evidence and advertised-skill summaries, and avoid dashboard-side
-  approval/replay POST controls.
+  approval/replay POST controls. Every popout and same-origin child uses one ephemeral,
+  exact-origin authenticated session; closing or rotating the dashboard destroys all children before
+  that session is permanently retired behind deny-all request guards and private-storage cleanup.
   Brain Agents now mirrors the Identity & Keys controller-wallet precedence (`ows_address`, then
   optional provider wallet address, then address-shaped OWS wallet) and shows per-agent total ETH
   gas spend vs last-24h ETH gas from Brain timeline transaction/gas evidence.
@@ -649,6 +659,11 @@ Manager; this is the plumbing.)
   application-wide shutdown coordinator has quiesced UI mutations, stopped background loops, and
   completed bounded Manager/Brain process-tree cleanup. Linux AppImage builds support that
   replacement path; Debian packages direct the user to the system package manager instead.
+  Both Linux release forms enable Electron's sandbox before bundled application modules load
+  and refuse sandbox-disabling launch switches. The Debian installer configures the Chromium
+  sandbox helper when required and conditionally configures its pinned AppArmor profile when
+  AppArmor is enabled with the supported ABI; release gates inspect both the built AppImage and
+  Debian archives.
 - **Managed subscription sign-ins**: CLI OAuth/device/browser flows (no API key) for `claude-*`,
   `codex`, `cursor-cli`, `grok`, Antigravity `agy`, `copilot`, `kiro-cli`, `kimi-cli`, and legacy `q`
   only when installed. Rows distinguish
@@ -779,8 +794,8 @@ tag objects, 62 exact published release identities, and 3 absent releases
 (`v0.1.622`, `v0.1.624`, and `v0.1.625`). It fails closed if any tag object,
 peeled target, signature state, or recorded release identity/state changes, or
 if another incomplete tag appears. While the cutover is active, the current
-published frontier `v0.1.684` is the changelog baseline. The first canonical
-signed release must be greater than `v0.1.684`.
+GitHub Latest and the changelog baseline remain `v0.1.619`; `v0.1.684` is the
+historical version floor that the first canonical signed release must exceed.
 The app self-updates from the verified GitHub release feed. The retained Tauri
 frontend is labeled and gated as a developer-only interface simulation; its
 production package commands fail because it does not bundle or supervise

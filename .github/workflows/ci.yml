@@ -78,7 +78,10 @@ jobs:
           npm run test:dashboard-coordination --prefix idctl-desktop
           npm run test:dashboard-activity-filter --prefix idctl-desktop
           npm run test:org-hierarchy --prefix idctl-desktop
+          npm run test:renderer-store --prefix idctl-desktop
           npm run test:release-platform-config --prefix idctl-desktop
+          npm run test:review-build-workflow --prefix idctl-desktop
+          npm run test:runtime-source-capsule --prefix idctl-desktop
           npm run test:release-preflight --prefix idctl-desktop
           npm run test:release-payload --prefix idctl-desktop
           npm run test:update-descriptor-contract --prefix idctl-desktop
@@ -101,6 +104,7 @@ jobs:
           npm run test:secret-redaction --prefix idctl-desktop
           npm run test:profile-migrations --prefix idctl-desktop
           npm run test:startup-recovery --prefix idctl-desktop
+          npm run test:provider-runtime-rehydration --prefix idctl-desktop
           npm run test:runtime-profile-isolation --prefix idctl-desktop
           npm run test:context-budget-retention --prefix idctl-desktop
           npm run test:computer-use-retention --prefix idctl-desktop
@@ -117,6 +121,12 @@ jobs:
           npm audit --prefix idctl-desktop --audit-level=high
           npm audit --prefix idctl-desktop --omit=dev --audit-level=high
           npm audit --prefix idctl --omit=dev --audit-level=high
+
+      - name: Verify Linux installer artifact policy fixtures
+        if: runner.os == 'Linux'
+        run: |
+          npm run test:appimage-artifact --prefix idctl-desktop
+          npm run test:deb-artifact --prefix idctl-desktop
 
       - name: Verify rendered command and drawer interactions
         if: runner.os != 'Linux'
@@ -163,15 +173,6 @@ jobs:
         id: runtime-lock
         run: node scripts/validate-runtime-lock.mjs --no-sources
 
-      - name: Require access to the exact runtime sources
-        env:
-          RUNTIME_SOURCE_TOKEN: ${{ secrets.RUNTIME_SOURCE_TOKEN }}
-        run: |
-          if [ -z "$RUNTIME_SOURCE_TOKEN" ]; then
-            echo "::error::RUNTIME_SOURCE_TOKEN is required to check out the pinned Manager and Brain sources." >&2
-            exit 1
-          fi
-
       - name: Restrict runtime sources to the audited repositories
         env:
           MANAGER_REPOSITORY: ${{ steps.runtime-lock.outputs.manager_repository }}
@@ -187,24 +188,13 @@ jobs:
           ref: ${{ steps.runtime-lock.outputs.manager_commit }}
           path: .runtime-sources/manager
           fetch-depth: 1
-          token: ${{ secrets.RUNTIME_SOURCE_TOKEN }}
+          token: ${{ github.token }}
           persist-credentials: false
 
-      - name: Check out the exact Brain commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ steps.runtime-lock.outputs.brain_repository }}
-          ref: ${{ steps.runtime-lock.outputs.brain_commit }}
-          path: .runtime-sources/brain
-          fetch-depth: 1
-          token: ${{ secrets.RUNTIME_SOURCE_TOKEN }}
-          persist-credentials: false
-
-      - name: Validate exact clean runtime sources
+      - name: Validate exact Manager source and vendored Brain capsule
         run: >-
           node scripts/validate-runtime-lock.mjs
           --manager-source .runtime-sources/manager
-          --brain-source .runtime-sources/brain
 
       - name: Verify the exact Manager source
         run: |
@@ -212,10 +202,16 @@ jobs:
           npm run ci:preflight --prefix .runtime-sources/manager
           npm run test:local-agent-lifecycle --prefix .runtime-sources/manager
 
-      - name: Verify the exact Brain source
+      - name: Materialize and verify the exact Brain runtime capsule
         run: |
-          npm ci --prefix .runtime-sources/brain
-          npm test --prefix .runtime-sources/brain
+          node scripts/runtime-source-capsule.mjs materialize \
+            --lock release/runtime-lock.json \
+            --component brain \
+            --target .runtime-sources/brain
+          npm ci --omit=dev --prefix .runtime-sources/brain
+          find .runtime-sources/brain -path '*/node_modules' -prune \
+            -o -type f -name '*.mjs' -print0 \
+            | xargs -0 -n1 node --check
 
       - name: Install IDACC dependencies exactly
         run: |
@@ -239,7 +235,6 @@ jobs:
       - name: Stage manager and Brain from their pins
         env:
           IDACC_MANAGER_SOURCE: ${{ github.workspace }}/.runtime-sources/manager
-          IDACC_BRAIN_SOURCE: ${{ github.workspace }}/.runtime-sources/brain
           IDACC_TARGET_ARCH: ${{ env.IDACC_BUILD_ARCH }}
         run: npm run stage:runtimes --prefix idctl-desktop
 
@@ -257,7 +252,6 @@ jobs:
       - name: Build unpacked application
         env:
           IDACC_MANAGER_SOURCE: ${{ github.workspace }}/.runtime-sources/manager
-          IDACC_BRAIN_SOURCE: ${{ github.workspace }}/.runtime-sources/brain
           IDACC_TARGET_ARCH: ${{ env.IDACC_BUILD_ARCH }}
         run: npm run dist --prefix idctl-desktop -- --${IDACC_BUILD_ARCH}
 
@@ -303,6 +297,7 @@ jobs:
             runtime_platform: win32
             arch: x64
             target_args: --win nsis
+            release_smoke_args: ""
             unpacked: win-unpacked
             artifact_globs: |
               idctl-desktop/release/*.exe
@@ -313,6 +308,7 @@ jobs:
             runtime_platform: linux
             arch: x64
             target_args: --linux AppImage deb
+            release_smoke_args: --linux-github-actions-suid-sandbox
             unpacked: linux-unpacked
             artifact_globs: |
               idctl-desktop/release/*.AppImage
@@ -339,16 +335,6 @@ jobs:
             idctl/package-lock.json
             idctl-desktop/package-lock.json
 
-      - name: Require access to the exact runtime sources
-        shell: bash
-        env:
-          RUNTIME_SOURCE_TOKEN: ${{ secrets.RUNTIME_SOURCE_TOKEN }}
-        run: |
-          if [ -z "$RUNTIME_SOURCE_TOKEN" ]; then
-            echo "::error::RUNTIME_SOURCE_TOKEN is required to check out the pinned Manager and Brain sources." >&2
-            exit 1
-          fi
-
       - name: Read runtime pins
         id: runtime-lock
         shell: bash
@@ -370,25 +356,22 @@ jobs:
           ref: ${{ steps.runtime-lock.outputs.manager_commit }}
           path: .runtime-sources/manager
           fetch-depth: 1
-          token: ${{ secrets.RUNTIME_SOURCE_TOKEN }}
+          token: ${{ github.token }}
           persist-credentials: false
 
-      - name: Check out the exact Brain commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ steps.runtime-lock.outputs.brain_repository }}
-          ref: ${{ steps.runtime-lock.outputs.brain_commit }}
-          path: .runtime-sources/brain
-          fetch-depth: 1
-          token: ${{ secrets.RUNTIME_SOURCE_TOKEN }}
-          persist-credentials: false
-
-      - name: Validate exact clean runtime sources
+      - name: Validate exact Manager source and vendored Brain capsule
         shell: bash
         run: >-
           node scripts/validate-runtime-lock.mjs
           --manager-source .runtime-sources/manager
-          --brain-source .runtime-sources/brain
+
+      - name: Materialize the exact Brain runtime capsule
+        shell: bash
+        run: >-
+          node scripts/runtime-source-capsule.mjs materialize
+          --lock release/runtime-lock.json
+          --component brain
+          --target .runtime-sources/brain
 
       - name: Install exact application dependencies
         shell: bash
@@ -412,7 +395,6 @@ jobs:
         shell: bash
         env:
           IDACC_MANAGER_SOURCE: ${{ github.workspace }}/.runtime-sources/manager
-          IDACC_BRAIN_SOURCE: ${{ github.workspace }}/.runtime-sources/brain
           IDACC_TARGET_ARCH: ${{ matrix.arch }}
         run: |
           npm run stage:runtimes --prefix idctl-desktop
@@ -435,11 +417,41 @@ jobs:
           npm run test:release-build-output
           npx electron-builder ${{ matrix.target_args }} --${{ matrix.arch }} --publish never
 
-      - name: Verify payload and clean-profile manager/Brain startup
+      - name: Verify the Linux installer sandbox policies
+        if: matrix.platform == 'linux'
         shell: bash
         run: |
+          mapfile -t APPIMAGES < <(
+            find idctl-desktop/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.AppImage' \
+              -print
+          )
+          test "${#APPIMAGES[@]}" -eq 1
+          node scripts/verify-appimage-artifact.mjs \
+            --appimage "${APPIMAGES[0]}" \
+            --expected-build production
+          mapfile -t DEBS < <(
+            find idctl-desktop/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.deb' \
+              -print
+          )
+          test "${#DEBS[@]}" -eq 1
+          node scripts/verify-deb-artifact.mjs \
+            --deb "${DEBS[0]}"
+
+      - name: Verify payload and clean-profile manager/Brain startup
+        shell: bash
+        env:
+          IDACC_GITHUB_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
           node scripts/check-release-payload.mjs "idctl-desktop/release/${{ matrix.unpacked }}"
-          node scripts/unified-stack-release-smoke.mjs "idctl-desktop/release/${{ matrix.unpacked }}"
+          node scripts/unified-stack-release-smoke.mjs \
+            "idctl-desktop/release/${{ matrix.unpacked }}" \
+            ${{ matrix.release_smoke_args }}
 
       - name: Generate platform-specific provenance
         shell: bash

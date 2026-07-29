@@ -41,7 +41,7 @@ export function App({ config }: { config: Config }) {
   const [overlay, setOverlay] = useState<Overlay>('none');
   const [capture, setCapture] = useState(false);
   const [flash, setFlash] = useState<{ msg: string; kind: string } | null>(null);
-  const flashTimer = useRef<ReturnType<typeof setTimeout>>();
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const doFlash = useCallback((msg: string, kind: 'info' | 'ok' | 'err' = 'info') => {
     setFlash({ msg, kind });

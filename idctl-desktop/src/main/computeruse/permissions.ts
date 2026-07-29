@@ -191,6 +191,9 @@ export type CuPermissionPane = 'screen' | 'accessibility' | 'input-monitoring' |
 
 /** Open the exact System Settings pane for a permission. */
 export async function openPermissionSettings(which: CuPermissionPane): Promise<void> {
+  if (process.platform !== 'darwin') {
+    throw new Error('Computer Use permission settings are available only on macOS.');
+  }
   const panes: Record<CuPermissionPane, string> = {
     screen: 'Privacy_ScreenCapture',
     accessibility: 'Privacy_Accessibility',

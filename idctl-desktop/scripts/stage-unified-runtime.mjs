@@ -2,7 +2,6 @@
 import {
   cpSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,9 +13,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import {
   dirname,
   join,
-  relative,
   resolve,
-  sep,
 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extract as extractTar } from 'tar';
@@ -29,6 +26,16 @@ import {
   verifyRuntimeManifest,
 } from '../../scripts/lib/runtime-provenance.mjs';
 import { assertConsumerPayload } from '../../scripts/lib/consumer-payload-policy.mjs';
+import {
+  BRAIN_RUNTIME_ROOTS,
+  BRAIN_STATIC_ASSETS,
+  copyRuntimeModuleGraph,
+} from '../../scripts/lib/runtime-module-graph.mjs';
+import {
+  materializeRuntimeSourceCapsule,
+  verifyRuntimeSourceCapsule,
+} from '../../scripts/lib/runtime-source-capsule.mjs';
+import { pruneXmtpNativeBindings } from '../../scripts/lib/runtime-native-pruning.mjs';
 import { npmInvocation } from './npm-invocation.mjs';
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -73,31 +80,17 @@ const MANAGER_CORE_SKILL_NAMES = [
 ];
 const MANAGER_CORE_SKILL_DOCUMENTS = MANAGER_CORE_SKILL_NAMES
   .map((name) => `skills/${name}/SKILL.md`);
-const BRAIN_RUNTIME_ROOTS = [
-  'brain.mjs',
-  'brain-cycle.mjs',
-  'brain-listener.mjs',
-  'brain-mcp.mjs',
-  'brain-connector-runner.mjs',
-  'brain-connector-validate.mjs',
-  'brain-eval.mjs',
-  'context/service.mjs',
-  'cycle/approvals.mjs',
-  'dashboard/dashboards.mjs',
-  'listener/contract.mjs',
-  'mcp/server.mjs',
-  'operator-tools/refresh-source-embeddings.mjs',
-  'routes/core.mjs',
+const STAGED_MANAGER_SOURCE_ONLY_PACKAGE_FIELDS = [
+  'main',
+  'module',
+  'types',
+  'typings',
+  'bin',
+  'exports',
+  'scripts',
+  'files',
+  'devDependencies',
 ];
-const BRAIN_STATIC_ASSETS = [
-  'brain-connector.schema.json',
-  'prompts/community-report.json',
-  'prompts/edge-description.json',
-  'prompts/fact-take-synthesis.json',
-  'prompts/follow-up-questions.json',
-  'prompts/safety-report.json',
-];
-
 function fail(message) {
   throw new Error(message);
 }
@@ -154,68 +147,14 @@ function copyAllowlistedPaths(sourceRoot, destinationRoot, names, { required = f
   }
 }
 
-function portableRelative(rootPath, path) {
-  return relative(rootPath, path).split(sep).join('/');
-}
-
-function localModuleSpecifiers(source) {
-  const specifiers = new Set();
-  const patterns = [
-    /\bimport\s+(?:[^"'()]*?\s+from\s+)?["'](\.[^"']+)["']/g,
-    /\bexport\s+[^"']*?\s+from\s+["'](\.[^"']+)["']/g,
-    /\bimport\s*\(\s*["'](\.[^"']+)["']\s*\)/g,
-  ];
-  for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) specifiers.add(match[1]);
+function sanitizeStagedManagerPackageMetadata(managerRoot) {
+  const packagePath = join(managerRoot, 'package.json');
+  const packageJson = readJson(packagePath, 'staged manager package');
+  packageJson.private = true;
+  for (const field of STAGED_MANAGER_SOURCE_ONLY_PACKAGE_FIELDS) {
+    delete packageJson[field];
   }
-  return [...specifiers].sort();
-}
-
-function resolveLocalModule(importer, specifier, sourceRoot) {
-  const unresolved = resolve(dirname(importer), specifier);
-  const candidates = [
-    unresolved,
-    `${unresolved}.js`,
-    `${unresolved}.mjs`,
-    `${unresolved}.cjs`,
-    `${unresolved}.json`,
-    join(unresolved, 'index.js'),
-    join(unresolved, 'index.mjs'),
-  ];
-  const sourcePrefix = `${resolve(sourceRoot)}${sep}`;
-  for (const candidate of candidates) {
-    const resolvedCandidate = resolve(candidate);
-    if (!resolvedCandidate.startsWith(sourcePrefix)) {
-      fail(`runtime module import escapes its source root: ${portableRelative(sourceRoot, importer)} -> ${specifier}`);
-    }
-    if (existsSync(resolvedCandidate) && lstatSync(resolvedCandidate).isFile()) return resolvedCandidate;
-  }
-  return '';
-}
-
-function copyRuntimeModuleGraph(sourceRoot, destinationRoot, roots) {
-  const queue = [];
-  for (const rootModule of roots) {
-    const path = join(sourceRoot, rootModule);
-    if (existsSync(path)) queue.push(path);
-  }
-  const copied = new Set();
-  while (queue.length) {
-    const source = queue.shift();
-    const relativePath = portableRelative(sourceRoot, source);
-    if (copied.has(relativePath)) continue;
-    copied.add(relativePath);
-    const destination = join(destinationRoot, relativePath);
-    mkdirSync(dirname(destination), { recursive: true });
-    cpSync(source, destination);
-    if (!/\.(?:c?m?js)$/i.test(source)) continue;
-    const contents = readFileSync(source, 'utf8');
-    for (const specifier of localModuleSpecifiers(contents)) {
-      const dependency = resolveLocalModule(source, specifier, sourceRoot);
-      if (dependency) queue.push(dependency);
-    }
-  }
-  return [...copied].sort();
+  writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
 }
 
 function npmCi(cwd, productionOnly = false) {
@@ -300,16 +239,35 @@ function atomicInstall(payload, destination) {
 
 requirePath(lockPath, 'runtime lock');
 requirePath(managerSource, 'manager source');
-requirePath(brainSource, 'Brain source');
 
 const lock = readJson(lockPath, 'runtime lock');
 const lockErrors = validateRuntimeLock(lock);
 if (lockErrors.length) fail(`runtime lock is invalid:\n- ${lockErrors.join('\n- ')}`);
 
+const brainDistribution = lock.components.brain.distributionSource;
+const brainCapsuleRoot = brainDistribution?.mode === 'vendored-capsule'
+  ? resolve(root, brainDistribution.path)
+  : '';
+const brainCapsuleManifest = brainDistribution?.mode === 'vendored-capsule'
+  ? resolve(root, brainDistribution.manifest)
+  : '';
 const inspections = {
   manager: inspectComponentSource('manager', lock.components.manager, managerSource),
-  brain: inspectComponentSource('brain', lock.components.brain, brainSource),
 };
+if (brainDistribution?.mode === 'vendored-capsule') {
+  requirePath(brainCapsuleRoot, 'Brain runtime capsule');
+  requirePath(brainCapsuleManifest, 'Brain runtime capsule manifest');
+  inspections.brain = verifyRuntimeSourceCapsule({
+    root: brainCapsuleRoot,
+    manifestPath: brainCapsuleManifest,
+    component: lock.components.brain,
+    componentName: 'brain',
+    containmentRoot: root,
+  });
+} else {
+  requirePath(brainSource, 'Brain source');
+  inspections.brain = inspectComponentSource('brain', lock.components.brain, brainSource);
+}
 const sourceErrors = [...inspections.manager.errors, ...inspections.brain.errors];
 if (sourceErrors.length) fail(`runtime sources are not releasable:\n- ${sourceErrors.join('\n- ')}`);
 
@@ -332,7 +290,18 @@ const brainExport = join(scratch, 'brain-source');
 try {
   mkdirSync(payload, { recursive: true });
   exportCommit(managerSource, lock.components.manager.commit, managerExport, scratch);
-  exportCommit(brainSource, lock.components.brain.commit, brainExport, scratch);
+  if (brainDistribution?.mode === 'vendored-capsule') {
+    materializeRuntimeSourceCapsule({
+      root: brainCapsuleRoot,
+      manifestPath: brainCapsuleManifest,
+      component: lock.components.brain,
+      componentName: 'brain',
+      target: brainExport,
+      containmentRoot: root,
+    });
+  } else {
+    exportCommit(brainSource, lock.components.brain.commit, brainExport, scratch);
+  }
 
   npmCi(managerExport);
   runNpm(['run', 'build'], managerExport);
@@ -358,6 +327,17 @@ try {
     ...MANAGER_CORE_SKILL_DOCUMENTS,
   ], { required: false });
   npmCi(managerTarget, true);
+  const xmtpPruning = pruneXmtpNativeBindings(managerTarget, {
+    platform: process.platform,
+    arch: targetArch,
+  });
+  if (xmtpPruning.removed.length) {
+    console.log(
+      `Pruned ${xmtpPruning.removed.length} foreign XMTP native binding(s); retained ${
+        xmtpPruning.kept.length
+      } ${xmtpPruning.expected} binding(s)`,
+    );
+  }
 
   const brainTarget = join(payload, 'brain');
   mkdirSync(brainTarget, { recursive: true });
@@ -396,6 +376,13 @@ try {
 
   const electron = electronVersion();
   rebuildNativeManagerModule(managerTarget, electron);
+  // The staged Manager is an app-owned service payload, not an installable
+  // library or alternate CLI surface. Keep package identity, ESM mode,
+  // licensing/provenance, engines, and production dependency metadata, while
+  // removing source-package interfaces that the minimal runtime does not ship.
+  // This runs only after install and native rebuild have consumed the original
+  // package metadata.
+  sanitizeStagedManagerPackageMetadata(managerTarget);
   assertConsumerPayload(payload, 'staged unified runtime');
 
   const files = collectFileRecords(payload);

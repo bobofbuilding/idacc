@@ -210,6 +210,74 @@ function childIsAlive(child: ChildProcess): boolean {
 }
 
 /**
+ * Return only an identity published by this exact ChildProcess handle. Node
+ * leaves `pid` undefined when an asynchronous spawn fails. Calling
+ * ChildProcess.kill() on that failed handle is not safe on every supported
+ * runtime, so every cleanup path must cross this boundary first.
+ */
+export function exactSpawnedChildPid(
+  child: ChildProcess,
+  currentPid = process.pid,
+): number | null {
+  const pid = Number(child.pid);
+  return (
+    Number.isSafeInteger(pid)
+    && pid > 0
+    && pid !== currentPid
+    && childIsAlive(child)
+  ) ? pid : null;
+}
+
+/** Signal only a live child whose exact handle published a non-self PID. */
+export function killExactSpawnedChild(
+  child: ChildProcess,
+  signal: NodeJS.Signals = 'SIGKILL',
+  currentPid = process.pid,
+): boolean {
+  if (exactSpawnedChildPid(child, currentPid) === null) return false;
+  try {
+    return child.kill(signal);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Await Node's spawn/error handshake and retain a harmless error boundary for
+ * the lifetime of the handle. Consumers can add their own diagnostic listener;
+ * this boundary merely prevents a late process error from becoming an
+ * uncaught exception during listener hand-off.
+ */
+export function waitForExactChildSpawn(
+  child: ChildProcess,
+  label: string,
+  currentPid = process.pid,
+): Promise<number> {
+  child.on('error', () => {});
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => {
+      child.removeListener('spawn', onSpawn);
+      child.removeListener('error', onError);
+    };
+    const onSpawn = (): void => {
+      cleanup();
+      const pid = exactSpawnedChildPid(child, currentPid);
+      if (pid === null) {
+        reject(new Error(`${label} did not publish a valid process identity`));
+        return;
+      }
+      resolve(pid);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(new Error(`${label} failed to start: ${errorMessage(error)}`));
+    };
+    child.once('spawn', onSpawn);
+    child.once('error', onError);
+  });
+}
+
+/**
  * The Windows handshake must pause the shared runtime stream while it removes
  * its private protocol listener and puts raced application bytes back. A
  * Readable that was explicitly paused does not resume merely because its next
@@ -405,7 +473,7 @@ async function verifyAuthenticodePublisher(
     const stopWith = (error: Error) => {
       if (settled || forcedError) return;
       forcedError = error;
-      try { verifier.kill('SIGKILL'); } catch { /* verifier already stopped */ }
+      killExactSpawnedChild(verifier, 'SIGKILL');
       // Await the exact verifier's close event after TerminateProcess. If
       // Windows does not report closure promptly, destroy its pipes and
       // release the caller with the original fail-closed error.
@@ -608,7 +676,7 @@ async function launchWindowsManagedProcessTree(
   host.stdin?.on('error', () => {});
   const hostPid = Number(host.pid);
   if (!Number.isSafeInteger(hostPid) || hostPid <= 0 || hostPid === process.pid) {
-    try { host.kill('SIGKILL'); } catch { /* failed host never became owned */ }
+    killExactSpawnedChild(host, 'SIGKILL');
     throw new Error('Windows Job Host did not publish a valid process identity');
   }
   return new Promise<ManagedProcessTreeLaunch>((resolve, reject) => {
@@ -620,7 +688,7 @@ async function launchWindowsManagedProcessTree(
     let timeout: ReturnType<typeof setTimeout>;
     const stdout = host.stdout;
     if (!stdout || !host.stdin) {
-      try { host.kill('SIGKILL'); } catch { /* host is already unavailable */ }
+      killExactSpawnedChild(host, 'SIGKILL');
       reject(new Error('Windows Job Host control pipes are unavailable'));
       return;
     }
@@ -795,10 +863,12 @@ export async function spawnManagedProcessTree(
     detached: true,
   };
   const child = spawn(executable, [...args], spawnOptions);
-  const pid = Number(child.pid);
-  if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) {
-    try { child.kill('SIGKILL'); } catch { /* invalid child is not retained */ }
-    throw new Error('managed process did not publish a valid process identity');
+  let pid: number;
+  try {
+    pid = await waitForExactChildSpawn(child, 'managed process');
+  } catch (error) {
+    killExactSpawnedChild(child, 'SIGKILL');
+    throw error;
   }
   return {
     child,
@@ -839,6 +909,32 @@ function unixProcessGroupExists(
     // it. Only ESRCH proves that the retained group identity is vacant.
     return (error as NodeJS.ErrnoException)?.code !== 'ESRCH';
   }
+}
+
+/**
+ * Check the retained detached POSIX process-group identity without relying on
+ * the root process still being alive. The group ID is accepted only when it is
+ * the exact PID originally published by this ChildProcess handle.
+ */
+export function managedPosixProcessGroupIsAlive(
+  child: ChildProcess,
+  processGroupId: number,
+  currentPid = process.pid,
+  killProcess: (
+    pid: number,
+    signal: NodeJS.Signals | number,
+  ) => boolean = (pid, signal) => process.kill(pid, signal),
+): boolean {
+  const childPid = Number(child.pid);
+  if (
+    !Number.isSafeInteger(childPid)
+    || childPid <= 0
+    || childPid === currentPid
+    || processGroupId !== childPid
+  ) {
+    return false;
+  }
+  return unixProcessGroupExists(processGroupId, killProcess);
 }
 
 async function waitForUnixProcessTreeExit(

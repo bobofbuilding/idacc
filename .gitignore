@@ -11,6 +11,9 @@ release/
 release/*
 !release/runtime-lock.json
 !release/legacy-release-cutover.json
+!release/REVIEW-NOTICE.md
+!release/runtime-sources/
+!release/runtime-sources/**
 /idctl-desktop/release/
 dist-tauri/
 idctl-desktop/resources/idacc-runtime/

@@ -12,6 +12,7 @@ import {
   readSync,
   statSync,
 } from 'node:fs';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 
 export interface JsonResponse {
@@ -34,6 +35,35 @@ export interface UnifiedRuntimeContractSelftestResult {
   localAgentStop: boolean;
 }
 
+export interface ManagedLocalWorkerExpectation {
+  id: string;
+  name: string;
+  port: number;
+  pid: number;
+}
+
+export type InvalidManagerAdminProbe = 'anonymous' | 'wrong-bearer';
+
+const INTENTIONALLY_INVALID_ADMIN_BEARER =
+  'Bearer idacc-selftest-invalid-not-a-32-byte-base64url-token';
+
+function isJsonRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function secretSafeResponseShape(response: JsonResponse): {
+  httpStatus: number;
+  bodyIsObject: boolean;
+  bodyFieldCount: number;
+} {
+  const bodyIsObject = isJsonRecord(response.body);
+  return {
+    httpStatus: response.status,
+    bodyIsObject,
+    bodyFieldCount: bodyIsObject ? Object.keys(response.body).length : 0,
+  };
+}
+
 async function requestJson(
   managerUrl: string,
   adminToken: string,
@@ -44,6 +74,7 @@ async function requestJson(
     expected: number[];
     timeoutMs?: number;
     team?: string;
+    secretSafeError?: boolean;
   },
 ): Promise<JsonResponse> {
   const response = await fetch(new URL(path, managerUrl), {
@@ -70,12 +101,414 @@ async function requestJson(
     throw new Error(`runtime contract response was not JSON for ${path}`);
   }
   if (!options.expected.includes(response.status)) {
+    const diagnostic = options.secretSafeError
+      ? JSON.stringify(secretSafeResponseShape({ status: response.status, body }))
+      : JSON.stringify(body).slice(0, 800);
     throw new Error(
       `runtime contract request ${options.method ?? 'GET'} ${path} returned HTTP ${response.status}: `
-      + JSON.stringify(body).slice(0, 800),
+      + diagnostic,
     );
   }
   return { status: response.status, body };
+}
+
+/**
+ * Probe only the managed worker's deliberately public liveness surface. This
+ * helper has no credential parameter so the Manager's static admin bearer can
+ * never be sent to a worker accidentally.
+ */
+export async function requestManagedWorkerAnonymousHealth(
+  workerUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<JsonResponse> {
+  const response = await fetchImpl(new URL('/health', workerUrl), {
+    redirect: 'error',
+    signal: AbortSignal.timeout(5_000),
+    headers: { accept: 'application/json' },
+  });
+  const text = await response.text();
+  if (Buffer.byteLength(text, 'utf8') > 16 * 1024) {
+    throw new Error('packaged local worker anonymous health exceeded 16 KiB');
+  }
+  const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error('packaged local worker anonymous health was not JSON');
+  }
+  let parsed: unknown;
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error('packaged local worker anonymous health was not valid JSON');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('packaged local worker anonymous health was not a JSON object');
+  }
+  const body = parsed as Record<string, any>;
+  return { status: response.status, body };
+}
+
+export function managedWorkerAnonymousHealthIsMinimal(
+  response: JsonResponse,
+): boolean {
+  if (
+    !response.body
+    || typeof response.body !== 'object'
+    || Array.isArray(response.body)
+  ) {
+    return false;
+  }
+  const keys = Object.keys(response.body);
+  return response.status === 200
+    && keys.length === 1
+    && keys[0] === 'status'
+    && response.body.status === 'ok';
+}
+
+export function managedWorkerAnonymousHealthFailureSummary(
+  response: JsonResponse,
+): Record<string, unknown> {
+  return {
+    ...secretSafeResponseShape(response),
+    reportsOk: isJsonRecord(response.body) && response.body.status === 'ok',
+  };
+}
+
+/**
+ * Exercise the managed Manager boundary without ever accepting the real admin
+ * credential. The fixed wrong bearer cannot equal IDACC's 32-byte base64url
+ * supervisor credential and is safe to expose in a test fixture.
+ */
+export async function requestManagerEndpointWithInvalidAdmin(
+  managerUrl: string,
+  path: string,
+  probe: InvalidManagerAdminProbe,
+  fetchImpl: typeof fetch = fetch,
+): Promise<JsonResponse> {
+  const response = await fetchImpl(new URL(path, managerUrl), {
+    redirect: 'error',
+    signal: AbortSignal.timeout(5_000),
+    headers: {
+      accept: 'application/json',
+      ...(probe === 'wrong-bearer'
+        ? {
+            authorization: INTENTIONALLY_INVALID_ADMIN_BEARER,
+            'x-id-admin': '1',
+            'x-id-team': 'default',
+          }
+        : {}),
+    },
+  });
+  const text = await response.text();
+  if (Buffer.byteLength(text, 'utf8') > 16 * 1024) {
+    throw new Error('packaged Manager authorization response exceeded 16 KiB');
+  }
+  const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error('packaged Manager authorization response was not JSON');
+  }
+  let parsed: unknown;
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error('packaged Manager authorization response was not valid JSON');
+  }
+  if (!isJsonRecord(parsed)) {
+    throw new Error('packaged Manager authorization response was not a JSON object');
+  }
+  return { status: response.status, body: parsed };
+}
+
+export function managerEndpointRejectsInvalidAdmin(
+  response: JsonResponse,
+): boolean {
+  return response.status === 401
+    && isJsonRecord(response.body)
+    && Object.keys(response.body).length === 1
+    && response.body.error === 'authentication_required';
+}
+
+export function managerAuthorizationFailureSummary(
+  response: JsonResponse,
+): Record<string, unknown> {
+  return {
+    ...secretSafeResponseShape(response),
+    reportsAuthenticationRequired: (
+      isJsonRecord(response.body)
+      && response.body.error === 'authentication_required'
+    ),
+  };
+}
+
+async function requireManagerEndpointAuthorization(
+  managerUrl: string,
+  path: string,
+  label: string,
+): Promise<void> {
+  for (const probe of ['anonymous', 'wrong-bearer'] as const) {
+    const response = await requestManagerEndpointWithInvalidAdmin(
+      managerUrl,
+      path,
+      probe,
+    );
+    if (!managerEndpointRejectsInvalidAdmin(response)) {
+      throw new Error(
+        `packaged Manager ${label} did not reject ${probe} access: `
+        + JSON.stringify(managerAuthorizationFailureSummary(response)),
+      );
+    }
+  }
+}
+
+/**
+ * Manager performs its status probe with the target worker's current
+ * generation-bound credential. Pair that proof with the admin-authenticated
+ * durable row before and after the probe so a concurrent replacement cannot
+ * pair one generation's persisted identity with another generation's liveness.
+ */
+export function managedWorkerLifecycleAttestationMatches(
+  detailBeforeResponse: JsonResponse,
+  statusResponse: JsonResponse,
+  detailAfterResponse: JsonResponse,
+  expected: ManagedLocalWorkerExpectation,
+): boolean {
+  if (
+    detailBeforeResponse.status !== 200
+    || statusResponse.status !== 200
+    || detailAfterResponse.status !== 200
+  ) {
+    return false;
+  }
+  const detailBefore = detailBeforeResponse.body;
+  const detailAfter = detailAfterResponse.body;
+  const statusRows = isJsonRecord(statusResponse.body)
+    && Array.isArray(statusResponse.body.agents)
+    ? statusResponse.body.agents as Array<Record<string, any>>
+    : [];
+  const matchingStatusRows = statusRows.filter((candidate) => (
+    isJsonRecord(candidate) && candidate.id === expected.id
+  ));
+  if (matchingStatusRows.length !== 1) return false;
+  const status = matchingStatusRows[0];
+
+  const matchesDurableIdentity = (candidate: Record<string, any>): boolean => (
+    isJsonRecord(candidate)
+    && candidate.id === expected.id
+    && candidate.name === expected.name
+    && candidate.alias === expected.name
+    && candidate.status === 'running'
+    && candidate.deploymentShape === 'local-process'
+    && candidate.port === expected.port
+    && candidate.pid === expected.pid
+    && candidate.processOwner === 'manager-child'
+    && Number.isInteger(candidate.processParentPid)
+    && candidate.processParentPid > 0
+    && typeof candidate.metadata?.processGeneration === 'string'
+    && candidate.metadata.processGeneration.trim().length > 0
+  );
+  return matchesDurableIdentity(detailBefore)
+    && matchesDurableIdentity(status)
+    && matchesDurableIdentity(detailAfter)
+    && detailBefore.metadata.processGeneration === status.metadata.processGeneration
+    && status.metadata.processGeneration === detailAfter.metadata.processGeneration
+    && status.isResponding === true;
+}
+
+export function managedWorkerAttestationSummary(
+  detailBeforeResponse: JsonResponse,
+  statusResponse: JsonResponse,
+  detailAfterResponse: JsonResponse,
+  expected: ManagedLocalWorkerExpectation,
+): Record<string, unknown> {
+  const statusRows = isJsonRecord(statusResponse.body)
+    && Array.isArray(statusResponse.body.agents)
+    ? statusResponse.body.agents as Array<Record<string, any>>
+    : [];
+  const summarize = (candidate: Record<string, any> | undefined) => isJsonRecord(candidate)
+    ? {
+        present: true,
+        idMatches: candidate.id === expected.id,
+        nameMatches: candidate.name === expected.name,
+        aliasMatches: candidate.alias === expected.name,
+        running: candidate.status === 'running',
+        localProcess: candidate.deploymentShape === 'local-process',
+        portMatches: candidate.port === expected.port,
+        pidMatches: candidate.pid === expected.pid,
+        managerChild: candidate.processOwner === 'manager-child',
+        processParentPidPresent: (
+          Number.isInteger(candidate.processParentPid)
+          && candidate.processParentPid > 0
+        ),
+        processGenerationPresent: (
+          typeof candidate.metadata?.processGeneration === 'string'
+          && candidate.metadata.processGeneration.trim().length > 0
+        ),
+        ...(candidate.isResponding !== undefined
+          ? { isResponding: candidate.isResponding === true }
+          : {}),
+      }
+    : { present: false };
+  const matchingStatuses = statusRows.filter((candidate) => (
+    isJsonRecord(candidate) && candidate.id === expected.id
+  ));
+  const detailBeforeGeneration = isJsonRecord(detailBeforeResponse.body)
+    ? detailBeforeResponse.body.metadata?.processGeneration
+    : undefined;
+  const statusGeneration = matchingStatuses.length === 1
+    ? matchingStatuses[0].metadata?.processGeneration
+    : undefined;
+  const detailAfterGeneration = isJsonRecord(detailAfterResponse.body)
+    ? detailAfterResponse.body.metadata?.processGeneration
+    : undefined;
+  return {
+    detailBeforeHttpStatus: detailBeforeResponse.status,
+    statusHttpStatus: statusResponse.status,
+    detailAfterHttpStatus: detailAfterResponse.status,
+    matchingStatusRows: matchingStatuses.length,
+    detailBefore: summarize(detailBeforeResponse.body),
+    status: summarize(matchingStatuses.length === 1 ? matchingStatuses[0] : undefined),
+    detailAfter: summarize(detailAfterResponse.body),
+    sameGeneration: (
+      typeof detailBeforeGeneration === 'string'
+      && detailBeforeGeneration.trim().length > 0
+      && detailBeforeGeneration === statusGeneration
+      && statusGeneration === detailAfterGeneration
+    ),
+  };
+}
+
+export function managedWorkerStopResponseIsExplicit(
+  response: JsonResponse,
+  expected: ManagedLocalWorkerExpectation,
+): boolean {
+  if (response.status !== 200 || response.body.ok !== true) return false;
+  const result = response.body.result;
+  if (
+    !isJsonRecord(result)
+    || result.action !== 'stopped'
+    || result.name !== expected.name
+    || typeof result.killed !== 'boolean'
+    || !Array.isArray(result.pids)
+    || !Number.isInteger(result.queriesCancelled)
+    || result.queriesCancelled < 0
+  ) {
+    return false;
+  }
+  const pids = result.pids;
+  if (
+    pids.some((pid: unknown) => !Number.isInteger(pid) || Number(pid) <= 0)
+    || new Set(pids).size !== pids.length
+  ) {
+    return false;
+  }
+  return result.killed === true
+    ? pids.length === 1 && pids[0] === expected.pid
+    : pids.length === 0;
+}
+
+const STOPPED_WORKER_FORBIDDEN_METADATA = [
+  'pid',
+  'processOwner',
+  'processParentPid',
+  'processInspectedAt',
+  'processGeneration',
+  'processRuntime',
+  'processRuntimeLane',
+  'managerOwnedLaunchIntent',
+  'managerRestartRequested',
+];
+
+export function managedWorkerStoppedDetailMatches(
+  response: JsonResponse,
+  expected: ManagedLocalWorkerExpectation,
+): boolean {
+  if (response.status !== 200 || !isJsonRecord(response.body)) return false;
+  const detail = response.body;
+  const metadata = isJsonRecord(detail.metadata) ? detail.metadata : null;
+  if (!metadata) return false;
+  return detail.id === expected.id
+    && detail.name === expected.name
+    && detail.alias === expected.name
+    && detail.status === 'stopped'
+    && detail.deploymentShape === 'local-process'
+    && detail.port === expected.port
+    && detail.pid === null
+    && detail.processOwner === null
+    && detail.processParentPid === null
+    && STOPPED_WORKER_FORBIDDEN_METADATA.every(
+      (key) => !Object.hasOwn(metadata, key),
+    );
+}
+
+export function managedWorkerStoppedDetailSummary(
+  response: JsonResponse,
+  expected: ManagedLocalWorkerExpectation,
+): Record<string, unknown> {
+  const detail = isJsonRecord(response.body) ? response.body : {};
+  const metadata = isJsonRecord(detail.metadata) ? detail.metadata : {};
+  return {
+    httpStatus: response.status,
+    idMatches: detail.id === expected.id,
+    nameMatches: detail.name === expected.name,
+    aliasMatches: detail.alias === expected.name,
+    stopped: detail.status === 'stopped',
+    localProcess: detail.deploymentShape === 'local-process',
+    portMatches: detail.port === expected.port,
+    pidCleared: detail.pid === null,
+    processOwnerCleared: detail.processOwner === null,
+    processParentPidCleared: detail.processParentPid === null,
+    processMetadataCleared: STOPPED_WORKER_FORBIDDEN_METADATA.every(
+      (key) => !Object.hasOwn(metadata, key),
+    ),
+  };
+}
+
+function localProcessIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+async function managedWorkerEndpointResponds(workerUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(new URL('/health', workerUrl), {
+      redirect: 'error',
+      signal: AbortSignal.timeout(750),
+      headers: { accept: 'application/json' },
+    });
+    await response.body?.cancel();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function loopbackPortIsBindable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    let settled = false;
+    const timeout = setTimeout(() => finish(false), 1_000);
+    timeout.unref();
+
+    const finish = (available: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (server.listening) {
+        server.close(() => resolve(available));
+        return;
+      }
+      try { server.close(); } catch { /* not listening */ }
+      resolve(available);
+    };
+
+    server.once('error', () => finish(false));
+    server.listen({ host: '127.0.0.1', port, exclusive: true }, () => {
+      finish(true);
+    });
+  });
 }
 
 function delay(ms: number): Promise<void> {
@@ -253,20 +686,64 @@ export async function runUnifiedRuntimeContractSelftest(
   if (!localAgentSpawn) {
     throw new Error(`packaged Manager did not start a real local worker: ${JSON.stringify(localSpawn.body)}`);
   }
-  const localHealthResponse = await fetch(`http://127.0.0.1:${localAgentPort}/health`, {
-    redirect: 'error',
-    signal: AbortSignal.timeout(5_000),
-    headers: { accept: 'application/json' },
+  const localHealthResponse = await requestManagedWorkerAnonymousHealth(
+    `http://127.0.0.1:${localAgentPort}`,
+  );
+  if (!managedWorkerAnonymousHealthIsMinimal(localHealthResponse)) {
+    throw new Error(
+      'packaged local worker anonymous health was not minimal: '
+      + JSON.stringify(managedWorkerAnonymousHealthFailureSummary(localHealthResponse)),
+    );
+  }
+  const localAgentDetailPath = `/agents/${encodeURIComponent(localAgentId)}`;
+  const localAgentStatusPath = '/agents/status?include_news=none';
+  await requireManagerEndpointAuthorization(
+    managerUrl,
+    localAgentDetailPath,
+    'worker detail endpoint',
+  );
+  await requireManagerEndpointAuthorization(
+    managerUrl,
+    localAgentStatusPath,
+    'worker status endpoint',
+  );
+  const localAgentDetailBefore = await requestJson(
+    managerUrl,
+    adminToken,
+    localAgentDetailPath,
+    { expected: [200], secretSafeError: true },
+  );
+  const localAgentStatuses = await requestJson(managerUrl, adminToken, localAgentStatusPath, {
+    expected: [200],
+    secretSafeError: true,
   });
-  const localHealth = await localHealthResponse.json() as Record<string, unknown>;
-  if (
-    !localHealthResponse.ok
-    || localHealth.status !== 'ok'
-    || localHealth.agent !== localAgentName
-    || localHealth.agentId !== localAgentId
-    || Number(localHealth.pid) !== localAgentPid
-  ) {
-    throw new Error(`packaged local worker health identity did not match: ${JSON.stringify(localHealth)}`);
+  const localAgentDetailAfter = await requestJson(
+    managerUrl,
+    adminToken,
+    localAgentDetailPath,
+    { expected: [200], secretSafeError: true },
+  );
+  const expectedManagedWorker = {
+    id: localAgentId,
+    name: localAgentName,
+    port: localAgentPort,
+    pid: localAgentPid,
+  };
+  if (!managedWorkerLifecycleAttestationMatches(
+    localAgentDetailBefore,
+    localAgentStatuses,
+    localAgentDetailAfter,
+    expectedManagedWorker,
+  )) {
+    throw new Error(
+      'packaged local worker Manager attestation did not match: '
+      + JSON.stringify(managedWorkerAttestationSummary(
+        localAgentDetailBefore,
+        localAgentStatuses,
+        localAgentDetailAfter,
+        expectedManagedWorker,
+      )),
+    );
   }
   const dataDir = process.env.IDACC_DATA_DIR?.trim() || '';
   const localLogPath = join(dataDir, 'logs', 'agents', `agent-${localAgentId.toLowerCase()}.log`);
@@ -279,12 +756,61 @@ export async function runUnifiedRuntimeContractSelftest(
     expected: [200],
     body: { command: `/agent ${localAgentName} stop` },
   });
-  const localAgentStop = localStop.body.ok === true
-    && localStop.body.result?.action === 'stopped'
-    && Array.isArray(localStop.body.result?.pids)
-    && localStop.body.result.pids.includes(localAgentPid);
+  const explicitStopAccepted = managedWorkerStopResponseIsExplicit(
+    localStop,
+    expectedManagedWorker,
+  );
+  let stoppedDetail: JsonResponse = { status: 0, body: {} };
+  let originalProcessAlive = true;
+  let workerEndpointResponding = true;
+  let workerPortReleased = false;
+  const stopDeadline = Date.now() + 8_000;
+  do {
+    stoppedDetail = await requestJson(
+      managerUrl,
+      adminToken,
+      localAgentDetailPath,
+      { expected: [200], secretSafeError: true },
+    );
+    originalProcessAlive = localProcessIsAlive(localAgentPid);
+    workerEndpointResponding = await managedWorkerEndpointResponds(
+      `http://127.0.0.1:${localAgentPort}`,
+    );
+    workerPortReleased = await loopbackPortIsBindable(localAgentPort);
+    if (
+      managedWorkerStoppedDetailMatches(stoppedDetail, expectedManagedWorker)
+      && !originalProcessAlive
+      && !workerEndpointResponding
+      && workerPortReleased
+    ) {
+      break;
+    }
+    await delay(150);
+  } while (Date.now() < stopDeadline);
+  const localAgentStop = explicitStopAccepted
+    && managedWorkerStoppedDetailMatches(stoppedDetail, expectedManagedWorker)
+    && !originalProcessAlive
+    && !workerEndpointResponding
+    && workerPortReleased;
   if (!localAgentStop) {
-    throw new Error(`packaged Manager did not stop its real local worker: ${JSON.stringify(localStop.body)}`);
+    throw new Error(
+      'packaged Manager did not converge its real local worker to a stopped state: '
+      + JSON.stringify({
+        explicitStopAccepted,
+        reportedKilled: localStop.body.result?.killed === true,
+        reportedExpectedPid: (
+          Array.isArray(localStop.body.result?.pids)
+          && localStop.body.result.pids.includes(localAgentPid)
+        ),
+        originalProcessAlive,
+        workerEndpointResponding,
+        workerPortReleased,
+        stoppedDetail: managedWorkerStoppedDetailSummary(
+          stoppedDetail,
+          expectedManagedWorker,
+        ),
+      }),
+    );
   }
 
   const agentId = `idacc_contract_${process.pid}`;

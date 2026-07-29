@@ -35,7 +35,7 @@ let unexpectedPublishedTag = '';
 let unexpectedPublishedPrerelease = false;
 let missingPublishedTag = '';
 let changedIdentityTag = '';
-let latestStableTag = 'v0.1.684';
+let latestStableTag = 'v0.1.619';
 let canonicalTagApi = null;
 let inventoryPaddingCount = 0;
 let malformedInventoryPage = 0;
@@ -254,8 +254,8 @@ try {
   const allowed = await run(['--json']);
   assert.equal(allowed.status, 0, `${allowed.stdout}\n${allowed.stderr}`);
   const state = JSON.parse(allowed.stdout);
-  assert.equal(state.latestPublishedTag, 'v0.1.684');
-  assert.equal(state.changelogBaselineTag, 'v0.1.684');
+  assert.equal(state.latestPublishedTag, 'v0.1.619');
+  assert.equal(state.changelogBaselineTag, 'v0.1.619');
   assert.equal(state.firstCanonicalVersionMustExceed, 'v0.1.684');
   assert.deepEqual(state.cutover, {
     active: true,

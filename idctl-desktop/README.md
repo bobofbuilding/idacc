@@ -24,17 +24,23 @@ or Brain.
 
 ## Distributable builds
 
-Release packaging requires clean source checkouts matching
-`../release/runtime-lock.json`. Stage those exact sources first:
+Release packaging requires a clean Manager source checkout matching
+`../release/runtime-lock.json`. The exact Brain runtime ships in the repository
+as a verified, consumer-safe capsule, so no Brain checkout or private
+runtime-source credential is required:
 
 ```bash
 IDACC_MANAGER_SOURCE="$PWD/.runtime-sources/manager" \
-IDACC_BRAIN_SOURCE="$PWD/.runtime-sources/brain" \
 npm run stage:runtimes --prefix idctl-desktop
 
 npm run verify:runtimes --prefix idctl-desktop
 npm run build:release --prefix idctl-desktop
 ```
+
+Publishers with access to the private Brain repository can additionally pass
+`--brain-source` to `scripts/validate-runtime-lock.mjs` to audit the capsule
+against its pinned upstream revision. That checkout is not needed to build or
+review the application.
 
 Native packages must be built on their target operating system:
 

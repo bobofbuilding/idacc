@@ -29,6 +29,14 @@ import { copyFilePrivateSync } from './privateFileCopy.ts';
 
 export type UnifiedServiceName = 'manager' | 'brain';
 
+export interface RuntimeDistributionSource {
+  mode: 'vendored-capsule';
+  path: string;
+  manifest: string;
+  manifestSha256: string;
+  treeSha256: string;
+}
+
 export interface RuntimeComponentManifest {
   repository: string;
   commit: string;
@@ -37,6 +45,7 @@ export interface RuntimeComponentManifest {
   packageLockSha256: string;
   entrypoint: string;
   serviceId: string;
+  distributionSource?: RuntimeDistributionSource;
 }
 
 export interface RuntimeFileRecord {
@@ -404,6 +413,38 @@ export function parseRuntimeManifest(value: unknown): RuntimeManifest {
     const packageLockSha256 = nonEmptyString(component.packageLockSha256);
     const entrypoint = nonEmptyString(component.entrypoint);
     const serviceId = nonEmptyString(component.serviceId);
+    const distributionValue = component.distributionSource;
+    const distribution = distributionValue === undefined
+      ? undefined
+      : record(distributionValue);
+    const distributionPath = distribution ? nonEmptyString(distribution.path) : undefined;
+    const distributionManifest = distribution ? nonEmptyString(distribution.manifest) : undefined;
+    const safeRepositoryPath = (candidate: string | undefined): candidate is string => Boolean(
+      candidate
+      && !candidate.startsWith('/')
+      && !candidate.includes('\\')
+      && !candidate.includes('\0')
+      && !/^[A-Za-z]:/.test(candidate)
+      && candidate.split('/').every((part) => part && part !== '.' && part !== '..')
+    );
+    const distributionIsValid = distributionValue === undefined || Boolean(
+      distribution
+      && name === 'brain'
+      && Object.keys(distribution).every((field) => [
+        'mode',
+        'path',
+        'manifest',
+        'manifestSha256',
+        'treeSha256',
+      ].includes(field))
+      && distribution.mode === 'vendored-capsule'
+      && safeRepositoryPath(distributionPath)
+      && safeRepositoryPath(distributionManifest)
+      && distributionManifest !== distributionPath
+      && !distributionManifest?.startsWith(`${distributionPath?.replace(/\/+$/, '')}/`)
+      && HEX_64.test(nonEmptyString(distribution.manifestSha256) || '')
+      && HEX_64.test(nonEmptyString(distribution.treeSha256) || '')
+    );
     if (
       !repository
       || !commit
@@ -418,6 +459,7 @@ export function parseRuntimeManifest(value: unknown): RuntimeManifest {
       || entrypoint.split(/[\\/]+/).includes('..')
       || !serviceId
       || !/^[a-z][a-z0-9-]{2,63}$/.test(serviceId)
+      || !distributionIsValid
     ) {
       throw new Error(`runtime manifest components.${name} is invalid`);
     }
@@ -429,6 +471,15 @@ export function parseRuntimeManifest(value: unknown): RuntimeManifest {
       packageLockSha256,
       entrypoint,
       serviceId,
+      ...(distribution && distributionPath && distributionManifest ? {
+        distributionSource: {
+          mode: 'vendored-capsule',
+          path: distributionPath,
+          manifest: distributionManifest,
+          manifestSha256: nonEmptyString(distribution.manifestSha256)!,
+          treeSha256: nonEmptyString(distribution.treeSha256)!,
+        },
+      } : {}),
     };
   }
   const generatedAt = nonEmptyString(source.generatedAt);

@@ -114,6 +114,14 @@ SBOMs, and build-provenance attestations. Linux in-app replacement is available
 only for the AppImage build; Debian-package installs update through the system
 package manager or by installing the newer `.deb`.
 
+Linux review and production builds enable Electron's sandbox before bundled
+application modules load and refuse to continue when `--no-sandbox` or
+`--disable-setuid-sandbox` is present. On hosts without usable unprivileged user
+namespaces, use the Debian package: its pinned install script configures the
+Chromium sandbox helper and, when AppArmor is enabled with the supported ABI,
+its pinned AppArmor profile for that host. Release automation extracts and
+verifies both the AppImage launcher and the Debian package policy.
+
 ## Main features
 
 - live fleet health, activity, routing, and Manager chat;
@@ -143,21 +151,25 @@ npm run build --prefix idctl-desktop
 ```
 
 The normal development build can run without staged runtimes. A distributable
-build must use clean Manager and Brain checkouts matching
-`release/runtime-lock.json`:
+build requires a clean Manager checkout matching `release/runtime-lock.json`.
+The exact Brain runtime is already committed as a verified, consumer-safe
+capsule, so building does not require a Brain checkout or private
+runtime-source credential:
 
 ```bash
 node scripts/validate-runtime-lock.mjs \
-  --manager-source .runtime-sources/manager \
-  --brain-source .runtime-sources/brain
+  --manager-source .runtime-sources/manager
 
 IDACC_MANAGER_SOURCE="$PWD/.runtime-sources/manager" \
-IDACC_BRAIN_SOURCE="$PWD/.runtime-sources/brain" \
 npm run stage:runtimes --prefix idctl-desktop
 
 npm run build:release --prefix idctl-desktop
 npm run verify:runtimes --prefix idctl-desktop
 ```
+
+Publishers with private Brain access can optionally add
+`--brain-source .runtime-sources/brain` to the validation command to compare
+the capsule with its pinned upstream revision.
 
 Native packages must be built on their target operating system because the
 Manager includes a native SQLite module. The production workflow rebuilds it for

@@ -84,6 +84,12 @@ try {
     format: 'cjs',
     target: 'node22',
     logLevel: 'silent',
+    define: {
+      __IDACC_REVIEW_BUILD__: 'false',
+      __IDACC_UPDATE_CHANNEL_POLICY__: JSON.stringify(
+        'idacc-production-updater-enabled:v1',
+      ),
+    },
     plugins: [{
       name: 'updater-runtime-mocks',
       setup(esbuild) {

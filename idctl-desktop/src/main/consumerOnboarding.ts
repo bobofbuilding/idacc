@@ -93,6 +93,8 @@ export interface ConfigureOnboardingProviderInput {
 }
 
 let statusGeneration = 0;
+let statusRequestSequence = 0;
+let latestStatusRequestSequence = 0;
 let cachedStatus: { at: number; generation: number; value: ConsumerOnboardingStatus } | null = null;
 let statusInflight: { generation: number; promise: Promise<ConsumerOnboardingStatus> } | null = null;
 let starterRunInflight: Promise<ConsumerOnboardingStatus> | null = null;
@@ -331,9 +333,17 @@ export async function consumerOnboardingStatus(options: { force?: boolean } = {}
     return cachedStatus.value;
   }
   if (!options.force && statusInflight?.generation === generation) return statusInflight.promise;
+  if (options.force) cachedStatus = null;
+  const requestSequence = ++statusRequestSequence;
+  latestStatusRequestSequence = requestSequence;
   const promise = buildStatus(Boolean(options.force))
     .then((value) => {
-      if (statusGeneration === generation) cachedStatus = { at: Date.now(), generation, value };
+      if (
+        statusGeneration === generation
+        && latestStatusRequestSequence === requestSequence
+      ) {
+        cachedStatus = { at: Date.now(), generation, value };
+      }
       return value;
     })
     .finally(() => {

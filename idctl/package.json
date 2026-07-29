@@ -1,6 +1,6 @@
 {
   "name": "idctl",
-  "version": "0.1.684",
+  "version": "0.1.685",
   "description": "Advanced terminal interface for the unified IDACC Manager and private agent fleet.",
   "type": "module",
   "private": true,
@@ -28,18 +28,18 @@
     "npm": "10.9.x"
   },
   "dependencies": {
-    "ink": "^5.1.0",
+    "ink": "^7.1.1",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
-    "react": "^18.3.1",
+    "react": "^19.2.8",
     "react-devtools-core": "file:build/react-devtools-core-stub"
   },
   "devDependencies": {
-    "@types/node": "^22.19.21",
-    "@types/react": "^18.3.12",
+    "@types/node": "^26.1.1",
+    "@types/react": "^19.2.17",
     "esbuild": "^0.28.1",
     "ink-testing-library": "^4.0.0",
-    "tsx": "^4.19.2",
+    "tsx": "^4.23.1",
     "typescript": "^5.6.3"
   }
 }

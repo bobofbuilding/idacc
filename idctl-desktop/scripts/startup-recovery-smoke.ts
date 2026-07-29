@@ -775,8 +775,17 @@ try {
   );
   assert.match(
     exitCallbackSource,
+    /recordBackgroundRootExit\(row\)/,
+    'the background exit callback must delegate to the revalidating exit logger',
+  );
+  const exitLoggerSource = systemSource.slice(
+    systemSource.indexOf('function recordBackgroundRootExit('),
+    systemSource.indexOf('function runBackgroundOperation<'),
+  );
+  assert.match(
+    exitLoggerSource,
     /appendPrivateAppTextFile\(/,
-    'the background exit callback must revalidate before its later append',
+    'the delegated background exit logger must revalidate before its later append',
   );
 
   const appProfileSource = readFileSync(

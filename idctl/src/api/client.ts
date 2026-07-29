@@ -554,9 +554,10 @@ export class ManagerClient {
     } catch (err) {
       if (err instanceof ManagerError && err.status === 404) {
         throw new ManagerError(
-          `"${feature}" isn't available on the id-agents manager at ${this.cfg.managerUrl}. ` +
-          `The endpoint returned 404 — this control-center feature needs a manager that ` +
-          `includes it (a stock/older id-agents won't). Update the manager you're pointed at.`,
+          `"${feature}" isn't available from the bundled service at ${this.cfg.managerUrl}. ` +
+          `The endpoint returned 404, so this control-center feature needs a newer unified ` +
+          `runtime. Update or repair the unified IDACC application from Settings; Manager ` +
+          `and Brain are updated with it.`,
           404,
         );
       }
@@ -990,6 +991,32 @@ export class ManagerClient {
   ): Promise<{ runtime?: string; executionRuntime?: string; needsRebuild?: boolean; message?: string }> {
     return this.requireRoute('Switch agent provider runtime', () =>
       this.post(`/agents/${encodeURIComponent(agentId)}/runtime`, { runtime, provider }, signal));
+  }
+
+  /**
+   * Rebind an encrypted-settings provider credential after the managed
+   * Manager restarts, and resume only an agent carrying the durable
+   * managerRestartRequested marker. The credential is a privileged,
+   * process-local handoff and is never returned by the Manager.
+   */
+  async rebindAndResumeAgentProviderRuntime(
+    agentId: string,
+    runtime: string,
+    provider: { name: string; kind?: string; baseUrl: string; apiKey?: string },
+    signal?: AbortSignal,
+  ): Promise<{
+    runtime?: string;
+    executionRuntime?: string;
+    status?: string;
+    resumed?: boolean;
+    message?: string;
+  }> {
+    return this.requireRoute('Restore provider runtime after Manager restart', () =>
+      this.post(`/agents/${encodeURIComponent(agentId)}/runtime`, {
+        runtime,
+        provider,
+        resumeAfterManagerRestart: true,
+      }, signal));
   }
 
   /**

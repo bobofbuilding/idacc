@@ -1,0 +1,710 @@
+name: Unsigned native review bundle
+run-name: Unsigned IDACC review bundle from ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - agent/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: unsigned-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Pin the review source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      candidate: ${{ steps.source.outputs.candidate }}
+      commit: ${{ steps.source.outputs.commit }}
+      review_version: ${{ steps.source.outputs.review_version }}
+      source_epoch: ${{ steps.source.outputs.source_epoch }}
+      version: ${{ steps.source.outputs.version }}
+
+    steps:
+      - name: Require the repository owner and an isolated review branch
+        shell: bash
+        run: |
+          if [ "$GITHUB_ACTOR" != "$GITHUB_REPOSITORY_OWNER" ]; then
+            echo "::error::Only the repository owner may start an unsigned review build." >&2
+            exit 1
+          fi
+          if [[ ! "$GITHUB_REF" =~ ^refs/heads/agent/.+ ]]; then
+            echo "::error::Unsigned review builds may run only from an agent/** branch." >&2
+            exit 1
+          fi
+
+      - name: Publish a monitorable review-run pointer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            --method POST \
+            "/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            --raw-field state=pending \
+            --raw-field context=idacc/unsigned-review-run \
+            --raw-field description="Unsigned multi-OS review build is running" \
+            --raw-field target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Check out the exact review source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            idctl/package-lock.json
+            idctl-desktop/package-lock.json
+
+      - name: Bind every native build to this exact commit
+        id: source
+        shell: bash
+        run: |
+          COMMIT="$(git rev-parse HEAD)"
+          test "$COMMIT" = "$GITHUB_SHA"
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          VERSION="$(node -p "require('./idctl-desktop/package.json').version")"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$GITHUB_RUN_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          REVIEW_VERSION="${VERSION}-review.${GITHUB_RUN_NUMBER}"
+          SOURCE_EPOCH="$(git show -s --format=%ct "$COMMIT")"
+          [[ "$SOURCE_EPOCH" =~ ^[1-9][0-9]*$ ]]
+          printf 'candidate=v%s-%s\n' "$REVIEW_VERSION" "${COMMIT:0:12}" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "$COMMIT" >> "$GITHUB_OUTPUT"
+          printf 'review_version=%s\n' "$REVIEW_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'source_epoch=%s\n' "$SOURCE_EPOCH" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Install exact application dependencies
+        shell: bash
+        run: |
+          npm ci --prefix idctl
+          npm ci --prefix idctl-desktop
+
+      - name: Verify review-build and unified-release policy
+        shell: bash
+        run: |
+          npm run test:review-build-workflow --prefix idctl-desktop
+          npm run test:appimage-artifact --prefix idctl-desktop
+          npm run test:deb-artifact --prefix idctl-desktop
+          npm run test:runtime-source-capsule --prefix idctl-desktop
+          npm run test:release-platform-config --prefix idctl-desktop
+          npm run test:release-preflight --prefix idctl-desktop
+          npm run test:release-payload --prefix idctl-desktop
+          npm run test:release-provenance --prefix idctl-desktop
+          npm run test:unified-stack-policy --prefix idctl-desktop
+          npm run test:unified-runtime-contract --prefix idctl-desktop
+          npm run test:renderer-store --prefix idctl-desktop
+          npm run typecheck --prefix idctl-desktop
+
+      - name: Gate unified consumer state, onboarding, and update authority
+        shell: bash
+        run: |
+          npm run test:credential-isolation --prefix idctl-desktop
+          npm run test:secure-settings-vault --prefix idctl-desktop
+          npm run test:profile-migrations --prefix idctl-desktop
+          npm run test:startup-recovery --prefix idctl-desktop
+          npm run test:runtime-profile-isolation --prefix idctl-desktop
+          npm run test:context-budget-retention --prefix idctl-desktop
+          npm run test:brain-plans-profile --prefix idctl-desktop
+          npm run test:goals-plan-separation --prefix idctl-desktop
+          npm run test:consumer-onboarding --prefix idctl-desktop
+          npm run test:consumer-onboarding-integration --prefix idctl-desktop
+          npm run test:selftest-result-file --prefix idctl-desktop
+          npm run test:legacy-manager-updater-retired --prefix idctl-desktop
+
+  runtime-source-tests:
+    name: Verify pinned Manager and Brain
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out the exact IDACC review commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Read exact runtime pins
+        id: runtime-lock
+        run: node scripts/validate-runtime-lock.mjs --no-sources
+
+      - name: Restrict runtime sources to the audited repositories
+        shell: bash
+        env:
+          MANAGER_REPOSITORY: ${{ steps.runtime-lock.outputs.manager_repository }}
+          BRAIN_REPOSITORY: ${{ steps.runtime-lock.outputs.brain_repository }}
+        run: |
+          test "$MANAGER_REPOSITORY" = "bobofbuilding/id-agents"
+          test "$BRAIN_REPOSITORY" = "bobofbuilding/brain"
+
+      - name: Check out the exact Manager commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.runtime-lock.outputs.manager_repository }}
+          ref: ${{ steps.runtime-lock.outputs.manager_commit }}
+          path: .runtime-sources/manager
+          fetch-depth: 1
+          token: ${{ github.token }}
+          persist-credentials: false
+
+      - name: Verify the Brain runtime capsule
+        shell: bash
+        run: >-
+          node scripts/runtime-source-capsule.mjs verify
+          --lock release/runtime-lock.json
+          --component brain
+
+      - name: Validate the exact Manager source and locked Brain capsule
+        shell: bash
+        run: >-
+          node scripts/validate-runtime-lock.mjs
+          --manager-source .runtime-sources/manager
+
+      - name: Materialize the verified Brain runtime capsule
+        shell: bash
+        run: >-
+          node scripts/runtime-source-capsule.mjs materialize
+          --lock release/runtime-lock.json
+          --component brain
+          --target .runtime-sources/brain
+
+      - name: Install exact application dependencies for cross-component policy
+        shell: bash
+        run: |
+          npm ci --prefix idctl
+          npm ci --prefix idctl-desktop
+
+      - name: Verify the unified policy against the pinned Manager
+        shell: bash
+        env:
+          IDACC_MANAGER_SOURCE: ${{ github.workspace }}/.runtime-sources/manager
+          IDACC_REQUIRE_MANAGER_POLICY_SOURCE: "1"
+        run: npm run test:unified-stack-policy --prefix idctl-desktop
+
+      - name: Verify provider routing survives restart with the pinned Manager
+        shell: bash
+        run: npm run test:provider-runtime-rehydration --prefix idctl-desktop
+
+      - name: Test the pinned Manager
+        shell: bash
+        run: |
+          npm ci --prefix .runtime-sources/manager
+          npm run ci:preflight --prefix .runtime-sources/manager
+          npm run test:local-agent-lifecycle --prefix .runtime-sources/manager
+
+      - name: Exercise the verified Brain runtime capsule
+        shell: bash
+        run: |
+          npm ci --prefix .runtime-sources/brain --omit=dev
+          find .runtime-sources/brain \
+            -path '*/node_modules' -prune -o \
+            -type f -name '*.mjs' -print0 \
+            | xargs -0 -n 1 node --check
+          BRAIN_STATE_DIR="$RUNNER_TEMP/idacc-review-brain-state" \
+            BRAIN_PORT=4219 \
+            node .runtime-sources/brain/brain.mjs \
+            > "$RUNNER_TEMP/idacc-review-brain.log" 2>&1 &
+          BRAIN_PID=$!
+          cleanup() {
+            kill "$BRAIN_PID" 2>/dev/null || true
+            wait "$BRAIN_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for ATTEMPT in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:4219/health \
+              > "$RUNNER_TEMP/idacc-review-brain-health.json"; then
+              break
+            fi
+            if ! kill -0 "$BRAIN_PID" 2>/dev/null; then
+              cat "$RUNNER_TEMP/idacc-review-brain.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent --show-error \
+            http://127.0.0.1:4219/health \
+            > "$RUNNER_TEMP/idacc-review-brain-health.json"
+
+  native-review-build:
+    name: Unsigned review package (${{ matrix.target }})
+    needs:
+      - prepare
+      - runtime-source-tests
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: darwin-arm64
+            platform: mac
+            runtime_platform: darwin
+            arch: arm64
+            target_args: --mac dmg zip
+            unsigned_builder_args: --config.mac.identity=null --config.mac.notarize=false --config.dmg.sign=false
+            release_smoke_args: ""
+            unpacked: mac-arm64/ID Agents Control Center.app
+            installer_globs: |
+              idctl-desktop/release/*.dmg
+              idctl-desktop/release/*.zip
+          - os: macos-15-intel
+            target: darwin-x64
+            platform: mac
+            runtime_platform: darwin
+            arch: x64
+            target_args: --mac dmg zip
+            unsigned_builder_args: --config.mac.identity=null --config.mac.notarize=false --config.dmg.sign=false
+            release_smoke_args: ""
+            unpacked: mac/ID Agents Control Center.app
+            installer_globs: |
+              idctl-desktop/release/*.dmg
+              idctl-desktop/release/*.zip
+          - os: windows-2025
+            target: win32-x64
+            platform: win
+            runtime_platform: win32
+            arch: x64
+            target_args: --win nsis
+            unsigned_builder_args: --config.win.signExecutable=false
+            release_smoke_args: ""
+            unpacked: win-unpacked
+            installer_globs: |
+              idctl-desktop/release/*.exe
+          - os: ubuntu-24.04
+            target: linux-x64
+            platform: linux
+            runtime_platform: linux
+            arch: x64
+            target_args: --linux AppImage deb
+            unsigned_builder_args: ""
+            release_smoke_args: --linux-github-actions-suid-sandbox
+            unpacked: linux-unpacked
+            installer_globs: |
+              idctl-desktop/release/*.AppImage
+              idctl-desktop/release/*.deb
+    env:
+      CI: "true"
+      IDACC_REVIEW_BUILD: "1"
+      IDACC_REVIEW_VERSION: ${{ needs.prepare.outputs.review_version }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      CSC_LINK: ""
+      CSC_KEY_PASSWORD: ""
+      CSC_NAME: ""
+      WIN_CSC_LINK: ""
+      WIN_CSC_KEY_PASSWORD: ""
+      WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ""
+      APPLE_API_KEY: ""
+      APPLE_API_KEY_ID: ""
+      APPLE_API_ISSUER: ""
+      APPLE_TEAM_ID: ""
+
+    steps:
+      - name: Check out the exact IDACC review commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            idctl/package-lock.json
+            idctl-desktop/package-lock.json
+
+      - name: Reconfirm the exact clean review source
+        shell: bash
+        env:
+          REVIEW_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$REVIEW_COMMIT"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Read exact runtime pins
+        id: runtime-lock
+        shell: bash
+        run: node scripts/validate-runtime-lock.mjs --no-sources
+
+      - name: Restrict runtime sources to the audited repositories
+        shell: bash
+        env:
+          MANAGER_REPOSITORY: ${{ steps.runtime-lock.outputs.manager_repository }}
+          BRAIN_REPOSITORY: ${{ steps.runtime-lock.outputs.brain_repository }}
+        run: |
+          test "$MANAGER_REPOSITORY" = "bobofbuilding/id-agents"
+          test "$BRAIN_REPOSITORY" = "bobofbuilding/brain"
+
+      - name: Check out the exact Manager commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.runtime-lock.outputs.manager_repository }}
+          ref: ${{ steps.runtime-lock.outputs.manager_commit }}
+          path: .runtime-sources/manager
+          fetch-depth: 1
+          token: ${{ github.token }}
+          persist-credentials: false
+
+      - name: Verify the Brain runtime capsule
+        shell: bash
+        run: >-
+          node scripts/runtime-source-capsule.mjs verify
+          --lock release/runtime-lock.json
+          --component brain
+
+      - name: Validate the exact Manager source and locked Brain capsule
+        shell: bash
+        run: >-
+          node scripts/validate-runtime-lock.mjs
+          --manager-source .runtime-sources/manager
+
+      - name: Materialize the verified Brain runtime capsule
+        shell: bash
+        run: >-
+          node scripts/runtime-source-capsule.mjs materialize
+          --lock release/runtime-lock.json
+          --component brain
+          --target .runtime-sources/brain
+
+      - name: Install exact application dependencies
+        shell: bash
+        run: |
+          npm ci --prefix idctl
+          npm ci --prefix idctl-desktop
+
+      - name: Install Linux clean-profile display support
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          command -v xvfb-run >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y xvfb
+          }
+
+      - name: Exercise native Windows containment helpers
+        if: matrix.platform == 'win'
+        shell: bash
+        run: |
+          npm run test:windows-native-toolchain --prefix idctl-desktop
+          npm run build --prefix idctl-desktop
+          npm run test:windows-job-host --prefix idctl-desktop
+          npm run test:windows-profile-native-build --prefix idctl-desktop
+          npm run test:profile-migrations --prefix idctl-desktop
+
+      - name: Validate unsigned native packaging policy
+        shell: bash
+        run: node idctl-desktop/scripts/release-preflight.mjs --platform ${{ matrix.platform }}
+
+      - name: Stage Manager and Brain for the native ABI
+        shell: bash
+        env:
+          IDACC_MANAGER_SOURCE: ${{ github.workspace }}/.runtime-sources/manager
+          IDACC_TARGET_ARCH: ${{ matrix.arch }}
+          SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.source_epoch }}
+        run: |
+          npm run stage:runtimes --prefix idctl-desktop
+          npm run verify:runtimes --prefix idctl-desktop
+
+      - name: Audit every shipped dependency tree
+        shell: bash
+        run: |
+          npm audit --prefix idctl-desktop --audit-level=high
+          npm audit --prefix idctl-desktop --omit=dev --audit-level=high
+          npm audit --prefix idctl --omit=dev --audit-level=high
+          npm audit --prefix idctl-desktop/resources/idacc-runtime/manager --omit=dev --audit-level=high
+          npm audit --prefix idctl-desktop/resources/idacc-runtime/brain --omit=dev --audit-level=high
+
+      - name: Build unsigned review-only native packages
+        shell: bash
+        working-directory: idctl-desktop
+        run: |
+          npm run build:release
+          npm run test:release-build-output
+          node scripts/run-review-builder.mjs \
+            --platform "${{ matrix.platform }}" \
+            --application-version "$IDACC_REVIEW_VERSION" \
+            -- \
+            ${{ matrix.target_args }} \
+            --${{ matrix.arch }} \
+            ${{ matrix.unsigned_builder_args }} \
+            --config.publish=null \
+            --config.extraMetadata.version="$IDACC_REVIEW_VERSION" \
+            --publish never
+
+      - name: Verify the Linux installer sandbox policies
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          mapfile -t APPIMAGES < <(
+            find idctl-desktop/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.AppImage' \
+              -print
+          )
+          test "${#APPIMAGES[@]}" -eq 1
+          node scripts/verify-appimage-artifact.mjs \
+            --appimage "${APPIMAGES[0]}" \
+            --expected-build review
+          mapfile -t DEBS < <(
+            find idctl-desktop/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.deb' \
+              -print
+          )
+          test "${#DEBS[@]}" -eq 1
+          node scripts/verify-deb-artifact.mjs \
+            --deb "${DEBS[0]}"
+
+      - name: Verify unified payload and clean-profile Manager/Brain startup
+        shell: bash
+        env:
+          REVIEW_SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
+          IDACC_GITHUB_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          node scripts/review-artifact-bundle.mjs verify-package \
+            --root . \
+            --unpacked "idctl-desktop/release/${{ matrix.unpacked }}" \
+            --source-version "$REVIEW_SOURCE_VERSION" \
+            --application-version "$IDACC_REVIEW_VERSION"
+          node scripts/check-release-payload.mjs "idctl-desktop/release/${{ matrix.unpacked }}"
+          node scripts/unified-stack-release-smoke.mjs \
+            "idctl-desktop/release/${{ matrix.unpacked }}" \
+            ${{ matrix.release_smoke_args }}
+
+      - name: Generate review provenance for installer packages only
+        shell: bash
+        env:
+          IDACC_REVIEW_INSTALLER_GLOBS: ${{ matrix.installer_globs }}
+        run: |
+          ARGS=()
+          while IFS= read -r GLOB; do
+            test -n "$GLOB" || continue
+            while IFS= read -r FILE; do
+              test -f "$FILE" && ARGS+=(--artifact "$FILE")
+            done < <(compgen -G "$GLOB" || true)
+          done <<< "$IDACC_REVIEW_INSTALLER_GLOBS"
+          test "${#ARGS[@]}" -gt 0
+          node scripts/generate-release-metadata.mjs \
+            "${ARGS[@]}" \
+            --output "idctl-desktop/release/metadata/${{ matrix.target }}"
+
+      - name: Stage the isolated review artifact
+        shell: bash
+        env:
+          IDACC_REVIEW_INSTALLER_GLOBS: ${{ matrix.installer_globs }}
+          REVIEW_CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+          REVIEW_COMMIT: ${{ needs.prepare.outputs.commit }}
+          REVIEW_SOURCE_EPOCH: ${{ needs.prepare.outputs.source_epoch }}
+          REVIEW_APPLICATION_VERSION: ${{ needs.prepare.outputs.review_version }}
+        run: |
+          mkdir -p \
+            review-platform/installers \
+            "review-platform/provenance/${{ matrix.target }}" \
+            review-platform/platform-records
+          COUNT=0
+          while IFS= read -r GLOB; do
+            test -n "$GLOB" || continue
+            while IFS= read -r FILE; do
+              test -f "$FILE" || continue
+              cp "$FILE" review-platform/installers/
+              COUNT=$((COUNT + 1))
+            done < <(compgen -G "$GLOB" || true)
+          done <<< "$IDACC_REVIEW_INSTALLER_GLOBS"
+          test "$COUNT" -gt 0
+          cp -R \
+            "idctl-desktop/release/metadata/${{ matrix.target }}/." \
+            "review-platform/provenance/${{ matrix.target }}/"
+          cp release/REVIEW-NOTICE.md review-platform/REVIEW-NOTICE.md
+          node scripts/review-artifact-bundle.mjs record \
+            --root . \
+            --output "review-platform/platform-records/${{ matrix.target }}.json" \
+            --installers review-platform/installers \
+            --build-mode idctl-desktop/out/build-mode.json \
+            --platform "${{ matrix.runtime_platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --candidate "$REVIEW_CANDIDATE" \
+            --commit "$REVIEW_COMMIT" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --source-date-epoch "$REVIEW_SOURCE_EPOCH" \
+            --application-version "$REVIEW_APPLICATION_VERSION"
+          if find review-platform -type f \( \
+            -name 'latest*.yml' -o \
+            -name 'latest*.yaml' -o \
+            -name 'app-update.yml' -o \
+            -name '*.blockmap' \
+          \) -print -quit | grep -q .; then
+            echo "::error::Updater descriptors and blockmaps are forbidden in review artifacts." >&2
+            exit 1
+          fi
+
+      - name: Upload the native review evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: idacc-${{ needs.prepare.outputs.candidate }}-attempt-${{ github.run_attempt }}-platform-${{ matrix.target }}-unsigned-review
+          if-no-files-found: error
+          retention-days: 30
+          path: review-platform/**
+
+  assemble-review-bundle:
+    name: Assemble all native review packages
+    needs:
+      - prepare
+      - native-review-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the exact IDACC review commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Download every native review artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: idacc-${{ needs.prepare.outputs.candidate }}-attempt-*-platform-*-unsigned-review
+          path: review-inputs
+
+      - name: Assemble one review-only cross-platform bundle
+        shell: bash
+        env:
+          REVIEW_CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+          REVIEW_COMMIT: ${{ needs.prepare.outputs.commit }}
+          REVIEW_SOURCE_VERSION: ${{ needs.prepare.outputs.version }}
+          REVIEW_APPLICATION_VERSION: ${{ needs.prepare.outputs.review_version }}
+        run: |
+          node scripts/review-artifact-bundle.mjs assemble \
+            --input review-inputs \
+            --output review-bundle \
+            --notice release/REVIEW-NOTICE.md \
+            --candidate "$REVIEW_CANDIDATE" \
+            --commit "$REVIEW_COMMIT" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-version "$REVIEW_SOURCE_VERSION" \
+            --application-version "$REVIEW_APPLICATION_VERSION" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+          (
+            cd review-bundle
+            sha256sum -c SHA256SUMS
+            for PLATFORM_SUMS in provenance/*/SHA256SUMS; do
+              test -f "$PLATFORM_SUMS"
+              (
+                cd "$(dirname "$PLATFORM_SUMS")"
+                sha256sum -c SHA256SUMS
+              )
+            done
+          )
+          mapfile -t APPIMAGES < <(find review-bundle/installers -maxdepth 1 -type f -name '*.AppImage' -print)
+          test "${#APPIMAGES[@]}" -gt 0
+          for APPIMAGE in "${APPIMAGES[@]}"; do
+            test -x "$APPIMAGE"
+          done
+          mkdir review-delivery
+          ARCHIVE="IDACC-${REVIEW_CANDIDATE}-all-native-unsigned-review.tar.gz"
+          tar -czf "review-delivery/$ARCHIVE" -C review-bundle .
+          (
+            cd review-delivery
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+            sha256sum -c "$ARCHIVE.sha256"
+          )
+
+      - name: Publish the review bundle as an Actions artifact only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: idacc-${{ needs.prepare.outputs.candidate }}-attempt-${{ github.run_attempt }}-all-native-unsigned-review
+          if-no-files-found: error
+          retention-days: 30
+          path: review-delivery/*
+
+      - name: Record review-only delivery boundaries
+        shell: bash
+        env:
+          REVIEW_CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+        run: |
+          {
+            echo "## $REVIEW_CANDIDATE"
+            echo
+            echo "One unsigned, unnotarized review bundle now contains macOS arm64, macOS Intel, Windows x64, and Linux x64 packages."
+            echo
+            echo "No signing, notarization, or GitHub Release publishing credentials were used."
+            echo
+            echo "This workflow did not create a GitHub Release, change Latest, publish updater metadata, or enable self-update."
+            echo
+            echo "No user-supplied or private runtime-source credential was used. The scoped automatic github.token read the public IDACC and pinned Manager repositories and wrote only the pending/final review status on this exact IDACC commit; Brain came from the verified vendored runtime capsule."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  report-review-status:
+    name: Report unsigned review result
+    if: ${{ always() }}
+    needs:
+      - prepare
+      - runtime-source-tests
+      - native-review-build
+      - assemble-review-bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+
+    steps:
+      - name: Publish the terminal review status
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          RUNTIME_RESULT: ${{ needs.runtime-source-tests.result }}
+          NATIVE_RESULT: ${{ needs.native-review-build.result }}
+          ASSEMBLY_RESULT: ${{ needs.assemble-review-bundle.result }}
+        run: |
+          STATE=failure
+          DESCRIPTION="Unsigned multi-OS review build failed"
+          if [ "$PREPARE_RESULT" = success ] \
+            && [ "$RUNTIME_RESULT" = success ] \
+            && [ "$NATIVE_RESULT" = success ] \
+            && [ "$ASSEMBLY_RESULT" = success ]; then
+            STATE=success
+            DESCRIPTION="Unsigned multi-OS review bundle is verified"
+          fi
+          gh api \
+            --method POST \
+            "/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            --raw-field state="$STATE" \
+            --raw-field context=idacc/unsigned-review-run \
+            --raw-field description="$DESCRIPTION" \
+            --raw-field target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

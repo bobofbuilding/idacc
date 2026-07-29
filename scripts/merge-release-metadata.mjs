@@ -12,16 +12,31 @@ import {
   sha256File,
   validateRuntimeLock,
 } from './lib/runtime-provenance.mjs';
+import { RUNTIME_SOURCE_UPSTREAM_MAPPING } from './lib/runtime-source-capsule.mjs';
 
 const args = process.argv.slice(2);
 const HEX_40 = /^[0-9a-f]{40}$/;
 const HEX_64 = /^[0-9a-f]{64}$/;
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._+()-]*$/;
-const REQUIRED_METADATA = [
+const BASE_REQUIRED_METADATA = [
   ['runtimeLock', 'runtime-lock.json'],
   ['runtimeManifest', 'runtime-manifest.json'],
   ['sbom', 'SBOM.cdx.json'],
   ['thirdPartyNotices', 'THIRD_PARTY_NOTICES.md'],
+];
+const BRAIN_RUNTIME_CAPSULE_METADATA = [
+  'brainRuntimeCapsule',
+  'brain-runtime-capsule.json',
+];
+const ROOT_CAPSULE_PROPERTIES = [
+  ['idacc:brain-distribution-mode', 'vendored-capsule'],
+  ['idacc:brain-capsule-manifest-sha256', 'manifestSha256'],
+  ['idacc:brain-capsule-tree-sha256', 'treeSha256'],
+];
+const BRAIN_CAPSULE_PROPERTIES = [
+  ['idacc:distribution-mode', 'vendored-capsule'],
+  ['idacc:capsule-manifest-sha256', 'manifestSha256'],
+  ['idacc:capsule-tree-sha256', 'treeSha256'],
 ];
 
 function option(name, fallback = '') {
@@ -72,6 +87,100 @@ function readChecksums(path) {
     entries.set(name, hash);
   }
   return entries;
+}
+
+function assertExactMetadataFields(metadata, definitions, label) {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    fail(`${label} must be an object`);
+  }
+  const expected = new Set(definitions.map(([key]) => key));
+  const actual = Object.keys(metadata);
+  const missing = [...expected].filter((key) => !actual.includes(key));
+  const extra = actual.filter((key) => !expected.has(key));
+  if (missing.length || extra.length || actual.length !== expected.size) {
+    fail(
+      `${label} must contain exactly the declared metadata fields`
+      + `${missing.length ? `; missing: ${missing.join(', ')}` : ''}`
+      + `${extra.length ? `; unexpected: ${extra.join(', ')}` : ''}`,
+    );
+  }
+}
+
+function validateCapsuleManifestIdentity(path, component, label) {
+  const manifest = readJson(path, label);
+  const expected = [
+    ['schemaVersion', 1],
+    ['component', 'brain'],
+    ['repository', component.repository],
+    ['commit', component.commit],
+    ['tree', component.tree],
+    ['version', component.version],
+    ['packageLockSha256', component.packageLockSha256],
+    ['entrypoint', component.entrypoint],
+    ['serviceId', component.serviceId],
+    ['upstreamMapping', RUNTIME_SOURCE_UPSTREAM_MAPPING],
+    ['treeSha256', component.distributionSource.treeSha256],
+  ];
+  for (const [field, value] of expected) {
+    if (manifest?.[field] !== value) {
+      fail(`${label} ${field} does not match the runtime lock`);
+    }
+  }
+}
+
+function propertyValue(component, name, label) {
+  const properties = Array.isArray(component?.properties) ? component.properties : [];
+  const matches = properties.filter((property) => property?.name === name);
+  if (matches.length > 1) fail(`${label} contains duplicate ${name} properties`);
+  return matches.length ? String(matches[0]?.value || '') : undefined;
+}
+
+function validateCapsulePropertySet(component, definitions, source, label) {
+  for (const [name, expectedKey] of definitions) {
+    const expected = expectedKey === 'vendored-capsule'
+      ? expectedKey
+      : source?.[expectedKey];
+    const actual = propertyValue(component, name, label);
+    if (source) {
+      if (actual !== expected) {
+        fail(`${label} ${name} does not match the runtime lock`);
+      }
+    } else if (actual !== undefined) {
+      fail(`${label} declares ${name} without a capsule-backed runtime lock`);
+    }
+  }
+}
+
+function validateSbomCapsuleProperties(path, runtimeLock, label) {
+  const sbom = readJson(path, label);
+  const source = runtimeLock.components.brain.distributionSource || null;
+  validateCapsulePropertySet(
+    sbom.metadata?.component,
+    ROOT_CAPSULE_PROPERTIES,
+    source,
+    `${label} application component`,
+  );
+  const brainComponents = Array.isArray(sbom.components)
+    ? sbom.components.filter((component) => (
+        Array.isArray(component?.properties)
+        && component.properties.some((property) => (
+          property?.name === 'idacc:component-source' && property?.value === 'brain'
+        ))
+        && propertyValue(component, 'idacc:commit', label)
+          === runtimeLock.components.brain.commit
+      ))
+    : [];
+  if (source && brainComponents.length !== 1) {
+    fail(`${label} must contain exactly one locked Brain runtime component`);
+  }
+  for (const component of brainComponents) {
+    validateCapsulePropertySet(
+      component,
+      BRAIN_CAPSULE_PROPERTIES,
+      source,
+      `${label} Brain runtime component`,
+    );
+  }
 }
 
 const metadataDirectories = options('--metadata').map((path) => resolve(path));
@@ -137,8 +246,54 @@ for (const directory of metadataDirectories) {
   else if (expectedComponents !== components) fail(`${target} component provenance differs from the other targets`);
 
   const checksums = readChecksums(checksumsPath);
+  const runtimeLockRecord = manifest.metadata?.runtimeLock;
+  if (
+    !runtimeLockRecord
+    || typeof runtimeLockRecord !== 'object'
+    || Array.isArray(runtimeLockRecord)
+    || runtimeLockRecord.name !== 'runtime-lock.json'
+  ) {
+    fail(`${releaseManifestPath} metadata.runtimeLock must declare runtime-lock.json`);
+  }
+  assertHash(
+    runtimeLockRecord.sha256,
+    `${releaseManifestPath} metadata.runtimeLock.sha256`,
+  );
+  const runtimeLockPath = join(directory, 'runtime-lock.json');
+  if (!existsSync(runtimeLockPath) || !lstatSync(runtimeLockPath).isFile()) {
+    fail(`${target} metadata file not found: runtime-lock.json`);
+  }
+  const runtimeLockHash = sha256File(runtimeLockPath);
+  if (
+    runtimeLockHash !== runtimeLockRecord.sha256
+    || checksums.get('runtime-lock.json') !== runtimeLockHash
+  ) {
+    fail(`${target} runtime-lock.json hash does not match its metadata and SHA256SUMS`);
+  }
+  const runtimeLock = readJson(runtimeLockPath, `${target} runtime lock`);
+  const runtimeLockErrors = validateRuntimeLock(runtimeLock);
+  if (runtimeLockErrors.length) {
+    fail(`${target} runtime lock is invalid: ${runtimeLockErrors.join('; ')}`);
+  }
+  const capsuleSource = runtimeLock.components.brain.distributionSource || null;
+  const metadataDefinitions = [
+    ...BASE_REQUIRED_METADATA,
+    ...(capsuleSource ? [BRAIN_RUNTIME_CAPSULE_METADATA] : []),
+  ];
+  assertExactMetadataFields(
+    manifest.metadata,
+    metadataDefinitions,
+    `${releaseManifestPath} metadata`,
+  );
+  if (
+    !capsuleSource
+    && existsSync(join(directory, BRAIN_RUNTIME_CAPSULE_METADATA[1]))
+  ) {
+    fail(`${target} contains undeclared ${BRAIN_RUNTIME_CAPSULE_METADATA[1]}`);
+  }
+
   const metadata = {};
-  for (const [key, expectedName] of REQUIRED_METADATA) {
+  for (const [key, expectedName] of metadataDefinitions) {
     const record = manifest.metadata?.[key];
     if (!record || typeof record !== 'object' || Array.isArray(record)) {
       fail(`${releaseManifestPath} metadata.${key} must be an object`);
@@ -156,13 +311,26 @@ for (const directory of metadataDirectories) {
     if (checksums.get(expectedName) !== actualHash) fail(`${target} SHA256SUMS mismatch: ${expectedName}`);
     metadata[key] = { name: expectedName, sha256: actualHash };
   }
+  if (capsuleSource) {
+    const capsulePath = join(directory, BRAIN_RUNTIME_CAPSULE_METADATA[1]);
+    if (metadata.brainRuntimeCapsule.sha256 !== capsuleSource.manifestSha256) {
+      fail(`${target} Brain runtime capsule manifest hash does not match the runtime lock`);
+    }
+    validateCapsuleManifestIdentity(
+      capsulePath,
+      runtimeLock.components.brain,
+      `${target} Brain runtime capsule manifest`,
+    );
+  }
+  validateSbomCapsuleProperties(
+    join(directory, metadata.sbom.name),
+    runtimeLock,
+    `${target} SBOM`,
+  );
   if (!expectedRuntimeLock) expectedRuntimeLock = metadata.runtimeLock.sha256;
   else if (expectedRuntimeLock !== metadata.runtimeLock.sha256) {
     fail(`${target} runtime lock differs from the other targets`);
   }
-  const runtimeLock = readJson(join(directory, metadata.runtimeLock.name), `${target} runtime lock`);
-  const runtimeLockErrors = validateRuntimeLock(runtimeLock);
-  if (runtimeLockErrors.length) fail(`${target} runtime lock is invalid: ${runtimeLockErrors.join('; ')}`);
   if (stableJson(runtimeLock.components) !== stableJson(manifest.components)) {
     fail(`${target} release manifest components differ from its runtime lock`);
   }
@@ -204,7 +372,7 @@ for (const directory of metadataDirectories) {
   }
   const expectedChecksumNames = new Set([
     'release-manifest.json',
-    ...REQUIRED_METADATA.map(([, name]) => name),
+    ...metadataDefinitions.map(([, name]) => name),
     ...artifacts.map((artifact) => artifact.name),
   ]);
   for (const name of checksums.keys()) {

@@ -1,12 +1,14 @@
 # Legacy Release Cutover
 
-The public GitHub release frontier was audited on 2026-07-26. Origin contains
-65 tags created by retired release paths, `v0.1.620` through `v0.1.684`.
+The public GitHub release frontier was audited on 2026-07-26. GitHub Latest and
+the changelog baseline remain `v0.1.619`; `v0.1.684` is the historical version
+floor that the first canonical signed release must exceed. Origin contains 65
+tags created by retired release paths, `v0.1.620` through `v0.1.684`.
 Sixty-three are lightweight; `v0.1.679` and `v0.1.680` are exact unsigned
 annotated tag objects. The GitHub Releases API has a mixed historical state for
 that exact set:
 
-- 62 tags have published releases, with `v0.1.684` currently GitHub Latest; and
+- 62 tags have published releases even though GitHub Latest remains `v0.1.619`; and
 - `v0.1.622`, `v0.1.624`, and `v0.1.625` have no GitHub Release.
 
 These tags and release objects are historical records, not the canonical
@@ -24,7 +26,8 @@ recorded identity and state matches.
 `scripts/check-release-publication.mjs` reads the fixed cutover record and
 compares it with origin and the GitHub Releases API.
 
-While GitHub Latest is the audited legacy cutoff `v0.1.684`, the guard:
+While GitHub Latest is the audited baseline `v0.1.619` and `v0.1.684` remains
+the highest historical version floor, the guard:
 
 1. requires all 65 recorded refs to exist on origin with their recorded object
    type, raw tag object, peeled commit, and signature state;
@@ -38,7 +41,7 @@ While GitHub Latest is the audited legacy cutoff `v0.1.684`, the guard:
 The first canonical release must therefore be greater than `v0.1.684`, use the
 signed annotated tag path, and complete the production workflow. During that
 release, the changelog range begins at the last published release,
-`v0.1.684`. The operator's
+`v0.1.619`. The operator's
 release summary remains the first changelog item, followed by unique commit
 subjects from the complete published range.
 

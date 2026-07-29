@@ -1,0 +1,14 @@
+{
+  "id": "fact-take-synthesis",
+  "version": "fact-take-synthesis.v1",
+  "purpose": "Create one durable operational take from recent Brain facts.",
+  "instructions": [
+    "Use only the supplied facts.",
+    "Return compact JSON only: {\"take\":\"...\"}.",
+    "Keep the take specific, operational, and under 45 words.",
+    "Do not add unsupported details."
+  ],
+  "output_schema": {
+    "take": "string"
+  }
+}
