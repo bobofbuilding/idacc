@@ -1252,7 +1252,9 @@ try {
   assert.match(bundle.credentials.runtimeSourceCheckout, /vendored runtime capsule/i);
   assert.deepEqual(bundle.targets, ['darwin-arm64', 'darwin-x64', 'linux-x64', 'win32-x64']);
   const assembledAppImage = join(output, 'installers', 'IDACC-x64.AppImage');
-  assert.equal(lstatSync(assembledAppImage).mode & 0o777, 0o755);
+  if (process.platform !== 'win32') {
+    assert.equal(lstatSync(assembledAppImage).mode & 0o777, 0o755);
+  }
   assert.equal(
     bundle.artifacts.find(({ name }) => name === 'IDACC-x64.AppImage')?.mode,
     '0755',

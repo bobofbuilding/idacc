@@ -393,7 +393,11 @@ function record(options) {
     if (isUpdaterSidecar(name)) fail(`updater sidecar entered review packages: ${name}`);
     if (!isInstaller(name)) fail(`unexpected file entered review packages: ${name}`);
     const appImage = name.toLowerCase().endsWith('.appimage');
-    if (appImage && (lstatSync(path).mode & 0o111) === 0) {
+    // Windows filesystems do not expose the POSIX executable bits used by
+    // AppImage. The real linux-x64 record job still enforces this before
+    // upload, while cross-platform policy smoke tests can exercise the same
+    // bundle contract on Windows.
+    if (appImage && process.platform !== 'win32' && (lstatSync(path).mode & 0o111) === 0) {
       fail(`${target} AppImage is not executable before Actions upload: ${name}`);
     }
     return {
