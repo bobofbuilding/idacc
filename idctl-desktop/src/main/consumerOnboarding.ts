@@ -209,6 +209,7 @@ async function buildStatus(force = false): Promise<ConsumerOnboardingStatus> {
   let assignments: OnboardingRuntimeOption[] = [];
   let subscriptions: OnboardingSubscriptionOption[] = [];
   const diagnostics: string[] = [];
+  const notices: string[] = [];
   if (!stack.managerCompatibility.ready) {
     diagnostics.push(
       stack.managerCompatibility.error
@@ -243,7 +244,7 @@ async function buildStatus(force = false): Promise<ConsumerOnboardingStatus> {
     );
     for (const row of incompatibleStarterRoutes) {
       const label = String(row.label ?? row.runtime ?? 'Model route').trim() || 'Model route';
-      diagnostics.push(
+      notices.push(
         `${label} is connected for general agent work but not offered for the starter workspace because it does not have authoritative Brain tool-call capability.${
           row.mcpDetail ? ` ${String(row.mcpDetail).slice(0, 500)}` : ''
         }`,
@@ -261,7 +262,7 @@ async function buildStatus(force = false): Promise<ConsumerOnboardingStatus> {
       const excluded = catalog.filter((model) => !allowed.has(model));
       if (!excluded.length) continue;
       const shown = excluded.slice(0, 5);
-      diagnostics.push(
+      notices.push(
         `${String(row.label ?? row.runtime ?? 'Model route')} remains available for general agents, but starter setup excludes ${
           shown.join(', ')
         }${excluded.length > shown.length ? ` and ${excluded.length - shown.length} more` : ''} because ${
@@ -323,6 +324,7 @@ async function buildStatus(force = false): Promise<ConsumerOnboardingStatus> {
     starterAgents: readiness.starterAgents,
     assignments,
     subscriptions,
+    notices,
     issues: [...diagnostics, ...readiness.issues, ...(state.lastError ? [state.lastError] : [])],
   };
 }

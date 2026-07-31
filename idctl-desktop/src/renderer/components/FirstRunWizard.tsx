@@ -369,6 +369,15 @@ export function FirstRunWizard({
               </div>
             </section>
 
+            {status.notices?.length && !setupFinished ? (
+              <details className="onboarding-route-notices">
+                <summary>Why some connected routes are not listed</summary>
+                <ul>
+                  {status.notices.map((notice) => <li key={notice}>{notice}</li>)}
+                </ul>
+              </details>
+            ) : null}
+
             {message ? <div className={`onboarding-message${status.currentReady ? ' success' : ''}`}>{message}</div> : null}
             {!message && status.issues.length && !setupFinished ? <div className="onboarding-message">{status.issues[0]}</div> : null}
 

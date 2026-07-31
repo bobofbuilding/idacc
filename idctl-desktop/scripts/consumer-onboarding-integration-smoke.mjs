@@ -852,20 +852,24 @@ try {
     'a selectable non-tool local model must remain outside the starter assignment list',
   );
   assert.ok(
-    initialStatus.issues.some((issue) => /Cursor fixture.*not offered.*Brain tool-call capability/.test(issue)),
+    initialStatus.notices.some((notice) => /Cursor fixture.*not offered.*Brain tool-call capability/.test(notice)),
     'starter setup must explain why a connected non-MCP runtime is excluded',
   );
   assert.ok(
-    initialStatus.issues.some((issue) => (
-      /Local Ollama fixture.*smollm-general:fixture.*authoritative Brain tool-call capability/.test(issue)
+    initialStatus.notices.some((notice) => (
+      /Local Ollama fixture.*smollm-general:fixture.*authoritative Brain tool-call capability/.test(notice)
     )),
     'starter setup must diagnose a local model that remains general-use only',
   );
   assert.ok(
-    initialStatus.issues.some((issue) => (
-      /Generic provider fixture.*not deterministic per-model tool evidence/.test(issue)
+    initialStatus.notices.some((notice) => (
+      /Generic provider fixture.*not deterministic per-model tool evidence/.test(notice)
     )),
     'generic provider lanes must stay visible for general agents without being declared starter-ready',
+  );
+  assert.ok(
+    initialStatus.issues.every((issue) => !/Cursor fixture|Generic provider fixture/.test(issue)),
+    'general-use route notices must not be presented as setup failures',
   );
   await assert.rejects(
     onboarding.runStarterFleetOnboarding({ runtime: 'provider:fixture-ollama' }),

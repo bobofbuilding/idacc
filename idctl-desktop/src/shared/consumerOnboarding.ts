@@ -108,6 +108,7 @@ export interface ConsumerOnboardingStatus {
   starterAgents: StarterAgentReadiness[];
   assignments: OnboardingRuntimeOption[];
   subscriptions: OnboardingSubscriptionOption[];
+  notices: string[];
   issues: string[];
 }
 
