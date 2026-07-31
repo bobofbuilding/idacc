@@ -252,11 +252,15 @@ const pendingStoreChangeMethods = new Set<string>();
 const pendingRendererRecoveryTimers = new Set<ReturnType<typeof setTimeout>>();
 const activeBrainApprovalInboxSyncs = new Set<Promise<void>>();
 const pendingBackgroundStops: Array<{ promise: Promise<void>; error?: unknown }> = [];
-const activeIpcWork = createBoundedWorkDrain(3_000);
+const CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS = 45_000;
+// Settings, onboarding, and runtime catalog requests can legitimately outlive
+// a three-second UI interaction window. Give already-admitted IPC the same
+// bounded drain budget as the rest of guarded shutdown so Restart & update
+// does not require a second quit attempt while a read-only probe is settling.
+const activeIpcWork = createBoundedWorkDrain(CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS);
 let delayedGoalDriverWork = createDelayedBackgroundWork();
 let activationWindowWork = createSingleFlightBackgroundGate();
 let controlLogBackgroundWork = createTrackedBackgroundWork();
-const CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS = 45_000;
 let ownsSingleInstanceLock = false;
 
 configureControlWriteScheduler((work) => {

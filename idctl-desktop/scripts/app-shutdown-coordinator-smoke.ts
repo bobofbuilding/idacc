@@ -699,6 +699,11 @@ assert.match(
 assert.match(mainSource, /quiesceConsumerOwnedServices\(\);[\s\S]*await activeIpcWork\.drain\(\);/);
 assert.match(
   mainSource,
+  /const CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS = 45_000;[\s\S]*createBoundedWorkDrain\(CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS\)/,
+  'already-admitted Settings and onboarding requests must share the guarded shutdown deadline',
+);
+assert.match(
+  mainSource,
   /const activityDrainDeadline = Date\.now\(\) \+ CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS;[\s\S]*drainConsumerStartup\(activityDrainDeadline\)[\s\S]*drainConsumerBackgroundActivities\(activityDrainDeadline\)/,
   'startup and background work must share one aggregate guarded deadline',
 );
