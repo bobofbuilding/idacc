@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { call } from '../store.ts';
 import type {
   ConsumerOnboardingStatus,
@@ -18,6 +18,23 @@ const PROVIDER_DEFAULTS: Record<ProviderKind, { name: string; baseUrl: string }>
   anthropic: { name: 'anthropic-api', baseUrl: 'https://api.anthropic.com' },
   openai: { name: 'openai-api', baseUrl: 'https://api.openai.com/v1' },
 };
+const REFRESH_UI_TIMEOUT_MS = 30_000;
+
+async function withUiDeadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(
+          'The route check is taking longer than expected. You can continue setup now and re-check routes later.',
+        )), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function gateLabel(key: keyof ConsumerOnboardingStatus['gates']): string {
   switch (key) {
@@ -45,6 +62,8 @@ export function FirstRunWizard({
   const [runtime, setRuntime] = useState('');
   const [model, setModel] = useState('');
   const [busy, setBusy] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshSequence = useRef(0);
   const [message, setMessage] = useState('');
   const [providerKind, setProviderKind] = useState<ProviderKind>('ollama');
   const [providerName, setProviderName] = useState(PROVIDER_DEFAULTS.ollama.name);
@@ -83,15 +102,27 @@ export function FirstRunWizard({
   }, [model, selectedOption, status?.state.selectedAssignment]);
 
   async function refresh() {
-    setBusy('refresh');
+    const sequence = ++refreshSequence.current;
+    setRefreshing(true);
     setMessage('');
     try {
-      onStatus(await call<ConsumerOnboardingStatus>('onboarding:status', { force: true }));
+      const next = await withUiDeadline(
+        call<ConsumerOnboardingStatus>('onboarding:status', { force: true }),
+        REFRESH_UI_TIMEOUT_MS,
+      );
+      if (refreshSequence.current === sequence) onStatus(next);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      if (refreshSequence.current === sequence) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setBusy('');
+      if (refreshSequence.current === sequence) setRefreshing(false);
     }
+  }
+
+  function cancelRefresh() {
+    refreshSequence.current += 1;
+    setRefreshing(false);
   }
 
   async function manageSubscription(provider: string, action: 'signin' | 'install') {
@@ -167,6 +198,7 @@ export function FirstRunWizard({
   }
 
   async function defer() {
+    cancelRefresh();
     setBusy('defer');
     setMessage('');
     try {
@@ -181,6 +213,7 @@ export function FirstRunWizard({
   }
 
   async function resume() {
+    cancelRefresh();
     setBusy('resume');
     setMessage('');
     try {
@@ -194,6 +227,7 @@ export function FirstRunWizard({
 
   if (!open || !status) return null;
   const working = Boolean(busy);
+  const interactionLocked = working || refreshing;
   const setupFinished = status.phase === 'ready';
   const canClose = setupFinished || status.phase === 'limited' || status.phase === 'degraded';
 
@@ -243,8 +277,8 @@ export function FirstRunWizard({
               <button className="btn" disabled={working} onClick={() => void defer()}>
                 {busy === 'defer' ? 'Opening…' : 'Continue in limited mode'}
               </button>
-              <button className="btn primary" disabled={working} onClick={() => void refresh()}>
-                {busy === 'refresh' ? 'Checking…' : 'Re-check services'}
+              <button className="btn primary" disabled={interactionLocked} onClick={() => void refresh()}>
+                {refreshing ? 'Checking…' : 'Re-check services'}
               </button>
             </div>
           </>
@@ -267,19 +301,19 @@ export function FirstRunWizard({
                 <div className="onboarding-runtime-row">
                   <label>
                     Route
-                    <select value={runtime} onChange={(event) => setRuntime(event.target.value)} disabled={working || !status.assignments.length}>
+                    <select value={runtime} onChange={(event) => setRuntime(event.target.value)} disabled={interactionLocked || !status.assignments.length}>
                       {!status.assignments.length ? <option value="">No verified routes yet</option> : null}
                       {status.assignments.map((option) => <option value={option.runtime} key={option.runtime}>{option.label}</option>)}
                     </select>
                   </label>
                   <label>
                     Model
-                    <select value={model} onChange={(event) => setModel(event.target.value)} disabled={working || !selectedOption?.models.length}>
+                    <select value={model} onChange={(event) => setModel(event.target.value)} disabled={interactionLocked || !selectedOption?.models.length}>
                       {!selectedOption?.models.length ? <option value="">Account default</option> : null}
                       {selectedOption?.models.map((name) => <option value={name} key={name}>{name}</option>)}
                     </select>
                   </label>
-                  <button className="btn" disabled={working} onClick={() => void refresh()}>{busy === 'refresh' ? 'Checking…' : 'Re-check'}</button>
+                  <button className="btn" disabled={interactionLocked} onClick={() => void refresh()}>{refreshing ? 'Checking…' : 'Re-check'}</button>
                 </div>
 
                 {status.subscriptions.length ? (
@@ -296,12 +330,12 @@ export function FirstRunWizard({
                           </div>
                         </div>
                         {!(subscription.loggedIn || subscription.linked) && subscription.installed && subscription.loginSupported ? (
-                          <button className="btn small" disabled={working} onClick={() => void manageSubscription(subscription.provider, 'signin')}>
+                          <button className="btn small" disabled={interactionLocked} onClick={() => void manageSubscription(subscription.provider, 'signin')}>
                             {busy === `signin:${subscription.provider}` ? 'Opening…' : 'Sign in'}
                           </button>
                         ) : null}
                         {subscription.installed === false && subscription.installSupported ? (
-                          <button className="btn small" disabled={working} onClick={() => void manageSubscription(subscription.provider, 'install')}>
+                          <button className="btn small" disabled={interactionLocked} onClick={() => void manageSubscription(subscription.provider, 'install')}>
                             {busy === `install:${subscription.provider}` ? 'Opening…' : 'Install'}
                           </button>
                         ) : null}
@@ -315,7 +349,7 @@ export function FirstRunWizard({
                   <div className="onboarding-provider-grid">
                     <label>
                       Type
-                      <select value={providerKind} onChange={(event) => selectProviderKind(event.target.value as ProviderKind)} disabled={working}>
+                      <select value={providerKind} onChange={(event) => selectProviderKind(event.target.value as ProviderKind)} disabled={interactionLocked}>
                         <option value="ollama">Ollama</option>
                         <option value="lmstudio">LM Studio</option>
                         <option value="openai-compatible">OpenAI-compatible</option>
@@ -323,14 +357,14 @@ export function FirstRunWizard({
                         <option value="openai">OpenAI API</option>
                       </select>
                     </label>
-                    <label>Name<input value={providerName} onChange={(event) => setProviderName(event.target.value)} disabled={working} /></label>
-                    <label className="wide">Server URL<input value={providerUrl} onChange={(event) => setProviderUrl(event.target.value)} disabled={working} /></label>
+                    <label>Name<input value={providerName} onChange={(event) => setProviderName(event.target.value)} disabled={interactionLocked} /></label>
+                    <label className="wide">Server URL<input value={providerUrl} onChange={(event) => setProviderUrl(event.target.value)} disabled={interactionLocked} /></label>
                     <label className="wide">
                       API key <span className="muted">(only when required)</span>
-                      <input type="password" autoComplete="off" value={providerKey} onChange={(event) => setProviderKey(event.target.value)} disabled={working} />
+                      <input type="password" autoComplete="off" value={providerKey} onChange={(event) => setProviderKey(event.target.value)} disabled={interactionLocked} />
                     </label>
                   </div>
-                  <div className="row end"><button className="btn" disabled={working || !providerName.trim() || !providerUrl.trim()} onClick={() => void connectProvider()}>{busy === 'provider' ? 'Connecting…' : 'Connect & verify'}</button></div>
+                  <div className="row end"><button className="btn" disabled={interactionLocked || !providerName.trim() || !providerUrl.trim()} onClick={() => void connectProvider()}>{busy === 'provider' ? 'Connecting…' : 'Connect & verify'}</button></div>
                 </details>
               </section>
             ) : null}
@@ -392,7 +426,7 @@ export function FirstRunWizard({
               ) : status.phase !== 'limited' ? (
                 <button
                   className="btn primary"
-                  disabled={working || !runtime || Boolean(selectedOption?.requiresModel && !model)}
+                  disabled={interactionLocked || !runtime || Boolean(selectedOption?.requiresModel && !model)}
                   onClick={() => void createStarterTeam()}
                 >
                   {busy === 'fleet' ? 'Building & verifying…' : status.state.startedAt ? 'Retry setup' : 'Create starter workspace'}

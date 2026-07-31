@@ -99,6 +99,7 @@ let cachedStatus: { at: number; generation: number; value: ConsumerOnboardingSta
 let statusInflight: { generation: number; promise: Promise<ConsumerOnboardingStatus> } | null = null;
 let starterRunInflight: Promise<ConsumerOnboardingStatus> | null = null;
 const STATUS_CACHE_MS = 4_000;
+const MAX_MISSING_SKILL_REPAIRS = 32;
 
 function invalidateStatus(): void {
   statusGeneration += 1;
@@ -107,6 +108,44 @@ function invalidateStatus(): void {
 
 function safeError(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).trim().slice(0, 600);
+}
+
+function missingLibrarySkillName(error: unknown): string | null {
+  const match = safeError(error).match(/Skill\s+["'“”]([^"'“”]+)["'“”]\s+not found at\b/i);
+  const name = String(match?.[1] ?? '').trim();
+  return /^[a-z0-9][a-z0-9._-]{0,127}$/i.test(name) ? name : null;
+}
+
+async function rebuildStarterAgentRepairingMissingSkills(
+  candidate: { name: string; team: string },
+): Promise<void> {
+  const definition = STARTER_FLEET_AGENTS.find((entry) => entry.name === candidate.name);
+  const required = new Set<string>(definition?.skills ?? []);
+  const attempted = new Set<string>();
+
+  while (attempted.size < MAX_MISSING_SKILL_REPAIRS) {
+    try {
+      await bridgeCall('rebuildAgent', [candidate.name, candidate.team]);
+      return;
+    } catch (error) {
+      const skill = missingLibrarySkillName(error);
+      if (!skill || attempted.has(skill)) throw error;
+      attempted.add(skill);
+
+      // Older app builds could leave removed, app-owned skills in agent
+      // metadata after the neutral consumer library replaced them. Repair only
+      // the exact skill the Manager reports as unavailable. Required starter
+      // skills are restored; unavailable optional/legacy references are
+      // detached so they cannot permanently block an otherwise valid rebuild.
+      await bridgeCall(required.has(skill) ? 'installSkill' : 'uninstallSkill', [
+        skill,
+        candidate.name,
+        candidate.team,
+      ]);
+    }
+  }
+
+  throw new Error(`Could not rebuild ${candidate.name}: too many unavailable skill references.`);
 }
 
 function normalizedRuntimeOptions(rows: RuntimeFreshnessRow[]): OnboardingRuntimeOption[] {
@@ -459,7 +498,7 @@ async function markFailure(error: unknown): Promise<ConsumerOnboardingStatus> {
     lastError: safeError(error),
   });
   invalidateStatus();
-  return consumerOnboardingStatus({ force: true });
+  return consumerOnboardingStatus();
 }
 
 async function runStarterFleetOnboardingOnce(input: unknown): Promise<ConsumerOnboardingStatus> {
@@ -530,7 +569,7 @@ async function runStarterFleetOnboardingOnce(input: unknown): Promise<ConsumerOn
         }
       },
       rebuildAgent: async (candidate) => {
-        await bridgeCall('rebuildAgent', [candidate.name, candidate.team]);
+        await rebuildStarterAgentRepairingMissingSkills(candidate);
       },
       onProgress: async (name, status, detail) => {
         setOnboardingAgentProgress(name, status, detail);
@@ -573,7 +612,9 @@ async function runStarterFleetOnboardingOnce(input: unknown): Promise<ConsumerOn
         await bridgeCall('installSkill', ['brain', definition.name, STARTER_TEAM]);
         changed = true;
       }
-      if (changed) await bridgeCall('rebuildAgent', [definition.name, STARTER_TEAM]);
+      if (changed) {
+        await rebuildStarterAgentRepairingMissingSkills({ name: definition.name, team: STARTER_TEAM });
+      }
     }
 
     await bridgeCall('coordinator:set', [STARTER_TEAM, STARTER_LEAD]);
@@ -604,7 +645,7 @@ async function runStarterFleetOnboardingOnce(input: unknown): Promise<ConsumerOn
       const existing = String(await bridgeCall('agent:getInstructions', [definition.name, STARTER_TEAM]) ?? '').trim();
       if (existing) continue;
       await bridgeCall('agent:setInstructions', [definition.name, definition.instructions, STARTER_TEAM]);
-      await bridgeCall('rebuildAgent', [definition.name, STARTER_TEAM]);
+      await rebuildStarterAgentRepairingMissingSkills({ name: definition.name, team: STARTER_TEAM });
     }
     await bridgeCall('org:sync', [{ autoRebuild: false }]);
 
@@ -645,15 +686,13 @@ export function runStarterFleetOnboarding(input: unknown): Promise<ConsumerOnboa
 
 export async function deferConsumerOnboarding(): Promise<ConsumerOnboardingStatus> {
   if (starterRunInflight) throw new Error('Starter workspace setup is still running.');
-  const status = await consumerOnboardingStatus({ force: true });
-  if (!status.canDefer) throw new Error('Wait until the bundled services are healthy before entering limited mode.');
   deferOnboarding();
   invalidateStatus();
-  return consumerOnboardingStatus({ force: true });
+  return consumerOnboardingStatus();
 }
 
 export async function resumeConsumerOnboarding(): Promise<ConsumerOnboardingStatus> {
   resumeOnboarding();
   invalidateStatus();
-  return consumerOnboardingStatus({ force: true });
+  return consumerOnboardingStatus();
 }

@@ -933,6 +933,16 @@ assert.ok(
   wizard.includes('${resolution.command}'),
   'first-run subscription actions must keep the manual command visible when clipboard access is unavailable',
 );
+assert.ok(
+  wizard.includes('REFRESH_UI_TIMEOUT_MS')
+    && wizard.includes('withUiDeadline('),
+  'first-run provider refresh must have a bounded renderer wait',
+);
+assert.ok(
+  wizard.includes('const interactionLocked = working || refreshing')
+    && /disabled=\{working\} onClick=\{\(\) => void resume\(\)\}>Continue setup<\/button>/.test(wizard),
+  'a route refresh must not share the mutation lock that disables Continue setup',
+);
 
 const unifiedStack = readFileSync(new URL('../src/main/unifiedStack.ts', import.meta.url), 'utf8');
 assert.ok(
