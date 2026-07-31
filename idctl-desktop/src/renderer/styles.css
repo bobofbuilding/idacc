@@ -774,6 +774,11 @@ textarea.composer-input { resize: none; line-height: 1.4; min-height: 38px; max-
 .onboarding-gates { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .onboarding-gate { padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 10px; }
 .onboarding-gate.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.onboarding-route-notices { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: var(--bg); font-size: 11px; }
+.onboarding-route-notices summary { cursor: pointer; }
+.onboarding-route-notices[open] summary { color: var(--text); }
+.onboarding-route-notices ul { margin: 8px 0 0; padding-left: 18px; }
+.onboarding-route-notices li + li { margin-top: 6px; }
 .onboarding-message { margin-top: 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); border-radius: 8px; color: var(--text); background: color-mix(in srgb, var(--warn) 7%, transparent); overflow-wrap: anywhere; }
 .onboarding-message.success { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); background: color-mix(in srgb, var(--ok) 7%, transparent); }
 .onboarding-actions { margin-top: 16px; }
