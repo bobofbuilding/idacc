@@ -375,6 +375,45 @@ function validateAndTightenPrivateTree(path: string): void {
   tightenPrivateTree(path);
 }
 
+function validateAndTightenPrivateTreeWithOpaqueDirectories(
+  path: string,
+  opaqueDirectoryNames: ReadonlySet<string>,
+): void {
+  const entry = lstatIfPresent(path);
+  if (!entry) return;
+  if (entry.isSymbolicLink() || !entry.isDirectory()) {
+    throw new Error(`profile state path is not a directory: ${path}`);
+  }
+
+  const children = readdirSync(path);
+  // Validate every app-owned descendant before changing any mode or ACL. The
+  // explicitly opaque roots are still required to be real private directories,
+  // but their Manager-created runtime links are deliberately not traversed.
+  for (const child of children) {
+    const childPath = join(path, child);
+    if (opaqueDirectoryNames.has(child)) {
+      const childEntry = lstatSync(childPath);
+      if (childEntry.isSymbolicLink() || !childEntry.isDirectory()) {
+        throw new Error(`profile state path is not a directory: ${childPath}`);
+      }
+      continue;
+    }
+    validatePrivateTree(childPath);
+  }
+
+  removeAndVerifyMacAcl(path);
+  chmodSync(path, 0o700);
+  assertPrivateDirectoryMode(path, entry);
+  for (const child of children) {
+    const childPath = join(path, child);
+    if (opaqueDirectoryNames.has(child)) {
+      ensurePrivateDirectory(childPath);
+    } else {
+      validateAndTightenPrivateTree(childPath);
+    }
+  }
+}
+
 function atomicWriteJson(path: string, value: unknown): void {
   ensurePrivateDirectory(dirname(path));
   const existing = lstatIfPresent(path);
@@ -832,7 +871,6 @@ function tightenKnownPermissions(paths: ProfileMigrationPaths): void {
   for (const directory of [
     dirname(paths.config),
     paths.brain,
-    paths.manager,
     paths.logs,
     paths.cache,
     join(paths.root, 'computeruse'),
@@ -840,6 +878,14 @@ function tightenKnownPermissions(paths: ProfileMigrationPaths): void {
   ]) {
     validateAndTightenPrivateTree(directory);
   }
+  // Codex overlays are Manager-owned runtime material. They intentionally
+  // contain links to session directories and executable shims, so protect the
+  // overlay boundary without following or rewriting its contents. Every other
+  // Manager descendant (including its database) remains recursively strict.
+  validateAndTightenPrivateTreeWithOpaqueDirectories(
+    paths.manager,
+    new Set(['codex-overlays']),
+  );
   for (const file of [
     join(paths.root, 'profile.json'),
   ]) {

@@ -450,7 +450,8 @@ function rollbackOversizedWindowsCache(
  *   1. prove local NTFS storage and safe ancestors;
  *   2. enumerate private state without following links or hard links;
  *   3. replace non-exact app-state DACLs, while treating existing user
- *      repository contents below workspace as an explicit opaque boundary;
+ *      repository contents below workspace and Manager-created Codex overlay
+ *      contents as explicit opaque boundaries;
  *   4. re-enumerate, verify, and write a versioned exact-root attestation.
  *
  * A protected DACL with only the interactive user and Local System prevents a
@@ -998,6 +999,11 @@ public static class IdaccProfileFileProbe {
   $reparseFlag = [System.IO.FileAttributes]::ReparsePoint
   $directoryFlag = [System.IO.FileAttributes]::Directory
   $workspaceRoot = [System.IO.Path]::Combine($root, 'workspace')
+  $managerOverlayRoot = [System.IO.Path]::Combine(
+    $root,
+    'manager',
+    'codex-overlays'
+  )
   $cacheRoot = [System.IO.Path]::Combine($root, 'cache')
   $profileMarkerPath = [System.IO.Path]::Combine($root, 'profile.json')
   $attestationPath = [System.IO.Path]::Combine(
@@ -1245,13 +1251,12 @@ public static class IdaccProfileFileProbe {
           [Console]::Out.WriteLine('${WINDOWS_PROFILE_TOO_LARGE}')
           exit 43
         }
-        # Existing user repositories are deliberately opaque. Secure only the
-        # workspace root; its inheritable ACEs protect future direct children,
-        # while SetFileSecurityW below does not rewrite existing descendants.
-        # Existing descendant ACLs remain user-managed and continue to govern
-        # direct access to known child paths.
+        # Existing user repositories and Manager-created Codex overlays are
+        # deliberately opaque. Secure their roots, while SetFileSecurityW below
+        # does not rewrite or follow existing descendants.
         if (
           (Test-SamePath $current $workspaceRoot) -or
+          (Test-SamePath $current $managerOverlayRoot) -or
           (Test-IsCacheQuarantine $current)
         ) {
           continue
@@ -1612,6 +1617,17 @@ public static class IdaccProfileFileProbe {
     } elseif ([System.IO.File]::Exists($workspaceRoot)) {
       throw 'workspace root is not a directory'
     }
+    if ([System.IO.Directory]::Exists($managerOverlayRoot)) {
+      Assert-NotReparse $managerOverlayRoot
+      if (-not (Test-PrivateAcl ([pscustomobject]@{
+        Path = $managerOverlayRoot
+        IsDirectory = $true
+      }))) {
+        return $false
+      }
+    } elseif ([System.IO.File]::Exists($managerOverlayRoot)) {
+      throw 'manager overlay root is not a directory'
+    }
     try {
       $attestation = (
         [System.IO.File]::ReadAllText($attestationPath) | ConvertFrom-Json
@@ -1619,7 +1635,8 @@ public static class IdaccProfileFileProbe {
       return (
         [int]$attestation.version -eq 3 -and
         [string]$attestation.userSid -eq $userSid.Value -and
-        [string]$attestation.workspacePolicy -eq 'root-only'
+        [string]$attestation.workspacePolicy -eq 'root-only' -and
+        [string]$attestation.managerOverlayPolicy -eq 'root-only'
       )
     } catch {
       return $false
@@ -1631,6 +1648,7 @@ public static class IdaccProfileFileProbe {
       version = 3
       userSid = $userSid.Value
       workspacePolicy = 'root-only'
+      managerOverlayPolicy = 'root-only'
     }
     $json = $attestation | ConvertTo-Json -Compress
     [System.IO.File]::WriteAllText(
@@ -1718,6 +1736,7 @@ public static class IdaccProfileFileProbe {
       }
       if (
         (Test-SamePath $current $workspaceRoot) -or
+        (Test-SamePath $current $managerOverlayRoot) -or
         (Test-IsCacheQuarantine $current)
       ) {
         continue

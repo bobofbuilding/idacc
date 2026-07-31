@@ -1063,7 +1063,7 @@ try {
   assert.equal(
     [
       ...privacySource.matchAll(
-        /\(Test-SamePath \$current \$workspaceRoot\) -or\s*\(Test-IsCacheQuarantine \$current\)/g,
+        /\(Test-SamePath \$current \$workspaceRoot\) -or\s*\(Test-SamePath \$current \$managerOverlayRoot\) -or\s*\(Test-IsCacheQuarantine \$current\)/g,
       ),
     ].length,
     2,
@@ -1072,6 +1072,7 @@ try {
   assert.match(privacySource, /New-PrivateDirectorySecurity \$true/);
   assert.doesNotMatch(privacySource, /New-PrivateDirectorySecurity \$false/);
   assert.match(privacySource, /\.idacc-windows-acl-v3\.json/);
+  assert.match(privacySource, /managerOverlayPolicy = 'root-only'/);
   assert.match(
     privacySource,
     /if \(\$aclMode -eq 'normal' -and \(Test-AclAttestation\)\) \{/,
@@ -1411,6 +1412,74 @@ try {
   assert.equal(second.appliedMigrations.length, 7);
   assert.match(readFileSync(profile.config, 'utf8'), /custom/);
   assert.doesNotMatch(readFileSync(join(profile.root, 'config', 'agent-signers.json'), 'utf8'), /changed/);
+
+  if (process.platform !== 'win32') {
+    // Manager-created Codex overlays intentionally contain runtime links. The
+    // overlay root remains a private real directory, while its descendants are
+    // opaque to profile hardening and every Manager sibling stays strict.
+    const overlayOutside = join(temp, 'overlay-outside');
+    const overlayRoot = join(profile.manager, 'codex-overlays');
+    const overlayRun = join(overlayRoot, 'agent-fixture', 'runs', 'run-fixture');
+    mkdirSync(overlayOutside);
+    mkdirSync(overlayRun, { recursive: true });
+    writeFileSync(join(overlayOutside, 'session.json'), '{"outside":true}\n', {
+      mode: 0o644,
+    });
+    symlinkSync(overlayOutside, join(overlayRun, 'archived_sessions'), 'dir');
+    chmodSync(overlayRoot, 0o755);
+    migrateAppProfile(profile, {
+      profileName: 'default',
+      legacyConfigDir: legacy,
+      legacyManagerDir: legacyManager,
+      legacyBrainDatabases: [legacyBrain],
+      legacyDesktopSignerVault: legacyDesktopSigner,
+    });
+    assert.equal(
+      lstatSync(join(overlayRun, 'archived_sessions')).isSymbolicLink(),
+      true,
+      'Manager overlay links must remain present and uninspected',
+    );
+    assert.equal(statSync(overlayRoot).mode & 0o777, 0o700);
+    assert.equal(
+      statSync(join(overlayOutside, 'session.json')).mode & 0o777,
+      0o644,
+      'profile hardening must not follow a Manager overlay link',
+    );
+
+    const strictManagerLink = join(profile.manager, 'unexpected-link');
+    symlinkSync(overlayOutside, strictManagerLink, 'dir');
+    assert.throws(
+      () => migrateAppProfile(profile, {
+        profileName: 'default',
+        legacyConfigDir: legacy,
+        allowLegacyImport: false,
+      }),
+      /refusing symbolic link in profile state/i,
+      'links outside the exact Manager overlay boundary remain forbidden',
+    );
+    rmSync(strictManagerLink);
+
+    const linkedOverlayProfile = paths(join(temp, 'linked-overlay-profile'));
+    migrateAppProfile(linkedOverlayProfile, {
+      profileName: 'linked-overlay',
+      legacyConfigDir: join(temp, 'missing-linked-overlay-legacy'),
+      allowLegacyImport: false,
+    });
+    rmSync(join(linkedOverlayProfile.manager, 'codex-overlays'), {
+      recursive: true,
+      force: true,
+    });
+    symlinkSync(overlayOutside, join(linkedOverlayProfile.manager, 'codex-overlays'), 'dir');
+    assert.throws(
+      () => migrateAppProfile(linkedOverlayProfile, {
+        profileName: 'linked-overlay',
+        legacyConfigDir: join(temp, 'missing-linked-overlay-legacy'),
+        allowLegacyImport: false,
+      }),
+      /profile state path is not a directory/i,
+      'the Manager overlay root itself must never be a link',
+    );
+  }
 
   // A stopped v1 import may leave only its private staging directory. The
   // uncommitted schema-0 marker makes the next launch rebuild and atomically
@@ -2278,8 +2347,15 @@ try {
     const opaqueWorkspace = join(opaqueWorkspaceProfile, 'workspace');
     const opaqueRepository = join(opaqueWorkspace, 'repo');
     const opaqueJunctionTarget = join(temp, 'opaque-junction-target');
+    const opaqueManagerOverlay = join(
+      opaqueWorkspaceProfile,
+      'manager',
+      'codex-overlays',
+    );
+    const opaqueManagerRun = join(opaqueManagerOverlay, 'agent-fixture', 'run-fixture');
     mkdirSync(opaqueRepository, { recursive: true });
     mkdirSync(opaqueJunctionTarget);
+    mkdirSync(opaqueManagerRun, { recursive: true });
     writeFileSync(join(opaqueWorkspaceProfile, 'profile.json'), JSON.stringify({
       schemaVersion: PROFILE_SCHEMA_VERSION,
       profile: 'opaque-workspace',
@@ -2289,6 +2365,11 @@ try {
     symlinkSync(
       opaqueJunctionTarget,
       join(opaqueRepository, 'deliberate-junction'),
+      'junction',
+    );
+    symlinkSync(
+      opaqueJunctionTarget,
+      join(opaqueManagerRun, 'archived_sessions'),
       'junction',
     );
     const workspaceFileAclBefore = windowsPowerShellForTest(
@@ -2309,10 +2390,22 @@ try {
       true,
       'workspace junctions must remain present and uninspected',
     );
+    assert.equal(
+      lstatSync(join(opaqueManagerRun, 'archived_sessions')).isSymbolicLink(),
+      true,
+      'Manager overlay junctions must remain present and uninspected',
+    );
     assert.match(
       windowsPowerShellForTest(
         WINDOWS_ASSERT_PRIVATE_DIRECTORY_ACL,
         opaqueWorkspace,
+      ),
+      /IDACC_TEST_PRIVATE_DIRECTORY_OK/,
+    );
+    assert.match(
+      windowsPowerShellForTest(
+        WINDOWS_ASSERT_PRIVATE_DIRECTORY_ACL,
+        opaqueManagerOverlay,
       ),
       /IDACC_TEST_PRIVATE_DIRECTORY_OK/,
     );
