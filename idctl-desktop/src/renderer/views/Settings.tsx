@@ -100,6 +100,38 @@ type SettingsUpdateStatus = {
   error?: string;
   lastChecked?: number;
 };
+
+function compareDisplayedVersions(left: string | undefined, right: string | undefined): number {
+  if (!left || !right) return 0;
+  const parse = (value: string): number[] => value
+    .trim()
+    .replace(/^v/, '')
+    .split('-', 1)[0]
+    .split('.')
+    .map((part) => Number.parseInt(part, 10) || 0);
+  const a = parse(left);
+  const b = parse(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) return difference > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+function updateChannelSummary(status: SettingsUpdateStatus | null): string {
+  if (!status) return 'up to date';
+  if (status.checking) return 'checking…';
+  if (status.downloading) {
+    return `downloading verified v${status.latest ?? '—'} · ${Math.round(status.downloadPercent ?? 0)}%`;
+  }
+  if (status.error) return `error: ${status.error}`;
+  if (status.available && status.staged) return `verified v${status.latest} ready to install`;
+  if (status.available) return `v${status.latest} available to download`;
+  if (status.latest && compareDisplayedVersions(status.current, status.latest) > 0) {
+    return `ahead of production channel (latest v${status.latest})`;
+  }
+  return status.latest ? `up to date (latest v${status.latest})` : 'up to date';
+}
 type OllamaModel = { name: string; size?: number; parameterSize?: string; digest?: string; modifiedAt?: string };
 type OllamaCatalogModel = {
   name: string;
@@ -3042,19 +3074,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           <b className="mono">v{version || '—'}</b>
           <span>IDACC status</span>
           <b className={updStatus?.error ? 'status-error' : updStatus?.available ? 'warn-text' : 'ok-text'}>
-            {updStatus?.checking
-              ? 'checking…'
-              : updStatus?.downloading
-                ? `downloading verified v${updStatus.latest ?? '—'} · ${Math.round(updStatus.downloadPercent ?? 0)}%`
-              : updStatus?.error
-                ? `error: ${updStatus.error}`
-                : updStatus?.available && updStatus.staged
-                  ? `verified v${updStatus.latest} ready to install`
-                  : updStatus?.available
-                    ? `v${updStatus.latest} available to download`
-                  : updStatus?.latest
-                    ? `up to date (latest v${updStatus.latest})`
-                    : 'up to date'}
+            {updateChannelSummary(updStatus)}
           </b>
           <span>Agent manager</span>
           <b className={managerService?.healthy ? 'ok-text' : managerService ? 'warn-text' : 'muted'}>
@@ -3100,6 +3120,11 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             <span className="muted small">when off, Check IDACC then choose Download update; every install still requires Restart & update</span>
           </b>
         </div>
+        {updStatus?.latest && compareDisplayedVersions(updStatus.current, updStatus.latest) > 0 ? (
+          <div className="muted small" style={{ marginTop: 8 }}>
+            This installed review is newer than the production channel. Automatic checks remain active and will resume downloads when a newer production release is published.
+          </div>
+        ) : null}
         <div className="row-actions" style={{ marginTop: 10 }}>
           <span className="muted small grow">
             IDACC, Agent manager, and Brain ship and update together as one verified application.

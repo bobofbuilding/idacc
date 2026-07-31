@@ -24,6 +24,7 @@ import {
   resolve,
   sep,
 } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { TextDecoder } from 'node:util';
 import { secureWindowsProfileRoot } from './profilePrivacy.ts';
 import { copyFilePrivateSync } from './privateFileCopy.ts';
@@ -38,7 +39,7 @@ import {
   isTrustedPrivatePathOwner,
 } from './posixFilePrivacy.ts';
 
-export const PROFILE_SCHEMA_VERSION = 5;
+export const PROFILE_SCHEMA_VERSION = 7;
 const PROFILE_MARKER_COMPATIBILITY_LIMIT_BYTES = 1024 * 1024;
 
 export interface ProfileMigrationPaths {
@@ -81,8 +82,30 @@ interface ProfileMigration {
 interface ProfileMigrationContext {
   importLegacy: boolean;
   legacyConfigDir: string;
+  legacyManagerDir?: string;
+  legacyBrainDatabases?: string[];
   legacyDesktopSignerVault?: string;
 }
+
+const MANAGER_DATABASE_NAME = 'id-agents.db';
+const MANAGER_USER_DATA_TABLES = [
+  'agents',
+  'tasks',
+  'queries',
+  'news_items',
+  'subscriptions',
+  'wallets',
+] as const;
+const BRAIN_CONTENT_TABLES = [
+  'facts',
+  'entities',
+  'text_units',
+  'agent_memories',
+  'memory_events',
+  'timeline',
+  'skill_nodes',
+  'learning_tasks',
+] as const;
 
 function lstatIfPresent(path: string): Stats | null {
   try {
@@ -485,6 +508,243 @@ function copyRegularFileIfAbsent(source: string, destination: string): void {
   });
 }
 
+function sqliteString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function openCheckedSqlite(path: string): DatabaseSync | null {
+  const entry = lstatIfPresent(path);
+  if (!entry) return null;
+  if (entry.isSymbolicLink() || !entry.isFile() || entry.nlink !== 1) {
+    throw new Error(`legacy database must be a private regular file: ${path}`);
+  }
+  const database = new DatabaseSync(path, { readOnly: true });
+  try {
+    const quickCheck = database.prepare('PRAGMA quick_check').get() as Record<string, unknown> | undefined;
+    if (!quickCheck || !Object.values(quickCheck).includes('ok')) {
+      throw new Error(`database integrity check failed: ${path}`);
+    }
+    return database;
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+}
+
+function sqliteTableRows(path: string, tables: readonly string[]): number {
+  const database = openCheckedSqlite(path);
+  if (!database) return 0;
+  try {
+    let rows = 0;
+    for (const table of tables) {
+      const present = database.prepare(
+        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+      ).get(table);
+      if (!present) continue;
+      const count = database.prepare(`SELECT COUNT(*) AS count FROM "${table}"`).get() as {
+        count?: number | bigint;
+      } | undefined;
+      rows += Number(count?.count || 0);
+    }
+    return rows;
+  } finally {
+    database.close();
+  }
+}
+
+function sqliteUserDataRows(path: string): number {
+  return sqliteTableRows(path, MANAGER_USER_DATA_TABLES);
+}
+
+function sqliteBrainContentRows(path: string): number {
+  return sqliteTableRows(path, BRAIN_CONTENT_TABLES);
+}
+
+function isBootstrapOnlyBrainDatabase(path: string): boolean {
+  const database = openCheckedSqlite(path);
+  if (!database) return true;
+  try {
+    for (const table of ['facts', 'entities', 'memory_events', 'timeline', 'skill_nodes', 'learning_tasks']) {
+      const present = database.prepare(
+        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+      ).get(table);
+      if (!present) continue;
+      const count = database.prepare(`SELECT COUNT(*) AS count FROM "${table}"`).get() as {
+        count?: number | bigint;
+      } | undefined;
+      if (Number(count?.count || 0) > 0) return false;
+    }
+
+    const memoryTable = database.prepare(
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_memories' LIMIT 1",
+    ).get();
+    if (memoryTable) {
+      const unexpected = database.prepare(`
+        SELECT COUNT(*) AS count
+        FROM agent_memories
+        WHERE COALESCE(agent_id, '') <> 'team-instructions'
+          OR COALESCE(mem_key, '') <> 'org:hierarchy'
+      `).get() as { count?: number | bigint } | undefined;
+      if (Number(unexpected?.count || 0) > 0) return false;
+      const total = database.prepare('SELECT COUNT(*) AS count FROM agent_memories').get() as {
+        count?: number | bigint;
+      } | undefined;
+      if (Number(total?.count || 0) > 1) return false;
+    }
+
+    const textTable = database.prepare(
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'text_units' LIMIT 1",
+    ).get();
+    if (textTable) {
+      const unexpected = database.prepare(`
+        SELECT COUNT(*) AS count
+        FROM text_units
+        WHERE COALESCE(source_kind, '') <> 'memory'
+          OR COALESCE(title, '') <> 'team-instructions:org:hierarchy'
+      `).get() as { count?: number | bigint } | undefined;
+      if (Number(unexpected?.count || 0) > 0) return false;
+      const total = database.prepare('SELECT COUNT(*) AS count FROM text_units').get() as {
+        count?: number | bigint;
+      } | undefined;
+      if (Number(total?.count || 0) > 1) return false;
+    }
+    return true;
+  } finally {
+    database.close();
+  }
+}
+
+function sqliteSnapshot(source: string, staging: string): void {
+  const sourceDatabase = openCheckedSqlite(source);
+  if (!sourceDatabase) throw new Error(`legacy database is unavailable: ${source}`);
+  try {
+    sourceDatabase.exec(`VACUUM INTO ${sqliteString(staging)}`);
+  } finally {
+    sourceDatabase.close();
+  }
+}
+
+function retainSqliteDestination(destination: string, rollback: string): void {
+  ensurePrivateDirectory(rollback);
+  for (const suffix of ['', '-wal', '-shm']) {
+    const current = `${destination}${suffix}`;
+    const currentEntry = lstatIfPresent(current);
+    if (!currentEntry) continue;
+    if (currentEntry.isSymbolicLink() || !currentEntry.isFile() || currentEntry.nlink !== 1) {
+      throw new Error(`profile database state is unsafe: ${current}`);
+    }
+    const retained = join(rollback, `${basename(destination)}${suffix}`);
+    if (lstatIfPresent(retained)) {
+      throw new Error(`database rollback state already exists: ${retained}`);
+    }
+    renameSync(current, retained);
+  }
+}
+
+/**
+ * Import the pre-unified Manager database only when the app-owned database has
+ * no user data. SQLite performs the snapshot so an independently running
+ * legacy Manager can keep writing while this copy is taken. The source and any
+ * bootstrap-only destination are retained as rollback-safe copies.
+ */
+function importLegacyManagerDatabase(
+  paths: ProfileMigrationPaths,
+  context: ProfileMigrationContext,
+): void {
+  if (!context.importLegacy || !context.legacyManagerDir) return;
+  const legacyDirectory = context.legacyManagerDir;
+  const legacyDirectoryEntry = lstatIfPresent(legacyDirectory);
+  if (!legacyDirectoryEntry) return;
+  if (legacyDirectoryEntry.isSymbolicLink() || !legacyDirectoryEntry.isDirectory()) {
+    throw new Error(`legacy manager root must be a regular directory: ${legacyDirectory}`);
+  }
+
+  const source = join(legacyDirectory, MANAGER_DATABASE_NAME);
+  const sourceRows = sqliteUserDataRows(source);
+  if (sourceRows === 0) return;
+
+  const destination = join(paths.manager, MANAGER_DATABASE_NAME);
+  const destinationRows = sqliteUserDataRows(destination);
+  if (destinationRows > 0) return;
+
+  ensurePrivateDirectory(paths.manager);
+  const staging = join(paths.manager, `.${MANAGER_DATABASE_NAME}.legacy-import.staging`);
+  const stagingEntry = lstatIfPresent(staging);
+  if (stagingEntry) {
+    if (stagingEntry.isSymbolicLink() || !stagingEntry.isFile() || stagingEntry.nlink !== 1) {
+      throw new Error(`legacy manager migration staging is unsafe: ${staging}`);
+    }
+    rmSync(staging, { force: false });
+  }
+
+  sqliteSnapshot(source, staging);
+  if (sqliteUserDataRows(staging) !== sourceRows) {
+    throw new Error('legacy manager snapshot row count changed during migration');
+  }
+  chmodSync(staging, 0o600);
+  assertPrivateFileMode(staging);
+
+  const rollback = join(paths.manager, '.pre-legacy-manager-import');
+  retainSqliteDestination(destination, rollback);
+
+  renameSync(staging, destination);
+  chmodSync(destination, 0o600);
+  assertPrivateFileMode(destination);
+  atomicWriteJson(join(paths.manager, 'legacy-manager-import.json'), {
+    version: 1,
+    source,
+    importedRows: sourceRows,
+    importedAt: new Date().toISOString(),
+    rollback,
+  });
+}
+
+function importLegacyBrainDatabase(
+  paths: ProfileMigrationPaths,
+  context: ProfileMigrationContext,
+): void {
+  if (!context.importLegacy || !context.legacyBrainDatabases?.length) return;
+  const destination = join(paths.brain, 'brain.db');
+  if (!isBootstrapOnlyBrainDatabase(destination)) return;
+
+  const candidates = [...new Set(context.legacyBrainDatabases.map((path) => resolve(path)))]
+    .filter((path) => path !== resolve(destination))
+    .map((path) => ({ path, rows: sqliteBrainContentRows(path) }))
+    .filter((entry) => entry.rows > 0)
+    .sort((left, right) => right.rows - left.rows || left.path.localeCompare(right.path));
+  const selected = candidates[0];
+  if (!selected) return;
+
+  ensurePrivateDirectory(paths.brain);
+  const staging = join(paths.brain, '.brain.db.legacy-import.staging');
+  const stagingEntry = lstatIfPresent(staging);
+  if (stagingEntry) {
+    if (stagingEntry.isSymbolicLink() || !stagingEntry.isFile() || stagingEntry.nlink !== 1) {
+      throw new Error(`legacy Brain migration staging is unsafe: ${staging}`);
+    }
+    rmSync(staging, { force: false });
+  }
+  sqliteSnapshot(selected.path, staging);
+  if (sqliteBrainContentRows(staging) !== selected.rows) {
+    throw new Error('legacy Brain snapshot row count changed during migration');
+  }
+  chmodSync(staging, 0o600);
+  assertPrivateFileMode(staging);
+
+  const rollback = join(paths.brain, '.pre-legacy-brain-import');
+  retainSqliteDestination(destination, rollback);
+  renameSync(staging, destination);
+  chmodSync(destination, 0o600);
+  assertPrivateFileMode(destination);
+  atomicWriteJson(join(paths.brain, 'legacy-brain-import.json'), {
+    version: 1,
+    source: selected.path,
+    importedRows: selected.rows,
+    importedAt: new Date().toISOString(),
+    rollback,
+  });
+}
+
 function mergeMissing(source: string, destination: string): void {
   const sourceEntry = lstatIfPresent(source);
   if (!sourceEntry) return;
@@ -678,6 +938,22 @@ const MIGRATIONS: ProfileMigration[] = [
       tightenKnownPermissions(paths);
     },
   },
+  {
+    version: 6,
+    id: 'import-legacy-manager-database',
+    apply(paths, context) {
+      importLegacyManagerDatabase(paths, context);
+      tightenKnownPermissions(paths);
+    },
+  },
+  {
+    version: 7,
+    id: 'import-legacy-brain-database',
+    apply(paths, context) {
+      importLegacyBrainDatabase(paths, context);
+      tightenKnownPermissions(paths);
+    },
+  },
 ];
 
 function normalizeMetadata(raw: unknown, profileName: string, migratedFrom: string | null): ProfileMetadata {
@@ -720,6 +996,8 @@ export function migrateAppProfile(
   options: {
     profileName?: string;
     legacyConfigDir: string;
+    legacyManagerDir?: string;
+    legacyBrainDatabases?: string[];
     legacyDesktopSignerVault?: string;
     allowLegacyImport?: boolean;
   },
@@ -738,6 +1016,8 @@ export function migrateAppProfile(
   const context: ProfileMigrationContext = {
     importLegacy,
     legacyConfigDir: options.legacyConfigDir,
+    legacyManagerDir: options.legacyManagerDir,
+    legacyBrainDatabases: options.legacyBrainDatabases,
     legacyDesktopSignerVault: options.legacyDesktopSignerVault,
   };
   const marker = join(paths.root, 'profile.json');

@@ -8,6 +8,11 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.687] — 2026-07-31
+### What changed
+- Restore existing Manager and Brain state when a legacy installation opens its first unified app profile, using consistent SQLite snapshots and rollback-safe retained copies.
+- Keep the unified application updater on `bobofbuilding/idacc` while clearly identifying locally installed builds that are ahead of the production release channel.
+
 ## [0.1.686] — 2026-07-29
 ### What changed
 - Unify IDACC, Manager, Brain, consumer profiles, and dependency updates

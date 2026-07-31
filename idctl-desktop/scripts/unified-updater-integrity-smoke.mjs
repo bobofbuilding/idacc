@@ -61,5 +61,7 @@ assert.match(settingsView, /freshStatus\.latest !== stagedVersion/);
 assert.match(settingsView, /window\.confirm\(/);
 assert.match(settingsView, /await call<\{ applying\?: boolean \}>\('update:applyNow'\)/);
 assert.match(settingsView, /Restart & update/);
+assert.match(settingsView, /ahead of production channel/);
+assert.match(settingsView, /Automatic checks remain active and will resume downloads/);
 
 process.stdout.write('unified updater integrity smoke: ok\n');

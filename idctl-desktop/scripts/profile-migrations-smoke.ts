@@ -19,6 +19,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, win32 } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import {
   normalizeAppProfileName,
   selectAppProfile,
@@ -1277,12 +1278,16 @@ try {
   }
 
   const legacy = join(temp, 'legacy');
+  const legacyManager = join(temp, 'legacy-manager');
+  const legacyBrain = join(temp, 'legacy-brain', 'brain.db');
   const legacyDesktopSigner = join(temp, 'old-user-data', 'keys', 'agent-signers.json');
   const profile = paths(join(temp, 'profile'));
   mkdirSync(join(legacy, 'goals', 'nested'), { recursive: true });
   mkdirSync(join(legacy, 'context-budget'), { recursive: true });
   mkdirSync(join(legacy, 'computeruse'), { recursive: true });
   mkdirSync(join(legacyDesktopSigner, '..'), { recursive: true });
+  mkdirSync(legacyManager, { recursive: true });
+  mkdirSync(dirname(legacyBrain), { recursive: true });
   writeFileSync(join(legacy, 'config.json'), '{"version":1,"defaultTeam":"default"}\n', { mode: 0o644 });
   writeFileSync(join(legacy, 'goals', 'goal.json'), '{"id":"legacy"}\n');
   writeFileSync(join(legacy, 'goals', 'nested', 'helper.sh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
@@ -1291,12 +1296,55 @@ try {
   writeFileSync(join(legacy, 'context-budget', 'cb_old.json'), '{"id":"cb_old"}\n');
   writeFileSync(join(legacy, 'computeruse', 'agent-tokens.json'), '{"token":"agent"}\n', { mode: 0o644 });
   writeFileSync(legacyDesktopSigner, '{"schemaVersion":1,"signers":{"lead":{"encryptedPrivateKey":"ciphertext"}}}\n', { mode: 0o644 });
+  const legacyManagerDatabase = new DatabaseSync(join(legacyManager, 'id-agents.db'));
+  legacyManagerDatabase.exec(`
+    CREATE TABLE agents (id TEXT PRIMARY KEY);
+    CREATE TABLE tasks (id TEXT PRIMARY KEY);
+    INSERT INTO agents VALUES ('lead'), ('coder');
+    INSERT INTO tasks VALUES ('task-1');
+  `);
+  legacyManagerDatabase.close();
+  const legacyBrainDatabase = new DatabaseSync(legacyBrain);
+  legacyBrainDatabase.exec(`
+    CREATE TABLE facts (id INTEGER PRIMARY KEY);
+    CREATE TABLE entities (id TEXT PRIMARY KEY);
+    CREATE TABLE text_units (id INTEGER PRIMARY KEY, source_kind TEXT, title TEXT);
+    CREATE TABLE agent_memories (id INTEGER PRIMARY KEY, agent_id TEXT, mem_key TEXT);
+    INSERT INTO facts VALUES (1), (2), (3);
+    INSERT INTO entities VALUES ('legacy-entity');
+    INSERT INTO text_units VALUES (1, 'document', 'legacy knowledge');
+    INSERT INTO agent_memories VALUES (1, 'lead', 'legacy-memory');
+  `);
+  legacyBrainDatabase.close();
+
+  mkdirSync(profile.manager, { recursive: true });
+  const bootstrapManagerDatabase = new DatabaseSync(join(profile.manager, 'id-agents.db'));
+  bootstrapManagerDatabase.exec(`
+    CREATE TABLE agents (id TEXT PRIMARY KEY);
+    CREATE TABLE tasks (id TEXT PRIMARY KEY);
+    CREATE TABLE teams (id TEXT PRIMARY KEY);
+    INSERT INTO teams VALUES ('default');
+  `);
+  bootstrapManagerDatabase.close();
+  mkdirSync(profile.brain, { recursive: true });
+  const bootstrapBrainDatabase = new DatabaseSync(join(profile.brain, 'brain.db'));
+  bootstrapBrainDatabase.exec(`
+    CREATE TABLE facts (id INTEGER PRIMARY KEY);
+    CREATE TABLE entities (id TEXT PRIMARY KEY);
+    CREATE TABLE text_units (id INTEGER PRIMARY KEY, source_kind TEXT, title TEXT);
+    CREATE TABLE agent_memories (id INTEGER PRIMARY KEY, agent_id TEXT, mem_key TEXT);
+    INSERT INTO text_units VALUES (1, 'memory', 'team-instructions:org:hierarchy');
+    INSERT INTO agent_memories VALUES (1, 'team-instructions', 'org:hierarchy');
+  `);
+  bootstrapBrainDatabase.close();
 
   let first: ReturnType<typeof migrateAppProfile>;
   try {
     first = migrateAppProfile(profile, {
       profileName: 'default',
       legacyConfigDir: legacy,
+      legacyManagerDir: legacyManager,
+      legacyBrainDatabases: [legacyBrain],
       legacyDesktopSignerVault: legacyDesktopSigner,
     });
   } catch (error) {
@@ -1311,7 +1359,7 @@ try {
     throw error;
   }
   assert.equal(first.schemaVersion, PROFILE_SCHEMA_VERSION);
-  assert.deepEqual(first.appliedMigrations.map((entry) => entry.version), [1, 2, 3, 4, 5]);
+  assert.deepEqual(first.appliedMigrations.map((entry) => entry.version), [1, 2, 3, 4, 5, 6, 7]);
   assert.equal(readFileSync(profile.config, 'utf8'), '{"version":1,"defaultTeam":"default"}\n');
   assert.equal(readFileSync(join(profile.root, 'config', 'goals', 'goal.json'), 'utf8'), '{"id":"legacy"}\n');
   if (process.platform !== 'win32') {
@@ -1328,6 +1376,20 @@ try {
   assert.equal(readFileSync(join(profile.root, 'computeruse', 'agent-tokens.json'), 'utf8'), '{"token":"agent"}\n');
   assert.equal(readFileSync(join(legacy, 'computeruse', 'agent-tokens.json'), 'utf8'), '{"token":"agent"}\n');
   assert.equal(readFileSync(join(profile.root, 'config', 'agent-signers.json'), 'utf8'), readFileSync(legacyDesktopSigner, 'utf8'));
+  const importedManagerDatabase = new DatabaseSync(join(profile.manager, 'id-agents.db'), { readOnly: true });
+  assert.equal(importedManagerDatabase.prepare('SELECT COUNT(*) AS count FROM agents').get()?.count, 2);
+  assert.equal(importedManagerDatabase.prepare('SELECT COUNT(*) AS count FROM tasks').get()?.count, 1);
+  importedManagerDatabase.close();
+  assert.equal(existsSync(join(profile.manager, '.pre-legacy-manager-import', 'id-agents.db')), true);
+  assert.equal(existsSync(join(profile.manager, 'legacy-manager-import.json')), true);
+  assert.equal(existsSync(join(legacyManager, 'id-agents.db')), true, 'legacy manager database remains a rollback source');
+  const importedBrainDatabase = new DatabaseSync(join(profile.brain, 'brain.db'), { readOnly: true });
+  assert.equal(importedBrainDatabase.prepare('SELECT COUNT(*) AS count FROM facts').get()?.count, 3);
+  assert.equal(importedBrainDatabase.prepare('SELECT COUNT(*) AS count FROM agent_memories').get()?.count, 1);
+  importedBrainDatabase.close();
+  assert.equal(existsSync(join(profile.brain, '.pre-legacy-brain-import', 'brain.db')), true);
+  assert.equal(existsSync(join(profile.brain, 'legacy-brain-import.json')), true);
+  assert.equal(existsSync(legacyBrain), true, 'legacy Brain database remains a rollback source');
   if (process.platform !== 'win32') {
     assert.equal(statSync(join(profile.root, 'computeruse', 'agent-tokens.json')).mode & 0o777, 0o600);
     assert.equal(statSync(profile.config).mode & 0o777, 0o600);
@@ -1341,10 +1403,12 @@ try {
   const second = migrateAppProfile(profile, {
     profileName: 'default',
     legacyConfigDir: legacy,
+    legacyManagerDir: legacyManager,
+    legacyBrainDatabases: [legacyBrain],
     legacyDesktopSignerVault: legacyDesktopSigner,
   });
   assert.equal(second.schemaVersion, PROFILE_SCHEMA_VERSION);
-  assert.equal(second.appliedMigrations.length, 5);
+  assert.equal(second.appliedMigrations.length, 7);
   assert.match(readFileSync(profile.config, 'utf8'), /custom/);
   assert.doesNotMatch(readFileSync(join(profile.root, 'config', 'agent-signers.json'), 'utf8'), /changed/);
 
@@ -1500,6 +1564,8 @@ try {
     const isolatedResult = migrateAppProfile(isolated, {
       profileName: name === 'named' ? 'work' : 'default',
       legacyConfigDir: legacy,
+      legacyManagerDir: legacyManager,
+      legacyBrainDatabases: [legacyBrain],
       legacyDesktopSignerVault: legacyDesktopSigner,
       ...(allowLegacyImport === false ? { allowLegacyImport } : {}),
     });
@@ -1507,7 +1573,45 @@ try {
     assert.equal(existsSync(isolated.config), false);
     assert.equal(existsSync(join(isolated.root, 'config', 'goals')), false);
     assert.equal(existsSync(join(isolated.root, 'config', 'agent-signers.json')), false);
+    assert.equal(existsSync(join(isolated.manager, 'id-agents.db')), false);
+    assert.equal(existsSync(join(isolated.brain, 'brain.db')), false);
   }
+
+  // Existing user-owned unified databases always win over larger legacy
+  // sources. The import only replaces an absent/bootstrap-only destination.
+  const authoritative = paths(join(temp, 'authoritative-profile'));
+  mkdirSync(authoritative.manager, { recursive: true });
+  mkdirSync(authoritative.brain, { recursive: true });
+  const authoritativeManager = new DatabaseSync(join(authoritative.manager, 'id-agents.db'));
+  authoritativeManager.exec(`
+    CREATE TABLE agents (id TEXT PRIMARY KEY);
+    CREATE TABLE tasks (id TEXT PRIMARY KEY);
+    INSERT INTO agents VALUES ('consumer-agent');
+  `);
+  authoritativeManager.close();
+  const authoritativeBrain = new DatabaseSync(join(authoritative.brain, 'brain.db'));
+  authoritativeBrain.exec(`
+    CREATE TABLE facts (id INTEGER PRIMARY KEY);
+    CREATE TABLE entities (id TEXT PRIMARY KEY);
+    CREATE TABLE text_units (id INTEGER PRIMARY KEY, source_kind TEXT, title TEXT);
+    CREATE TABLE agent_memories (id INTEGER PRIMARY KEY, agent_id TEXT, mem_key TEXT);
+    INSERT INTO facts VALUES (91);
+  `);
+  authoritativeBrain.close();
+  migrateAppProfile(authoritative, {
+    profileName: 'default',
+    legacyConfigDir: join(temp, 'missing-authoritative-config'),
+    legacyManagerDir: legacyManager,
+    legacyBrainDatabases: [legacyBrain],
+  });
+  const retainedManager = new DatabaseSync(join(authoritative.manager, 'id-agents.db'), { readOnly: true });
+  assert.equal(retainedManager.prepare('SELECT id FROM agents').get()?.id, 'consumer-agent');
+  retainedManager.close();
+  const retainedBrain = new DatabaseSync(join(authoritative.brain, 'brain.db'), { readOnly: true });
+  assert.equal(retainedBrain.prepare('SELECT id FROM facts').get()?.id, 91);
+  retainedBrain.close();
+  assert.equal(existsSync(join(authoritative.manager, 'legacy-manager-import.json')), false);
+  assert.equal(existsSync(join(authoritative.brain, 'legacy-brain-import.json')), false);
 
   // A version-1 profile resumes at v2, including the old config cache location.
   const resumed = paths(join(temp, 'resumed'));

@@ -1,7 +1,8 @@
 import { app } from 'electron';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { selectAppProfile } from './appProfileSelection.ts';
 import {
   readAppProfilePreferenceForSelection,
@@ -31,6 +32,62 @@ function profilePaths(root: string): AppProfilePaths {
     logs: join(root, 'logs'),
     cache: join(root, 'cache'),
   };
+}
+
+function legacyBrainDatabaseCandidates(): string[] {
+  const home = homedir();
+  const candidates: string[] = [];
+  const explicit = process.env.IDACC_LEGACY_BRAIN_DB?.trim();
+  if (explicit && isAbsolute(explicit)) candidates.push(resolve(explicit));
+
+  if (process.platform === 'darwin') {
+    candidates.push(join(home, 'Library', 'Application Support', 'ID Agents', 'Brain', 'brain.db'));
+    const plist = join(home, 'Library', 'LaunchAgents', 'io.bittrees.brain.plist');
+    if (existsSync(plist)) {
+      const result = spawnSync('/usr/bin/plutil', [
+        '-extract',
+        'ProgramArguments',
+        'json',
+        '-o',
+        '-',
+        plist,
+      ], {
+        encoding: 'utf8',
+        timeout: 5_000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      if (!result.error && result.status === 0) {
+        try {
+          const args = JSON.parse(result.stdout) as unknown;
+          if (Array.isArray(args)) {
+            const entrypoint = args.find((value): value is string => (
+              typeof value === 'string'
+              && isAbsolute(value)
+              && basename(value) === 'brain.mjs'
+            ));
+            if (entrypoint) candidates.push(join(dirname(entrypoint), 'brain.db'));
+          }
+        } catch {
+          // A malformed retired service definition is not a trusted import source.
+        }
+      }
+    }
+  } else if (process.platform === 'win32') {
+    candidates.push(join(
+      process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'),
+      'ID Agents',
+      'Brain',
+      'brain.db',
+    ));
+  } else {
+    candidates.push(join(
+      process.env.XDG_STATE_HOME || join(home, '.local', 'state'),
+      'id-agents',
+      'brain',
+      'brain.db',
+    ));
+  }
+  return [...new Set(candidates.map((path) => resolve(path)))];
 }
 
 function appProfileSelection() {
@@ -107,6 +164,8 @@ export function initializeAppProfile(): AppProfilePaths {
   migrateAppProfile(paths, {
     profileName: selection.profileName,
     legacyConfigDir: join(homedir(), '.config', 'idctl'),
+    legacyManagerDir: join(homedir(), '.id-agents'),
+    legacyBrainDatabases: legacyBrainDatabaseCandidates(),
     legacyDesktopSignerVault: join(app.getPath('userData'), 'keys', 'agent-signers.json'),
     allowLegacyImport: selection.profileName === 'default' && !selection.explicitDataDir,
   });
