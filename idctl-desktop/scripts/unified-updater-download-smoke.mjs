@@ -17,6 +17,7 @@ const bundledUpdater = join(scratch, 'updater.cjs');
 const stateKey = '__IDACC_UPDATER_DOWNLOAD_TEST_STATE__';
 const require = createRequire(import.meta.url);
 let instance = 0;
+const originalFetch = globalThis.fetch;
 
 const mockModules = {
   electron: `
@@ -119,10 +120,23 @@ try {
       checkCalls: 0,
       downloadCalls: 0,
       installCalls: 0,
+      latestCalls: 0,
+      latestStableVersion: '1.1.0',
       checkImpl: async () => ({ updateInfo: { version: '1.1.0' } }),
       downloadImpl: async () => [],
       autoUpdater: null,
       ...overrides,
+    };
+    globalThis.fetch = async () => {
+      state.latestCalls += 1;
+      return {
+        status: 302,
+        headers: {
+          get: (name) => name.toLowerCase() === 'location'
+            ? `https://github.com/bobofbuilding/idacc/releases/tag/v${state.latestStableVersion}`
+            : null,
+        },
+      };
     };
     const instancePath = join(scratch, `updater-${instance += 1}.cjs`);
     copyFileSync(bundledUpdater, instancePath);
@@ -154,6 +168,9 @@ try {
     assert.equal(state.downloadCalls, 0, 'manual download must not race an active metadata check');
     assert.match(blocked.error, /check is still in progress/i);
 
+    for (let attempt = 0; attempt < 5 && !finishCheck; attempt += 1) {
+      await Promise.resolve();
+    }
     finishCheck({ updateInfo: { version: '1.1.0' } });
     const checked = await check;
     assert.equal(checked.available, true);
@@ -171,6 +188,20 @@ try {
     assert.equal(state.autoUpdater.autoInstallOnAppQuit, false);
     assert.equal(state.autoUpdater.allowDowngrade, false);
     assert.equal(state.autoUpdater.allowPrerelease, false);
+  }
+
+  {
+    const { api, state } = loadUpdater({
+      currentVersion: '1.2.0',
+      latestStableVersion: '1.1.0',
+      checkImpl: async () => { throw new Error('legacy metadata must not be requested'); },
+    });
+    const checked = await api.checkForUpdate();
+    assert.equal(checked.latest, '1.1.0');
+    assert.equal(checked.available, false);
+    assert.equal(checked.error, undefined);
+    assert.equal(state.latestCalls, 1);
+    assert.equal(state.checkCalls, 0, 'an ahead build must not request missing legacy metadata');
   }
 
   {
@@ -314,6 +345,7 @@ try {
 
   process.stdout.write('unified updater manual download smoke: ok\n');
 } finally {
+  globalThis.fetch = originalFetch;
   delete globalThis[stateKey];
   rmSync(scratch, { recursive: true, force: true });
 }

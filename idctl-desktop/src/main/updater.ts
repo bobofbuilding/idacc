@@ -300,6 +300,37 @@ function configureUpdater(): UpdateSettings {
   return current;
 }
 
+/**
+ * Read GitHub's stable-channel pointer without consuming legacy updater
+ * metadata. Older IDACC releases predate electron-builder's latest-*.yml
+ * files, but GitHub's /releases/latest redirect still provides an authoritative
+ * stable tag. If that tag is not newer than this app, no artifact lookup is
+ * necessary. A failed probe falls back to electron-updater so a transient
+ * GitHub redirect issue can never suppress a real update.
+ */
+async function probeLatestStableVersion(
+  repository: { owner: string; repo: string },
+): Promise<string | undefined> {
+  const releaseUrl = new URL(
+    `https://github.com/${repository.owner}/${repository.repo}/releases/latest`,
+  );
+  const response = await fetch(releaseUrl, {
+    method: 'HEAD',
+    redirect: 'manual',
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status < 300 || response.status >= 400) return undefined;
+  const location = response.headers.get('location');
+  if (!location) return undefined;
+  const target = new URL(location, releaseUrl);
+  const prefix = `/${repository.owner}/${repository.repo}/releases/tag/`;
+  if (target.protocol !== 'https:' || target.hostname !== 'github.com') return undefined;
+  if (!target.pathname.startsWith(prefix)) return undefined;
+  const tag = decodeURIComponent(target.pathname.slice(prefix.length));
+  if (!/^v?\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/.test(tag)) return undefined;
+  return tag.replace(/^v/, '');
+}
+
 export function getStatus(): UpdateStatus {
   const readiness = updateTargetReadiness();
   if (!readiness.ok) return updateUnavailable(readiness);
@@ -322,6 +353,29 @@ async function checkForUpdateInternal(): Promise<UpdateStatus> {
   status = { ...status, checking: true, error: undefined };
   emit();
   try {
+    const repository = parseUpdateRepository(DEFAULT_UPDATE_REPO);
+    let latestStable: string | undefined;
+    try {
+      latestStable = await probeLatestStableVersion(repository);
+    } catch {
+      // Compatibility probing is an optimization only. electron-updater
+      // remains the fail-closed authority for every actual artifact.
+    }
+    if (latestStable && compareVersions(latestStable, app.getVersion()) <= 0) {
+      status = {
+        ...status,
+        checking: false,
+        latest: latestStable,
+        available: false,
+        staged: false,
+        downloading: false,
+        downloadPercent: undefined,
+        lastChecked: Date.now(),
+        error: undefined,
+      };
+      emit();
+      return { ...status };
+    }
     const current = configureUpdater();
     const result = await autoUpdater.checkForUpdates();
     const info = result?.updateInfo;
