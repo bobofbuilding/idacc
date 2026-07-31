@@ -234,7 +234,12 @@ const HEALTH_TIMEOUT_MS = 1_500;
 const MAX_HEALTH_BODY_BYTES = 64 * 1024;
 const HEALTH_INTERVAL_MS = 5_000;
 const INITIAL_HEALTH_DELAY_MS = 500;
-const STARTUP_GRACE_MS = 12_000;
+// A recovered consumer profile can contain dozens of locally managed agents.
+// Manager deliberately restores them sequentially so process ownership,
+// credential lanes, and port attestations remain deterministic. Keep the
+// watchdog active, but do not mistake that bounded restore pass for a hung
+// Manager and repeatedly erase its progress by restarting it.
+const STARTUP_GRACE_MS = 2 * 60_000;
 const HEALTH_FAILURE_LIMIT = 3;
 const STABLE_RUNTIME_MS = 2 * 60_000;
 const CRASH_WINDOW_MS = 60_000;

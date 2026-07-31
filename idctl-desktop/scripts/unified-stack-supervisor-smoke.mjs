@@ -199,6 +199,11 @@ assert.match(
   /evaluateRuntimeApplicationVersionContract\(\{[\s\S]*manifestVersion:\s*manifest\.application\.version[\s\S]*reviewBuild:\s*COMPILED_REVIEW_BUILD/,
   'runtime admission must enforce the compiled application/source version contract',
 );
+assert.match(
+  unifiedStackSource,
+  /const STARTUP_GRACE_MS = 2 \* 60_000/,
+  'recovered fleets must receive a bounded two-minute Manager restore window before watchdog restart',
+);
 assert.match(managedProcessTreeSource, /shell:\s*false/);
 assert.match(managedProcessTreeSource, /windowsHide:\s*true/);
 assert.match(managedProcessTreeSource, /Get-AuthenticodeSignature/);
