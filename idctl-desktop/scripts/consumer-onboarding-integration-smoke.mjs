@@ -35,6 +35,7 @@ const onboardPayloads = [];
 const assignmentWrites = [];
 const rebuilds = [];
 const installedSkills = [];
+const removedSkills = [];
 const instructionWrites = [];
 const verificationBatches = [];
 const probes = [];
@@ -64,7 +65,7 @@ const agents = new Map([
     runtime: 'retired-runtime',
     model: 'retired-model',
     instructions: 'Keep this person-authored lead instruction.',
-    skills: ['identity'],
+    skills: ['identity', 'idagents-team-builder', 'wallet'],
     brainMcpReady: false,
   }],
 ]);
@@ -254,6 +255,13 @@ async function managerCall(method, args) {
     }
     case 'rebuildAgent': {
       const agent = findAgent(args[0]);
+      const missingSkill = ['idagents-team-builder', 'wallet']
+        .find((skill) => agent.skills.includes(skill));
+      if (missingSkill) {
+        throw new Error(
+          `Agent rebuild failed: Skill "${missingSkill}" not found at /fixture/library/skills/${missingSkill}/SKILL.md`,
+        );
+      }
       rebuilds.push(agent.name);
       agent.status = 'running';
       agent.brainMcpReady = agent.skills.includes('brain');
@@ -268,6 +276,13 @@ async function managerCall(method, args) {
       const agent = findAgent(name);
       installedSkills.push({ name, skill });
       if (!agent.skills.includes(skill)) agent.skills.push(skill);
+      return { ok: true };
+    }
+    case 'uninstallSkill': {
+      const [skill, name] = args;
+      const agent = findAgent(name);
+      removedSkills.push({ name, skill });
+      agent.skills = agent.skills.filter((candidate) => candidate !== skill);
       return { ok: true };
     }
     case 'coordinator:set':
@@ -886,13 +901,25 @@ try {
   );
   assert.equal(onboardPayloads.length, 0, 'rejected local assignments must not mutate the fleet');
   assert.equal(initialStatus.canDefer, true);
+  const deferCallCheckpoint = calls.length;
   const limited = await onboarding.deferConsumerOnboarding();
   assert.equal(limited.phase, 'limited');
   assert.equal(limited.limitedMode, true);
   assert.equal(limited.ready, false);
+  assert.deepEqual(
+    calls.slice(deferCallCheckpoint).find((row) => row.method === 'runtime:freshness')?.args,
+    [],
+    'entering limited mode must not wait for a forced provider refresh',
+  );
+  const resumeCallCheckpoint = calls.length;
   const resumed = await onboarding.resumeConsumerOnboarding();
   assert.equal(resumed.phase, 'required');
   assert.equal(resumed.limitedMode, false);
+  assert.deepEqual(
+    calls.slice(resumeCallCheckpoint).find((row) => row.method === 'runtime:freshness')?.args,
+    [],
+    'continuing setup must not wait for a forced provider refresh',
+  );
 
   const failed = await onboarding.runStarterFleetOnboarding(selectedAssignment);
   assert.equal(failed.phase, 'in_progress');
@@ -919,6 +946,14 @@ try {
     'the stale preserved lead must receive the verified assignment exactly once',
   );
   assert.deepEqual(rebuilds, ['lead'], 'the stopped/stale lead must rebuild before the injected retry boundary');
+  assert.deepEqual(
+    removedSkills,
+    [
+      { name: 'lead', skill: 'idagents-team-builder' },
+      { name: 'lead', skill: 'wallet' },
+    ],
+    'explicit setup must detach each exact unavailable legacy skill reported by Manager and no others',
+  );
 
   const completed = await onboarding.runStarterFleetOnboarding(selectedAssignment);
   assert.equal(completed.phase, 'ready');
