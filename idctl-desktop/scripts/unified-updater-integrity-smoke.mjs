@@ -66,5 +66,11 @@ assert.match(settingsView, /await call<\{ applying\?: boolean \}>\('update:apply
 assert.match(settingsView, /Restart & update/);
 assert.match(settingsView, /ahead of production channel/);
 assert.match(settingsView, /Automatic checks remain active and will resume downloads/);
+assert.match(settingsView, /const SETTINGS_STACK_REFRESH_MS = 5_000/);
+assert.match(
+  settingsView,
+  /setInterval\(\(\) => void refreshStack\(\), SETTINGS_STACK_REFRESH_MS\)/,
+  'Settings must replace transient startup health errors without requiring an updater-button click',
+);
 
 process.stdout.write('unified updater integrity smoke: ok\n');

@@ -26,6 +26,7 @@ const SETTINGS_FOCUS_REFRESH_MIN_MS = 60 * 1000;
 const SETTINGS_RUNTIME_CATALOG_WARM_MS = 5 * 60 * 1000;
 const SETTINGS_UPDATE_CHECK_STALE_MS = 15 * 60 * 1000;
 const SETTINGS_CONCURRENCY_REFRESH_MS = 3_000;
+const SETTINGS_STACK_REFRESH_MS = 5_000;
 const API_FIRST_PROVIDER = PROVIDER_CATALOG.find((e) => !e.local) ?? findProvider('openai');
 const DISCOVERY_MAX_AGE_MS = 2 * 60 * 1000;
 const STACK_BACKEND_PRESET_FILTER = 'backend-presets';
@@ -794,6 +795,22 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   useEffect(() => {
     reload();
   }, [store.team, store.coordinator]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshStack = async () => {
+      const next = await call<UnifiedStackViewStatus>('unifiedStack:status').catch(() => null);
+      if (!cancelled) setUnifiedStack(next);
+    };
+    const interval = window.setInterval(() => void refreshStack(), SETTINGS_STACK_REFRESH_MS);
+    const onFocus = () => { void refreshStack(); };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
 
   useEffect(() => {
     const idagents = (window as {
