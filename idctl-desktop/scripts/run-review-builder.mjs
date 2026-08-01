@@ -97,6 +97,7 @@ if (platform === 'mac') {
     '--config.mac.notarize=false',
     '--config.mac.hardenedRuntime=false',
     '--config.mac.requirements=build/review-requirements.txt',
+    '--config.afterSign=scripts/review-after-sign.mjs',
     '--config.dmg.sign=false',
   ]) requiredArgument(value);
 }
@@ -137,6 +138,7 @@ if (platform === 'mac') {
     || config.mac?.notarize !== 'false'
     || config.mac?.hardenedRuntime !== 'false'
     || config.mac?.requirements !== 'build/review-requirements.txt'
+    || config.afterSign !== 'scripts/review-after-sign.mjs'
     || config.dmg?.sign !== 'false'
   ) {
     fail('review builder did not retain the stable ad-hoc review identity without notarization');

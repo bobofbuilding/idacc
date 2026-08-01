@@ -277,7 +277,10 @@ for (const target of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
     `${target} must use the packaged application's sandbox defaults`,
   );
 }
-assert.match(workflow, /--config\.mac\.identity=- --config\.mac\.notarize=false --config\.mac\.hardenedRuntime=false --config\.mac\.requirements=build\/review-requirements\.txt --config\.dmg\.sign=false/);
+assert.match(workflow, /--config\.mac\.identity=- --config\.mac\.notarize=false --config\.mac\.hardenedRuntime=false --config\.mac\.requirements=build\/review-requirements\.txt --config\.afterSign=scripts\/review-after-sign\.mjs --config\.dmg\.sign=false/);
+assert.match(readFileSync(join(root, 'idctl-desktop', 'build', 'review-requirements.txt'), 'utf8'), /designated => true/);
+assert.match(readFileSync(join(root, 'idctl-desktop', 'build', 'review-root-requirements.txt'), 'utf8'), /designated => identifier "world\.idchain\.idagents-control"/);
+assert.match(readFileSync(join(root, 'idctl-desktop', 'scripts', 'review-after-sign.mjs'), 'utf8'), /--preserve-metadata=entitlements,flags/);
 assert.match(workflow, /--config\.win\.signExecutable=false/);
 assert.doesNotMatch(workflow, /\bnpx electron-builder\b/);
 assert.match(workflow, /node scripts\/run-review-builder\.mjs[\s\S]*\$\{\{\s*matrix\.target_args\s*\}\}[\s\S]*--\$\{\{\s*matrix\.arch\s*\}\}[\s\S]*\$\{\{\s*matrix\.unsigned_builder_args\s*\}\}[\s\S]*--config\.extraMetadata\.version="\$IDACC_REVIEW_VERSION"[\s\S]*--publish never/);
