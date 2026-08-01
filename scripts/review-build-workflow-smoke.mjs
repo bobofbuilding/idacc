@@ -288,6 +288,7 @@ assert.match(workflow, /--config\.win\.signExecutable=false/);
 assert.doesNotMatch(workflow, /\bnpx electron-builder\b/);
 assert.match(workflow, /node scripts\/run-review-builder\.mjs[\s\S]*\$\{\{\s*matrix\.target_args\s*\}\}[\s\S]*--\$\{\{\s*matrix\.arch\s*\}\}[\s\S]*\$\{\{\s*matrix\.unsigned_builder_args\s*\}\}[\s\S]*--config\.extraMetadata\.version="\$IDACC_REVIEW_VERSION"[\s\S]*--publish never/);
 assert.match(workflow, /--config\.publish\.channel=review/);
+assert.match(workflow, /if \[ "\$\{\{ matrix\.platform \}\}" = mac \]; then\s+ulimit -n 65536\s+fi/);
 assert.match(workflow, /IDACC_REVIEW_BUILD:\s*"1"/);
 assert.match(workflow, /IDACC_REVIEW_VERSION:\s*\$\{\{\s*needs\.prepare\.outputs\.review_version\s*\}\}/);
 assert.match(workflow, /REVIEW_VERSION="\$\{VERSION\}-review\.\$\{GITHUB_RUN_NUMBER\}"/);

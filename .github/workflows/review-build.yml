@@ -445,6 +445,9 @@ jobs:
         shell: bash
         working-directory: idctl-desktop
         run: |
+          if [ "${{ matrix.platform }}" = mac ]; then
+            ulimit -n 65536
+          fi
           npm run build:release
           npm run test:release-build-output
           node scripts/run-review-builder.mjs \
