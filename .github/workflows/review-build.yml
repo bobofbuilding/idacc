@@ -446,7 +446,10 @@ jobs:
         working-directory: idctl-desktop
         run: |
           if [ "${{ matrix.platform }}" = mac ]; then
-            ulimit -n 65536
+            sudo sysctl -w kern.maxfiles=524288
+            sudo sysctl -w kern.maxfilesperproc=524288
+            ulimit -n 524288
+            test "$(ulimit -n)" = 524288
           fi
           npm run build:release
           npm run test:release-build-output
