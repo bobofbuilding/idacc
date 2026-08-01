@@ -78,6 +78,7 @@ if (
   fail(`review builder target must contain exactly one ${expectedPlatformFlag} platform flag`);
 }
 requiredArgument(`--config.extraMetadata.version=${applicationVersion}`);
+requiredArgument('--config.publish.channel=review');
 const publishFlags = rawBuilderArgs
   .map((value, index) => ({ value, index }))
   .filter(({ value }) => value === '--publish' || value.startsWith('--publish='));
@@ -126,6 +127,7 @@ if (
   || config.publish?.owner !== 'bobofbuilding'
   || config.publish?.repo !== 'idacc'
   || config.publish?.releaseType !== 'release'
+  || config.publish?.channel !== 'review'
 ) {
   fail('review builder must retain only the compiled public IDACC publisher');
 }

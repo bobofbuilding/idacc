@@ -284,6 +284,7 @@ assert.match(readFileSync(join(root, 'idctl-desktop', 'scripts', 'review-after-s
 assert.match(workflow, /--config\.win\.signExecutable=false/);
 assert.doesNotMatch(workflow, /\bnpx electron-builder\b/);
 assert.match(workflow, /node scripts\/run-review-builder\.mjs[\s\S]*\$\{\{\s*matrix\.target_args\s*\}\}[\s\S]*--\$\{\{\s*matrix\.arch\s*\}\}[\s\S]*\$\{\{\s*matrix\.unsigned_builder_args\s*\}\}[\s\S]*--config\.extraMetadata\.version="\$IDACC_REVIEW_VERSION"[\s\S]*--publish never/);
+assert.match(workflow, /--config\.publish\.channel=review/);
 assert.match(workflow, /IDACC_REVIEW_BUILD:\s*"1"/);
 assert.match(workflow, /IDACC_REVIEW_VERSION:\s*\$\{\{\s*needs\.prepare\.outputs\.review_version\s*\}\}/);
 assert.match(workflow, /REVIEW_VERSION="\$\{VERSION\}-review\.\$\{GITHUB_RUN_NUMBER\}"/);
@@ -393,6 +394,7 @@ assert.match(
 assert.doesNotMatch(reviewBuilder, /requiredArgument\('--config\.publish=null'\)/);
 assert.match(reviewBuilder, /review builder must retain only the compiled public IDACC publisher/);
 assert.match(reviewBuilder, /--config\.extraMetadata\.version=/);
+assert.match(reviewBuilder, /--config\.publish\.channel=review/);
 assert.match(reviewBuilder, /process\.env\.IDACC_REVIEW_BUILD !== '1'/);
 assert.match(updater, /declare const __IDACC_REVIEW_BUILD__:\s*boolean/);
 assert.match(updater, /UPDATE_CHANNEL_POLICY === REVIEW_UPDATE_POLICY/);
@@ -971,6 +973,7 @@ const builderPolicy = spawnSync(process.execPath, [
   '--config.publish.owner=bobofbuilding',
   '--config.publish.repo=idacc',
   '--config.publish.releaseType=release',
+  '--config.publish.channel=review',
   `--config.extraMetadata.version=${applicationVersion}`,
   '--publish', 'never',
 ], {
@@ -997,6 +1000,7 @@ const duplicatePublishPolicy = spawnSync(process.execPath, [
   '--config.publish.owner=bobofbuilding',
   '--config.publish.repo=idacc',
   '--config.publish.releaseType=release',
+  '--config.publish.channel=review',
   `--config.extraMetadata.version=${applicationVersion}`,
   '--publish', 'never',
   '--publish', 'always',
@@ -1027,6 +1031,7 @@ const mismatchedPlatformPolicy = spawnSync(process.execPath, [
   '--config.publish.owner=bobofbuilding',
   '--config.publish.repo=idacc',
   '--config.publish.releaseType=release',
+  '--config.publish.channel=review',
   `--config.extraMetadata.version=${applicationVersion}`,
   '--publish', 'never',
 ], {

@@ -468,6 +468,7 @@ jobs:
             --config.publish.owner=bobofbuilding \
             --config.publish.repo=idacc \
             --config.publish.releaseType=release \
+            --config.publish.channel=review \
             --config.extraMetadata.version="$IDACC_REVIEW_VERSION" \
             --publish never
 
