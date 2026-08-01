@@ -14,6 +14,7 @@ import { build } from 'esbuild';
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = mkdtempSync(join(tmpdir(), 'idacc-updater-download-'));
 const bundledUpdater = join(scratch, 'updater.cjs');
+const bundledReviewUpdater = join(scratch, 'updater-review.cjs');
 const stateKey = '__IDACC_UPDATER_DOWNLOAD_TEST_STATE__';
 const require = createRequire(import.meta.url);
 let instance = 0;
@@ -107,7 +108,37 @@ try {
     }],
   });
 
-  function loadUpdater(overrides = {}) {
+  await build({
+    entryPoints: [join(desktopRoot, 'src', 'main', 'updater.ts')],
+    outfile: bundledReviewUpdater,
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+    logLevel: 'silent',
+    define: {
+      __IDACC_REVIEW_BUILD__: 'true',
+      __IDACC_UPDATE_CHANNEL_POLICY__: JSON.stringify(
+        'idacc-review-updater-enabled:v1',
+      ),
+    },
+    plugins: [{
+      name: 'review-updater-runtime-mocks',
+      setup(esbuild) {
+        esbuild.onResolve({ filter: /^electron$/ }, () => ({ path: 'electron', namespace: 'mock' }));
+        esbuild.onResolve({ filter: /^electron-updater$/ }, () => ({ path: 'electron-updater', namespace: 'mock' }));
+        esbuild.onResolve({ filter: /settings\/store\.ts$/ }, () => ({ path: 'settings', namespace: 'mock' }));
+        esbuild.onResolve({ filter: /settings\/schema\.ts$/ }, () => ({ path: 'schema', namespace: 'mock' }));
+        esbuild.onResolve({ filter: /updateTarget\.ts$/ }, () => ({ path: 'target', namespace: 'mock' }));
+        esbuild.onLoad({ filter: /.*/, namespace: 'mock' }, ({ path }) => ({
+          contents: mockModules[path],
+          loader: 'js',
+        }));
+      },
+    }],
+  });
+
+  function loadUpdater(overrides = {}, review = false) {
     const state = {
       currentVersion: '1.0.0',
       settings: {
@@ -139,7 +170,7 @@ try {
       };
     };
     const instancePath = join(scratch, `updater-${instance += 1}.cjs`);
-    copyFileSync(bundledUpdater, instancePath);
+    copyFileSync(review ? bundledReviewUpdater : bundledUpdater, instancePath);
     globalThis[stateKey] = state;
     const api = require(instancePath);
     delete globalThis[stateKey];
@@ -181,6 +212,7 @@ try {
         owner: 'bobofbuilding',
         repo: 'idacc',
         private: false,
+        channel: 'latest',
       },
       'profile data must never redirect the executable update feed',
     );
@@ -188,6 +220,34 @@ try {
     assert.equal(state.autoUpdater.autoInstallOnAppQuit, false);
     assert.equal(state.autoUpdater.allowDowngrade, false);
     assert.equal(state.autoUpdater.allowPrerelease, false);
+    assert.equal(state.autoUpdater.channel, 'latest');
+  }
+
+  {
+    const { api, state } = loadUpdater({
+      currentVersion: '1.2.0-review.8',
+      checkImpl: async () => ({ updateInfo: { version: '1.2.0-review.10' } }),
+      downloadImpl: async (updater) => {
+        updater.emit('update-downloaded', { version: '1.2.0-review.10' });
+        return ['/mock/review-update'];
+      },
+    }, true);
+    const checked = await api.checkForUpdate();
+    assert.equal(checked.channel, 'review');
+    assert.equal(checked.available, true, 'numeric review run 10 must be newer than review run 8');
+    assert.equal(state.latestCalls, 0, 'review builds must not probe the stable Latest route');
+    assert.equal(state.autoUpdater.allowPrerelease, true);
+    assert.equal(state.autoUpdater.channel, 'review');
+    assert.deepEqual(state.feeds.at(-1), {
+      provider: 'github',
+      owner: 'bobofbuilding',
+      repo: 'idacc',
+      private: false,
+      channel: 'review',
+    });
+    const staged = await api.downloadUpdate();
+    assert.equal(staged.staged, true);
+    assert.equal(staged.latest, '1.2.0-review.10');
   }
 
   {

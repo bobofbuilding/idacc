@@ -8,28 +8,29 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const requireFromDesktop = createRequire(join(root, 'idctl-desktop', 'package.json'));
 const { createClient } = requireFromDesktop('electron-updater/out/providerFactory.js');
 const { GitHubProvider } = requireFromDesktop('electron-updater/out/providers/GitHubProvider.js');
+const { parse: parseSemver } = requireFromDesktop('semver');
 const repository = 'bobofbuilding/idacc';
 const [owner, repo] = repository.split('/');
 const tag = 'v1.2.3';
 const digest = Buffer.alloc(64, 0x61).toString('base64');
 
-function updateYaml(platform) {
+function updateYaml(platform, version = '1.2.3') {
   const files = platform === 'darwin'
     ? [
-        'ID-Agents-Control-Center-1.2.3-arm64.zip',
-        'ID-Agents-Control-Center-1.2.3-x64.zip',
+        `ID-Agents-Control-Center-${version}-arm64.zip`,
+        `ID-Agents-Control-Center-${version}-x64.zip`,
       ]
     : platform === 'win32'
-      ? ['ID-Agents-Control-Center-1.2.3-x64.exe']
+      ? [`ID-Agents-Control-Center-${version}-x64.exe`]
       : [
-          'ID-Agents-Control-Center-1.2.3-x64.AppImage',
-          'ID-Agents-Control-Center-1.2.3-x64.deb',
+          `ID-Agents-Control-Center-${version}-x64.AppImage`,
+          `ID-Agents-Control-Center-${version}-x64.deb`,
         ];
   const primary = platform === 'darwin'
     ? files[1]
     : files[0];
   return [
-    'version: 1.2.3',
+    `version: ${version}`,
     'files:',
     ...files.flatMap((name) => [
       `  - url: ${name}`,
@@ -137,6 +138,73 @@ try {
       expectedPayloads.map((name) => (
         `https://github.com/${repository}/releases/download/${tag}/${name}`
       )),
+    );
+
+    const reviewTag = 'v1.2.4-review.10';
+    const reviewChannelName = channelName.replace('latest', 'review');
+    const reviewRequests = [];
+    const reviewExecutor = {
+      request: async (options) => {
+        reviewRequests.push(options);
+        const url = pathOf(options);
+        if (url === `https://github.com/${repository}/releases.atom`) {
+          return [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<feed xmlns="http://www.w3.org/2005/Atom">',
+            '  <entry>',
+            '    <title>v1.2.5</title>',
+            `    <link href="https://github.com/${repository}/releases/tag/v1.2.5"/>`,
+            '    <content>Stable content.</content>',
+            '  </entry>',
+            '  <entry>',
+            `    <title>${reviewTag}</title>`,
+            `    <link href="https://github.com/${repository}/releases/tag/${reviewTag}"/>`,
+            '    <content>Review content.</content>',
+            '  </entry>',
+            '</feed>',
+          ].join('\n');
+        }
+        if (url === `https://github.com/${repository}/releases/download/${reviewTag}/${reviewChannelName}`) {
+          return updateYaml(platform, '1.2.4-review.10');
+        }
+        throw new Error(`unexpected review updater request: ${url}`);
+      },
+    };
+    const reviewProvider = createClient(
+      {
+        provider: 'github',
+        owner,
+        repo,
+        private: false,
+        channel: 'review',
+      },
+      {
+        channel: 'review',
+        allowPrerelease: true,
+        currentVersion: parseSemver('1.2.4-review.8'),
+        fullChangelog: false,
+      },
+      {
+        executor: reviewExecutor,
+        platform,
+        isUseMultipleRangeRequest: false,
+      },
+    );
+    const reviewInfo = await reviewProvider.getLatestVersion();
+    assert.equal(reviewInfo.tag, reviewTag);
+    assert.equal(reviewInfo.version, '1.2.4-review.10');
+    assert.deepEqual(
+      reviewRequests.map(pathOf),
+      [
+        `https://github.com/${repository}/releases.atom`,
+        `https://github.com/${repository}/releases/download/${reviewTag}/${reviewChannelName}`,
+      ],
+      `${platform} review updater must select only the matching prerelease channel`,
+    );
+    assert.equal(
+      reviewRequests.every((request) => !Object.keys(request.headers || {}).some((name) => name.toLowerCase() === 'authorization')),
+      true,
+      'the public review updater must not send ambient GitHub credentials',
     );
   }
 } finally {

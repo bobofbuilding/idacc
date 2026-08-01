@@ -77,7 +77,6 @@ if (
 ) {
   fail(`review builder target must contain exactly one ${expectedPlatformFlag} platform flag`);
 }
-requiredArgument('--config.publish=null');
 requiredArgument(`--config.extraMetadata.version=${applicationVersion}`);
 const publishFlags = rawBuilderArgs
   .map((value, index) => ({ value, index }))
@@ -94,8 +93,10 @@ if (publishPolicy !== 'never') {
 }
 if (platform === 'mac') {
   for (const value of [
-    '--config.mac.identity=null',
+    '--config.mac.identity=-',
     '--config.mac.notarize=false',
+    '--config.mac.hardenedRuntime=false',
+    '--config.mac.requirements=build/review-requirements.txt',
     '--config.dmg.sign=false',
   ]) requiredArgument(value);
 }
@@ -119,20 +120,29 @@ if (normalized.publish !== 'never') {
   fail('review builder normalized publish policy did not remain fail-closed');
 }
 normalized.publish = 'never';
-if (config.publish !== 'null') fail('review builder publish configuration did not remain fail-closed');
-config.publish = null;
+if (
+  config.publish?.provider !== 'github'
+  || config.publish?.owner !== 'bobofbuilding'
+  || config.publish?.repo !== 'idacc'
+  || config.publish?.releaseType !== 'release'
+) {
+  fail('review builder must retain only the compiled public IDACC publisher');
+}
 if (config.extraMetadata?.version !== applicationVersion) {
   fail('review builder package identity does not match the workflow identity');
 }
 if (platform === 'mac') {
   if (
-    config.mac?.identity !== null
+    config.mac?.identity !== '-'
     || config.mac?.notarize !== 'false'
+    || config.mac?.hardenedRuntime !== 'false'
+    || config.mac?.requirements !== 'build/review-requirements.txt'
     || config.dmg?.sign !== 'false'
   ) {
-    fail('review builder did not explicitly disable macOS signing and notarization');
+    fail('review builder did not retain the stable ad-hoc review identity without notarization');
   }
   config.mac.notarize = false;
+  config.mac.hardenedRuntime = false;
   config.dmg.sign = false;
 }
 if (platform === 'win') {

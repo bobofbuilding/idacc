@@ -878,7 +878,7 @@ await build({
     ),
     __IDACC_UPDATE_CHANNEL_POLICY__: JSON.stringify(
       reviewBuild
-        ? 'idacc-review-updater-disabled:v1'
+        ? 'idacc-review-updater-enabled:v1'
         : 'idacc-production-updater-enabled:v1',
     ),
     __IDACC_RUNTIME_MANIFEST_SHA256__: JSON.stringify(runtimeManifestSha256),
@@ -945,7 +945,8 @@ cpSync(
 writeFileSync(resolve(ROOT, 'out/build-mode.json'), JSON.stringify({
   mode: releaseBuild ? 'production' : 'development',
   reviewOnly: reviewBuild,
-  updaterEnabled: !reviewBuild,
+  updaterEnabled: releaseBuild,
+  updaterChannel: reviewBuild ? 'review' : 'production',
   mainProcessStartupPolicy: {
     mode: mainProcessPolicyMode,
     marker: mainProcessPolicyMarker,

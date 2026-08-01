@@ -90,6 +90,21 @@ Do not publish a production build by hand. Local package commands are useful for
 development evidence, but only `.github/workflows/release.yml` is authorized to
 assemble and publish the unified macOS, Windows, and Linux application.
 
+### Review-channel updates
+
+For installed-app review before a consumer release, run the **Review build**
+workflow. It publishes an isolated GitHub prerelease tagged
+`v<source-version>-review.<run-number>` with the `review` updater descriptors and
+all supported operating-system packages. Review releases do not change the
+stable GitHub **Latest** release or the production `latest` update channel.
+
+Review builds deliberately require no private signing or Apple notarization
+credentials. macOS packages use a stable ad-hoc designated requirement, and all
+platforms use electron-builder SHA-512 update metadata. Install the first review
+package manually to bridge from an existing production or legacy build; later
+review builds can update that installed review app automatically. These packages
+are for owner review only and are not consumer-ready production releases.
+
 `idctl-desktop/src-tauri` is retained only as a developer interface simulation.
 It does not bundle or supervise Manager and Brain, its bundler is disabled, and
 the old `tauri`, `tauri:dev`, and `tauri:build` package commands deliberately

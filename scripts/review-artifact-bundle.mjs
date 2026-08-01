@@ -126,7 +126,7 @@ function isUpdaterSidecar(name) {
   const lower = basename(name).toLowerCase();
   return (
     lower === 'app-update.yml'
-    || /^latest(?:-[a-z0-9-]+)?\.ya?ml$/.test(lower)
+    || /^(?:latest|review)(?:-[a-z0-9-]+)?\.ya?ml$/.test(lower)
     || lower.endsWith('.blockmap')
   );
 }
@@ -350,6 +350,7 @@ function record(options) {
   const root = resolve(options.get('--root') || process.cwd());
   const output = resolve(required(options, '--output'));
   const installers = resolve(required(options, '--installers'));
+  const updaterRoot = resolve(required(options, '--updater'));
   const buildModePath = resolve(required(options, '--build-mode'));
   const platform = required(options, '--platform');
   const arch = required(options, '--arch');
@@ -374,16 +375,20 @@ function record(options) {
   if (!existsSync(installers) || !lstatSync(installers).isDirectory()) {
     fail(`review installer directory is missing: ${installers}`);
   }
+  if (!existsSync(updaterRoot) || !lstatSync(updaterRoot).isDirectory()) {
+    fail(`review updater directory is missing: ${updaterRoot}`);
+  }
 
   const buildMode = readJson(buildModePath, 'review build mode');
   if (
     buildMode.mode !== 'production'
     || buildMode.reviewOnly !== true
-    || buildMode.updaterEnabled !== false
+    || buildMode.updaterEnabled !== true
+    || buildMode.updaterChannel !== 'review'
     || buildMode.sourceVersion !== pkg.version
     || buildMode.applicationVersion !== applicationVersion
   ) {
-    fail('packaged review build is not marked review-only with self-update disabled');
+    fail('packaged review build is not isolated to the review update channel');
   }
 
   const artifactPaths = walkRegularFiles(installers);
@@ -411,6 +416,21 @@ function record(options) {
     fail(`${target} produced duplicate package names`);
   }
   assertTargetInstallerSet(target, artifacts);
+  const updaterArtifacts = walkRegularFiles(updaterRoot).map((path) => {
+    const name = basename(path);
+    if (!isUpdaterSidecar(name) || name.toLowerCase() === 'app-update.yml') {
+      fail(`unexpected review updater file: ${name}`);
+    }
+    return {
+      name,
+      byteLength: lstatSync(path).size,
+      sha256: sha256File(path),
+      mode: '0644',
+    };
+  }).sort((left, right) => left.name.localeCompare(right.name));
+  if (!updaterArtifacts.some(({ name }) => name.toLowerCase().endsWith('.yml'))) {
+    fail(`${target} review updater is missing its channel descriptor`);
+  }
 
   const runtimeLock = readJson(join(root, 'release', 'runtime-lock.json'), 'runtime lock');
   const timestamp = generatedAt(epochInput);
@@ -422,8 +442,10 @@ function record(options) {
     signed: false,
     notarized: false,
     updater: {
-      enabled: false,
-      descriptorsIncluded: false,
+      enabled: true,
+      channel: 'review',
+      descriptorsIncluded: true,
+      artifacts: updaterArtifacts,
     },
     candidate,
     generatedAt: timestamp,
@@ -760,12 +782,13 @@ function assemble(options) {
       || value.productionReady !== false
       || value.signed !== false
       || value.notarized !== false
-      || value.updater?.enabled !== false
-      || value.updater?.descriptorsIncluded !== false
+      || value.updater?.enabled !== true
+      || value.updater?.channel !== 'review'
+      || value.updater?.descriptorsIncluded !== true
       || value.credentials?.signingNotarizationRelease !== 'not-used'
       || value.credentials?.runtimeSourceCheckout !== RUNTIME_SOURCE_CREDENTIAL_NOTE
     ) {
-      fail(`invalid review-only policy record: ${path}`);
+      fail(`invalid isolated review-channel record: ${path}`);
     }
     if (
       value.candidate !== candidate
@@ -835,6 +858,7 @@ function assemble(options) {
 
     const platformRoot = dirname(dirname(path));
     const installerRoot = join(platformRoot, 'installers');
+    const updaterRoot = join(platformRoot, 'updater');
     const artifacts = Array.isArray(value.artifacts) ? value.artifacts : [];
     assertTargetInstallerSet(target, artifacts);
     const provenanceSource = join(platformRoot, 'provenance', target);
@@ -883,6 +907,37 @@ function assemble(options) {
       });
     }
 
+    const updaterArtifacts = Array.isArray(value.updater?.artifacts)
+      ? value.updater.artifacts
+      : [];
+    if (
+      value.updater?.enabled !== true
+      || value.updater?.channel !== 'review'
+      || value.updater?.descriptorsIncluded !== true
+      || !updaterArtifacts.length
+    ) {
+      fail(`${target} review record does not bind its review updater assets`);
+    }
+    for (const artifact of updaterArtifacts) {
+      const name = String(artifact?.name || '');
+      if (basename(name) !== name || !isUpdaterSidecar(name) || name === 'app-update.yml') {
+        fail(`invalid review updater asset in ${target}: ${name || '(missing)'}`);
+      }
+      const sourcePath = join(updaterRoot, name);
+      if (!existsSync(sourcePath) || !lstatSync(sourcePath).isFile()) {
+        fail(`recorded review updater asset is missing: ${sourcePath}`);
+      }
+      const actualSha256 = sha256File(sourcePath);
+      const actualByteLength = lstatSync(sourcePath).size;
+      if (artifact.sha256 !== actualSha256 || artifact.byteLength !== actualByteLength) {
+        fail(`recorded review updater bytes changed: ${name}`);
+      }
+      const destinationPath = join(output, 'updater', target, name);
+      mkdirSync(dirname(destinationPath), { recursive: true });
+      copyFileSync(sourcePath, destinationPath);
+      chmodSync(destinationPath, 0o644);
+    }
+
     const provenanceDestination = join(output, 'provenance', target);
     copyTree(provenanceSource, provenanceDestination);
     writeNormalizedPlatformChecksums(
@@ -912,8 +967,9 @@ function assemble(options) {
     productionReady: false,
     signing: 'unsigned-and-unnotarized',
     updater: {
-      enabled: false,
-      descriptorsIncluded: false,
+      enabled: true,
+      channel: 'review',
+      descriptorsIncluded: true,
     },
     candidate,
     generatedAt: commonGeneratedAt,
@@ -941,11 +997,6 @@ function assemble(options) {
   );
 
   const bundleFiles = walkRegularFiles(output);
-  for (const path of bundleFiles) {
-    if (isUpdaterSidecar(path)) {
-      fail(`updater descriptor or blockmap entered the assembled review bundle: ${path}`);
-    }
-  }
   const checksumLines = bundleFiles
     .filter((path) => basename(path) !== 'SHA256SUMS' || dirname(path) !== output)
     .map((path) => `${sha256File(path)}  ${portablePath(output, path)}`);
@@ -971,14 +1022,21 @@ function verifyPackage(options) {
   const updateDescriptor = readdirSync(resources).find(
     (name) => name.toLowerCase() === 'app-update.yml',
   );
-  if (updateDescriptor) {
-    fail(`review application contains forbidden updater configuration: ${updateDescriptor}`);
+  if (!updateDescriptor) fail('review application is missing its compiled updater configuration');
+  const requireFromDesktop = createRequire(join(root, 'idctl-desktop', 'package.json'));
+  const { load } = requireFromDesktop('js-yaml');
+  const updateConfiguration = load(readFileSync(join(resources, updateDescriptor), 'utf8'));
+  if (
+    updateConfiguration?.provider !== 'github'
+    || updateConfiguration?.owner !== 'bobofbuilding'
+    || updateConfiguration?.repo !== 'idacc'
+  ) {
+    fail('review application updater configuration is not pinned to public IDACC');
   }
   const asarPath = join(resources, 'app.asar');
   if (!existsSync(asarPath) || !lstatSync(asarPath).isFile()) {
     fail(`review application archive is missing: ${asarPath}`);
   }
-  const requireFromDesktop = createRequire(join(root, 'idctl-desktop', 'package.json'));
   const { extractFile } = requireFromDesktop('@electron/asar');
   const packaged = JSON.parse(extractFile(asarPath, 'package.json').toString('utf8'));
   const buildMode = JSON.parse(
@@ -999,7 +1057,8 @@ function verifyPackage(options) {
   if (
     buildMode.mode !== 'production'
     || buildMode.reviewOnly !== true
-    || buildMode.updaterEnabled !== false
+    || buildMode.updaterEnabled !== true
+    || buildMode.updaterChannel !== 'review'
     || buildMode.mainProcessStartupPolicy?.mode !== 'review'
     || buildMode.mainProcessStartupPolicy?.marker !== startupPolicyMarker
     || buildMode.mainProcessStartupPolicy?.rejectsLinuxSandboxDisableSwitches
@@ -1013,12 +1072,12 @@ function verifyPackage(options) {
     !mainProcess.startsWith(startupPolicyBanner)
     || mainProcess.indexOf(startupPolicyMarker, startupPolicyBanner.length) >= 0
     ||
-    !mainProcess.includes('idacc-review-updater-disabled:v1')
+    !mainProcess.includes('idacc-review-updater-enabled:v1')
     || mainProcess.includes('idacc-production-updater-enabled:v1')
   ) {
-    fail('packaged review application did not compile the updater fail-closed');
+    fail('packaged review application did not compile the isolated review updater');
   }
-  process.stdout.write(`verified review package ${applicationVersion} without app-update.yml\n`);
+  process.stdout.write(`verified review package ${applicationVersion} on the isolated review channel\n`);
 }
 
 const [command, ...optionValues] = process.argv.slice(2);

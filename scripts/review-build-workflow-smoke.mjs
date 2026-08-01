@@ -163,10 +163,13 @@ assert.match(
   workflow,
   /^permissions:\s*\n\s*contents:\s*read\s*\n\s*statuses:\s*write\s*$/m,
 );
-assert.doesNotMatch(
+assert.equal((workflow.match(/contents:\s*write/g) || []).length, 1);
+assert.match(
   workflow,
-  /contents:\s*write|id-token:\s*write|attestations:\s*write|actions:\s*write|packages:\s*write/,
+  /assemble-review-bundle:[\s\S]*?permissions:\s*\n\s*contents:\s*write/,
+  'only the final isolated prerelease publisher may write release contents',
 );
+assert.doesNotMatch(workflow, /id-token:\s*write|attestations:\s*write|actions:\s*write|packages:\s*write/);
 assert.match(workflow, /context=idacc\/unsigned-review-run/);
 assert.match(
   workflow,
@@ -179,11 +182,9 @@ assert.match(
   /IDACC_MANAGER_SOURCE:\s*\$\{\{\s*github\.workspace\s*\}\}\/\.runtime-sources\/manager/,
 );
 assert.match(workflow, /IDACC_REQUIRE_MANAGER_POLICY_SOURCE:\s*"1"/);
-assert.doesNotMatch(
-  workflow,
-  /gh\s+release|repos\/[^\s"']+\/releases|action-gh-release|create-release|upload-release-asset|softprops/i,
-  'review builds must never enter a GitHub Release publication path',
-);
+assert.match(workflow, /gh release create "\$TAG"[\s\S]*--prerelease/);
+assert.match(workflow, /test "\$\(gh release view "\$TAG"[\s\S]*\.isPrerelease\)" = true/);
+assert.doesNotMatch(workflow, /action-gh-release|create-release|upload-release-asset|softprops/i);
 assert.doesNotMatch(workflow, /\benvironment:\s*production\b/);
 assert.doesNotMatch(workflow, /--require-signing/);
 assert.match(workflow, /CSC_IDENTITY_AUTO_DISCOVERY:\s*"false"/);
@@ -249,7 +250,11 @@ const matrixBlock = workflow.slice(
   workflow.indexOf('matrix:\n'),
   workflow.indexOf('\n    env:\n', workflow.indexOf('matrix:\n')),
 );
-assert.doesNotMatch(matrixBlock, /latest[^ \n]*\.ya?ml|\.blockmap/i);
+assert.doesNotMatch(matrixBlock, /latest[^ \n]*\.ya?ml/i);
+assert.equal((matrixBlock.match(/updater_globs:/g) || []).length, 4);
+assert.equal((matrixBlock.match(/review-mac\.yml/g) || []).length, 2);
+assert.match(matrixBlock, /review\.yml/);
+assert.match(matrixBlock, /review-linux\.yml/);
 assert.equal(
   (matrixBlock.match(/release_smoke_args:/g) || []).length,
   4,
@@ -262,20 +267,20 @@ assert.equal(
 );
 assert.match(
   matrixBlock,
-  /os:\s*ubuntu-24\.04[\s\S]{0,320}target:\s*linux-x64[\s\S]{0,420}release_smoke_args:\s*--linux-github-actions-suid-sandbox/,
+  /os:\s*ubuntu-24\.04[\s\S]{0,320}target:\s*linux-x64[\s\S]{0,800}release_smoke_args:\s*--linux-github-actions-suid-sandbox/,
   'only the pinned Ubuntu 24 Linux review target may request isolated SUID sandbox preparation',
 );
 for (const target of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
   assert.match(
     matrixBlock,
-    new RegExp(`target:\\s*${target}[\\s\\S]{0,320}release_smoke_args:\\s*""`),
+    new RegExp(`target:\\s*${target}[\\s\\S]{0,800}release_smoke_args:\\s*""`),
     `${target} must use the packaged application's sandbox defaults`,
   );
 }
-assert.match(workflow, /--config\.mac\.identity=null --config\.mac\.notarize=false --config\.dmg\.sign=false/);
+assert.match(workflow, /--config\.mac\.identity=- --config\.mac\.notarize=false --config\.mac\.hardenedRuntime=false --config\.mac\.requirements=build\/review-requirements\.txt --config\.dmg\.sign=false/);
 assert.match(workflow, /--config\.win\.signExecutable=false/);
 assert.doesNotMatch(workflow, /\bnpx electron-builder\b/);
-assert.match(workflow, /node scripts\/run-review-builder\.mjs[\s\S]*\$\{\{\s*matrix\.target_args\s*\}\}[\s\S]*--\$\{\{\s*matrix\.arch\s*\}\}[\s\S]*\$\{\{\s*matrix\.unsigned_builder_args\s*\}\}[\s\S]*--config\.publish=null[\s\S]*--config\.extraMetadata\.version="\$IDACC_REVIEW_VERSION"[\s\S]*--publish never/);
+assert.match(workflow, /node scripts\/run-review-builder\.mjs[\s\S]*\$\{\{\s*matrix\.target_args\s*\}\}[\s\S]*--\$\{\{\s*matrix\.arch\s*\}\}[\s\S]*\$\{\{\s*matrix\.unsigned_builder_args\s*\}\}[\s\S]*--config\.extraMetadata\.version="\$IDACC_REVIEW_VERSION"[\s\S]*--publish never/);
 assert.match(workflow, /IDACC_REVIEW_BUILD:\s*"1"/);
 assert.match(workflow, /IDACC_REVIEW_VERSION:\s*\$\{\{\s*needs\.prepare\.outputs\.review_version\s*\}\}/);
 assert.match(workflow, /REVIEW_VERSION="\$\{VERSION\}-review\.\$\{GITHUB_RUN_NUMBER\}"/);
@@ -340,16 +345,16 @@ assert.match(
 );
 assert.match(
   workflow,
-  /pattern:\s*idacc-\$\{\{\s*needs\.prepare\.outputs\.candidate\s*\}\}-attempt-\*-platform-\*-unsigned-review/,
+  /pattern:\s*idacc-\$\{\{\s*needs\.prepare\.outputs\.candidate\s*\}\}-attempt-\$\{\{\s*github\.run_attempt\s*\}\}-platform-\*-unsigned-review/,
 );
 assert.match(
   workflow,
   /name:\s*idacc-\$\{\{\s*needs\.prepare\.outputs\.candidate\s*\}\}-attempt-\$\{\{\s*github\.run_attempt\s*\}\}-all-native-unsigned-review/,
 );
 assert.equal(
-  (workflow.match(/\$\{\{\s*github\.run_attempt\s*\}\}/g) || []).length,
-  2,
-  'platform and combined uploads must carry their immutable run-attempt identity',
+  (workflow.match(/\$\{\{\s*github\.run_attempt\s*\}\}/g) || []).length >= 3,
+  true,
+  'platform downloads and combined uploads must carry their immutable run-attempt identity',
 );
 assert.doesNotMatch(
   workflow,
@@ -358,35 +363,37 @@ assert.doesNotMatch(
 );
 assert.equal((workflow.match(/--run-attempt "\$GITHUB_RUN_ATTEMPT"/g) || []).length, 2);
 assert.match(workflow, /path:\s*review-platform\/\*\*/);
-assert.match(workflow, /path:\s*review-delivery\/\*/);
+assert.match(workflow, /path:\s*\|[\s\S]*review-delivery\/\*[\s\S]*publish\/\*/);
 assert.equal((workflow.match(/retention-days:\s*30/g) || []).length, 2);
-assert.match(workflow, /Updater descriptors and blockmaps are forbidden in review artifacts/);
-assert.match(workflow, /did not create a GitHub Release, change Latest, publish updater metadata, or enable self-update/);
-assert.match(workflow, /No signing, notarization, or GitHub Release publishing credentials were used/);
+assert.match(workflow, /Production updater descriptors are forbidden in review artifacts/);
+assert.match(workflow, /did not change the stable GitHub Latest route or the consumer production channel/);
+assert.match(workflow, /No private signing or notarization credentials were used/);
+assert.match(workflow, /verify-update-descriptors\.mjs[\s\S]*--channel review/);
 
 assert.match(builder, /const reviewBuild = releaseBuild && process\.env\.IDACC_REVIEW_BUILD === '1'/);
 assert.match(builder, /__IDACC_REVIEW_BUILD__:\s*JSON\.stringify\(reviewBuild\)/);
-assert.match(builder, /idacc-review-updater-disabled:v1/);
+assert.match(builder, /idacc-review-updater-enabled:v1/);
 assert.match(builder, /idacc-production-updater-enabled:v1/);
 assert.match(builder, /reviewOnly:\s*reviewBuild/);
-assert.match(builder, /updaterEnabled:\s*!reviewBuild/);
+assert.match(builder, /updaterEnabled:\s*releaseBuild/);
+assert.match(builder, /updaterChannel:\s*reviewBuild \? 'review' : 'production'/);
 assert.match(builder, /sourceVersion:\s*sourcePackageVersion/);
 assert.match(builder, /applicationVersion:\s*reviewVersion \|\| sourcePackageVersion/);
 assert.match(
   releaseBuildSmoke,
-  /assert\.equal\(\s*buildMode\.updaterEnabled,\s*!expectedReviewBuild/,
+  /buildMode\.updaterEnabled,\s*true/,
 );
 assert.match(
   releaseBuildSmoke,
   /expectedReviewBuild\s*\?\s*process\.env\.IDACC_REVIEW_VERSION\s*:\s*sourcePackage\.version/,
 );
-assert.match(reviewBuilder, /requiredArgument\('--config\.publish=null'\)/);
-assert.match(reviewBuilder, /config\.publish = null/);
+assert.doesNotMatch(reviewBuilder, /requiredArgument\('--config\.publish=null'\)/);
+assert.match(reviewBuilder, /review builder must retain only the compiled public IDACC publisher/);
 assert.match(reviewBuilder, /--config\.extraMetadata\.version=/);
 assert.match(reviewBuilder, /process\.env\.IDACC_REVIEW_BUILD !== '1'/);
 assert.match(updater, /declare const __IDACC_REVIEW_BUILD__:\s*boolean/);
 assert.match(updater, /UPDATE_CHANNEL_POLICY === REVIEW_UPDATE_POLICY/);
-assert.match(updater, /this unsigned review-only build cannot use the production update channel/);
+assert.match(updater, /autoUpdater\.channel = REVIEW_BUILD \? 'review' : 'latest'/);
 for (const [name, source] of [
   ['desktop package configuration', JSON.stringify(pkg)],
   ['desktop application source tree', applicationSourceTree],
@@ -416,14 +423,13 @@ assert.match(
   'capsule bytes must never be rewritten by cross-platform checkout EOL conversion',
 );
 assert.match(notice, /not a consumer release/i);
-assert.match(notice, /Self-update is disabled/i);
-assert.match(notice, /not[\s\S]*GitHub Release[\s\S]*does not change GitHub Latest/i);
+assert.match(notice, /Self-update is enabled only on the isolated `review` prerelease channel/i);
+assert.match(notice, /prerelease does not change the stable GitHub Latest route/i);
 assert.match(notice, /signed-tag, code-signing, notarization/);
-assert.match(notice, /No signing, notarization, or GitHub Release publishing credentials are used/);
+assert.match(notice, /No private signing or notarization credentials are used/);
 assert.match(notice, /No user-supplied or private runtime-source credential is used/i);
 assert.match(notice, /github\.token[\s\S]*public IDACC and Manager/i);
-assert.match(notice, /pending\/final review status[\s\S]*exact IDACC commit/i);
-assert.match(notice, /no release-write\s+permission/i);
+assert.match(notice, /pending\/final review status and the isolated prerelease[\s\S]*exact IDACC commit/i);
 assert.match(notice, /vendored runtime capsule/i);
 assert.match(notice, /publisher\s+assertions/i);
 assert.match(notice, /chmod 0755 ID-Agents-Control-Center-\*\.AppImage/);
@@ -869,10 +875,10 @@ const commit = 'a'.repeat(40);
 const sourceEpoch = '1767225600';
 const repository = 'bobofbuilding/idacc';
 const targets = [
-  { id: 'darwin-arm64', platform: 'darwin', arch: 'arm64', files: ['IDACC-arm64.dmg', 'IDACC-arm64.zip'] },
-  { id: 'darwin-x64', platform: 'darwin', arch: 'x64', files: ['IDACC-x64.dmg', 'IDACC-x64.zip'] },
-  { id: 'win32-x64', platform: 'win32', arch: 'x64', files: ['IDACC-x64.exe'] },
-  { id: 'linux-x64', platform: 'linux', arch: 'x64', files: ['IDACC-x64.AppImage', 'IDACC-x64.deb'] },
+  { id: 'darwin-arm64', platform: 'darwin', arch: 'arm64', files: ['IDACC-arm64.dmg', 'IDACC-arm64.zip'], updater: ['review-mac.yml', 'IDACC-arm64.zip.blockmap'] },
+  { id: 'darwin-x64', platform: 'darwin', arch: 'x64', files: ['IDACC-x64.dmg', 'IDACC-x64.zip'], updater: ['review-mac.yml', 'IDACC-x64.zip.blockmap'] },
+  { id: 'win32-x64', platform: 'win32', arch: 'x64', files: ['IDACC-x64.exe'], updater: ['review.yml', 'IDACC-x64.exe.blockmap'] },
+  { id: 'linux-x64', platform: 'linux', arch: 'x64', files: ['IDACC-x64.AppImage', 'IDACC-x64.deb'], updater: ['review-linux.yml'] },
 ];
 
 function write(path, content) {
@@ -924,7 +930,8 @@ function runHelper(args, expectSuccess = true) {
 function assertBuildMode(mode, expectedReviewBuild) {
   assert.equal(mode.mode, 'production');
   assert.equal(mode.reviewOnly, expectedReviewBuild);
-  assert.equal(mode.updaterEnabled, !expectedReviewBuild);
+  assert.equal(mode.updaterEnabled, true);
+  assert.equal(mode.updaterChannel, expectedReviewBuild ? 'review' : 'production');
   assert.equal(mode.sourceVersion, pkg.version);
   assert.equal(
     mode.applicationVersion,
@@ -936,13 +943,15 @@ assertBuildMode({
   mode: 'production',
   reviewOnly: false,
   updaterEnabled: true,
+  updaterChannel: 'production',
   sourceVersion: pkg.version,
   applicationVersion: pkg.version,
 }, false);
 assertBuildMode({
   mode: 'production',
   reviewOnly: true,
-  updaterEnabled: false,
+  updaterEnabled: true,
+  updaterChannel: 'review',
   sourceVersion: pkg.version,
   applicationVersion,
 }, true);
@@ -955,7 +964,10 @@ const builderPolicy = spawnSync(process.execPath, [
   '--',
   '--linux', 'AppImage', 'deb',
   '--x64',
-  '--config.publish=null',
+  '--config.publish.provider=github',
+  '--config.publish.owner=bobofbuilding',
+  '--config.publish.repo=idacc',
+  '--config.publish.releaseType=release',
   `--config.extraMetadata.version=${applicationVersion}`,
   '--publish', 'never',
 ], {
@@ -978,7 +990,10 @@ const duplicatePublishPolicy = spawnSync(process.execPath, [
   '--',
   '--linux', 'AppImage', 'deb',
   '--x64',
-  '--config.publish=null',
+  '--config.publish.provider=github',
+  '--config.publish.owner=bobofbuilding',
+  '--config.publish.repo=idacc',
+  '--config.publish.releaseType=release',
   `--config.extraMetadata.version=${applicationVersion}`,
   '--publish', 'never',
   '--publish', 'always',
@@ -1005,7 +1020,10 @@ const mismatchedPlatformPolicy = spawnSync(process.execPath, [
   '--',
   '--win', 'nsis',
   '--x64',
-  '--config.publish=null',
+  '--config.publish.provider=github',
+  '--config.publish.owner=bobofbuilding',
+  '--config.publish.repo=idacc',
+  '--config.publish.releaseType=release',
   `--config.extraMetadata.version=${applicationVersion}`,
   '--publish', 'never',
 ], {
@@ -1028,7 +1046,8 @@ try {
   write(buildMode, `${JSON.stringify({
     mode: 'production',
     reviewOnly: true,
-    updaterEnabled: false,
+    updaterEnabled: true,
+    updaterChannel: 'review',
     mainProcessStartupPolicy: {
       mode: 'review',
       marker: mainProcessStartupPolicyMarker('review'),
@@ -1046,10 +1065,14 @@ try {
   for (const target of targets) {
     const platformRoot = join(input, `artifact-${target.id}`, 'review-platform');
     const installers = join(platformRoot, 'installers');
+    const updater = join(platformRoot, 'updater');
     for (const name of target.files) {
       const path = join(installers, name);
       write(path, `${target.id}:${name}\n`);
       if (name.endsWith('.AppImage')) chmodSync(path, 0o755);
+    }
+    for (const name of target.updater) {
+      write(join(updater, name), `${target.id}:${name}\n`);
     }
     const recordPath = join(platformRoot, 'platform-records', `${target.id}.json`);
     runHelper([
@@ -1057,6 +1080,7 @@ try {
       '--root', root,
       '--output', recordPath,
       '--installers', installers,
+      '--updater', updater,
       '--build-mode', buildMode,
       '--platform', target.platform,
       '--arch', target.arch,
@@ -1199,13 +1223,16 @@ try {
   }
 
   const badInstallers = join(scratch, 'bad-installers');
+  const badUpdater = join(scratch, 'bad-updater');
   write(join(badInstallers, 'IDACC-x64.exe'), 'installer\n');
   write(join(badInstallers, 'latest.yml'), 'forbidden\n');
+  write(join(badUpdater, 'review.yml'), 'review\n');
   const rejected = runHelper([
     'record',
     '--root', root,
     '--output', join(scratch, 'bad-record.json'),
     '--installers', badInstallers,
+    '--updater', badUpdater,
     '--build-mode', buildMode,
     '--platform', 'win32',
     '--arch', 'x64',
@@ -1237,15 +1264,16 @@ try {
   assert.ok(existsSync(join(output, 'SHA256SUMS')));
   assert.equal(readdirSync(join(output, 'platform-records')).length, 4);
   assert.equal(readdirSync(join(output, 'installers')).length, 7);
-  assert.doesNotMatch(
+  assert.match(
     readFileSync(join(output, 'SHA256SUMS'), 'utf8'),
-    /latest[^ \n]*\.ya?ml|\.blockmap/i,
+    /review[^ \n]*\.ya?ml|\.blockmap/i,
   );
   const bundle = JSON.parse(readFileSync(join(output, 'REVIEW-BUNDLE.json'), 'utf8'));
   assert.equal(bundle.reviewOnly, true);
   assert.equal(bundle.productionReady, false);
-  assert.equal(bundle.updater.enabled, false);
-  assert.equal(bundle.updater.descriptorsIncluded, false);
+  assert.equal(bundle.updater.enabled, true);
+  assert.equal(bundle.updater.channel, 'review');
+  assert.equal(bundle.updater.descriptorsIncluded, true);
   assert.equal(bundle.applicationVersion, applicationVersion);
   assert.equal(bundle.credentials.signingNotarizationRelease, 'not-used');
   assert.match(bundle.credentials.runtimeSourceCheckout, /no private runtime-source credential was used/i);
@@ -1475,7 +1503,8 @@ try {
     `${JSON.stringify({
       mode: 'production',
       reviewOnly: true,
-      updaterEnabled: false,
+      updaterEnabled: true,
+      updaterChannel: 'review',
       mainProcessStartupPolicy: {
         mode: 'review',
         marker: mainProcessStartupPolicyMarker('review'),
@@ -1487,11 +1516,12 @@ try {
   );
   write(
     join(packageSource, 'out', 'main', 'main.cjs'),
-    `${mainProcessStartupBanner('review')}const compiledUpdatePolicy = "idacc-review-updater-disabled:v1";\n`,
+    `${mainProcessStartupBanner('review')}const compiledUpdatePolicy = "idacc-review-updater-enabled:v1";\n`,
   );
   const unpacked = join(scratch, 'fake-unpacked');
   const resources = join(unpacked, 'resources');
   mkdirSync(resources, { recursive: true });
+  write(join(resources, 'app-update.yml'), 'provider: github\nowner: bobofbuilding\nrepo: idacc\n');
   const requireFromDesktop = createRequire(join(root, 'idctl-desktop', 'package.json'));
   const { createPackage } = requireFromDesktop('@electron/asar');
   await createPackage(packageSource, join(resources, 'app.asar'));
@@ -1502,7 +1532,7 @@ try {
     '--source-version', pkg.version,
     '--application-version', applicationVersion,
   ]);
-  write(join(resources, 'app-update.yml'), 'provider: github\n');
+  write(join(resources, 'app-update.yml'), 'provider: github\nowner: attacker\nrepo: idacc\n');
   const updateConfigRejected = runHelper([
     'verify-package',
     '--root', root,
@@ -1512,7 +1542,7 @@ try {
   ], false);
   assert.match(
     `${updateConfigRejected.stdout}\n${updateConfigRejected.stderr}`,
-    /forbidden updater configuration/i,
+    /not pinned to public IDACC/i,
   );
 } finally {
   rmSync(scratch, { recursive: true, force: true });
