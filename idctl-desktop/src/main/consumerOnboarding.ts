@@ -137,11 +137,27 @@ async function rebuildStarterAgentRepairingMissingSkills(
       // the exact skill the Manager reports as unavailable. Required starter
       // skills are restored; unavailable optional/legacy references are
       // detached so they cannot permanently block an otherwise valid rebuild.
-      await bridgeCall(required.has(skill) ? 'installSkill' : 'uninstallSkill', [
-        skill,
-        candidate.name,
-        candidate.team,
-      ]);
+      if (required.has(skill)) {
+        await bridgeCall('installSkill', [skill, candidate.name, candidate.team]);
+        continue;
+      }
+
+      // Do not use the public uninstall route here. It deploys immediately,
+      // which means a second unavailable legacy reference makes that deploy
+      // fail and rolls the first removal back. Replace the metadata list
+      // without deploying, then let the next loop iteration discover any
+      // remaining stale reference. The successful iteration rebuilds once.
+      const groups = await bridgeCall('agents:allTeams', [{ force: true }]) as FleetGroup[];
+      const agent = groups
+        .find((group) => String(group.team ?? STARTER_TEAM) === candidate.team)
+        ?.agents?.find((entry) => String(entry.name ?? '') === candidate.name);
+      if (!agent) throw error;
+      const currentSkills = (Array.isArray(agent.metadata?.skills) ? agent.metadata.skills : [])
+        .map((entry) => String(entry ?? '').trim())
+        .filter(Boolean);
+      const nextSkills = currentSkills.filter((entry) => entry !== skill);
+      if (nextSkills.length === currentSkills.length) throw error;
+      await bridgeCall('setAgentSkills', [agent.id, nextSkills, candidate.team]);
     }
   }
 

@@ -58,6 +58,17 @@ export interface AgentMetadata {
   [key: string]: unknown;
 }
 
+export interface AgentBrainTools {
+  skillInstalled?: boolean;
+  contextInjection?: boolean;
+  mcpExplicit?: boolean;
+  mcpAttached?: boolean;
+  mcpServerCount?: number;
+  localRuntime?: boolean;
+  runtimeSupportsMcp?: boolean;
+  activeToolAccess?: boolean;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -73,6 +84,7 @@ export interface Agent {
   createdAt: number;
   lastHealthCheck?: number;
   metadata?: AgentMetadata;
+  brainTools?: AgentBrainTools;
   teamName?: string;
   deploymentShape?: 'local-process' | 'remote-endpoint';
   pid?: number | null;

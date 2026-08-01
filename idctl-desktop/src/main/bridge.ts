@@ -2280,6 +2280,8 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     (team ? client.withTeam(String(team)) : client).setAgentEffort(String(id), String(effort ?? '')),
   setAgentSpeed: (id: string, speed: string, team?: string) =>
     (team ? client.withTeam(String(team)) : client).setAgentSpeed(String(id), String(speed ?? '')),
+  setAgentSkills: (id: string, skills: string[], team?: string) =>
+    (team ? client.withTeam(String(team)) : client).setAgentSkills(String(id), Array.isArray(skills) ? skills.map(String) : []),
   // reassign a local agent to another team (rebuilds it there)
   'agent:move': (id: string, team: string, sourceTeam?: string, createTarget?: boolean) =>
     (sourceTeam ? client.withTeam(String(sourceTeam)) : client).moveAgent(String(id), String(team), { createTarget: Boolean(createTarget) }),

@@ -481,6 +481,7 @@ const ACTIONS: Record<string, (args: unknown[], result: unknown) => Summary> = {
   setAgentRuntime: (a) => ({ subject: `agent ${s(a[0])} runtime → ${s(a[1])}`, data: { id: s(a[0]), runtime: s(a[1]), team: s(a[2]) }, tags: ['agent-config'] }),
   setAgentEffort: (a) => ({ subject: `agent ${s(a[0])} effort → ${s(a[1])}`, data: { id: s(a[0]), effort: s(a[1]), team: s(a[2]) }, tags: ['agent-config'] }),
   setAgentSpeed: (a) => ({ subject: `agent ${s(a[0])} speed → ${s(a[1])}`, data: { id: s(a[0]), speed: s(a[1]), team: s(a[2]) }, tags: ['agent-config'] }),
+  setAgentSkills: (a) => ({ subject: `agent ${s(a[0])} capabilities reconciled`, data: { id: s(a[0]), count: Array.isArray(a[1]) ? a[1].length : 0, team: s(a[2]) }, tags: ['agent-config', 'capability'] }),
   'agent:setInstructions': (a) => ({ subject: `agent ${s(a[0])} instructions updated`, data: { id: s(a[0]), team: s(a[2]), chars: s(a[1]).length }, tags: ['agent-config'] }),
   'agent:move': (a) => ({ subject: `agent ${s(a[0])} ${s(a[2]) ? `${s(a[2])} → ` : '→ team '}${s(a[1])}`, data: { id: s(a[0]), team: s(a[1]), sourceTeam: s(a[2]), createTarget: Boolean(a[3]) }, tags: ['agent-config'] }),
   'agent:delete': (a) => ({ subject: `agent ${s(a[1]) ? `${s(a[1])}/` : ''}${s(a[0])} deleted`, data: { agent: s(a[0]), team: s(a[1]) }, tags: ['agent-config', 'destructive'] }),

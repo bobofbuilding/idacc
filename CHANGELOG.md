@@ -8,6 +8,13 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.689] — 2026-08-01
+### What changed
+- Preserve Manager-reported Brain and MCP readiness through the IDACC API boundary so a healthy starter team can complete private workspace setup.
+- Reconcile unavailable legacy starter capabilities atomically, avoiding partial rebuild loops that strand one agent in a failed state.
+- Bundle Manager 0.1.157 with one-time, recovery-backed migration for pre-receipt managed overlays, strict protection for later user edits, and a production dependency tree free of known advisories.
+- Keep unsupported-but-available provider routes informational instead of treating them as blockers for an otherwise complete starter workspace.
+
 ## [0.1.687] — 2026-07-31
 ### What changed
 - Restore existing Manager and Brain state when a legacy installation opens its first unified app profile, using consistent SQLite snapshots and rollback-safe retained copies.

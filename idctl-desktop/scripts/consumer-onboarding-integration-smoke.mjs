@@ -278,13 +278,18 @@ async function managerCall(method, args) {
       if (!agent.skills.includes(skill)) agent.skills.push(skill);
       return { ok: true };
     }
-    case 'uninstallSkill': {
-      const [skill, name] = args;
-      const agent = findAgent(name);
-      removedSkills.push({ name, skill });
-      agent.skills = agent.skills.filter((candidate) => candidate !== skill);
+    case 'setAgentSkills': {
+      const [id, skills] = args;
+      const agent = [...agents.values()].find((candidate) => candidate.id === id);
+      if (!agent) throw new Error(`fixture agent id not found: ${String(id)}`);
+      for (const skill of agent.skills.filter((candidate) => !skills.includes(candidate))) {
+        removedSkills.push({ name: agent.name, skill });
+      }
+      agent.skills = [...skills];
       return { ok: true };
     }
+    case 'uninstallSkill':
+      throw new Error('per-skill uninstall must not be used for multi-stale legacy profile repair');
     case 'coordinator:set':
       hierarchy.coordinators[String(args[0])] = String(args[1]);
       return { ok: true };

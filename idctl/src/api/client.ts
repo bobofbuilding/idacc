@@ -293,12 +293,23 @@ export function normalizeManagerEvent(raw: unknown): ManagerEvent | null {
   };
 }
 
-function normalizeAgentRecord(raw: unknown): Agent | null {
+export function normalizeAgentRecord(raw: unknown): Agent | null {
   const row = objectRecord(raw);
   const id = textField(row.id) ?? textField(row.name);
   const name = textField(row.name) ?? textField(row.alias) ?? id;
   if (!id || !name) return null;
   const metadata = objectRecord(row.metadata);
+  const rawBrainTools = objectRecord(row.brainTools);
+  const brainTools = {
+    ...(typeof rawBrainTools.skillInstalled === 'boolean' ? { skillInstalled: rawBrainTools.skillInstalled } : {}),
+    ...(typeof rawBrainTools.contextInjection === 'boolean' ? { contextInjection: rawBrainTools.contextInjection } : {}),
+    ...(typeof rawBrainTools.mcpExplicit === 'boolean' ? { mcpExplicit: rawBrainTools.mcpExplicit } : {}),
+    ...(typeof rawBrainTools.mcpAttached === 'boolean' ? { mcpAttached: rawBrainTools.mcpAttached } : {}),
+    ...(numberField(rawBrainTools.mcpServerCount) != null ? { mcpServerCount: numberField(rawBrainTools.mcpServerCount) } : {}),
+    ...(typeof rawBrainTools.localRuntime === 'boolean' ? { localRuntime: rawBrainTools.localRuntime } : {}),
+    ...(typeof rawBrainTools.runtimeSupportsMcp === 'boolean' ? { runtimeSupportsMcp: rawBrainTools.runtimeSupportsMcp } : {}),
+    ...(typeof rawBrainTools.activeToolAccess === 'boolean' ? { activeToolAccess: rawBrainTools.activeToolAccess } : {}),
+  };
   return {
     id,
     name,
@@ -314,6 +325,7 @@ function normalizeAgentRecord(raw: unknown): Agent | null {
     createdAt: numberField(row.createdAt ?? row.created_at) ?? 0,
     lastHealthCheck: numberField(row.lastHealthCheck ?? row.last_health_check),
     ...(Object.keys(metadata).length ? { metadata } : {}),
+    ...(Object.keys(brainTools).length ? { brainTools } : {}),
     ...(textField(row.teamName ?? row.team_name ?? row.team) ? { teamName: textField(row.teamName ?? row.team_name ?? row.team) } : {}),
     ...(textField(row.deploymentShape) === 'remote-endpoint' ? { deploymentShape: 'remote-endpoint' as const } : textField(row.deploymentShape) === 'local-process' ? { deploymentShape: 'local-process' as const } : {}),
     pid: numberField(row.pid) ?? null,
@@ -950,6 +962,22 @@ export class ManagerClient {
    */
   async setAgentSpeed(agentId: string, speed: string, signal?: AbortSignal): Promise<{ metadata?: Record<string, unknown> }> {
     return this.post(`/agents/${encodeURIComponent(agentId)}/metadata`, { metadata: { speed } }, signal);
+  }
+
+  /**
+   * Replace an agent's complete skill reference list without deploying it.
+   * This is intentionally separate from installSkill/uninstallSkill: those
+   * routes live-deploy after every individual mutation, so they cannot repair
+   * a legacy profile that contains more than one unavailable skill reference.
+   * The caller must rebuild once after the reconciled list is complete.
+   */
+  async setAgentSkills(agentId: string, skills: string[], signal?: AbortSignal): Promise<{ metadata?: Record<string, unknown> }> {
+    const normalized = Array.from(new Set(
+      (Array.isArray(skills) ? skills : [])
+        .map((skill) => String(skill ?? '').trim())
+        .filter(Boolean),
+    ));
+    return this.post(`/agents/${encodeURIComponent(agentId)}/metadata`, { metadata: { skills: normalized } }, signal);
   }
 
   /**
