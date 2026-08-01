@@ -93,11 +93,15 @@ if (publishPolicy !== 'never') {
   fail('review builder must use --publish never');
 }
 if (platform === 'mac') {
+  // The staged runtime manifest pins the exact bytes of Manager and Brain.
+  // Their distributed Mach-O files are already signed, so replacing those
+  // nested signatures would mutate the verified payload during packaging.
   for (const value of [
     '--config.mac.identity=-',
     '--config.mac.notarize=false',
     '--config.mac.hardenedRuntime=false',
     '--config.mac.requirements=build/review-requirements.txt',
+    '--config.mac.signIgnore=/Contents/Resources/idacc-runtime/',
     '--config.afterSign=scripts/review-after-sign.mjs',
     '--config.dmg.sign=false',
   ]) requiredArgument(value);
@@ -140,6 +144,7 @@ if (platform === 'mac') {
     || config.mac?.notarize !== 'false'
     || config.mac?.hardenedRuntime !== 'false'
     || config.mac?.requirements !== 'build/review-requirements.txt'
+    || config.mac?.signIgnore !== '/Contents/Resources/idacc-runtime/'
     || config.afterSign !== 'scripts/review-after-sign.mjs'
     || config.dmg?.sign !== 'false'
   ) {
@@ -147,6 +152,7 @@ if (platform === 'mac') {
   }
   config.mac.notarize = false;
   config.mac.hardenedRuntime = false;
+  config.mac.signIgnore = '/Contents/Resources/idacc-runtime/';
   config.dmg.sign = false;
 }
 if (platform === 'win') {

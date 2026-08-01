@@ -280,7 +280,7 @@ for (const target of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
     `${target} must use the packaged application's sandbox defaults`,
   );
 }
-assert.match(workflow, /--config\.mac\.identity=- --config\.mac\.notarize=false --config\.mac\.hardenedRuntime=false --config\.mac\.requirements=build\/review-requirements\.txt --config\.afterSign=scripts\/review-after-sign\.mjs --config\.dmg\.sign=false/);
+assert.match(workflow, /--config\.mac\.identity=- --config\.mac\.notarize=false --config\.mac\.hardenedRuntime=false --config\.mac\.requirements=build\/review-requirements\.txt --config\.mac\.signIgnore=\/Contents\/Resources\/idacc-runtime\/ --config\.afterSign=scripts\/review-after-sign\.mjs --config\.dmg\.sign=false/);
 assert.match(readFileSync(join(root, 'idctl-desktop', 'build', 'review-requirements.txt'), 'utf8'), /designated => true/);
 assert.match(readFileSync(join(root, 'idctl-desktop', 'build', 'review-root-requirements.txt'), 'utf8'), /designated => identifier "world\.idchain\.idagents-control"/);
 assert.match(readFileSync(join(root, 'idctl-desktop', 'scripts', 'review-after-sign.mjs'), 'utf8'), /--preserve-metadata=entitlements,flags/);
@@ -399,6 +399,7 @@ assert.doesNotMatch(reviewBuilder, /requiredArgument\('--config\.publish=null'\)
 assert.match(reviewBuilder, /review builder must retain only the compiled public IDACC publisher/);
 assert.match(reviewBuilder, /--config\.extraMetadata\.version=/);
 assert.match(reviewBuilder, /--config\.publish\.channel=review/);
+assert.match(reviewBuilder, /--config\.mac\.signIgnore=\/Contents\/Resources\/idacc-runtime\//);
 assert.match(reviewBuilder, /process\.env\.IDACC_REVIEW_BUILD !== '1'/);
 assert.match(updater, /declare const __IDACC_REVIEW_BUILD__:\s*boolean/);
 assert.match(updater, /UPDATE_CHANNEL_POLICY === REVIEW_UPDATE_POLICY/);

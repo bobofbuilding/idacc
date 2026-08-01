@@ -264,7 +264,7 @@ jobs:
             runtime_platform: darwin
             arch: arm64
             target_args: --mac dmg zip
-            unsigned_builder_args: --config.mac.identity=- --config.mac.notarize=false --config.mac.hardenedRuntime=false --config.mac.requirements=build/review-requirements.txt --config.afterSign=scripts/review-after-sign.mjs --config.dmg.sign=false
+            unsigned_builder_args: --config.mac.identity=- --config.mac.notarize=false --config.mac.hardenedRuntime=false --config.mac.requirements=build/review-requirements.txt --config.mac.signIgnore=/Contents/Resources/idacc-runtime/ --config.afterSign=scripts/review-after-sign.mjs --config.dmg.sign=false
             release_smoke_args: ""
             unpacked: mac-arm64/ID Agents Control Center.app
             installer_globs: |
@@ -279,7 +279,7 @@ jobs:
             runtime_platform: darwin
             arch: x64
             target_args: --mac dmg zip
-            unsigned_builder_args: --config.mac.identity=- --config.mac.notarize=false --config.mac.hardenedRuntime=false --config.mac.requirements=build/review-requirements.txt --config.afterSign=scripts/review-after-sign.mjs --config.dmg.sign=false
+            unsigned_builder_args: --config.mac.identity=- --config.mac.notarize=false --config.mac.hardenedRuntime=false --config.mac.requirements=build/review-requirements.txt --config.mac.signIgnore=/Contents/Resources/idacc-runtime/ --config.afterSign=scripts/review-after-sign.mjs --config.dmg.sign=false
             release_smoke_args: ""
             unpacked: mac/ID Agents Control Center.app
             installer_globs: |
