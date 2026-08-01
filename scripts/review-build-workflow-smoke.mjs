@@ -191,16 +191,19 @@ assert.match(workflow, /CSC_IDENTITY_AUTO_DISCOVERY:\s*"false"/);
 for (const credential of [
   'CSC_LINK',
   'CSC_KEY_PASSWORD',
+  'CSC_NAME',
   'WIN_CSC_LINK',
   'WIN_CSC_KEY_PASSWORD',
+  'WINDOWS_EXPECTED_PUBLISHER_SUBJECT',
   'APPLE_API_KEY',
   'APPLE_API_KEY_ID',
   'APPLE_API_ISSUER',
+  'APPLE_TEAM_ID',
 ]) {
-  assert.match(
+  assert.doesNotMatch(
     workflow,
-    new RegExp(`^\\s*${credential}:\\s*""\\s*$`, 'm'),
-    `${credential} must remain empty in unsigned review jobs`,
+    new RegExp(`^\\s*${credential}:`, 'm'),
+    `${credential} must not be exported in credential-free review jobs`,
   );
 }
 assert.equal(

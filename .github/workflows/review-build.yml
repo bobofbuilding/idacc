@@ -322,16 +322,6 @@ jobs:
       IDACC_REVIEW_BUILD: "1"
       IDACC_REVIEW_VERSION: ${{ needs.prepare.outputs.review_version }}
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      CSC_LINK: ""
-      CSC_KEY_PASSWORD: ""
-      CSC_NAME: ""
-      WIN_CSC_LINK: ""
-      WIN_CSC_KEY_PASSWORD: ""
-      WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ""
-      APPLE_API_KEY: ""
-      APPLE_API_KEY_ID: ""
-      APPLE_API_ISSUER: ""
-      APPLE_TEAM_ID: ""
 
     steps:
       - name: Check out the exact IDACC review commit
