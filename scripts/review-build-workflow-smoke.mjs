@@ -377,6 +377,15 @@ assert.match(workflow, /Production updater descriptors are forbidden in review a
 assert.match(workflow, /did not change the stable GitHub Latest route or the consumer production channel/);
 assert.match(workflow, /No private signing or notarization credentials were used/);
 assert.match(workflow, /verify-update-descriptors\.mjs[\s\S]*--channel review/);
+const reviewAssemblyBlock = workflow.slice(
+  workflow.indexOf('assemble-review-bundle:'),
+  workflow.indexOf('\n  report-review-status:', workflow.indexOf('assemble-review-bundle:')),
+);
+assert.ok(
+  reviewAssemblyBlock.indexOf('npm ci --prefix idctl-desktop --omit=dev --ignore-scripts')
+    < reviewAssemblyBlock.indexOf('node scripts/merge-update-metadata.mjs'),
+  'review assembly must install the exact locked metadata parser before merging updater feeds',
+);
 
 assert.match(builder, /const reviewBuild = releaseBuild && process\.env\.IDACC_REVIEW_BUILD === '1'/);
 assert.match(builder, /__IDACC_REVIEW_BUILD__:\s*JSON\.stringify\(reviewBuild\)/);
