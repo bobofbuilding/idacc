@@ -113,8 +113,8 @@ const expectedInstallers = [
   `ID-Agents-Control-Center-${version}-arm64.zip`,
   `ID-Agents-Control-Center-${version}-x64.zip`,
   `ID-Agents-Control-Center-${version}-x64.exe`,
-  `ID-Agents-Control-Center-${version}-x64.AppImage`,
-  `ID-Agents-Control-Center-${version}-x64.deb`,
+  `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
+  `ID-Agents-Control-Center-${version}-amd64.deb`,
 ];
 const installerSuffixes = ['.dmg', '.zip', '.exe', '.AppImage', '.deb'];
 const actualFiles = readdirSync(directory, { withFileTypes: true });
@@ -154,10 +154,10 @@ const expectations = new Map([
   }],
   [`${channel}-linux.yml`, {
     files: [
-      `ID-Agents-Control-Center-${version}-x64.AppImage`,
-      `ID-Agents-Control-Center-${version}-x64.deb`,
+      `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
+      `ID-Agents-Control-Center-${version}-amd64.deb`,
     ],
-    primary: `ID-Agents-Control-Center-${version}-x64.AppImage`,
+    primary: `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
   }],
 ]);
 
