@@ -376,6 +376,16 @@ if (managerSource) {
     /if \(process\.env\.IDACC_MANAGED_SERVICE !== '1'\) return 0;/,
     'standalone Manager startup must not inherit the managed parent-watchdog grace delay',
   );
+  assert.match(
+    managerSource,
+    /startIdleParkingSweeper\(\): void \{[\s\S]*if \(process\.env\.ID_IDLE_PARK_ENABLED !== 'true'\) return;/,
+    'automatic idle parking must remain disabled unless an operator explicitly opts in',
+  );
+  assert.doesNotMatch(
+    managerSource,
+    /startIdleParkingSweeper\(\): void \{[\s\S]{0,800}ID_IDLE_PARK_DISABLED/,
+    'absence of an opt-out flag must never authorize automatic agent shutdown',
+  );
 }
 assert.match(
   unifiedStackSource,
