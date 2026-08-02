@@ -15,6 +15,7 @@ subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 - Keep agents running unless the user explicitly stops them, align HR structure with Dashboard fleet views, and complete the Computer Use full-control workflow.
 - Retire the dormant context-retrieval adapter and preserve review updater integrity across macOS, Windows, and Linux unsigned review packages.
 - Align both application toolchains on TypeScript 7.0.2 and pin production provenance to the reviewed `actions/attest` 4.2.1 commit while retaining the Electron 41 ABI boundary required by the bundled Manager.
+- Restore an explicit owner-authorized unsigned stable release mode that retains signed source tags, all seven OS installers, immutable provenance, exact updater descriptors, and anonymous public verification while clearly disclosing the absence of Apple notarization and Windows Authenticode.
 
 ## [0.1.690] — 2026-08-01
 ### What changed

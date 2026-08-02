@@ -17,6 +17,18 @@ on:
         description: Unique release-command dispatch identity
         required: true
         type: string
+      signing_mode:
+        description: Platform package signing policy
+        required: true
+        default: signed
+        type: choice
+        options:
+          - signed
+          - unsigned
+      unsigned_acknowledgement:
+        description: For unsigned mode, enter publish-vX.Y.Z-unsigned
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -24,6 +36,8 @@ permissions:
 env:
   RELEASE_VERSION: ${{ inputs.version }}
   RELEASE_REQUEST_ID: ${{ inputs.request_id }}
+  RELEASE_SIGNING_MODE: ${{ inputs.signing_mode }}
+  UNSIGNED_RELEASE_ACKNOWLEDGEMENT: ${{ inputs.unsigned_acknowledgement }}
 
 concurrency:
   group: production-release
@@ -56,6 +70,15 @@ jobs:
           fi
           if [[ ! "$RELEASE_REQUEST_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]]; then
             echo "::error::request_id must be a unique 8-128 character release-command identity."
+            exit 1
+          fi
+          if [ "$RELEASE_SIGNING_MODE" != signed ] && [ "$RELEASE_SIGNING_MODE" != unsigned ]; then
+            echo "::error::signing_mode must be signed or unsigned."
+            exit 1
+          fi
+          if [ "$RELEASE_SIGNING_MODE" = unsigned ] \
+            && [ "$UNSIGNED_RELEASE_ACKNOWLEDGEMENT" != "publish-v$RELEASE_VERSION-unsigned" ]; then
+            echo "::error::Unsigned stable publication requires the exact acknowledgement publish-v$RELEASE_VERSION-unsigned."
             exit 1
           fi
           printf 'tag=v%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
@@ -402,7 +425,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: Signed and notarized macOS arm64
+          - label: macOS arm64 consumer bundle
             os: macos-15
             platform: mac
             runtime_platform: darwin
@@ -419,7 +442,7 @@ jobs:
               idctl-desktop/release/*.dmg
               idctl-desktop/release/*.zip
               idctl-desktop/release/*.blockmap
-          - label: Signed and notarized macOS Intel
+          - label: macOS Intel consumer bundle
             os: macos-15-intel
             platform: mac
             runtime_platform: darwin
@@ -436,7 +459,7 @@ jobs:
               idctl-desktop/release/*.dmg
               idctl-desktop/release/*.zip
               idctl-desktop/release/*.blockmap
-          - label: Authenticode-signed Windows x64
+          - label: Windows x64 consumer bundle
             os: windows-2025
             platform: win
             runtime_platform: win32
@@ -595,7 +618,7 @@ jobs:
 
       - name: Prepare Apple notarization key
         id: apple-key
-        if: matrix.platform == 'mac'
+        if: matrix.platform == 'mac' && inputs.signing_mode == 'signed'
         shell: bash
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -606,6 +629,7 @@ jobs:
           echo "path=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_OUTPUT"
 
       - name: Enforce production signing policy
+        if: inputs.signing_mode == 'signed'
         shell: bash
         env:
           CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_DEVELOPER_ID_P12 || '' }}
@@ -625,7 +649,8 @@ jobs:
           --platform ${{ matrix.platform }}
           ${{ matrix.platform == 'linux' && '' || '--require-signing' }}
 
-      - name: Build native consumer artifacts
+      - name: Build signed native consumer artifacts
+        if: inputs.signing_mode == 'signed'
         shell: bash
         working-directory: idctl-desktop
         env:
@@ -647,6 +672,48 @@ jobs:
           node scripts/run-production-builder.mjs \
             --platform ${{ matrix.platform }} \
             -- ${{ matrix.target_args }} --${{ matrix.arch }} --publish never
+
+      - name: Build owner-authorized unsigned stable artifacts
+        if: inputs.signing_mode == 'unsigned'
+        shell: bash
+        working-directory: idctl-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_LINK: ""
+          CSC_KEY_PASSWORD: ""
+          WIN_CSC_LINK: ""
+          WIN_CSC_KEY_PASSWORD: ""
+          WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ""
+          IDACC_UNSIGNED_STABLE_BUILD: "1"
+          IDACC_UNSIGNED_STABLE_VERSION: ${{ inputs.version }}
+        run: |
+          npm run build:release
+          npm run test:release-build-output
+          EXTRA_ARGS=()
+          if [ "${{ matrix.platform }}" = mac ]; then
+            EXTRA_ARGS+=(
+              --config.mac.identity=-
+              --config.mac.notarize=false
+              --config.mac.hardenedRuntime=false
+              --config.mac.requirements=build/review-requirements.txt
+              --config.mac.signIgnore=/Contents/Resources/idacc-runtime/
+              --config.afterSign=scripts/unsigned-stable-after-sign.mjs
+              --config.dmg.sign=false
+            )
+          elif [ "${{ matrix.platform }}" = win ]; then
+            EXTRA_ARGS+=(--config.win.signExecutable=false)
+          fi
+          node node_modules/electron-builder/out/cli/cli.js \
+            ${{ matrix.target_args }} \
+            --${{ matrix.arch }} \
+            "${EXTRA_ARGS[@]}" \
+            --config.publish.provider=github \
+            --config.publish.owner=bobofbuilding \
+            --config.publish.repo=idacc \
+            --config.publish.releaseType=release \
+            --config.publish.channel=latest \
+            --config.extraMetadata.version="$RELEASE_VERSION" \
+            --publish never
 
       - name: Verify the Linux installer sandbox policies
         if: matrix.platform == 'linux'
@@ -675,7 +742,7 @@ jobs:
             --deb "${DEBS[0]}"
 
       - name: Notarize and staple the signed macOS disk image
-        if: matrix.platform == 'mac'
+        if: matrix.platform == 'mac' && inputs.signing_mode == 'signed'
         shell: bash
         env:
           APPLE_API_KEY: ${{ steps.apple-key.outputs.path }}
@@ -699,7 +766,7 @@ jobs:
           test "$DMG_COUNT" -gt 0
 
       - name: Verify macOS signature, notarization, and Gatekeeper acceptance
-        if: matrix.platform == 'mac'
+        if: matrix.platform == 'mac' && inputs.signing_mode == 'signed'
         shell: bash
         env:
           MACOS_EXPECTED_SIGNING_IDENTITY: ${{ secrets.MACOS_EXPECTED_SIGNING_IDENTITY }}
@@ -729,7 +796,7 @@ jobs:
           test "$DMG_COUNT" -gt 0
 
       - name: Verify Windows Authenticode signatures
-        if: matrix.platform == 'win'
+        if: matrix.platform == 'win' && inputs.signing_mode == 'signed'
         shell: pwsh
         env:
           WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ${{ secrets.WINDOWS_EXPECTED_PUBLISHER_SUBJECT }}
@@ -753,6 +820,56 @@ jobs:
             }
           }
           node idctl-desktop/scripts/verify-packaged-publisher.mjs "idctl-desktop/release/${{ matrix.unpacked }}/resources/app-update.yml"
+
+      - name: Verify owner-authorized unsigned macOS identity
+        if: matrix.platform == 'mac' && inputs.signing_mode == 'unsigned'
+        shell: bash
+        run: |
+          APP="idctl-desktop/release/${{ matrix.unpacked }}"
+          test -d "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          SIGNING_INFO="$(codesign -dv --verbose=4 "$APP" 2>&1)"
+          test "$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^Identifier=//p' | head -1)" = "world.idchain.idagents-control"
+          TEAM_ID="$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^TeamIdentifier=//p' | head -1)"
+          test -z "$TEAM_ID" || test "$TEAM_ID" = "not set"
+          REQUIREMENT="$(codesign --display --requirements - "$APP" 2>&1)"
+          printf '%s\n' "$REQUIREMENT" | grep -F 'designated => identifier "world.idchain.idagents-control"'
+          DMG_COUNT=0
+          while IFS= read -r -d '' DMG; do
+            DMG_COUNT=$((DMG_COUNT + 1))
+            if codesign --verify "$DMG" >/dev/null 2>&1; then
+              echo "::error::Unsigned stable DMG unexpectedly has a platform signature: $DMG" >&2
+              exit 1
+            fi
+          done < <(find idctl-desktop/release -maxdepth 1 -type f -name '*.dmg' -print0)
+          test "$DMG_COUNT" -gt 0
+
+      - name: Verify owner-authorized unsigned Windows identity
+        if: matrix.platform == 'win' && inputs.signing_mode == 'unsigned'
+        shell: pwsh
+        run: |
+          $app = "idctl-desktop/release/${{ matrix.unpacked }}/ID Agents Control Center.exe"
+          $jobHost = "idctl-desktop/release/${{ matrix.unpacked }}/resources/app.asar.unpacked/out/native/idacc-job-host.exe"
+          $installer = Get-ChildItem "idctl-desktop/release/*.exe" | Where-Object { $_.FullName -ne (Resolve-Path $app) } | Select-Object -First 1
+          if (-not (Test-Path $app)) { throw "Packaged application executable is missing" }
+          if (-not (Test-Path $jobHost)) { throw "Packaged Windows Job Host is missing" }
+          if (-not $installer) { throw "NSIS installer is missing" }
+          foreach ($file in @($app, $installer.FullName, $jobHost)) {
+            $signature = Get-AuthenticodeSignature $file
+            if ($signature.Status -ne "NotSigned") {
+              throw "Owner-authorized unsigned build unexpectedly has Authenticode state $($signature.Status): $file"
+            }
+          }
+
+      - name: Verify exact unsigned stable package identity
+        if: inputs.signing_mode == 'unsigned'
+        shell: bash
+        run: >-
+          node scripts/verify-unsigned-stable-package.mjs
+          --unpacked "idctl-desktop/release/${{ matrix.unpacked }}"
+          --version "$RELEASE_VERSION"
+          --platform "${{ matrix.runtime_platform }}"
+          --arch "${{ matrix.arch }}"
 
       - name: Verify payload and clean-profile manager/Brain startup
         shell: bash
@@ -921,6 +1038,9 @@ jobs:
           cp release-inputs/latest-mac.yml publish/latest-mac.yml
           cp release-inputs/release-index/release-index.json publish/release-index.json
           cp release-inputs/release-index/release-index.sha256 publish/release-index.sha256
+          if [ "$RELEASE_SIGNING_MODE" = unsigned ]; then
+            cp docs/UNSIGNED_STABLE_RELEASE.md publish/UNSIGNED-STABLE-NOTICE.md
+          fi
           for TARGET in darwin-arm64 darwin-x64 win32-x64 linux-x64; do
             SOURCE="$(find release-inputs -type d -path "*/metadata/$TARGET" -print -quit)"
             test -n "$SOURCE"
@@ -1022,7 +1142,15 @@ jobs:
               exit 1
             fi
           else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
+            if [ "$RELEASE_SIGNING_MODE" = unsigned ]; then
+              gh release create "$RELEASE_TAG" \
+                --verify-tag \
+                --draft \
+                --title "$RELEASE_TAG — owner-authorized unsigned stable release" \
+                --notes-file publish/UNSIGNED-STABLE-NOTICE.md
+            else
+              gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
+            fi
             STATE="draft"
           fi
           test "$STATE" != "missing"
@@ -1114,6 +1242,21 @@ jobs:
           )" = "true"
           TAG_OBJECT="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT" --jq '.object.sha')" = "$RELEASE_COMMIT"
+
+      - name: Record package signing mode
+        if: ${{ inputs.publish }}
+        run: |
+          {
+            echo "## v$RELEASE_VERSION"
+            echo
+            if [ "$RELEASE_SIGNING_MODE" = unsigned ]; then
+              echo "Published seven owner-authorized unsigned stable installers from the exact GitHub-verified source tag."
+              echo
+              echo "Apple Developer ID, Apple notarization, and Windows Authenticode credentials were not used."
+            else
+              echo "Published seven signed, verified, and attested stable installers."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   promote-draft:
     name: Promote draft matching an immutable successful-run artifact

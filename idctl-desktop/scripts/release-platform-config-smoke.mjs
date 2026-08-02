@@ -644,7 +644,7 @@ assert.match(
 const unsignedWindowsNativeStep =
   nativeReleaseBuildJob.indexOf('- name: Build and exercise unsigned Windows native helpers');
 const signedNativeBuildStep =
-  nativeReleaseBuildJob.indexOf('- name: Build native consumer artifacts');
+  nativeReleaseBuildJob.indexOf('- name: Build signed native consumer artifacts');
 assert.ok(
   unsignedWindowsNativeStep >= 0
     && signedNativeBuildStep > unsignedWindowsNativeStep,
@@ -675,6 +675,12 @@ assert.match(releaseWorkflow, /MACOS_EXPECTED_TEAM_ID/);
 assert.match(releaseWorkflow, /MACOS_EXPECTED_SIGNING_IDENTITY/);
 assert.match(releaseWorkflow, /WINDOWS_EXPECTED_PUBLISHER_SUBJECT/);
 assert.match(releaseWorkflow, /node scripts\/run-production-builder\.mjs/);
+assert.match(releaseWorkflow, /signing_mode:\s*[\s\S]*- signed[\s\S]*- unsigned/);
+assert.match(releaseWorkflow, /publish-v\$RELEASE_VERSION-unsigned/);
+assert.match(releaseWorkflow, /Build owner-authorized unsigned stable artifacts/);
+assert.match(releaseWorkflow, /--config\.publish\.channel=latest/);
+assert.match(releaseWorkflow, /scripts\/unsigned-stable-after-sign\.mjs/);
+assert.match(releaseWorkflow, /scripts\/verify-unsigned-stable-package\.mjs/);
 assert.match(releaseWorkflow, /node idctl-desktop\/scripts\/verify-packaged-publisher\.mjs/);
 assert.match(releaseWorkflow, /SignerCertificate\.Subject -cne \$env:WINDOWS_EXPECTED_PUBLISHER_SUBJECT/);
 assert.match(

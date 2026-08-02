@@ -121,6 +121,7 @@ gh workflow run release.yml \
   --ref "$TAG" \
   --field "version=$VER" \
   --field "publish=$PUBLISH" \
+  --field "signing_mode=signed" \
   --field "request_id=$REQUEST_ID"
 
 RUN_RECORD="$(release_wait_for_dispatched_workflow_record \
