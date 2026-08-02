@@ -78,6 +78,23 @@ electron-builder qualifier without the `Developer ID Application:` prefix and
 ending in `(TEAMID)`), and `WINDOWS_EXPECTED_PUBLISHER_SUBJECT` (the exact full
 certificate subject distinguished name).
 
+### Owner-authorized unsigned stable releases
+
+The repository owner may deliberately restore the legacy unsigned application
+distribution model for a specific stable version. This does **not** relax source
+identity, payload, provenance, updater, or public-download validation: the
+release still requires an exact GitHub-verified signed annotated tag, the full
+seven-installer matrix, exact Manager and Brain pins, GitHub attestations,
+immutable release assets, and anonymous verification of the public Latest route.
+
+Dispatch `Production release` from the exact `vX.Y.Z` tag with
+`signing_mode=unsigned`, `publish=true`, a unique `request_id`, and
+`unsigned_acknowledgement=publish-vX.Y.Z-unsigned`. In this mode macOS uses the
+stable ad-hoc application identity without notarization, Windows uses SHA-256
+helper verification without Authenticode, and the release notes explicitly warn
+about Gatekeeper and SmartScreen. The ordinary `scripts/release.sh` path remains
+signed by default and never opts into unsigned packages implicitly.
+
 The one historical exception is the audited tag frontier from `v0.1.620`
 through `v0.1.684`: 63 lightweight refs and two exact unsigned annotated refs.
 It is an exact tag-object, peeled-commit, and release-identity allowlist, not a
