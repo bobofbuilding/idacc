@@ -33,7 +33,7 @@ type LocalSkillCandidate = {
   installed: boolean;
   duplicate: boolean;
 };
-type PluginRow = LibraryPluginEntry & Partial<LibraryPluginInspection> & { packageSource: string; bundledPortable?: boolean };
+type PluginRow = LibraryPluginEntry & Partial<LibraryPluginInspection> & { packageSource: string };
 type BrainSkillStats = { totalSkills?: number; chainable?: number; nonChainable?: number; domains?: number; tags?: number; averageComputeCost?: number | null; maxUseCount?: number };
 type BrainSkillFacet = { domain?: string; tag?: string; name?: string; count?: number };
 type BrainSkillSummary = {
@@ -579,7 +579,6 @@ function pluginProjectionLabel(p: PluginRow): string {
   }
 }
 function pluginAdapterSummary(p: PluginRow): string {
-  if (p.name === 'idacc-context-retrieval') return 'Skill + MCP + native + fallback';
   if (p.classification === 'instruction-skill') return 'Instruction wrapper';
   if (p.classification === 'hybrid-tool-plugin') return 'Skill + tools';
   if (p.classification === 'native-tool-plugin') return 'Tools';
@@ -587,8 +586,7 @@ function pluginAdapterSummary(p: PluginRow): string {
   return 'Unverified';
 }
 function pluginIsDigestedSkill(p: PluginRow): boolean {
-  return p.name !== 'idacc-context-retrieval'
-    && p.classification === 'instruction-skill'
+  return p.classification === 'instruction-skill'
     && p.skillProjection === 'already-in-catalog';
 }
 function capabilitySurface(tab: CapabilityTab, runtime: string | undefined): { label: string; title: string; advisory?: boolean } {
@@ -1764,37 +1762,11 @@ export function Modules({ store }: { store: FleetStore }) {
   const targetLabel = targetCount === 0 ? 'no selected agents' : targetCount === 1 ? targetAgents[0].name : `${targetCount} agents`;
   const allPluginRows = useMemo<PluginRow[]>(() => {
     const inspectionByName = new Map(pluginInspections.map((inspection) => [inspection.name, inspection]));
-    const idaccPortableDefaults: Partial<PluginRow> = {
-      hasSkillMd: true,
-      hasTools: true,
-      toolCount: 3,
-      tools: ['contract', 'mcp', 'resolve'],
-      entrypoint: 'SKILL.md',
-      adapterKinds: ['skill', 'mcp', 'native-plugin', 'direct-fallback'],
-      classification: 'portable-package',
-      skillProjection: 'blocked-tools',
-      notes: ['Bundled IDACC package with Skill, MCP, native plugin, and direct-fallback adapters.'],
-    };
-    const rows: PluginRow[] = plugins.map((plugin) => ({
+    return plugins.map((plugin) => ({
       ...plugin,
       ...(inspectionByName.get(plugin.name) ?? {}),
-      ...(plugin.name === 'idacc-context-retrieval' ? idaccPortableDefaults : {}),
-      packageSource: plugin.name === 'idacc-context-retrieval' ? 'manager + IDACC portable package' : 'manager native inventory',
-      bundledPortable: plugin.name === 'idacc-context-retrieval',
+      packageSource: 'manager plugin inventory',
     }));
-    if (!rows.some((plugin) => plugin.name === 'idacc-context-retrieval')) {
-      rows.unshift({
-        name: 'idacc-context-retrieval',
-        version: '0.1.0',
-        description: 'IDACC portable retrieval-handle resolver for future Headroom-backed context compression pilots.',
-        source: 'bundled with IDACC',
-        hasManifest: true,
-        ...idaccPortableDefaults,
-        packageSource: 'IDACC bundled portable package',
-        bundledPortable: true,
-      });
-    }
-    return rows;
   }, [plugins, pluginInspections]);
   const digestedPluginRows = useMemo(() => allPluginRows.filter(pluginIsDigestedSkill), [allPluginRows]);
   const pluginRows = useMemo(() => allPluginRows.filter((plugin) => !pluginIsDigestedSkill(plugin)), [allPluginRows]);

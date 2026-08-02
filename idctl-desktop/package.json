@@ -106,7 +106,6 @@
     "test:goal-hardening": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/goal-hardening-smoke.mjs",
     "test:learn-brain-sync": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/learn-brain-sync-smoke.ts",
     "test:learn-queue": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/learn-queue-smoke.ts",
-    "test:headroom-plugin": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/headroom-plugin-path-smoke.mjs",
     "test:goals-plan-separation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/goals-plan-separation-smoke.mjs",
     "test:brain-plans-profile": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/brain-plans-profile-smoke.ts",
     "test:profile-migrations": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/profile-migrations-smoke.ts",
@@ -172,10 +171,6 @@
       {
         "from": "resources/computeruse-mcp",
         "to": "computeruse-mcp"
-      },
-      {
-        "from": "resources/idacc-context-retrieval",
-        "to": "idacc-context-retrieval"
       },
       {
         "from": "resources/idacc-runtime",

@@ -57,8 +57,7 @@ import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts
 import { buildProviderModelLanes, buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider, localProviderRouteIsLive, settingsAvailableRuntimeSet, managedRuntimeHasEvidence, runtimeDisplayLabel, runtimeHasManagerHarness, starterMcpCapabilityPolicy, type RuntimeModelLaneKind } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import { subsStatus, subsStatusForRuntimes } from './subscriptions.ts';
 import { testMcpServer } from './mcpTest.ts';
-import { headroomBackendContractAudit, headroomCoreAudit, headroomStatus } from './headroom.ts';
-import { headroomPluginPathAudit } from './headroomPlugin.ts';
+import { headroomCoreAudit, headroomStatus } from './headroom.ts';
 import { contextBudgetDryRun, contextBudgetReport, loadRecentContextBudgetRecords, optimizeAskCommand, readContextBudgetRecord } from './contextBudget.ts';
 import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayOptions } from './contextReplay.ts';
 import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
@@ -2136,19 +2135,6 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   probeOne: (name: string, team?: string) => (team ? client.withTeam(String(team)) : client).probeOne(String(name)),
   'headroom:status': () => headroomStatus(),
   'headroom:audit': async () => headroomCoreAudit(loadSettings().headroomPilot),
-  'headroom:pluginPath': async () => headroomPluginPathAudit({
-    managerCapabilities: await client.capabilities().catch(() => null),
-    managerPlugins: await client.libraryPlugins().catch(() => []),
-    headroomStatus: await headroomStatus(),
-  }),
-  'headroom:backendContract': async () => {
-    const pluginPath = await headroomPluginPathAudit({
-      managerCapabilities: await client.capabilities().catch(() => null),
-      managerPlugins: await client.libraryPlugins().catch(() => []),
-      headroomStatus: await headroomStatus(),
-    });
-    return headroomBackendContractAudit(pluginPath);
-  },
   'headroom:pilot': async () => loadSettings().headroomPilot,
   'headroom:setPilot': async (partial: Partial<HeadroomPilotSettings>) => setHeadroomPilot(partial).headroomPilot,
   'context:budgetReport': async () => contextBudgetReport(),

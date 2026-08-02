@@ -180,6 +180,21 @@ assert.equal(
   'resources/THIRD_PARTY_NOTICES.md',
   'every packaged app must carry notices for its bundled production dependencies',
 );
+assert.equal(
+  (build.extraResources || []).some((entry) => entry?.to === 'idacc-context-retrieval'),
+  false,
+  'the retired retrieval pilot must not ship as a user-manageable plugin resource',
+);
+assert.equal(
+  existsSync(join(desktop, 'resources', 'idacc-context-retrieval')),
+  false,
+  'the retired retrieval pilot source directory must not remain in the application bundle inputs',
+);
+assert.equal(
+  existsSync(join(desktop, 'src', 'main', 'headroomPlugin.ts')),
+  false,
+  'the retired retrieval pilot validator must not remain as a dormant main-process feature',
+);
 assert.match(
   String(pkg.scripts?.['build:release'] || ''),
   /prepare:notices/,
