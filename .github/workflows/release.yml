@@ -703,7 +703,10 @@ jobs:
           elif [ "${{ matrix.platform }}" = win ]; then
             EXTRA_ARGS+=(--config.win.signExecutable=false)
           fi
-          node node_modules/electron-builder/out/cli/cli.js \
+          node scripts/run-unsigned-stable-builder.mjs \
+            --platform "${{ matrix.platform }}" \
+            --application-version "$RELEASE_VERSION" \
+            -- \
             ${{ matrix.target_args }} \
             --${{ matrix.arch }} \
             "${EXTRA_ARGS[@]}" \
