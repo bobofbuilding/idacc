@@ -549,7 +549,19 @@ assert.match(
   'the publication CLI smoke must synthesize its complete baseline and legacy tag fixture',
 );
 
-const releaseWorkflow = readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf8');
+const releaseWorkflow = readFileSync(
+  join(root, '.github', 'workflows', 'release.yml'),
+  'utf8',
+).replaceAll('\r\n', '\n');
+const publishReleaseJob = releaseWorkflow.slice(
+  releaseWorkflow.indexOf('  publish:\n'),
+  releaseWorkflow.indexOf('\n  promote-draft:'),
+);
+assert.match(
+  publishReleaseJob,
+  /env:\s*\n\s+GH_REPO:\s*\$\{\{\s*github\.repository\s*\}\}/,
+  'the artifact-only publish job must bind gh release commands to the target repository',
+);
 const actionPins = [
   ['checkout', '3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1', 5, 8],
   ['setup-node', '820762786026740c76f36085b0efc47a31fe5020 # v7.0.0', 3, 6],
