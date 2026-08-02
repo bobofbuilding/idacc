@@ -682,6 +682,12 @@ jobs:
           IDACC_UNSIGNED_STABLE_BUILD: "1"
           IDACC_UNSIGNED_STABLE_VERSION: ${{ inputs.version }}
         run: |
+          if [ "${{ matrix.platform }}" = mac ]; then
+            sudo sysctl -w kern.maxfiles=524288
+            sudo sysctl -w kern.maxfilesperproc=524288
+            ulimit -n 524288
+            test "$(ulimit -n)" = 524288
+          fi
           npm run build:release
           npm run test:release-build-output
           EXTRA_ARGS=()
