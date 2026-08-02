@@ -555,7 +555,7 @@ const actionPins = [
   ['setup-node', '820762786026740c76f36085b0efc47a31fe5020 # v7.0.0', 3, 6],
   ['upload-artifact', '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1', 2, 2],
   ['download-artifact', '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1', 0, 5],
-  ['attest', 'f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0', 0, 3],
+  ['attest', '508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1', 0, 3],
 ];
 for (const [action, pin, ciCount, releaseCount] of actionPins) {
   const pattern = new RegExp(
@@ -732,7 +732,7 @@ assert.match(releaseWorkflow, /npm run ci:preflight --prefix \.runtime-sources\/
 assert.match(releaseWorkflow, /npm ci --omit=dev --prefix \.runtime-sources\/brain/);
 assert.match(releaseWorkflow, /xargs -0 -n1 node --check/);
 assert.equal(
-  (releaseWorkflow.match(/uses: actions\/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4\.2\.0/g) || []).length,
+  (releaseWorkflow.match(/uses: actions\/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4\.2\.1/g) || []).length,
   3,
   'production provenance and SBOMs must use the current SHA-pinned unified GitHub attestation action',
 );

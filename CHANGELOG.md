@@ -14,6 +14,7 @@ subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 - Resolve active team leads from current Manager state, skip stopped teams, show the accepted delegation destinations, and return Chat control to the user while work continues in Work and Dashboard.
 - Keep agents running unless the user explicitly stops them, align HR structure with Dashboard fleet views, and complete the Computer Use full-control workflow.
 - Retire the dormant context-retrieval adapter and preserve review updater integrity across macOS, Windows, and Linux unsigned review packages.
+- Align both application toolchains on TypeScript 7.0.2 and pin production provenance to the reviewed `actions/attest` 4.2.1 commit while retaining the Electron 41 ABI boundary required by the bundled Manager.
 
 ## [0.1.690] — 2026-08-01
 ### What changed
