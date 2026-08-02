@@ -92,6 +92,7 @@ type DockerStatus = { installed: boolean; serverRunning: boolean; version?: stri
 type LocalConcurrencyStatus = { concurrency: number; active: number; queued: number };
 type SettingsUpdateStatus = {
   current?: string;
+  channel?: 'production' | 'review';
   latest?: string;
   available?: boolean;
   staged?: boolean;
@@ -129,7 +130,7 @@ function updateChannelSummary(status: SettingsUpdateStatus | null): string {
   if (status.available && status.staged) return `verified v${status.latest} ready to install`;
   if (status.available) return `v${status.latest} available to download`;
   if (status.latest && compareDisplayedVersions(status.current, status.latest) > 0) {
-    return `ahead of production channel (latest v${status.latest})`;
+    return `ahead of ${status.channel ?? 'production'} channel (latest v${status.latest})`;
   }
   return status.latest ? `up to date (latest v${status.latest})` : 'up to date';
 }
@@ -3139,12 +3140,12 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         </div>
         {updStatus?.latest && compareDisplayedVersions(updStatus.current, updStatus.latest) > 0 ? (
           <div className="muted small" style={{ marginTop: 8 }}>
-            This installed review is newer than the production channel. Automatic checks remain active and will resume downloads when a newer production release is published.
+            This installation is newer than its {updStatus.channel ?? 'production'} channel. Automatic checks remain active and will resume downloads when a newer release is published on that channel.
           </div>
         ) : null}
         <div className="row-actions" style={{ marginTop: 10 }}>
           <span className="muted small grow">
-            IDACC, Agent manager, and Brain ship and update together as one verified application.
+            IDACC, Agent manager, and Brain ship and update together through the {updStatus?.channel ?? 'production'} channel as one verified application.
           </span>
           <button
             className="btn"

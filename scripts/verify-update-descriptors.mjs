@@ -31,14 +31,21 @@ function option(name) {
 }
 
 for (let index = 0; index < args.length; index += 2) {
-  if (!['--directory', '--version'].includes(args[index]) || !args[index + 1]) {
-    fail('usage: scripts/verify-update-descriptors.mjs --directory <release-assets> --version X.Y.Z');
+  if (!['--directory', '--version', '--channel'].includes(args[index]) || !args[index + 1]) {
+    fail('usage: scripts/verify-update-descriptors.mjs --directory <release-assets> --version X.Y.Z[-review.N] [--channel review]');
   }
 }
 
 const directory = resolve(option('--directory'));
 const version = option('--version');
-if (!/^\d+\.\d+\.\d+$/.test(version)) fail('--version must be plain semver X.Y.Z');
+const channelPositions = args.flatMap((arg, index) => arg === '--channel' ? [index] : []);
+if (channelPositions.length > 1) fail('--channel may be provided at most once');
+const channel = channelPositions.length ? String(args[channelPositions[0] + 1] || '') : 'latest';
+if (!['latest', 'review'].includes(channel)) fail('--channel must be latest or review');
+const versionPattern = channel === 'review'
+  ? /^\d+\.\d+\.\d+-review\.[1-9][0-9]*$/
+  : /^\d+\.\d+\.\d+$/;
+if (!versionPattern.test(version)) fail('--version does not match the selected update channel');
 
 function safeName(value, label) {
   const name = String(value || '');
@@ -106,8 +113,8 @@ const expectedInstallers = [
   `ID-Agents-Control-Center-${version}-arm64.zip`,
   `ID-Agents-Control-Center-${version}-x64.zip`,
   `ID-Agents-Control-Center-${version}-x64.exe`,
-  `ID-Agents-Control-Center-${version}-x64.AppImage`,
-  `ID-Agents-Control-Center-${version}-x64.deb`,
+  `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
+  `ID-Agents-Control-Center-${version}-amd64.deb`,
 ];
 const installerSuffixes = ['.dmg', '.zip', '.exe', '.AppImage', '.deb'];
 const actualFiles = readdirSync(directory, { withFileTypes: true });
@@ -134,23 +141,23 @@ for (const name of expectedInstallers) {
 }
 
 const expectations = new Map([
-  ['latest-mac.yml', {
+  [`${channel}-mac.yml`, {
     files: [
       `ID-Agents-Control-Center-${version}-arm64.zip`,
       `ID-Agents-Control-Center-${version}-x64.zip`,
     ],
     primary: `ID-Agents-Control-Center-${version}-x64.zip`,
   }],
-  ['latest.yml', {
+  [`${channel}.yml`, {
     files: [`ID-Agents-Control-Center-${version}-x64.exe`],
     primary: `ID-Agents-Control-Center-${version}-x64.exe`,
   }],
-  ['latest-linux.yml', {
+  [`${channel}-linux.yml`, {
     files: [
-      `ID-Agents-Control-Center-${version}-x64.AppImage`,
-      `ID-Agents-Control-Center-${version}-x64.deb`,
+      `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
+      `ID-Agents-Control-Center-${version}-amd64.deb`,
     ],
-    primary: `ID-Agents-Control-Center-${version}-x64.AppImage`,
+    primary: `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
   }],
 ]);
 

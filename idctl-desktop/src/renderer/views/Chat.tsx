@@ -7,6 +7,7 @@ import {
 import type { ProjectEntry } from '../../../../idctl/src/settings/schema.ts';
 import type { ActivityStep } from '../../../../idctl/src/api/types.ts';
 import { mergeExactQueryActivity } from '../../shared/chatActivity.ts';
+import { shouldDelegatePrimaryLeadRequest, stripDirectLeadOverride } from '../../shared/chatDelegation.ts';
 
 type PickedFile = { path: string; name: string; size: number; isImage: boolean };
 type SavedFile = { name: string; path: string; size: number; isImage: boolean };
@@ -41,6 +42,7 @@ interface Session {
 type ChatSummary = { id: string; title: string; team: string; messageCount: number; updatedAt: number; unread?: boolean };
 type ImageResult = { ok: boolean; path?: string; dataUrl?: string; model?: string; costUsd?: number; error?: string };
 type QueryPoll = { status?: string; text?: string; error?: string };
+type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
 
 /** Quote a free-text message as ONE token for the manager's tokenizer (matches client.ts qArg). */
 function qArg(s: string): string {
@@ -855,6 +857,42 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     void pollInflight(sid, inf);
   }
 
+  /** Deterministic primary-lead routing. This returns as soon as the Manager has
+   * accepted the parallel team-lead queries; the resulting task rows and agent
+   * activity continue in Work and Dashboard without locking this chat for the
+   * duration of the entire objective. */
+  async function beginLeadDelegation(sid: string, replyId: number, scopedMessage: string): Promise<boolean> {
+    let results: FanoutResult[];
+    try {
+      results = await call<FanoutResult[]>('work:fanoutToTeamLeads', scopedMessage, team);
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      await resolveMsg(sid, replyId, { role: 'system', text: `✗ Lead delegation could not start: ${raw}`, pending: false });
+      setBusy(false);
+      return true;
+    }
+    const dispatched = results.filter((row) => row.status === 'dispatched');
+    const deferred = results.filter((row) => row.status === 'deferred');
+    const failed = results.filter((row) => row.status !== 'dispatched' && row.status !== 'deferred');
+    const destinations = dispatched.map((row) => `${row.team}/${row.lead || 'lead'}`);
+    const issues = [...deferred, ...failed].map((row) => `${row.team}: ${row.detail || row.status}`);
+    const text = dispatched.length
+      ? [
+          `Delegated immediately to ${dispatched.length} team lead${dispatched.length === 1 ? '' : 's'}: ${destinations.join(', ')}.`,
+          'Their teams are running in parallel. Progress and child tasks remain visible in Work and Dashboard; this chat is available now instead of waiting on one lead lane.',
+          issues.length ? `Not started: ${issues.join(' · ')}` : '',
+        ].filter(Boolean).join('\n\n')
+      : `✗ Lead delegation did not start. ${issues.join(' · ') || 'No active team leads are available.'}`;
+    await resolveMsg(sid, replyId, {
+      text,
+      pending: false,
+      delegations: destinations.map((destination) => `Manager dispatched to ${destination}`),
+      reasoning: dispatched.length ? `delegated to ${dispatched.length} team lead${dispatched.length === 1 ? '' : 's'}` : 'delegation blocked',
+    });
+    setBusy(false);
+    return true;
+  }
+
   function newChat() { const s = blankSession(); adoptSession(s); persist(s); }
   async function openChat(id: string) {
     if (id === session?.id) return;
@@ -1048,7 +1086,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
         if (res.skipped?.length) pushMsgs({ id: idRef.current++, role: 'system', who: '', text: `⚠ Couldn't attach ${res.skipped.length} file(s): ${res.skipped.join(', ')}` });
         if (saved.length === 0 && !text) { setBusy(false); return; }
       }
-      const message = compose(text, saved);
+      const message = compose(stripDirectLeadOverride(text), saved);
       const scopedMessage = buildChatScopedPrompt(session, target, message);
       const planRequest = !!text && isPlanRequest(text);
       const myId = idRef.current++;
@@ -1062,7 +1100,12 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
       setAttachments([]);
       // 2. Hand off to the resumable dispatch — it kicks the query, commits it to
       // session.inflight (which drives the UI), and polls until a reply lands.
-      await beginDispatch(sid, replyId, target, scopedMessage, { planRequest, planText: text });
+      const primaryLead = target === defaultTarget && !teamOverride;
+      if (primaryLead && shouldDelegatePrimaryLeadRequest(text)) {
+        await beginLeadDelegation(sid, replyId, scopedMessage);
+      } else {
+        await beginDispatch(sid, replyId, target, scopedMessage, { planRequest, planText: text });
+      }
     } finally {
       sendingRef.current = false; // inflight is now committed (or the send errored out)
     }

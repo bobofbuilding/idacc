@@ -671,64 +671,6 @@ function emptyContextBudgetHistoryReplay() {
   };
 }
 
-function headroomPluginPathFallback() {
-  return {
-    coreReady: false,
-    pilotReady: false,
-    verdict: 'valid-pilot-path-runtime-neutral-contract-required',
-    candidate: {
-      name: 'idacc-context-retrieval',
-      bundled: false,
-      bundledPath: null,
-      manifestOk: false,
-      skillOk: false,
-      toolOk: false,
-      smokeOk: false,
-      mcpOk: false,
-      portableOk: false,
-      adapterCoverage: {
-        portablePluginRuntimes: [],
-        skillRuntimes: [],
-        mcpRuntimes: [],
-        nativePluginRuntimes: [],
-        directFallbackRuntimes: [],
-        unsupportedRuntimes: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
-      },
-      smokeError: 'Plugin candidate validation requires Electron packaged resources.',
-    },
-    manager: {
-      capabilitiesRoute: false,
-      retrievalFeatureAdvertised: false,
-      pluginListed: false,
-      pluginSourcePath: null,
-    },
-    headroom: {
-      mcpCatalogEntry: true,
-      cliFound: false,
-      proxyReachable: false,
-    },
-    runtimeCoverage: {
-      allRuntimes: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
-      pluginRuntimes: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local'],
-      portablePluginRuntimes: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
-      mcpRuntimes: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'grok', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
-      directFallbackRuntimes: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
-      pluginOnlyWouldExclude: ['codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
-    },
-    modeMatrix: [
-      { mode: 'direct-deterministic', coreEligible: true, pilotEligible: true, reason: 'Universal fallback.' },
-      { mode: 'idacc-context-retrieval-plugin', coreEligible: false, pilotEligible: false, reason: 'Electron packaged resources are required for validation.' },
-      { mode: 'idacc-portable-plugin-package', coreEligible: false, pilotEligible: false, reason: 'Electron packaged resources are required for portable adapter validation.' },
-    ],
-    guardrails: [
-      'Plugin-only routing is not core-eligible because it would exclude non-Claude runtimes.',
-      'IDACC plugins are runtime-neutral only as portable packages with declared Skill, MCP, native-plugin, and direct-fallback adapters; native plugin loaders remain runtime-specific.',
-      'Direct deterministic routing remains the universal fallback for stock managers and unsupported runtimes.',
-    ],
-    blockers: ['Use the Electron build to validate packaged plugin resources and Headroom CLI/proxy status.'],
-  };
-}
-
 function stripMarkdownFrontmatter(markdown: string): string {
   const text = markdown.replace(/^\uFEFF/, '');
   const match = text.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
@@ -920,43 +862,6 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
       requiredForCore: ['Electron/main-process Headroom detection plus manager retrieval-handle support.'],
       safeToday: ['Keep Headroom out of the Health UI and use direct routing.'],
       policy: headroomPilotState(),
-    };
-  },
-  'headroom:pluginPath': async () => headroomPluginPathFallback(),
-  'headroom:backendContract': async () => {
-    const replay = emptyContextBudgetHistoryReplay();
-    const pluginPath = headroomPluginPathFallback();
-    return {
-      coreReady: false,
-      validationReady: false,
-      decision: 'validate-idacc-plugin-path-first',
-      managerChangeLevel: 'none-now-minimal-later',
-      recommendedPath: 'idacc-owned-plugin-candidate',
-      status: {
-        cli: { found: false, error: 'Headroom status requires the Electron main process.' },
-        proxy: { url: 'http://127.0.0.1:8787/mcp', reachable: false, error: 'not checked in this shell' },
-      },
-      historyReplay: {
-        corpus: replay.corpus,
-        dryRunOnly: replay.dryRunOnly,
-        rawPromptPersisted: replay.rawPromptPersisted,
-        managerContacted: replay.managerContacted,
-        scannedSessions: replay.scannedSessions,
-        eligibleMessages: replay.eligibleMessages,
-        totals: replay.totals,
-        guardrails: replay.guardrails,
-      },
-      pluginPath,
-      phases: ['Use the Electron build for local chat-history replay and plugin validation.'],
-      pluginCandidate: {
-        name: 'idacc-context-retrieval',
-        installSurface: 'Capabilities or Settings reviewed install',
-        managerRequirement: 'existing id-agents plugin attachment and rebuild flow',
-        purpose: 'Expose a narrow local retrieval tool for context handles without forking the base manager hot path.',
-      },
-      requiredContract: ['Manager /capabilities must advertise context-retrieval before handle routing.'],
-      validationGates: ['Electron replay and plugin smoke tests must pass before activation.'],
-      blockers: ['Tauri shell cannot validate local plugin file access.'],
     };
   },
   'headroom:pilot': async () => headroomPilotState(),

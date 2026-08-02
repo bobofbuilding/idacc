@@ -77,8 +77,8 @@ if (
 ) {
   fail(`review builder target must contain exactly one ${expectedPlatformFlag} platform flag`);
 }
-requiredArgument('--config.publish=null');
 requiredArgument(`--config.extraMetadata.version=${applicationVersion}`);
+requiredArgument('--config.publish.channel=review');
 const publishFlags = rawBuilderArgs
   .map((value, index) => ({ value, index }))
   .filter(({ value }) => value === '--publish' || value.startsWith('--publish='));
@@ -93,9 +93,16 @@ if (publishPolicy !== 'never') {
   fail('review builder must use --publish never');
 }
 if (platform === 'mac') {
+  // The staged runtime manifest pins the exact bytes of Manager and Brain.
+  // Their distributed Mach-O files are already signed, so replacing those
+  // nested signatures would mutate the verified payload during packaging.
   for (const value of [
-    '--config.mac.identity=null',
+    '--config.mac.identity=-',
     '--config.mac.notarize=false',
+    '--config.mac.hardenedRuntime=false',
+    '--config.mac.requirements=build/review-requirements.txt',
+    '--config.mac.signIgnore=/Contents/Resources/idacc-runtime/',
+    '--config.afterSign=scripts/review-after-sign.mjs',
     '--config.dmg.sign=false',
   ]) requiredArgument(value);
 }
@@ -119,20 +126,33 @@ if (normalized.publish !== 'never') {
   fail('review builder normalized publish policy did not remain fail-closed');
 }
 normalized.publish = 'never';
-if (config.publish !== 'null') fail('review builder publish configuration did not remain fail-closed');
-config.publish = null;
+if (
+  config.publish?.provider !== 'github'
+  || config.publish?.owner !== 'bobofbuilding'
+  || config.publish?.repo !== 'idacc'
+  || config.publish?.releaseType !== 'release'
+  || config.publish?.channel !== 'review'
+) {
+  fail('review builder must retain only the compiled public IDACC publisher');
+}
 if (config.extraMetadata?.version !== applicationVersion) {
   fail('review builder package identity does not match the workflow identity');
 }
 if (platform === 'mac') {
   if (
-    config.mac?.identity !== null
+    config.mac?.identity !== '-'
     || config.mac?.notarize !== 'false'
+    || config.mac?.hardenedRuntime !== 'false'
+    || config.mac?.requirements !== 'build/review-requirements.txt'
+    || config.mac?.signIgnore !== '/Contents/Resources/idacc-runtime/'
+    || config.afterSign !== 'scripts/review-after-sign.mjs'
     || config.dmg?.sign !== 'false'
   ) {
-    fail('review builder did not explicitly disable macOS signing and notarization');
+    fail('review builder did not retain the stable ad-hoc review identity without notarization');
   }
   config.mac.notarize = false;
+  config.mac.hardenedRuntime = false;
+  config.mac.signIgnore = '/Contents/Resources/idacc-runtime/';
   config.dmg.sign = false;
 }
 if (platform === 'win') {

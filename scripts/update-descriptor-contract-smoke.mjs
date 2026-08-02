@@ -22,8 +22,8 @@ const installers = [
   `ID-Agents-Control-Center-${version}-arm64.zip`,
   `ID-Agents-Control-Center-${version}-x64.zip`,
   `ID-Agents-Control-Center-${version}-x64.exe`,
-  `ID-Agents-Control-Center-${version}-x64.AppImage`,
-  `ID-Agents-Control-Center-${version}-x64.deb`,
+  `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
+  `ID-Agents-Control-Center-${version}-amd64.deb`,
 ];
 
 function digest(algorithm, data, encoding = 'hex') {
@@ -99,10 +99,10 @@ try {
     join(directory, 'latest-linux.yml'),
     descriptor(
       [
-        `ID-Agents-Control-Center-${version}-x64.AppImage`,
-        `ID-Agents-Control-Center-${version}-x64.deb`,
+        `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
+        `ID-Agents-Control-Center-${version}-amd64.deb`,
       ],
-      `ID-Agents-Control-Center-${version}-x64.AppImage`,
+      `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
     ),
   );
   refreshChecksums();
@@ -116,8 +116,8 @@ try {
   writeFileSync(
     linuxPath,
     descriptor(
-      [`ID-Agents-Control-Center-${version}-x64.AppImage`],
-      `ID-Agents-Control-Center-${version}-x64.AppImage`,
+      [`ID-Agents-Control-Center-${version}-x86_64.AppImage`],
+      `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
     ),
   );
   refreshChecksums();

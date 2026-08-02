@@ -49,9 +49,10 @@ assert.equal(
 );
 assert.equal(
   buildMode.updaterEnabled,
-  !expectedReviewBuild,
-  'self-update must be disabled only in review-only output',
+  true,
+  'every packaged build must retain its compiled update channel',
 );
+assert.equal(buildMode.updaterChannel, expectedReviewBuild ? 'review' : 'production');
 assert.equal(buildMode.sourceVersion, sourcePackage.version);
 assert.deepEqual(buildMode.mainProcessStartupPolicy, {
   mode: expectedStartupPolicyMode,
@@ -81,7 +82,7 @@ if (expectedReviewBuild) {
 assert.ok(
   compiledMainProcess.includes(
     expectedReviewBuild
-      ? 'idacc-review-updater-disabled:v1'
+      ? 'idacc-review-updater-enabled:v1'
       : 'idacc-production-updater-enabled:v1',
   ),
   'the compiled updater must carry the expected fail-closed channel policy',

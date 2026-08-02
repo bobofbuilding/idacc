@@ -78,6 +78,7 @@ jobs:
           npm run test:dashboard-coordination --prefix idctl-desktop
           npm run test:dashboard-activity-filter --prefix idctl-desktop
           npm run test:org-hierarchy --prefix idctl-desktop
+          npm run test:chat-delegation --prefix idctl-desktop
           npm run test:renderer-store --prefix idctl-desktop
           npm run test:release-platform-config --prefix idctl-desktop
           npm run test:review-build-workflow --prefix idctl-desktop

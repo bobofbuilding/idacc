@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  classifyComputerUseRisk,
+  computerUseActionNeedsApproval,
   computerUseRuntimeEligible,
   mapComputerUsePoint,
   selectComputerUseDisplay,
@@ -14,6 +16,14 @@ assert.equal(computerUseRuntimeEligible('codex'), true);
 assert.equal(computerUseRuntimeEligible('ollama'), true);
 assert.equal(computerUseRuntimeEligible('cursor-cli'), false);
 assert.equal(computerUseRuntimeEligible('made-up-claude-runtime'), false);
+
+assert.equal(computerUseActionNeedsApproval('supervised', 'mouse_move', { x: 1, y: 1 }), true);
+assert.equal(computerUseActionNeedsApproval('guarded', 'mouse_move', { x: 1, y: 1 }), false);
+assert.equal(computerUseActionNeedsApproval('guarded', 'key', { keys: 'cmd+q' }), true);
+assert.equal(computerUseActionNeedsApproval('guarded', 'type', { text: 'sudo rm -rf /tmp/example' }), true);
+assert.equal(computerUseActionNeedsApproval('full-control', 'key', { keys: 'cmd+q' }), false);
+assert.equal(computerUseActionNeedsApproval('full-control', 'type', { text: 'sudo rm -rf /tmp/example' }), false);
+assert.equal(classifyComputerUseRisk('type', { text: 'npm run build' }).risky, false);
 
 const displays = [
   { id: 10, primary: true, label: 'Primary' },
@@ -51,18 +61,36 @@ const broker = readFileSync(join(root, 'src', 'main', 'computeruse', 'broker.ts'
 const capture = readFileSync(join(root, 'src', 'main', 'computeruse', 'capture.ts'), 'utf8');
 const permissions = readFileSync(join(root, 'src', 'main', 'computeruse', 'permissions.ts'), 'utf8');
 const main = readFileSync(join(root, 'src', 'main', 'main.ts'), 'utf8');
+const mcp = readFileSync(join(root, 'resources', 'computeruse-mcp', 'server.mjs'), 'utf8');
 
 assert.doesNotMatch(view, /function mcpCapable|\/claude\|codex\//);
 assert.match(view, /computerUseRuntimeEligible\(agentRuntime\(a\)\)/);
+assert.match(view, /buildFleetStructureSnapshot\(/);
+assert.match(view, /Full-control readiness/);
+assert.match(view, /setControlMode\('full-control'\)/);
+assert.match(view, /Disarming or PANIC automatically returns to Approve every action/);
+assert.match(view, /partial session was disarmed/);
 assert.match(view, /attachment was rolled back/);
 assert.match(view, />Repair<\/button>/);
 assert.match(view, /cu:setDisplay/);
 assert.match(broker, /export function setBrokerDisplay/);
 assert.match(broker, /captureDisplay\(S\.displayId/);
 assert.match(broker, /S\.lastShot !== actionShot/);
+assert.match(broker, /computerUseActionNeedsApproval\(S\.controlMode, type, body\)/);
+assert.match(broker, /export function setFullControl/);
+assert.match(broker, /S\.controlMode = 'supervised'/);
+assert.match(broker, /!S\.armed \|\| !S\.blessed\.size/);
+assert.match(broker, /rec\(agent, type, `\$\{f\.display\.label\} \$\{f\.width\}×\$\{f\.height\}`, 'executed'\)/);
+assert.match(broker, /The bundled Computer Use controller is not staged/);
 assert.match(broker, /flushPending\(false\)/);
 assert.match(capture, /screen\.getAllDisplays\(\)/);
 assert.match(main, /case 'cu:setDisplay'/);
+assert.match(main, /case 'cu:setFullControl'/);
+assert.match(main, /Computer Use safety mode changed before this request/);
+assert.match(main, /Computer Use pause state changed before this request/);
+assert.match(main, /if \(!result\.ok\) throw new Error\(result\.error/);
+assert.match(mcp, /name: 'computer_middle_click'/);
+assert.match(mcp, /explicit Full control session grant/);
 assert.match(broker, /process\.platform === 'darwin'/);
 assert.match(broker, /available: false/);
 assert.match(broker, /Windows\/Linux review build does not include the macOS screen-control driver/);

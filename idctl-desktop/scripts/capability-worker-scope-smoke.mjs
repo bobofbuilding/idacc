@@ -99,5 +99,16 @@ assert.match(
   /may use metered or billable provider capacity/,
   'explicit AI re-tagging must disclose possible provider cost before dispatch',
 );
+for (const [surface, source] of [
+  ['Modules', modules],
+  ['desktop bridge', bridge],
+  ['Tauri adapter', tauri],
+]) {
+  assert.doesNotMatch(
+    source,
+    /idacc-context-retrieval|headroom:pluginPath|headroom:backendContract/,
+    `${surface} must not synthesize or expose the retired retrieval pilot`,
+  );
+}
 
 console.log('capability worker scope smoke: ok');

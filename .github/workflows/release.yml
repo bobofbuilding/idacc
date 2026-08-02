@@ -291,6 +291,7 @@ jobs:
           npm run test:startup-recovery --prefix idctl-desktop
           npm run test:runtime-profile-isolation --prefix idctl-desktop
           npm run test:context-budget-retention --prefix idctl-desktop
+          npm run test:chat-delegation --prefix idctl-desktop
           npm run test:computer-use-retention --prefix idctl-desktop
           npm run test:computer-use-session-discovery --prefix idctl-desktop
           npm run test:brain-plans-profile --prefix idctl-desktop
@@ -841,12 +842,12 @@ jobs:
           path: attest-inputs
 
       - name: Attest native build artifacts
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: ${{ matrix.subject_globs }}
 
       - name: Attest native CycloneDX SBOM
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: ${{ matrix.subject_globs }}
           sbom-path: attest-inputs/metadata/${{ matrix.target }}/SBOM.cdx.json
@@ -970,7 +971,7 @@ jobs:
           path: publish
 
       - name: Attest the cross-platform release index and provenance bundles
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: |
             publish/release-index.json

@@ -119,6 +119,7 @@ jobs:
           npm run test:startup-recovery --prefix idctl-desktop
           npm run test:runtime-profile-isolation --prefix idctl-desktop
           npm run test:context-budget-retention --prefix idctl-desktop
+          npm run test:chat-delegation --prefix idctl-desktop
           npm run test:brain-plans-profile --prefix idctl-desktop
           npm run test:goals-plan-separation --prefix idctl-desktop
           npm run test:consumer-onboarding --prefix idctl-desktop
@@ -264,24 +265,30 @@ jobs:
             runtime_platform: darwin
             arch: arm64
             target_args: --mac dmg zip
-            unsigned_builder_args: --config.mac.identity=null --config.mac.notarize=false --config.dmg.sign=false
+            unsigned_builder_args: --config.mac.identity=- --config.mac.notarize=false --config.mac.hardenedRuntime=false --config.mac.requirements=build/review-requirements.txt --config.mac.signIgnore=/Contents/Resources/idacc-runtime/ --config.afterSign=scripts/review-after-sign.mjs --config.dmg.sign=false
             release_smoke_args: ""
             unpacked: mac-arm64/ID Agents Control Center.app
             installer_globs: |
               idctl-desktop/release/*.dmg
               idctl-desktop/release/*.zip
+            updater_globs: |
+              idctl-desktop/release/review-mac.yml
+              idctl-desktop/release/*.zip.blockmap
           - os: macos-15-intel
             target: darwin-x64
             platform: mac
             runtime_platform: darwin
             arch: x64
             target_args: --mac dmg zip
-            unsigned_builder_args: --config.mac.identity=null --config.mac.notarize=false --config.dmg.sign=false
+            unsigned_builder_args: --config.mac.identity=- --config.mac.notarize=false --config.mac.hardenedRuntime=false --config.mac.requirements=build/review-requirements.txt --config.mac.signIgnore=/Contents/Resources/idacc-runtime/ --config.afterSign=scripts/review-after-sign.mjs --config.dmg.sign=false
             release_smoke_args: ""
             unpacked: mac/ID Agents Control Center.app
             installer_globs: |
               idctl-desktop/release/*.dmg
               idctl-desktop/release/*.zip
+            updater_globs: |
+              idctl-desktop/release/review-mac.yml
+              idctl-desktop/release/*.zip.blockmap
           - os: windows-2025
             target: win32-x64
             platform: win
@@ -293,6 +300,9 @@ jobs:
             unpacked: win-unpacked
             installer_globs: |
               idctl-desktop/release/*.exe
+            updater_globs: |
+              idctl-desktop/release/review.yml
+              idctl-desktop/release/*.exe.blockmap
           - os: ubuntu-24.04
             target: linux-x64
             platform: linux
@@ -305,21 +315,14 @@ jobs:
             installer_globs: |
               idctl-desktop/release/*.AppImage
               idctl-desktop/release/*.deb
+            updater_globs: |
+              idctl-desktop/release/review-linux.yml
+              idctl-desktop/release/*.AppImage.blockmap
     env:
       CI: "true"
       IDACC_REVIEW_BUILD: "1"
       IDACC_REVIEW_VERSION: ${{ needs.prepare.outputs.review_version }}
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      CSC_LINK: ""
-      CSC_KEY_PASSWORD: ""
-      CSC_NAME: ""
-      WIN_CSC_LINK: ""
-      WIN_CSC_KEY_PASSWORD: ""
-      WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ""
-      APPLE_API_KEY: ""
-      APPLE_API_KEY_ID: ""
-      APPLE_API_ISSUER: ""
-      APPLE_TEAM_ID: ""
 
     steps:
       - name: Check out the exact IDACC review commit
@@ -443,6 +446,12 @@ jobs:
         shell: bash
         working-directory: idctl-desktop
         run: |
+          if [ "${{ matrix.platform }}" = mac ]; then
+            sudo sysctl -w kern.maxfiles=524288
+            sudo sysctl -w kern.maxfilesperproc=524288
+            ulimit -n 524288
+            test "$(ulimit -n)" = 524288
+          fi
           npm run build:release
           npm run test:release-build-output
           node scripts/run-review-builder.mjs \
@@ -452,7 +461,11 @@ jobs:
             ${{ matrix.target_args }} \
             --${{ matrix.arch }} \
             ${{ matrix.unsigned_builder_args }} \
-            --config.publish=null \
+            --config.publish.provider=github \
+            --config.publish.owner=bobofbuilding \
+            --config.publish.repo=idacc \
+            --config.publish.releaseType=release \
+            --config.publish.channel=review \
             --config.extraMetadata.version="$IDACC_REVIEW_VERSION" \
             --publish never
 
@@ -519,6 +532,7 @@ jobs:
         shell: bash
         env:
           IDACC_REVIEW_INSTALLER_GLOBS: ${{ matrix.installer_globs }}
+          IDACC_REVIEW_UPDATER_GLOBS: ${{ matrix.updater_globs }}
           REVIEW_CANDIDATE: ${{ needs.prepare.outputs.candidate }}
           REVIEW_COMMIT: ${{ needs.prepare.outputs.commit }}
           REVIEW_SOURCE_EPOCH: ${{ needs.prepare.outputs.source_epoch }}
@@ -526,6 +540,7 @@ jobs:
         run: |
           mkdir -p \
             review-platform/installers \
+            review-platform/updater \
             "review-platform/provenance/${{ matrix.target }}" \
             review-platform/platform-records
           COUNT=0
@@ -538,6 +553,16 @@ jobs:
             done < <(compgen -G "$GLOB" || true)
           done <<< "$IDACC_REVIEW_INSTALLER_GLOBS"
           test "$COUNT" -gt 0
+          UPDATE_COUNT=0
+          while IFS= read -r GLOB; do
+            test -n "$GLOB" || continue
+            while IFS= read -r FILE; do
+              test -f "$FILE" || continue
+              cp "$FILE" review-platform/updater/
+              UPDATE_COUNT=$((UPDATE_COUNT + 1))
+            done < <(compgen -G "$GLOB" || true)
+          done <<< "$IDACC_REVIEW_UPDATER_GLOBS"
+          test "$UPDATE_COUNT" -gt 0
           cp -R \
             "idctl-desktop/release/metadata/${{ matrix.target }}/." \
             "review-platform/provenance/${{ matrix.target }}/"
@@ -546,6 +571,7 @@ jobs:
             --root . \
             --output "review-platform/platform-records/${{ matrix.target }}.json" \
             --installers review-platform/installers \
+            --updater review-platform/updater \
             --build-mode idctl-desktop/out/build-mode.json \
             --platform "${{ matrix.runtime_platform }}" \
             --arch "${{ matrix.arch }}" \
@@ -556,13 +582,8 @@ jobs:
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --source-date-epoch "$REVIEW_SOURCE_EPOCH" \
             --application-version "$REVIEW_APPLICATION_VERSION"
-          if find review-platform -type f \( \
-            -name 'latest*.yml' -o \
-            -name 'latest*.yaml' -o \
-            -name 'app-update.yml' -o \
-            -name '*.blockmap' \
-          \) -print -quit | grep -q .; then
-            echo "::error::Updater descriptors and blockmaps are forbidden in review artifacts." >&2
+          if find review-platform -type f -name 'latest*.yml' -print -quit | grep -q .; then
+            echo "::error::Production updater descriptors are forbidden in review artifacts." >&2
             exit 1
           fi
 
@@ -581,6 +602,8 @@ jobs:
       - native-review-build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: write
 
     steps:
       - name: Check out the exact IDACC review commit
@@ -595,10 +618,13 @@ jobs:
         with:
           node-version-file: .node-version
 
+      - name: Install exact metadata tooling
+        run: npm ci --prefix idctl-desktop --omit=dev --ignore-scripts
+
       - name: Download every native review artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: idacc-${{ needs.prepare.outputs.candidate }}-attempt-*-platform-*-unsigned-review
+          pattern: idacc-${{ needs.prepare.outputs.candidate }}-attempt-${{ github.run_attempt }}-platform-*-unsigned-review
           path: review-inputs
 
       - name: Assemble one review-only cross-platform bundle
@@ -644,13 +670,74 @@ jobs:
             sha256sum -c "$ARCHIVE.sha256"
           )
 
+      - name: Assemble the durable review update feed
+        shell: bash
+        env:
+          REVIEW_APPLICATION_VERSION: ${{ needs.prepare.outputs.review_version }}
+        run: |
+          mkdir publish
+          while IFS= read -r FILE; do
+            NAME="$(basename "$FILE")"
+            test ! -e "publish/$NAME"
+            cp "$FILE" "publish/$NAME"
+          done < <(find review-inputs -type f -path '*/installers/*' -print)
+          while IFS= read -r FILE; do
+            NAME="$(basename "$FILE")"
+            case "$NAME" in
+              review-mac.yml) continue ;;
+            esac
+            test ! -e "publish/$NAME"
+            cp "$FILE" "publish/$NAME"
+          done < <(find review-inputs -type f -path '*/updater/*' -print)
+          mapfile -t MAC_FEEDS < <(find review-inputs -type f -path '*/updater/review-mac.yml' -print | sort)
+          test "${#MAC_FEEDS[@]}" -eq 2
+          node scripts/merge-update-metadata.mjs \
+            --input "${MAC_FEEDS[0]}" \
+            --input "${MAC_FEEDS[1]}" \
+            --output publish/review-mac.yml \
+            --require-mac-arches
+          cp release/REVIEW-NOTICE.md publish/REVIEW-NOTICE.md
+          find publish -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sed 's#  publish/#  #' > publish/SHA256SUMS
+          node scripts/verify-update-descriptors.mjs \
+            --directory publish \
+            --version "$REVIEW_APPLICATION_VERSION" \
+            --channel review
+
       - name: Publish the review bundle as an Actions artifact only
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: idacc-${{ needs.prepare.outputs.candidate }}-attempt-${{ github.run_attempt }}-all-native-unsigned-review
           if-no-files-found: error
           retention-days: 30
-          path: review-delivery/*
+          path: |
+            review-delivery/*
+            publish/*
+
+      - name: Publish the isolated, unsigned review update channel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_APPLICATION_VERSION: ${{ needs.prepare.outputs.review_version }}
+          REVIEW_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          TAG="v$REVIEW_APPLICATION_VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Review release $TAG already exists; start a new workflow run for a new immutable review version." >&2
+            exit 1
+          fi
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$REVIEW_COMMIT" \
+            --prerelease \
+            --title "IDACC $REVIEW_APPLICATION_VERSION unsigned review" \
+            --notes-file release/REVIEW-NOTICE.md \
+            publish/*
+          test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false
+          test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)" = true
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)" = "$REVIEW_COMMIT"
 
       - name: Record review-only delivery boundaries
         shell: bash
@@ -662,9 +749,9 @@ jobs:
             echo
             echo "One unsigned, unnotarized review bundle now contains macOS arm64, macOS Intel, Windows x64, and Linux x64 packages."
             echo
-            echo "No signing, notarization, or GitHub Release publishing credentials were used."
+            echo "No private signing or notarization credentials were used. The scoped automatic github.token published an isolated prerelease update feed."
             echo
-            echo "This workflow did not create a GitHub Release, change Latest, publish updater metadata, or enable self-update."
+            echo "This workflow created only a prerelease review feed. It did not change the stable GitHub Latest route or the consumer production channel."
             echo
             echo "No user-supplied or private runtime-source credential was used. The scoped automatic github.token read the public IDACC and pinned Manager repositories and wrote only the pending/final review status on this exact IDACC commit; Brain came from the verified vendored runtime capsule."
           } >> "$GITHUB_STEP_SUMMARY"

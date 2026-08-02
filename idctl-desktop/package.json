@@ -2,7 +2,7 @@
   "name": "idagents-control-center",
   "productName": "ID Agents Control Center",
   "desktopName": "idagents-control-center.desktop",
-  "version": "0.1.689",
+  "version": "0.1.691",
   "description": "Unified private AI-agent desktop application with bundled Manager and Brain.",
   "license": "MIT",
   "author": "IDACC Contributors",
@@ -40,6 +40,7 @@
     "test:windows-native-toolchain": "node scripts/build.mjs --probe-windows-native-toolchain",
     "test:windows-job-host": "node scripts/windows-job-host-integration-smoke.mjs",
     "test:chat-failure": "node scripts/chat-terminal-failure-smoke.mjs",
+    "test:chat-delegation": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/chat-lead-delegation-smoke.ts",
     "test:background-policy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/background-policy-smoke.mjs",
     "test:release-payload": "node ../scripts/release-payload-smoke.mjs",
     "test:release-provenance": "node ../scripts/release-provenance-smoke.mjs",
@@ -89,7 +90,7 @@
     "test:computer-use-retention": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/computer-use-profile-retention-smoke.ts",
     "test:computer-use-session-discovery": "node scripts/computer-use-session-discovery-smoke.mjs",
     "test:context-history": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/context-budget-history.mjs",
-    "test:dashboard-coordination": "node scripts/dashboard-coordination-roster-smoke.mjs",
+    "test:dashboard-coordination": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/dashboard-coordination-roster-smoke.mjs",
     "test:dashboard-command-surface": "node scripts/dashboard-command-surface-smoke.mjs",
     "test:dashboard-rendered": "node scripts/dashboard-rendered-smoke.mjs",
     "test:dashboard-activity-filter": "node scripts/dashboard-activity-filter-smoke.mjs",
@@ -106,7 +107,6 @@
     "test:goal-hardening": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/goal-hardening-smoke.mjs",
     "test:learn-brain-sync": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/learn-brain-sync-smoke.ts",
     "test:learn-queue": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/learn-queue-smoke.ts",
-    "test:headroom-plugin": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/headroom-plugin-path-smoke.mjs",
     "test:goals-plan-separation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/goals-plan-separation-smoke.mjs",
     "test:brain-plans-profile": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/brain-plans-profile-smoke.ts",
     "test:profile-migrations": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/profile-migrations-smoke.ts",
@@ -172,10 +172,6 @@
       {
         "from": "resources/computeruse-mcp",
         "to": "computeruse-mcp"
-      },
-      {
-        "from": "resources/idacc-context-retrieval",
-        "to": "idacc-context-retrieval"
       },
       {
         "from": "resources/idacc-runtime",

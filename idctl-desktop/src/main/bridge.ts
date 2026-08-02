@@ -57,11 +57,10 @@ import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts
 import { buildProviderModelLanes, buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider, localProviderRouteIsLive, settingsAvailableRuntimeSet, managedRuntimeHasEvidence, runtimeDisplayLabel, runtimeHasManagerHarness, starterMcpCapabilityPolicy, type RuntimeModelLaneKind } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import { subsStatus, subsStatusForRuntimes } from './subscriptions.ts';
 import { testMcpServer } from './mcpTest.ts';
-import { headroomBackendContractAudit, headroomCoreAudit, headroomStatus } from './headroom.ts';
-import { headroomPluginPathAudit } from './headroomPlugin.ts';
+import { headroomCoreAudit, headroomStatus } from './headroom.ts';
 import { contextBudgetDryRun, contextBudgetReport, loadRecentContextBudgetRecords, optimizeAskCommand, readContextBudgetRecord } from './contextBudget.ts';
 import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayOptions } from './contextReplay.ts';
-import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
+import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, fanOutObjectiveToActiveTeamLeads, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
 import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, syncGoalDriverConfig, type GoalDriverConfig } from './goaldriver.ts';
 import { discoverClaudeCliModels } from './claudeModels.ts';
 import {
@@ -2107,6 +2106,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'work:teamLeads': (teams: string[]) => teamLeads(client, Array.isArray(teams) ? teams.map(String) : []),
   'work:fanout': (objective: string, teams: string[]) =>
     fanOutObjective(client, String(objective), Array.isArray(teams) ? teams.map(String) : []),
+  // Primary-lead Chat delegation: discover active non-default team leads in the
+  // main process, then dispatch to every one in parallel.
+  'work:fanoutToTeamLeads': (objective: string, currentTeam?: string) =>
+    fanOutObjectiveToActiveTeamLeads(client, String(objective), String(currentTeam || 'default')),
   // Lead triages unassigned To-Do tasks: assign each to the best active agent + dispatch.
   'work:triage': async (lead: string, team?: string, projectId?: string) => {
     const route = await projectRouting(projectId, team, lead);
@@ -2136,19 +2139,6 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   probeOne: (name: string, team?: string) => (team ? client.withTeam(String(team)) : client).probeOne(String(name)),
   'headroom:status': () => headroomStatus(),
   'headroom:audit': async () => headroomCoreAudit(loadSettings().headroomPilot),
-  'headroom:pluginPath': async () => headroomPluginPathAudit({
-    managerCapabilities: await client.capabilities().catch(() => null),
-    managerPlugins: await client.libraryPlugins().catch(() => []),
-    headroomStatus: await headroomStatus(),
-  }),
-  'headroom:backendContract': async () => {
-    const pluginPath = await headroomPluginPathAudit({
-      managerCapabilities: await client.capabilities().catch(() => null),
-      managerPlugins: await client.libraryPlugins().catch(() => []),
-      headroomStatus: await headroomStatus(),
-    });
-    return headroomBackendContractAudit(pluginPath);
-  },
   'headroom:pilot': async () => loadSettings().headroomPilot,
   'headroom:setPilot': async (partial: Partial<HeadroomPilotSettings>) => setHeadroomPilot(partial).headroomPilot,
   'context:budgetReport': async () => contextBudgetReport(),

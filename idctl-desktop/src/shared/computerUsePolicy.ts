@@ -4,6 +4,38 @@ export function computerUseRuntimeEligible(runtime: string | undefined): boolean
   return runtimeHasManagerHarness(runtime) && runtimeSupports(runtime, 'mcp');
 }
 
+export type ComputerUseControlMode = 'supervised' | 'guarded' | 'full-control';
+
+const COMPUTER_USE_SHELL_DANGER = /\brm\s+(-[a-z]*[rf]|--(recursive|force))|\bsudo\b|\bmkfs\b|\bdd\s+if=|:\(\)\s*\{|\bdrop\s+(table|database)\b|\bdelete\s+from\b|\btruncate\s+table\b|\bgit\s+(reset\s+--hard|push\b[^\n]*--force|clean\s+-[a-z]*f)|--force\b|\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b|\binit\s+0\b|\bkillall\b|\bpkill\b|\bdiskutil\s+(erase|reformat|partitiondisk|apfs\s+delete)|\bfind\b[^\n]*-delete\b|\b(curl|wget)\b[^\n]*\|\s*(sudo\s+)?(ba|z)?sh\b|>\s*\/dev\/(sda|disk|hd)|\bchmod\s+-R\b|\bchown\s+-R\b|\bformat\s+[a-z]:/i;
+
+export function classifyComputerUseRisk(
+  type: string,
+  body: Record<string, unknown>,
+): { risky: boolean; reason?: string } {
+  if (type === 'key') {
+    const keys = String(body.keys ?? body.key ?? '').toLowerCase().replace(/\s+/g, '');
+    const command = /(cmd|command|meta|super|⌘)/.test(keys);
+    if (command && /(delete|backspace|\bdel\b|bksp)/.test(keys)) {
+      return { risky: true, reason: 'move to Trash / delete' };
+    }
+    if (command && /\+q$/.test(keys)) return { risky: true, reason: 'quit the app' };
+  }
+  if (type === 'type' && COMPUTER_USE_SHELL_DANGER.test(String(body.text ?? ''))) {
+    return { risky: true, reason: 'looks like a destructive command' };
+  }
+  return { risky: false };
+}
+
+export function computerUseActionNeedsApproval(
+  mode: ComputerUseControlMode,
+  type: string,
+  body: Record<string, unknown>,
+): boolean {
+  if (mode === 'supervised') return true;
+  if (mode === 'full-control') return false;
+  return classifyComputerUseRisk(type, body).risky;
+}
+
 export type DisplayChoice = {
   id: number;
   primary?: boolean;

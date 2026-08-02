@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
 import { runtimeDisplayLabel } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import { isAgentLive } from '../agentStatus.ts';
 
 export interface GraphGroup { team: string; agents: Agent[] }
 export interface Hier {
@@ -64,7 +65,7 @@ type Layout = {
 };
 
 function up(agent: Agent): boolean {
-  return /running|online|ready|healthy/i.test(`${agent.status ?? ''} ${agent.health ?? ''}`);
+  return isAgentLive(agent);
 }
 function statusColor(agent: Agent): string {
   if (up(agent)) return 'var(--ok)';

@@ -21,7 +21,7 @@ import { evaluateUpdateTarget, type UpdateTargetReadiness } from '../shared/upda
 
 declare const __IDACC_REVIEW_BUILD__: boolean;
 declare const __IDACC_UPDATE_CHANNEL_POLICY__: string;
-const REVIEW_UPDATE_POLICY = 'idacc-review-updater-disabled:v1';
+const REVIEW_UPDATE_POLICY = 'idacc-review-updater-enabled:v1';
 const UPDATE_CHANNEL_POLICY = typeof __IDACC_UPDATE_CHANNEL_POLICY__ === 'undefined'
   ? REVIEW_UPDATE_POLICY
   : __IDACC_UPDATE_CHANNEL_POLICY__;
@@ -32,6 +32,7 @@ const REVIEW_BUILD = REVIEW_BUILD_FLAG
 
 export interface UpdateStatus {
   current: string;
+  channel: 'production' | 'review';
   latest?: string;
   available: boolean;
   staged: boolean;
@@ -46,6 +47,7 @@ export interface UpdateStatus {
 
 let status: UpdateStatus = {
   current: app.getVersion(),
+  channel: REVIEW_BUILD ? 'review' : 'production',
   available: false,
   staged: false,
   checking: false,
@@ -65,12 +67,12 @@ let activeUpdateDownload: Promise<UpdateStatus> | null = null;
 
 /** Numeric semver compare: prerelease labels are treated as lower than release. */
 export function compareVersions(a: string, b: string): number {
-  const parse = (value: string): { numbers: number[]; prerelease: string } => {
+  const parse = (value: string): { numbers: number[]; prerelease: string[] } => {
     const clean = value.trim().replace(/^v/, '');
     const [core, prerelease = ''] = clean.split('-', 2);
     return {
       numbers: core.split('.').map((part) => Number.parseInt(part, 10) || 0),
-      prerelease,
+      prerelease: prerelease ? prerelease.split('.') : [],
     };
   };
   const left = parse(a);
@@ -79,9 +81,21 @@ export function compareVersions(a: string, b: string): number {
     const delta = (left.numbers[index] ?? 0) - (right.numbers[index] ?? 0);
     if (delta !== 0) return delta > 0 ? 1 : -1;
   }
-  if (!left.prerelease && right.prerelease) return 1;
-  if (left.prerelease && !right.prerelease) return -1;
-  return left.prerelease.localeCompare(right.prerelease);
+  if (!left.prerelease.length && right.prerelease.length) return 1;
+  if (left.prerelease.length && !right.prerelease.length) return -1;
+  for (let index = 0; index < Math.max(left.prerelease.length, right.prerelease.length); index += 1) {
+    const aPart = left.prerelease[index];
+    const bPart = right.prerelease[index];
+    if (aPart === undefined) return -1;
+    if (bPart === undefined) return 1;
+    if (aPart === bPart) continue;
+    const aNumeric = /^\d+$/.test(aPart);
+    const bNumeric = /^\d+$/.test(bPart);
+    if (aNumeric && bNumeric) return BigInt(aPart) > BigInt(bPart) ? 1 : -1;
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    return aPart > bPart ? 1 : -1;
+  }
+  return 0;
 }
 
 /**
@@ -91,7 +105,10 @@ export function compareVersions(a: string, b: string): number {
  * returns unexpected metadata.
  */
 export function isAllowedUpdateVersion(candidate: string, current: string): boolean {
-  if (!/^v?\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/.test(candidate.trim())) return false;
+  const allowed = REVIEW_BUILD
+    ? /^v?\d+\.\d+\.\d+-review\.[1-9][0-9]*$/
+    : /^v?\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/;
+  if (!allowed.test(candidate.trim())) return false;
   return compareVersions(candidate, current) > 0;
 }
 
@@ -113,12 +130,6 @@ function settings(): UpdateSettings {
 }
 
 function updateTargetReadiness(): UpdateTargetReadiness {
-  if (REVIEW_BUILD) {
-    return {
-      ok: false,
-      reason: 'this unsigned review-only build cannot use the production update channel',
-    };
-  }
   const bundle = process.platform === 'darwin'
     ? resolve(process.execPath, '..', '..', '..')
     : app.getAppPath();
@@ -191,7 +202,8 @@ function bindUpdaterEvents(): void {
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowDowngrade = false;
-  autoUpdater.allowPrerelease = false;
+  autoUpdater.allowPrerelease = REVIEW_BUILD;
+  autoUpdater.channel = REVIEW_BUILD ? 'review' : 'latest';
   autoUpdater.on('checking-for-update', () => {
     status = { ...status, checking: true, error: undefined };
     emit();
@@ -296,6 +308,7 @@ function configureUpdater(): UpdateSettings {
     owner: repository.owner,
     repo: repository.repo,
     private: false,
+    channel: REVIEW_BUILD ? 'review' : 'latest',
   });
   return current;
 }
@@ -355,13 +368,15 @@ async function checkForUpdateInternal(): Promise<UpdateStatus> {
   try {
     const repository = parseUpdateRepository(DEFAULT_UPDATE_REPO);
     let latestStable: string | undefined;
-    try {
-      latestStable = await probeLatestStableVersion(repository);
-    } catch {
-      // Compatibility probing is an optimization only. electron-updater
-      // remains the fail-closed authority for every actual artifact.
+    if (!REVIEW_BUILD) {
+      try {
+        latestStable = await probeLatestStableVersion(repository);
+      } catch {
+        // Compatibility probing is an optimization only. electron-updater
+        // remains the fail-closed authority for every actual artifact.
+      }
     }
-    if (latestStable && compareVersions(latestStable, app.getVersion()) <= 0) {
+    if (!REVIEW_BUILD && latestStable && compareVersions(latestStable, app.getVersion()) <= 0) {
       status = {
         ...status,
         checking: false,
@@ -475,7 +490,7 @@ async function downloadUpdateInternal(allowActiveCheck: boolean): Promise<Update
         downloading: false,
         downloadPercent: undefined,
         staged: false,
-        error: 'No newer stable IDACC update is available to download.',
+        error: `No newer ${REVIEW_BUILD ? 'review' : 'stable'} IDACC update is available to download.`,
       };
       emit();
       return { ...status };
@@ -589,6 +604,12 @@ export function installPreparedUpdateAndQuit(): void {
     throw new Error('No verified update is prepared for installation.');
   }
   stagedInstallPrepared = false;
+  // The packaged update self-test verifies the atomic replacement without
+  // reopening the full consumer application. Ordinary user-driven installs
+  // retain electron-updater's normal relaunch behavior.
+  autoUpdater.autoRunAppAfterInstall = !/^(1|true|yes|on)$/i.test(
+    String(process.env.IDCTL_UPDATE_NOOPEN || ''),
+  );
   autoUpdater.quitAndInstall(false, true);
 }
 

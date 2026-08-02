@@ -12,7 +12,8 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 assert.match(updater, /from 'electron-updater'/);
 assert.match(updater, /autoUpdater\.allowDowngrade = false/);
-assert.match(updater, /autoUpdater\.allowPrerelease = false/);
+assert.match(updater, /autoUpdater\.allowPrerelease = REVIEW_BUILD/);
+assert.match(updater, /autoUpdater\.channel = REVIEW_BUILD \? 'review' : 'latest'/);
 assert.match(updater, /autoUpdater\.quitAndInstall/);
 assert.match(updater, /activeUpdateDownload/);
 assert.match(updater, /export function beginUpdateCheck\(\)/);
@@ -64,7 +65,7 @@ assert.match(settingsView, /freshStatus\.latest !== stagedVersion/);
 assert.match(settingsView, /window\.confirm\(/);
 assert.match(settingsView, /await call<\{ applying\?: boolean \}>\('update:applyNow'\)/);
 assert.match(settingsView, /Restart & update/);
-assert.match(settingsView, /ahead of production channel/);
+assert.match(settingsView, /ahead of \$\{status\.channel \?\? 'production'\} channel/);
 assert.match(settingsView, /Automatic checks remain active and will resume downloads/);
 assert.match(settingsView, /const SETTINGS_STACK_REFRESH_MS = 5_000/);
 assert.match(

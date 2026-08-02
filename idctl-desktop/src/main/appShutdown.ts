@@ -69,7 +69,13 @@ export function cleanupOwnedPrimaryInstance(
   return Promise.resolve().then(cleanup);
 }
 
-const DEFAULT_UPDATE_QUIT_FALLBACK_MS = 5_000;
+// Squirrel.Mac must stream, unpack, and validate the complete replacement app
+// after electron-updater starts the native handoff. A five-second fallback can
+// terminate the app before that work reports update-downloaded, especially now
+// that Manager and Brain ship inside the application. Keep a bounded escape
+// hatch for a silent native-updater failure, but allow the verified unified
+// bundle enough time to finish its local installation handoff.
+export const DEFAULT_UPDATE_QUIT_FALLBACK_MS = 120_000;
 
 /**
  * Observe whether already-admitted work settles before a shared shutdown

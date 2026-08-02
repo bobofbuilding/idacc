@@ -5,22 +5,23 @@ for hands-on review across macOS, Windows, and Linux.
 
 - Each packaged application uses a review-only SemVer identity such as
   `0.1.685-review.42`; the source package version remains unchanged.
-- The macOS applications and disk images are unsigned and not notarized.
+- The macOS applications use a stable ad-hoc review requirement and are not
+  Developer ID signed or notarized. Disk images are unsigned.
 - The Windows application and installer are unsigned.
 - Operating-system security warnings are expected.
-- Self-update is disabled inside these review builds.
-- Updater descriptor and blockmap files are deliberately excluded.
-- No signing, notarization, or GitHub Release publishing credentials are used.
-- This bundle was uploaded as a GitHub Actions artifact only. It was not
-  published as a GitHub Release, does not change GitHub Latest, and is not an
+- Self-update is enabled only on the isolated `review` prerelease channel.
+- Updater descriptors bind every downloadable installer to its exact SHA-512.
+- No private signing or notarization credentials are used. The scoped automatic
+  GitHub token may publish the verified packages as a GitHub prerelease.
+- The prerelease does not change the stable GitHub Latest route and is not an
   IDACC production update.
 
 No user-supplied or private runtime-source credential is used. GitHub's scoped
 automatic `github.token` reads the public IDACC and Manager repositories and
-writes only the pending/final review status on the exact IDACC commit. Checkout
-credential persistence is disabled and the workflow has no release-write
-permission. Brain is supplied by the vendored runtime capsule committed with
-IDACC; the workflow verifies the capsule before materializing or packaging it.
+writes the pending/final review status and the isolated prerelease bound to the
+exact IDACC commit. Checkout credential persistence is disabled. Brain is
+supplied by the vendored runtime capsule committed with IDACC; the workflow
+verifies the capsule before materializing or packaging it.
 
 The capsule manifest binds its exact file inventory, modes, and content hashes
 to the lock. It intentionally omits raw private Git tree objects because those
@@ -52,6 +53,12 @@ The workflow's repository-owner and `agent/**` branch checks reduce accidental
 execution and distribution of review artifacts. Branch protection, Actions
 permissions, and repository or environment policy remain administrative
 controls that repository maintainers must configure and review.
+
+The first move from the legacy stable installation into this review channel is
+a manual bridge install. Subsequent review versions can update in-app without
+Apple notarization credentials while retaining the fixed GitHub repository,
+prerelease channel, SHA-512 metadata, downgrade protection, and explicit
+restart approval.
 
 Do not redistribute these packages as consumer-ready software. A production
 release still requires the normal signed-tag, code-signing, notarization,

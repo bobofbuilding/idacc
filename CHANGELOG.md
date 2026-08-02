@@ -8,6 +8,21 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.691] — 2026-08-02
+### What changed
+- Route actionable primary-lead Chat requests through deterministic, immediate cross-team delegation so broad work no longer stalls in one lead query.
+- Resolve active team leads from current Manager state, skip stopped teams, show the accepted delegation destinations, and return Chat control to the user while work continues in Work and Dashboard.
+- Keep agents running unless the user explicitly stops them, align HR structure with Dashboard fleet views, and complete the Computer Use full-control workflow.
+- Retire the dormant context-retrieval adapter and preserve review updater integrity across macOS, Windows, and Linux unsigned review packages.
+- Align both application toolchains on TypeScript 7.0.2 and pin production provenance to the reviewed `actions/attest` 4.2.1 commit while retaining the Electron 41 ABI boundary required by the bundled Manager.
+
+## [0.1.690] — 2026-08-01
+### What changed
+- Restore self-updating unsigned review builds through an isolated GitHub prerelease channel without requiring Apple notarization credentials.
+- Keep review downloads on the compiled `bobofbuilding/idacc` repository, verify electron-builder SHA-512 metadata, reject downgrades and production-channel crossover, and require explicit restart approval.
+- Give macOS review builds a stable ad-hoc designated requirement so the standard atomic Squirrel updater can verify successive review builds without reintroducing the legacy bundle-deletion or quarantine-removal helper.
+- Publish durable multi-OS review updater descriptors as prerelease assets while leaving the stable consumer Latest route unchanged.
+
 ## [0.1.689] — 2026-08-01
 ### What changed
 - Preserve Manager-reported Brain and MCP readiness through the IDACC API boundary so a healthy starter team can complete private workspace setup.
