@@ -690,6 +690,11 @@ const unsignedStableBuildStep = releaseWorkflow.slice(
   releaseWorkflow.indexOf('- name: Verify the Linux installer sandbox policies'),
 );
 assert.match(unsignedStableBuildStep, /CSC_IDENTITY_AUTO_DISCOVERY: "false"/);
+assert.match(
+  unsignedStableBuildStep,
+  /if \[ "\$\{\{ matrix\.platform \}\}" = mac \]; then\s+sudo sysctl -w kern\.maxfiles=524288\s+sudo sysctl -w kern\.maxfilesperproc=524288\s+ulimit -n 524288\s+test "\$\(ulimit -n\)" = 524288\s+fi/,
+  'unsigned stable macOS packaging must raise the runner file limit for the unified runtime',
+);
 for (const harmfulEmptySigningVariable of [
   'CSC_LINK',
   'CSC_KEY_PASSWORD',
