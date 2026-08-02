@@ -45,6 +45,7 @@ const mockModules = {
     Object.assign(updater, {
       autoDownload: true,
       autoInstallOnAppQuit: true,
+      autoRunAppAfterInstall: true,
       allowDowngrade: true,
       allowPrerelease: true,
       setFeedURL(feed) {
@@ -58,8 +59,9 @@ const mockModules = {
         state.downloadCalls += 1;
         return state.downloadImpl(updater);
       },
-      quitAndInstall() {
+      quitAndInstall(...args) {
         state.installCalls += 1;
+        state.installArgs.push(args);
       },
     });
     state.autoUpdater = updater;
@@ -151,6 +153,7 @@ try {
       checkCalls: 0,
       downloadCalls: 0,
       installCalls: 0,
+      installArgs: [],
       latestCalls: 0,
       latestStableVersion: '1.1.0',
       checkImpl: async () => ({ updateInfo: { version: '1.1.0' } }),
@@ -248,6 +251,30 @@ try {
     const staged = await api.downloadUpdate();
     assert.equal(staged.staged, true);
     assert.equal(staged.latest, '1.2.0-review.10');
+  }
+
+  {
+    const previousNoOpen = process.env.IDCTL_UPDATE_NOOPEN;
+    process.env.IDCTL_UPDATE_NOOPEN = '1';
+    try {
+      const { api, state } = loadUpdater({
+        currentVersion: '1.2.0-review.8',
+        checkImpl: async () => ({ updateInfo: { version: '1.2.0-review.10' } }),
+        downloadImpl: async (updater) => {
+          updater.emit('update-downloaded', { version: '1.2.0-review.10' });
+          return ['/mock/review-update'];
+        },
+      }, true);
+      await api.checkForUpdate();
+      await api.downloadUpdate();
+      assert.equal(api.prepareStagedUpdateInstall(), true);
+      api.installPreparedUpdateAndQuit();
+      assert.equal(state.autoUpdater.autoRunAppAfterInstall, false);
+      assert.deepEqual(state.installArgs, [[false, true]]);
+    } finally {
+      if (previousNoOpen == null) delete process.env.IDCTL_UPDATE_NOOPEN;
+      else process.env.IDCTL_UPDATE_NOOPEN = previousNoOpen;
+    }
   }
 
   {

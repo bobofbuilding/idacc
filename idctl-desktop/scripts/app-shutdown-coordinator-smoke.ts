@@ -7,6 +7,7 @@ import {
   cleanupOwnedPrimaryInstance,
   createAppShutdownCoordinator,
   createBoundedWorkDrain,
+  DEFAULT_UPDATE_QUIT_FALLBACK_MS,
   shutdownReentryDisposition,
   workSettledWithin,
   type AppShutdownEvent,
@@ -81,6 +82,12 @@ class FakeApp implements AppShutdownHost {
     this.calls.push('relaunch');
   }
 }
+
+assert.equal(
+  DEFAULT_UPDATE_QUIT_FALLBACK_MS,
+  120_000,
+  'the native updater must have enough time to unpack and validate the unified macOS bundle',
+);
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 

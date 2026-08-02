@@ -604,6 +604,12 @@ export function installPreparedUpdateAndQuit(): void {
     throw new Error('No verified update is prepared for installation.');
   }
   stagedInstallPrepared = false;
+  // The packaged update self-test verifies the atomic replacement without
+  // reopening the full consumer application. Ordinary user-driven installs
+  // retain electron-updater's normal relaunch behavior.
+  autoUpdater.autoRunAppAfterInstall = !/^(1|true|yes|on)$/i.test(
+    String(process.env.IDCTL_UPDATE_NOOPEN || ''),
+  );
   autoUpdater.quitAndInstall(false, true);
 }
 
