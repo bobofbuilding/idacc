@@ -679,11 +679,6 @@ jobs:
         working-directory: idctl-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          CSC_LINK: ""
-          CSC_KEY_PASSWORD: ""
-          WIN_CSC_LINK: ""
-          WIN_CSC_KEY_PASSWORD: ""
-          WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ""
           IDACC_UNSIGNED_STABLE_BUILD: "1"
           IDACC_UNSIGNED_STABLE_VERSION: ${{ inputs.version }}
         run: |

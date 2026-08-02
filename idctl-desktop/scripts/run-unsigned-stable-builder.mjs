@@ -51,6 +51,25 @@ if (
 ) {
   fail('unsigned stable builder requires the exact stable build identity in its environment');
 }
+for (const signingVariable of [
+  'CSC_LINK',
+  'CSC_KEY_PASSWORD',
+  'CSC_NAME',
+  'WIN_CSC_LINK',
+  'WIN_CSC_KEY_PASSWORD',
+  'WINDOWS_EXPECTED_PUBLISHER_SUBJECT',
+  'APPLE_API_KEY',
+  'APPLE_API_KEY_ID',
+  'APPLE_API_ISSUER',
+]) {
+  if (String(process.env[signingVariable] || '').trim()) {
+    fail(`unsigned stable builder refuses signing input ${signingVariable}`);
+  }
+  // Electron Builder resolves an explicitly empty CSC_LINK as the current
+  // directory on macOS and then attempts to import it as a certificate.
+  // Absence, together with the policy below, is the fail-closed state.
+  delete process.env[signingVariable];
+}
 
 const rawBuilderArgs = args.slice(separator + 1);
 const requiredArgument = (value) => {

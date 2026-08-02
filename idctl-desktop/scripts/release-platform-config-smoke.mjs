@@ -685,6 +685,24 @@ assert.match(
   /node scripts\/run-unsigned-stable-builder\.mjs[\s\S]*--application-version "\$RELEASE_VERSION"[\s\S]*--config\.extraMetadata\.version="\$RELEASE_VERSION"[\s\S]*--publish never/,
   'unsigned stable packages must use the policy-normalizing builder API wrapper',
 );
+const unsignedStableBuildStep = releaseWorkflow.slice(
+  releaseWorkflow.indexOf('- name: Build owner-authorized unsigned stable artifacts'),
+  releaseWorkflow.indexOf('- name: Verify the Linux installer sandbox policies'),
+);
+assert.match(unsignedStableBuildStep, /CSC_IDENTITY_AUTO_DISCOVERY: "false"/);
+for (const harmfulEmptySigningVariable of [
+  'CSC_LINK',
+  'CSC_KEY_PASSWORD',
+  'WIN_CSC_LINK',
+  'WIN_CSC_KEY_PASSWORD',
+  'WINDOWS_EXPECTED_PUBLISHER_SUBJECT',
+]) {
+  assert.doesNotMatch(
+    unsignedStableBuildStep,
+    new RegExp(`^\\s*${harmfulEmptySigningVariable}:`, 'm'),
+    `${harmfulEmptySigningVariable} must remain absent instead of resolving an empty certificate path`,
+  );
+}
 assert.doesNotMatch(
   releaseWorkflow,
   /node node_modules\/electron-builder\/out\/cli\/cli\.js/,
@@ -738,6 +756,11 @@ for (const [platform, targetArgs, policyArgs] of [
       ...process.env,
       IDACC_UNSIGNED_STABLE_BUILD: '1',
       IDACC_UNSIGNED_STABLE_VERSION: pkg.version,
+      CSC_LINK: '',
+      CSC_KEY_PASSWORD: '',
+      WIN_CSC_LINK: '',
+      WIN_CSC_KEY_PASSWORD: '',
+      WINDOWS_EXPECTED_PUBLISHER_SUBJECT: '',
     },
   });
   assert.equal(
