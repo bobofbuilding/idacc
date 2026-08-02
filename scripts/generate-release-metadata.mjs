@@ -481,8 +481,11 @@ const copiedBrainRuntimeCapsulePath = brainRuntimeCapsule
   : '';
 writeFileSync(sbomPath, JSON.stringify(sbom, null, 2) + '\n');
 writeFileSync(noticesPath, noticesText);
-copyFileSync(lockPath, copiedLockPath);
-copyFileSync(runtimeManifestPath, copiedRuntimeManifestPath);
+// Git may materialize tracked JSON with platform-native line endings. Release
+// metadata must be byte-identical across builders, so serialize the already
+// validated structures instead of preserving checkout-specific bytes.
+writeFileSync(copiedLockPath, JSON.stringify(lock, null, 2) + '\n');
+writeFileSync(copiedRuntimeManifestPath, JSON.stringify(runtimeManifest, null, 2) + '\n');
 if (brainRuntimeCapsule) {
   copyFileSync(brainRuntimeCapsule.manifestPath, copiedBrainRuntimeCapsulePath);
   const copiedCapsuleSha256 = sha256File(copiedBrainRuntimeCapsulePath);

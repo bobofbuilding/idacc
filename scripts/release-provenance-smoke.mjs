@@ -581,6 +581,33 @@ try {
   assert.equal(sbom.components.some((component) => component.name === '@electron/rebuild'), false);
   assert.match(readFileSync(join(metadataOutput, 'THIRD_PARTY_NOTICES.md'), 'utf8'), /----- BEGIN LICENSE -----/);
   assert.match(readFileSync(join(metadataOutput, 'SHA256SUMS'), 'utf8'), new RegExp(`${sha256File(artifact)}  IDACC-fixture\\.zip`));
+  const alternateLineEndingMetadataOutput = join(scratch, 'metadata-alternate-line-endings');
+  const canonicalLockText = JSON.stringify(lock, null, 2) + '\n';
+  const canonicalRuntimeManifestText = readFileSync(runtimeManifestPath, 'utf8');
+  writeFileSync(lockPath, canonicalLockText.replaceAll('\n', '\r\n'));
+  writeFileSync(
+    runtimeManifestPath,
+    canonicalRuntimeManifestText.replaceAll('\n', '\r\n'),
+  );
+  run(process.execPath, [
+    join(root, 'scripts', 'generate-release-metadata.mjs'),
+    '--lock', lockPath,
+    '--runtime-root', runtimeRoot,
+    '--output', alternateLineEndingMetadataOutput,
+    '--artifact', artifact,
+  ], root);
+  assert.equal(
+    readFileSync(join(alternateLineEndingMetadataOutput, 'runtime-lock.json'), 'utf8'),
+    readFileSync(join(metadataOutput, 'runtime-lock.json'), 'utf8'),
+    'runtime lock metadata must not depend on checkout line endings',
+  );
+  assert.equal(
+    readFileSync(join(alternateLineEndingMetadataOutput, 'runtime-manifest.json'), 'utf8'),
+    readFileSync(join(metadataOutput, 'runtime-manifest.json'), 'utf8'),
+    'runtime manifest metadata must not depend on checkout line endings',
+  );
+  writeFileSync(lockPath, canonicalLockText);
+  writeFileSync(runtimeManifestPath, canonicalRuntimeManifestText);
   const packagedNotices = join(scratch, 'packaged', 'THIRD_PARTY_NOTICES.md');
   run(process.execPath, [
     join(root, 'scripts', 'generate-release-metadata.mjs'),
