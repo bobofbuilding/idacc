@@ -291,6 +291,7 @@ jobs:
           npm run test:startup-recovery --prefix idctl-desktop
           npm run test:runtime-profile-isolation --prefix idctl-desktop
           npm run test:context-budget-retention --prefix idctl-desktop
+          npm run test:chat-delegation --prefix idctl-desktop
           npm run test:computer-use-retention --prefix idctl-desktop
           npm run test:computer-use-session-discovery --prefix idctl-desktop
           npm run test:brain-plans-profile --prefix idctl-desktop

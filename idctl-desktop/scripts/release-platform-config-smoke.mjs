@@ -116,6 +116,7 @@ assert.deepEqual(
   tsxPackageScripts.map(([name]) => name).sort(),
   [
     'test:brain-plans-profile',
+    'test:chat-delegation',
     'test:computer-use-policy',
     'test:computer-use-retention',
     'test:consumer-onboarding',
@@ -754,6 +755,7 @@ for (const source of [workflow, releaseWorkflow]) {
     'test:subscription-portability',
     'test:goals-plan-separation',
     'test:credential-isolation',
+    'test:chat-delegation',
     'test:startup-recovery',
     'test:release-payload',
     'runtimeCatalog.test.ts',
