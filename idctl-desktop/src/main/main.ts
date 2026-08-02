@@ -80,7 +80,7 @@ import {
   type KeyProductionReadiness,
   type KeyReadinessCheck,
 } from '../../../idctl/src/keys/types.ts';
-import { startBroker, armBroker, disarmBroker, setWatching, setBrokerDisplay, brokerStatus, auditTail, panicBroker, setSupervised, setPaused, confirmAction, pendingActions, setPanicHotkey, mintAgentToken, brokerUrl, stopBroker, legacyAgentTokenReport } from './computeruse/broker.ts';
+import { startBroker, armBroker, disarmBroker, setWatching, setBrokerDisplay, brokerStatus, auditTail, panicBroker, setSupervised, setFullControl, setPaused, confirmAction, pendingActions, setPanicHotkey, mintAgentToken, brokerUrl, stopBroker, legacyAgentTokenReport } from './computeruse/broker.ts';
 import { configureComputerUseAuditManager } from './computeruse/audit.ts';
 import { getPermissions, openPermissionSettings, type CuPermissionPane } from './computeruse/permissions.ts';
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
@@ -1541,7 +1541,9 @@ async function armComputerUseFromCurrentAttached(teamArg: unknown, expectedAttac
     ...(status.blessed ?? []).filter((authority: string) => !authority.startsWith(`${team}:`)),
     ...(attached ?? []).map((agent) => scopedComputerUseAuthority(agent, team)),
   ]).split('|').filter(Boolean);
-  return { ...armBroker(next), team, attached: attached?.length ?? 0 };
+  const result = armBroker(next);
+  if (!result.ok) throw new Error(result.error || 'Computer Use could not be armed.');
+  return { ...result, team, attached: attached?.length ?? 0 };
 }
 
 function publishStoreChange(method: string): void {
@@ -3065,8 +3067,19 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'cu:panic':
       return panicBroker();
     case 'cu:setSupervised':
+      if (typeof args[1] === 'string' && brokerStatus().controlMode !== args[1]) {
+        throw new Error('Computer Use safety mode changed before this request; refresh and review the current mode.');
+      }
       return setSupervised(Boolean(args[0]));
+    case 'cu:setFullControl':
+      if (typeof args[1] === 'string' && brokerStatus().controlMode !== args[1]) {
+        throw new Error('Computer Use safety mode changed before this request; refresh and review the current mode.');
+      }
+      return setFullControl(Boolean(args[0]));
     case 'cu:pause':
+      if (typeof args[1] === 'boolean' && brokerStatus().paused !== args[1]) {
+        throw new Error('Computer Use pause state changed before this request; refresh and review the current state.');
+      }
       return setPaused(Boolean(args[0]));
     case 'cu:confirm':
       return confirmAction(args[0] as string, Boolean(args[1]));
@@ -3172,7 +3185,14 @@ if (ownsSingleInstanceLock && cuSelftest) {
       const riskyPend = pendingActions();
       if (riskyPend.length) confirmAction(riskyPend[0].id, false);
       const riskyRes = await risky;
-      console.log('CU_SELFTEST ' + JSON.stringify({ port: st.port, shotOk: shot.ok, imageBytes: shot.image ? Buffer.from(shot.image, 'base64').length : 0, width: shot.width, height: shot.height, driverOk: st.driverOk, accessibility: st.accessibility, moveOk: mv.ok, moveDetail: mv.detail, moveReason: mv.reason, supervisedHeld: pend.length, supervisedApprovedOk: heldRes.ok, autoNormalOk: normal.ok, autoRiskyHeld: riskyPend.length, autoRiskyDenied: riskyRes.reason === 'declined' }));
+      let fullControlModeOk = false;
+      try {
+        setFullControl(true);
+        fullControlModeOk = brokerStatus().fullControl === true;
+      } finally {
+        setSupervised(true);
+      }
+      console.log('CU_SELFTEST ' + JSON.stringify({ port: st.port, shotOk: shot.ok, imageBytes: shot.image ? Buffer.from(shot.image, 'base64').length : 0, width: shot.width, height: shot.height, driverOk: st.driverOk, accessibility: st.accessibility, moveOk: mv.ok, moveDetail: mv.detail, moveReason: mv.reason, supervisedHeld: pend.length, supervisedApprovedOk: heldRes.ok, autoNormalOk: normal.ok, autoRiskyHeld: riskyPend.length, autoRiskyDenied: riskyRes.reason === 'declined', fullControlModeOk }));
     } catch (e) {
       console.log('CU_SELFTEST_ERR ' + (e instanceof Error ? e.message : String(e)));
     }

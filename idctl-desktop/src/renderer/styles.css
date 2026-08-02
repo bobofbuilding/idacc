@@ -1115,6 +1115,9 @@ select:focus, input:focus { border-color: var(--accent); }
 
 /* ── Computer Use ─────────────────────────────────────────────────────── */
 .cu-intro { margin: 2px 2px 12px; line-height: 1.5; }
+.cu-readiness { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 12px; margin: -4px 2px 12px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 44%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--warn) 7%, transparent); font-size: 12px; }
+.cu-readiness.ready { border-color: color-mix(in srgb, var(--ok) 48%, var(--border)); background: color-mix(in srgb, var(--ok) 7%, transparent); }
+.cu-readiness b { margin-right: 2px; }
 .cu-empty-arm { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: -4px 2px 12px; padding: 8px 10px; border: 1px solid var(--warn); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, transparent); }
 .cu-armpill { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
 .cu-armpill.on { color: #fff; background: #1f7a33; border-color: #2a9d45; }
@@ -1173,6 +1176,9 @@ select:focus, input:focus { border-color: var(--accent); }
 .cu-approval-text { font-size: 13px; }
 .cu-mode-row { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 10px; cursor: pointer; line-height: 1.4; }
 .cu-mode-row input { margin-top: 3px; }
+.cu-mode-row:has(input:disabled) { cursor: not-allowed; opacity: .58; }
+.cu-full-control { padding: 8px; border: 1px solid var(--border); border-radius: 8px; }
+.cu-full-control.active { border-color: #d2432f; background: rgba(210,67,47,.09); }
 
 /* ── Command palette (⌘K) — the "drive everything" front door ───────────────── */
 .titlebar { display: flex; align-items: center; justify-content: center; position: relative; }

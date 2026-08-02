@@ -29,8 +29,11 @@ import {
 } from './audit.ts';
 import { copyFilePrivateSync } from '../privateFileCopy.ts';
 import {
+  classifyComputerUseRisk,
+  computerUseActionNeedsApproval,
   mapComputerUsePoint,
   validateComputerUseFrame,
+  type ComputerUseControlMode,
   type ComputerUseFrame,
 } from '../../shared/computerUsePolicy.ts';
 import {
@@ -83,7 +86,7 @@ interface BrokerState {
   blessed: Set<string>;       // scoped agent authorities allowed to act this armed session (synced at arm)
   team: string;               // most recent caller's team (for the audit→Chat mirror)
   lastShot: ComputerUseFrame | null; // agent/display-bound coordinate evidence
-  supervised: boolean;        // HOLD every input action for the user's approval (default on)
+  controlMode: ComputerUseControlMode; // supervised by default; full control is explicit and session-scoped
   paused: boolean;            // block input without disarming (user is taking over)
   pending: Map<string, { resolve: (allow: boolean) => void; timer: ReturnType<typeof setTimeout>; entry: PendingAction }>;
   onPending: ((evt: { kind: 'add' | 'remove'; pending: PendingAction[] }) => void) | null;
@@ -98,7 +101,7 @@ export interface LegacyComputerUseAuthority {
   source: 'computer-use-agent-tokens';
   note: string;
 }
-const S: BrokerState = { server: null, port: 0, token: '', armed: false, watching: false, onFrame: null, pump: null, lastSig: 0, lastAgent: '', actions: 0, captureFailing: false, displayId: null, blessed: new Set(), team: '', lastShot: null, supervised: true, paused: false, pending: new Map(), onPending: null, stopping: false };
+const S: BrokerState = { server: null, port: 0, token: '', armed: false, watching: false, onFrame: null, pump: null, lastSig: 0, lastAgent: '', actions: 0, captureFailing: false, displayId: null, blessed: new Set(), team: '', lastShot: null, controlMode: 'supervised', paused: false, pending: new Map(), onPending: null, stopping: false };
 const requestLifecycle = createComputerUseRequestLifecycle();
 const brokerSockets = new Set<Socket>();
 let brokerStopPromise: Promise<void> | null = null;
@@ -123,30 +126,6 @@ function previewAction(type: string, body: Record<string, unknown>): string {
     case 'scroll': return `scroll ${String(body.direction ?? 'down')} ${Math.max(1, Math.min(20, Number(body.amount) || 3))}`;
     default: return type;
   }
-}
-
-// Risk classifier: in AUTONOMOUS mode we auto-allow ordinary actions but still HOLD
-// these for approval. Mouse targets can't be classified without the accessibility
-// tree, so this focuses on the reliably-detectable destructive keyboard + typed
-// commands; supervised mode (the default) still holds everything regardless.
-// Recursive/forced rm, sudo, fs/disk wipes, mass deletes, fork-bombs, DB drops,
-// hard resets/force-pushes, shutdowns, kills, pipe-to-shell, etc. Linear [^\n]*
-// only (no nested quantifiers → no catastrophic backtracking on agent text).
-const SHELL_DANGER = /\brm\s+(-[a-z]*[rf]|--(recursive|force))|\bsudo\b|\bmkfs\b|\bdd\s+if=|:\(\)\s*\{|\bdrop\s+(table|database)\b|\bdelete\s+from\b|\btruncate\s+table\b|\bgit\s+(reset\s+--hard|push\b[^\n]*--force|clean\s+-[a-z]*f)|--force\b|\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b|\binit\s+0\b|\bkillall\b|\bpkill\b|\bdiskutil\s+(erase|reformat|partitiondisk|apfs\s+delete)|\bfind\b[^\n]*-delete\b|\b(curl|wget)\b[^\n]*\|\s*(sudo\s+)?(ba|z)?sh\b|>\s*\/dev\/(sda|disk|hd)|\bchmod\s+-R\b|\bchown\s+-R\b|\bformat\s+[a-z]:/i;
-function classifyRisk(type: string, body: Record<string, unknown>): { risky: boolean; reason?: string } {
-  if (type === 'key') {
-    // Match the driver's modifier + key normalization so aliases (super→cmd, del→delete) can't slip past.
-    const k = String(body.keys ?? body.key ?? '').toLowerCase().replace(/\s+/g, '');
-    const cmd = /(cmd|command|meta|super|⌘)/.test(k);
-    if (cmd && /(delete|backspace|\bdel\b|bksp)/.test(k)) return { risky: true, reason: 'move to Trash / delete' };
-    if (cmd && /\+q$/.test(k)) return { risky: true, reason: 'quit the app' };
-    return { risky: false };
-  }
-  if (type === 'type') {
-    if (SHELL_DANGER.test(String(body.text ?? ''))) return { risky: true, reason: 'looks like a destructive command' };
-    return { risky: false };
-  }
-  return { risky: false };
 }
 
 function pendingList(): PendingAction[] { return [...S.pending.values()].map((p) => p.entry); }
@@ -180,7 +159,22 @@ function flushPending(allow: boolean): void {
   notifyPending('remove');
 }
 export function pendingActions(): PendingAction[] { return pendingList(); }
-export function setSupervised(on: boolean): { ok: boolean; supervised: boolean } { S.supervised = !!on; return { ok: true, supervised: S.supervised }; }
+export function setSupervised(on: boolean): { ok: boolean; supervised: boolean; fullControl: boolean; controlMode: ComputerUseControlMode } {
+  flushPending(false);
+  S.controlMode = on ? 'supervised' : 'guarded';
+  return { ok: true, supervised: S.controlMode === 'supervised', fullControl: false, controlMode: S.controlMode };
+}
+export function setFullControl(on: boolean): { ok: boolean; supervised: boolean; fullControl: boolean; controlMode: ComputerUseControlMode } {
+  if (on) {
+    if (!computerUseAvailable()) throw new Error(COMPUTER_USE_UNAVAILABLE_REASON);
+    if (!S.armed || !S.blessed.size) throw new Error('Arm Computer Use with at least one blessed agent before granting Full control.');
+    if (!driver.driverCapability().ok) throw new Error('The native input controller is unavailable in this build.');
+    if (!accessibilityGranted()) throw new Error('Accessibility permission is required before Full control can be enabled.');
+  }
+  flushPending(false);
+  S.controlMode = on ? 'full-control' : 'guarded';
+  return { ok: true, supervised: false, fullControl: S.controlMode === 'full-control', controlMode: S.controlMode };
+}
 export function setPaused(on: boolean): { ok: boolean; paused: boolean } { S.paused = !!on; if (S.paused) flushPending(false); return { ok: true, paused: S.paused }; }
 
 const INPUT_VERBS = new Set(['mouse_move', 'left_click', 'right_click', 'middle_click', 'double_click', 'left_click_drag', 'type', 'key', 'scroll']);
@@ -384,13 +378,22 @@ async function handleAction(
   }
 
   // Every screenshot + input requires: armed, AND the caller is blessed for this session.
-  if (!S.armed) return blk('disarmed', 'Computer Use is off — open ID Agents Control Center → Computer Use and press Arm.');
-  if (!S.blessed.has(agent)) return blk('agent_not_blessed', `"${agent || 'this agent'}" isn't blessed for Computer Use. Bless it in the app, then it must be re-armed.`);
+  if (!S.armed) {
+    rec(agent, type, previewAction(type, body), 'blocked', 'disarmed');
+    return blk('disarmed', 'Computer Use is off — open ID Agents Control Center → Computer Use and press Arm.');
+  }
+  if (!S.blessed.has(agent)) {
+    rec(agent, type, previewAction(type, body), 'blocked', 'agent_not_blessed');
+    return blk('agent_not_blessed', `"${agent || 'this agent'}" isn't blessed for Computer Use. Bless it in the app, then it must be re-armed.`);
+  }
 
   if (type === 'screenshot') {
     const f = await captureDisplay(S.displayId, { format: 'png' });
     if (!lease.isCurrent()) return stoppedAction();
-    if (!f) return blk('screen_recording_permission', 'Screen Recording permission is not granted to ID Agents Control Center.');
+    if (!f) {
+      rec(agent, type, 'capture selected display', 'blocked', 'screen_recording_permission');
+      return blk('screen_recording_permission', 'Screen Recording permission is not granted to ID Agents Control Center.');
+    }
     S.lastShot = {
       agent,
       displayId: f.display.id,
@@ -401,6 +404,7 @@ async function handleAction(
       capturedAt: f.ts,
     };
     S.actions++;
+    rec(agent, type, `${f.display.label} ${f.width}×${f.height}`, 'executed');
     return { status: 200, json: { ok: true, image: f.buf.toString('base64'), mimeType: 'image/png', width: f.width, height: f.height, display: f.display } };
   }
 
@@ -429,11 +433,12 @@ async function handleAction(
     }
     // You can pause the agent (block input) without disarming.
     if (S.paused) { rec(agent, type, previewAction(type, body), 'blocked', 'paused'); return blk('paused', 'You paused Computer Use — resume it in the app to continue.'); }
-    // Decide whether to HOLD this action for approval: supervised holds EVERY action;
-    // autonomous holds only the ones the risk classifier flags (delete/quit/dangerous
-    // commands). Either way the user is the only one who can release a held action.
-    const risk = classifyRisk(type, body);
-    if (S.supervised || risk.risky) {
+    // Decide whether to HOLD this action for approval: supervised holds every
+    // action; guarded autonomy holds only classified risky actions; an explicit
+    // session-scoped Full control grant holds none. Scope, frame, permission,
+    // pause, disarm, and audit enforcement remain active in every mode.
+    const risk = classifyComputerUseRisk(type, body);
+    if (computerUseActionNeedsApproval(S.controlMode, type, body)) {
       const label = previewAction(type, body) + (risk.risky ? ` — ⚠ ${risk.reason}` : '');
       const approved = await requestApproval(agent, type, label);
       if (!lease.isCurrent()) return stoppedAction();
@@ -501,6 +506,7 @@ async function handleAction(
     return { status: 200, json: { ok: true, action: type, detail } };
   }
 
+  rec(agent, type || '(empty)', '', 'blocked', 'unknown_action');
   return blk('unknown_action', `unknown action "${type}"`);
 }
 
@@ -664,6 +670,9 @@ export function armBroker(blessed?: string[]): { ok: boolean; port: number; bles
   if (S.stopping || !requestLifecycle.isAccepting()) {
     return { ok: false, port: 0, blessed: [] };
   }
+  if (!S.server || !S.port || !existsSync(brokerServerPath())) {
+    return { ok: false, port: S.port, blessed: [], error: 'The bundled Computer Use controller is not staged. Restart or repair IDACC before arming.' };
+  }
   // The blessed set is captured AT ARM from the agents that currently have the
   // computer-use tool attached — so disarming + re-arming is the way to refresh it.
   if (Array.isArray(blessed)) S.blessed = new Set(blessed.map((s) => normalizeAuthority(String(s))).filter(Boolean)); // match handleAction's truncation of the caller id
@@ -679,6 +688,7 @@ export function disarmBroker(): { ok: boolean } {
   S.blessed = new Set();
   S.lastShot = null;
   S.paused = false;
+  S.controlMode = 'supervised'; // every new armed session requires a fresh explicit autonomy/full-control grant
   flushPending(false);                              // decline anything held for approval
   try { driver.releaseAll(); } catch { /* */ }      // backstop: never leave a button held after disarm
   reconcilePump();
@@ -733,7 +743,9 @@ export function brokerStatus() {
       blessed: [],
       driverOk: false,
       accessibility: false,
-      supervised: S.supervised,
+      supervised: S.controlMode === 'supervised',
+      fullControl: S.controlMode === 'full-control',
+      controlMode: S.controlMode,
       paused: false,
       pending: [],
       panicHotkey: false,
@@ -747,7 +759,7 @@ export function brokerStatus() {
     S.lastShot = null;
     S.lastSig = 0;
   }
-  return { available: true, armed: S.armed, watching: S.watching, port: S.port, url: S.port ? `http://127.0.0.1:${S.port}` : '', lastAgent: S.lastAgent, actions: S.actions, serverStaged: existsSync(brokerServerPath()), captureFailing: S.captureFailing, display, displays, blessed: [...S.blessed], driverOk: driver.driverCapability().ok, accessibility: accessibilityGranted(), supervised: S.supervised, paused: S.paused, pending: pendingList(), panicHotkey: panicHotkeyOk };
+  return { available: true, armed: S.armed, watching: S.watching, port: S.port, url: S.port ? `http://127.0.0.1:${S.port}` : '', lastAgent: S.lastAgent, actions: S.actions, serverStaged: existsSync(brokerServerPath()), captureFailing: S.captureFailing, display, displays, blessed: [...S.blessed], driverOk: driver.driverCapability().ok, accessibility: accessibilityGranted(), supervised: S.controlMode === 'supervised', fullControl: S.controlMode === 'full-control', controlMode: S.controlMode, paused: S.paused, pending: pendingList(), panicHotkey: panicHotkeyOk };
 }
 
 export function stopBroker(): Promise<void> {
