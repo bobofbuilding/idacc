@@ -680,6 +680,73 @@ assert.match(releaseWorkflow, /publish-v\$RELEASE_VERSION-unsigned/);
 assert.match(releaseWorkflow, /Build owner-authorized unsigned stable artifacts/);
 assert.match(releaseWorkflow, /--config\.publish\.channel=latest/);
 assert.match(releaseWorkflow, /scripts\/unsigned-stable-after-sign\.mjs/);
+assert.match(
+  releaseWorkflow,
+  /node scripts\/run-unsigned-stable-builder\.mjs[\s\S]*--application-version "\$RELEASE_VERSION"[\s\S]*--config\.extraMetadata\.version="\$RELEASE_VERSION"[\s\S]*--publish never/,
+  'unsigned stable packages must use the policy-normalizing builder API wrapper',
+);
+assert.doesNotMatch(
+  releaseWorkflow,
+  /node node_modules\/electron-builder\/out\/cli\/cli\.js/,
+  'the production workflow must not bypass normalized builder configuration',
+);
+const unsignedStableBuilder = join(
+  desktop,
+  'scripts',
+  'run-unsigned-stable-builder.mjs',
+);
+const unsignedStableCommonArgs = [
+  '--config.publish.provider=github',
+  '--config.publish.owner=bobofbuilding',
+  '--config.publish.repo=idacc',
+  '--config.publish.releaseType=release',
+  '--config.publish.channel=latest',
+  `--config.extraMetadata.version=${pkg.version}`,
+  '--publish',
+  'never',
+];
+for (const [platform, targetArgs, policyArgs] of [
+  [
+    'mac',
+    ['--mac', 'dmg', 'zip', '--arm64'],
+    [
+      '--config.mac.identity=-',
+      '--config.mac.notarize=false',
+      '--config.mac.hardenedRuntime=false',
+      '--config.mac.requirements=build/review-requirements.txt',
+      '--config.mac.signIgnore=/Contents/Resources/idacc-runtime/',
+      '--config.afterSign=scripts/unsigned-stable-after-sign.mjs',
+      '--config.dmg.sign=false',
+    ],
+  ],
+  ['win', ['--win', 'nsis', '--x64'], ['--config.win.signExecutable=false']],
+  ['linux', ['--linux', 'AppImage', 'deb', '--x64'], []],
+]) {
+  const result = spawnSync(process.execPath, [
+    unsignedStableBuilder,
+    '--platform', platform,
+    '--application-version', pkg.version,
+    '--policy-only',
+    '--',
+    ...targetArgs,
+    ...policyArgs,
+    ...unsignedStableCommonArgs,
+  ], {
+    cwd: desktop,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      IDACC_UNSIGNED_STABLE_BUILD: '1',
+      IDACC_UNSIGNED_STABLE_VERSION: pkg.version,
+    },
+  });
+  assert.equal(
+    result.status,
+    0,
+    `unsigned stable ${platform} builder policy failed:\n${result.stderr}`,
+  );
+  assert.match(result.stdout, /unsigned stable builder policy: ok/);
+}
 assert.match(releaseWorkflow, /scripts\/verify-unsigned-stable-package\.mjs/);
 assert.match(releaseWorkflow, /node idctl-desktop\/scripts\/verify-packaged-publisher\.mjs/);
 assert.match(releaseWorkflow, /SignerCertificate\.Subject -cne \$env:WINDOWS_EXPECTED_PUBLISHER_SUBJECT/);
