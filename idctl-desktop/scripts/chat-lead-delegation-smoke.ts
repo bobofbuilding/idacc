@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { shouldDelegatePrimaryLeadRequest, stripDirectLeadOverride } from '../src/shared/chatDelegation.ts';
+import {
+  buildAuthorizedProjectInventory,
+  shouldDelegatePrimaryLeadRequest,
+  stripDirectLeadOverride,
+} from '../src/shared/chatDelegation.ts';
 import { fanOutObjectiveToActiveTeamLeads } from '../src/main/work.ts';
 
 assert.equal(shouldDelegatePrimaryLeadRequest('delegate this to the other team leads'), true);
@@ -10,6 +14,14 @@ assert.equal(shouldDelegatePrimaryLeadRequest('what is happening with setup?'), 
 assert.equal(shouldDelegatePrimaryLeadRequest('hello, how are you?'), false);
 assert.equal(shouldDelegatePrimaryLeadRequest('/direct audit every project'), false);
 assert.equal(stripDirectLeadOverride('/direct audit every project'), 'audit every project');
+const inventory = buildAuthorizedProjectInventory('audit each project one by one', [
+  { id: 'alpha', name: 'Alpha', status: 'active', path: '/work/alpha', links: ['https://github.com/example/alpha'] },
+  { id: 'paused', name: 'Paused', status: 'paused', path: '/work/paused' },
+]);
+assert.match(inventory, /id="alpha"/);
+assert.match(inventory, /root="\/work\/alpha"/);
+assert.match(inventory, /audit-reconcile-authorized-projects/);
+assert.doesNotMatch(inventory, /\/work\/paused/);
 
 async function main(): Promise<void> {
   const chat = await readFile(new URL('../src/renderer/views/Chat.tsx', import.meta.url), 'utf8');
@@ -26,6 +38,10 @@ async function main(): Promise<void> {
   const rosters: Record<string, Array<{ id: string; name: string; status: string; port: number; createdAt: number }>> = {
     default: [{ id: 'primary', name: 'lead', status: 'running', port: 4101, createdAt: Date.now() }],
     engineering: [{ id: 'eng-lead', name: 'engineering-lead', status: 'running', port: 4102, createdAt: Date.now() }],
+    'operations-team': [
+      { id: 'ops-lead', name: 'ops-lead', status: 'stopped', port: 4104, createdAt: Date.now() },
+      { id: 'moderator', name: 'content-moderator', status: 'running', port: 4105, createdAt: Date.now() },
+    ],
     dormant: [{ id: 'dormant-lead', name: 'dormant-lead', status: 'stopped', port: 4103, createdAt: Date.now() }],
   };
   const makeClient = (team: string): any => ({
@@ -36,15 +52,18 @@ async function main(): Promise<void> {
     activeAgentQueries: async () => ({ count: 0, queries: [] }),
     remote: async (command: string) => {
       dispatched.push({ team, command });
+      if (command.includes('/agent') && command.includes('ops-lead') && command.endsWith(' start')) {
+        rosters['operations-team'][0].status = 'running';
+      }
       return { ok: true, result: { queryId: `query-${team}` } };
     },
     withTeam: (next: string) => makeClient(next),
   });
   const result = await fanOutObjectiveToActiveTeamLeads(makeClient('default'), 'Audit every project and ship verified fixes.', 'default');
-  assert.deepEqual(result.map((row) => [row.team, row.status]), [['engineering', 'dispatched']]);
-  assert.equal(dispatched.length, 1, 'only active non-default team leads should receive work');
-  assert.equal(dispatched[0].team, 'engineering');
-  assert.match(dispatched[0].command, /^\/ask engineering-lead\b/);
+  assert.deepEqual(result.map((row) => [row.team, row.status]), [['operations-team', 'dispatched']]);
+  assert.ok(dispatched.some((row) => row.team === 'operations-team' && /\/agent "ops-lead" start/.test(row.command)), 'the configured stopped operations lead should be started');
+  assert.ok(dispatched.some((row) => row.team === 'operations-team' && /^\/task create "Audit reconcile authorized projects" --owner ops-lead\b/.test(row.command)), 'repository work must create the named operations task under ops-lead');
+  assert.equal(dispatched.some((row) => /content-moderator/.test(row.command)), false, 'an active specialist must not replace the configured operations lead');
 
   console.log('chat primary-lead delegation guard ok');
 }

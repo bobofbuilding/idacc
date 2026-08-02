@@ -7,7 +7,11 @@ import {
 import type { ProjectEntry } from '../../../../idctl/src/settings/schema.ts';
 import type { ActivityStep } from '../../../../idctl/src/api/types.ts';
 import { mergeExactQueryActivity } from '../../shared/chatActivity.ts';
-import { shouldDelegatePrimaryLeadRequest, stripDirectLeadOverride } from '../../shared/chatDelegation.ts';
+import {
+  buildAuthorizedProjectInventory,
+  shouldDelegatePrimaryLeadRequest,
+  stripDirectLeadOverride,
+} from '../../shared/chatDelegation.ts';
 
 type PickedFile = { path: string; name: string; size: number; isImage: boolean };
 type SavedFile = { name: string; path: string; size: number; isImage: boolean };
@@ -1027,6 +1031,10 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     if (focused) {
       const repo = (focused.links ?? []).find((l) => /github\.com/i.test(l));
       parts.push(`[Focus: project "${focused.name}"${focused.path ? ` at ${focused.path}` : ''}${repo ? ` — repo ${repo}` : ''}]`);
+    }
+    if (!focused) {
+      const inventory = buildAuthorizedProjectInventory(text, projects);
+      if (inventory) parts.push(inventory);
     }
     if (text) parts.push(text);
     if (saved.length) parts.push(`[I attached ${saved.length} file(s); read them at these paths:\n${saved.map((f) => `- ${f.path}${f.isImage ? ' (image)' : ''}`).join('\n')}]`);

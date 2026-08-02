@@ -8,6 +8,13 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.692] — 2026-08-02
+### What changed
+- Restore the managed lead credential lifecycle by pinning the unified app to Manager 0.1.158 and keeping live Manager updates on the signed release frontier.
+- Route repository-wide delegation through the trusted desktop Manager boundary, start the configured operations lead when needed, and never substitute an unrelated active specialist for a stopped team lead.
+- Attach an explicit active-project inventory to broad audit requests, create or resume `audit-reconcile-authorized-projects` under the operations lead, and require per-project refs, tests, conflict handling, push, and merge evidence before validation.
+- Fail closed when no authorized project roots or operations lead are available, without granting cross-team administrative authority to individual managed workers.
+
 ## [0.1.691] — 2026-08-02
 ### What changed
 - Route actionable primary-lead Chat requests through deterministic, immediate cross-team delegation so broad work no longer stalls in one lead query.

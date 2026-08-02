@@ -219,6 +219,14 @@ function pickActiveLead(agents: { name: string; status?: string; metadata?: unkn
     .sort((a, b) => leadRank(a) - leadRank(b) || a.name.localeCompare(b.name))[0].name;
 }
 
+function pickConfiguredLead(agents: { name: string; status?: string; metadata?: unknown }[]): string | null {
+  const ranked = agents
+    .slice()
+    .sort((a, b) => leadRank(a) - leadRank(b) || a.name.localeCompare(b.name));
+  const lead = ranked[0];
+  return lead && leadRank(lead) < 5 ? lead.name : null;
+}
+
 function agentNameKey(name?: string): string {
   return String(name || '').trim().toLowerCase();
 }
@@ -310,9 +318,31 @@ async function resolveActiveTeamLeadTargets(baseClient: ManagerClient, currentTe
     .filter((team) => team !== currentTeam && team !== 'default');
   const targets = await Promise.all(
     names.map(async (team): Promise<TeamLeadDelegationTarget | null> => {
-      const agents = await baseClient.withTeam(team).agents().catch(() => [] as Agent[]);
+      const scoped = baseClient.withTeam(team);
+      let agents = await scoped.agents().catch(() => [] as Agent[]);
+      const configuredLead = pickConfiguredLead(agents);
+      if (configuredLead) {
+        const row = agents.find((agent) => agent.name === configuredLead);
+        if (row && !isActiveStatus(row.status)) {
+          try {
+            await scoped.remote(`/agent ${qArg(configuredLead)} start`);
+            for (let attempt = 0; attempt < 30; attempt += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              agents = await scoped.agents().catch(() => agents);
+              if (isActiveStatus(agents.find((agent) => agent.name === configuredLead)?.status)) break;
+            }
+          } catch {
+            // Do not route lead-owned work to an arbitrary active specialist.
+          }
+        }
+      }
       const activeCount = agents.filter((agent) => isActiveStatus(agent.status)).length;
-      const lead = pickActiveLead(agents);
+      const lead = configuredLead
+        && isActiveStatus(agents.find((agent) => agent.name === configuredLead)?.status)
+        ? configuredLead
+        : configuredLead
+          ? null
+          : pickActiveLead(agents);
       if (!lead || isDefaultValidatorName(lead)) return null;
       const row = agents.find((agent) => agent.name === lead);
       return {
@@ -1158,7 +1188,66 @@ export async function fanOutObjectiveToActiveTeamLeads(
       detail: 'no active non-default team leads are available',
     }];
   }
-  return fanOutObjective(client, objective, targets.map((target) => target.team));
+  const repositoryAuthorityRequest = /\b(?:audit|review|reconcile|merge|push|release|update|upgrade|validate|verify)\b/i.test(objective)
+    && /\b(?:git|projects?|repos?(?:itories)?|branches?|commits?)\b/i.test(objective);
+  if (!repositoryAuthorityRequest) {
+    return fanOutObjective(client, objective, targets.map((target) => target.team));
+  }
+
+  const operations = targets.find((target) => /^(?:operations-team|operations|ops-team|ops)$/i.test(target.team));
+  if (!operations) {
+    return [{
+      team: 'operations-team',
+      status: 'no-active-agent',
+      detail: 'the configured operations lead could not be started; repository work was not routed to another team',
+    }];
+  }
+
+  const scoped = client.withTeam(operations.team);
+  const existing = [
+    ...(await scoped.tasksByStatus('todo').catch(() => [] as Task[])),
+    ...(await scoped.tasksByStatus('doing').catch(() => [] as Task[])),
+  ].find((task) => task.name === 'audit-reconcile-authorized-projects');
+  if (existing) {
+    const ref = existing.shortId || existing.name || 'audit-reconcile-authorized-projects';
+    await scoped.remote(`/task jumpstart-stalled --task ${qArg(ref)}`).catch(() => {});
+    return [{
+      team: operations.team,
+      lead: operations.lead,
+      status: 'dispatched',
+      detail: `reused task ${ref}`,
+    }];
+  }
+
+  const packet = FANOUT_PROMPT(objective, operations.team);
+  const created = await createAndDispatchPlan(scoped, objective, [{
+    title: 'Audit reconcile authorized projects',
+    agent: operations.lead,
+    description: packet,
+    dependsOn: [],
+  }], {
+    dispatch: true,
+    respectOwners: true,
+    allowCoordinatorOwners: true,
+    ownerOpenTaskCap: Math.max(WORK_OWNER_OPEN_TASK_CAP, WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP),
+    coordinator: operations.lead,
+    leadCoordination: true,
+  });
+  const task = created.created[0];
+  if (!task?.ok) {
+    return [{
+      team: operations.team,
+      lead: operations.lead,
+      status: task?.deferred ? 'deferred' : 'failed',
+      detail: task?.error || task?.warning || 'the operations parent task was not accepted',
+    }];
+  }
+  return [{
+    team: operations.team,
+    lead: operations.lead,
+    status: 'dispatched',
+    detail: `created task ${task.ref}`,
+  }];
 }
 
 // ---- Lead triage of unassigned To-Do tasks --------------------------------
