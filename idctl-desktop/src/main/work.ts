@@ -1139,6 +1139,28 @@ export async function fanOutObjective(client: ManagerClient, objective: string, 
   );
 }
 
+/**
+ * Chat's primary lead is a coordinator, not a single execution lane. Resolve the
+ * live non-default team leads at dispatch time and fan the objective out to them
+ * immediately. Keeping discovery in the main process prevents a stale renderer
+ * roster from silently omitting a team.
+ */
+export async function fanOutObjectiveToActiveTeamLeads(
+  client: ManagerClient,
+  objective: string,
+  currentTeam = 'default',
+): Promise<FanoutResult[]> {
+  const targets = await resolveActiveTeamLeadTargets(client, currentTeam);
+  if (!targets.length) {
+    return [{
+      team: currentTeam,
+      status: 'no-active-agent',
+      detail: 'no active non-default team leads are available',
+    }];
+  }
+  return fanOutObjective(client, objective, targets.map((target) => target.team));
+}
+
 // ---- Lead triage of unassigned To-Do tasks --------------------------------
 
 export interface TriageResult { considered: number; assigned: { ref: string; agent: string }[]; skipped: number; dispatched: number; error?: string }

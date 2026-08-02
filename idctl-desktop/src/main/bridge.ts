@@ -60,7 +60,7 @@ import { testMcpServer } from './mcpTest.ts';
 import { headroomCoreAudit, headroomStatus } from './headroom.ts';
 import { contextBudgetDryRun, contextBudgetReport, loadRecentContextBudgetRecords, optimizeAskCommand, readContextBudgetRecord } from './contextBudget.ts';
 import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayOptions } from './contextReplay.ts';
-import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
+import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, fanOutObjectiveToActiveTeamLeads, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
 import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, syncGoalDriverConfig, type GoalDriverConfig } from './goaldriver.ts';
 import { discoverClaudeCliModels } from './claudeModels.ts';
 import {
@@ -2106,6 +2106,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'work:teamLeads': (teams: string[]) => teamLeads(client, Array.isArray(teams) ? teams.map(String) : []),
   'work:fanout': (objective: string, teams: string[]) =>
     fanOutObjective(client, String(objective), Array.isArray(teams) ? teams.map(String) : []),
+  // Primary-lead Chat delegation: discover active non-default team leads in the
+  // main process, then dispatch to every one in parallel.
+  'work:fanoutToTeamLeads': (objective: string, currentTeam?: string) =>
+    fanOutObjectiveToActiveTeamLeads(client, String(objective), String(currentTeam || 'default')),
   // Lead triages unassigned To-Do tasks: assign each to the best active agent + dispatch.
   'work:triage': async (lead: string, team?: string, projectId?: string) => {
     const route = await projectRouting(projectId, team, lead);
