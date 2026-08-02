@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import {
   externalChildEnvironment,
@@ -93,7 +93,6 @@ const externalLauncherFiles = [
   '../src/main/projects.ts',
   '../src/main/computeruse/permissions.ts',
   '../src/main/materialstore.ts',
-  '../src/main/headroomPlugin.ts',
   '../src/main/mcpTest.ts',
 ];
 for (const path of externalLauncherFiles) {
@@ -103,6 +102,11 @@ for (const path of externalLauncherFiles) {
     `${path} does not route external processes through the credential boundary`,
   );
 }
+assert.equal(
+  existsSync(new URL('../src/main/headroomPlugin.ts', import.meta.url)),
+  false,
+  'the retired retrieval pilot must not return as a credential-bearing external launcher',
+);
 
 const unifiedStack = source('../src/main/unifiedStack.ts');
 assert.doesNotMatch(
