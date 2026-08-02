@@ -89,7 +89,7 @@
     "test:computer-use-retention": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/computer-use-profile-retention-smoke.ts",
     "test:computer-use-session-discovery": "node scripts/computer-use-session-discovery-smoke.mjs",
     "test:context-history": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/context-budget-history.mjs",
-    "test:dashboard-coordination": "node scripts/dashboard-coordination-roster-smoke.mjs",
+    "test:dashboard-coordination": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/dashboard-coordination-roster-smoke.mjs",
     "test:dashboard-command-surface": "node scripts/dashboard-command-surface-smoke.mjs",
     "test:dashboard-rendered": "node scripts/dashboard-rendered-smoke.mjs",
     "test:dashboard-activity-filter": "node scripts/dashboard-activity-filter-smoke.mjs",
