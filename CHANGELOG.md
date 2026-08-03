@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.695] — 2026-08-03
+### What changed
+- Update the clean-runner unified-stack contract to enforce the new leadership-first startup sequence: restore the primary lead and external team leads, publish readiness, then restore the remaining workers before enabling automatic schedules.
+
 ## [0.1.694] — 2026-08-03
 ### What changed
 - Recognize the pinned default-team Dashboard chat as the primary lead surface, so actionable objectives use deterministic Manager fan-out instead of waiting on a direct lead reply.

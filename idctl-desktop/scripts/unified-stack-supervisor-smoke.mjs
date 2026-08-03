@@ -363,12 +363,12 @@ if (managerSource) {
   );
   assert.match(
     managerSource,
-    /this\.fleetRestoring = true;\s*this\.startupReady = true;\s*try \{\s*await this\.restoreManagerOwnedAgentsAtStartup\(\);\s*\} finally \{\s*this\.fleetRestoring = false;\s*\}[\s\S]*this\.schedulerService\.start\(\);[\s\S]*settled = true;/,
-    'the initialized control plane must become health-ready before bounded worker restoration, publish when restoration settles, and keep automatic schedules gated until then',
+    /this\.fleetRestoring = true;\s*try \{\s*await this\.restoreManagerOwnedAgentsAtStartup\('leadership'\);\s*this\.startupReady = true;\s*await this\.restoreManagerOwnedAgentsAtStartup\('workers'\);\s*\} finally \{\s*this\.fleetRestoring = false;\s*\}[\s\S]*this\.schedulerService\.start\(\);[\s\S]*settled = true;/,
+    'the Manager must restore its leadership spine before becoming health-ready, finish bounded worker restoration, and keep automatic schedules gated until then',
   );
   assert.match(
     managerSource,
-    /restoreManagerOwnedAgentsAtStartup[\s\S]*await this\.restoreManagerOwnedAgentsAfterRestart\(\);[\s\S]*await sleep\(graceMs\);[\s\S]*await this\.restoreManagerOwnedAgentsAfterRestart\(\);/,
+    /restoreManagerOwnedAgentsAtStartup[\s\S]*await this\.restoreManagerOwnedAgentsAfterRestart\(phase\);[\s\S]*await sleep\(graceMs\);[\s\S]*await this\.restoreManagerOwnedAgentsAfterRestart\(phase\);/,
     'managed startup must make a bounded second marker pass after old workers run their parent-death watchdog',
   );
   assert.match(
