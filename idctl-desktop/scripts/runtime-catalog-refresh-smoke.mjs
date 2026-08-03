@@ -27,6 +27,8 @@ try {
 const bridge = readFileSync(new URL('../src/main/bridge.ts', import.meta.url), 'utf8');
 const main = readFileSync(new URL('../src/main/main.ts', import.meta.url), 'utf8');
 assert.match(bridge, /readCallCache\.clear\(\);\s*onRefresh\(scope\)/, 'background refresh must invalidate reads and notify the shell');
+assert.match(bridge, /backgroundProviderProbeAllowed/, 'background refresh must not unlock encrypted providers just because the app restarted');
+assert.match(bridge, /else await probeBackgroundRuntimes\(\)/, 'cloud background refresh must use the credential-lazy probe path');
 assert.match(main, /startModelRefreshLoop\(\(\) => publishStoreChange\('runtime:probe'\)\)/, 'main process must publish runtime-catalog changes');
 
 console.log('runtime catalog auto-refresh smoke: ok');

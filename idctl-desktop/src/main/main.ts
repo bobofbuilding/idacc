@@ -1785,6 +1785,44 @@ function presentProviderRehydrationStatus(report: ProviderRehydrationReport): vo
   });
 }
 
+function waitForProviderRehydrationRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    const error = new Error('Provider runtime restoration was cancelled');
+    error.name = 'AbortError';
+    return Promise.reject(error);
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    timer.unref?.();
+    const onAbort = () => {
+      clearTimeout(timer);
+      const error = new Error('Provider runtime restoration was cancelled');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function resumeProviderAgentsWithStartupRetry(
+  signal: AbortSignal,
+): Promise<ProviderRehydrationReport> {
+  let report: ProviderRehydrationReport = { attempted: 0, resumed: 0, issues: [] };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    report = await resumeManagedProviderAgentsAfterRestart(signal);
+    const retryable = report.issues.some((issue) => (
+      issue.reason === 'manager_rebind_failed'
+      || issue.reason === 'fleet_inventory_unavailable'
+    ));
+    if (!retryable || attempt === 2) return report;
+    await waitForProviderRehydrationRetry(500 * (attempt + 1), signal);
+  }
+  return report;
+}
+
 function rehydrateProviderAgentsForReadyManager(): Promise<void> {
   if (providerRuntimeRehydrationWork) {
     providerRuntimeRehydrationPending = true;
@@ -1793,7 +1831,7 @@ function rehydrateProviderAgentsForReadyManager(): Promise<void> {
   providerRuntimeRehydrationPending = false;
   const abort = new AbortController();
   providerRuntimeRehydrationAbort = abort;
-  const work = resumeManagedProviderAgentsAfterRestart(abort.signal)
+  const work = resumeProviderAgentsWithStartupRetry(abort.signal)
     .then((report) => {
       if (!appShutdown.isQuiescing()) presentProviderRehydrationStatus(report);
     })

@@ -389,8 +389,13 @@ assert.match(
 );
 assert.match(
   supervisorIntegrationSmoke,
-  /isGitHubActionsLinux\s*\?\s*\['--no-sandbox', '\.'\]\s*:\s*\['\.'\]/,
+  /isGitHubActionsLinux\s*\?\s*\['--no-sandbox', `--user-data-dir=\$\{isolatedElectronUserData\}`, '\.'\]\s*:\s*\[`--user-data-dir=\$\{isolatedElectronUserData\}`, '\.'\]/,
   'the supervisor integration may bypass an unavailable GitHub-hosted Linux sandbox only behind its narrow guard',
+);
+assert.match(
+  supervisorIntegrationSmoke,
+  /const isolatedElectronUserData = join\(scratch, 'electron-user-data'\)/,
+  'the supervisor integration must isolate Electron single-instance state from a running installed app',
 );
 assert.equal(
   (supervisorIntegrationSmoke.match(/--no-sandbox/g) || []).length,

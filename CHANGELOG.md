@@ -8,6 +8,13 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.693] — 2026-08-03
+### What changed
+- Keep completed profiles out of the private-workspace setup modal during ordinary service restarts while preserving setup for new or incomplete profiles.
+- Pin Manager 0.1.160 so its initialized control plane becomes available before large persistent fleets finish their bounded worker-restoration pass, expose that recovery phase without enabling automated dispatch early, and make explicit local-worker stops deterministic across operating systems.
+- Keep encrypted cloud-provider refresh lazy in unsigned review builds so background catalog checks do not open macOS Keychain merely because IDACC restarted; explicit provider use and active encrypted-provider agents still unlock securely when required.
+- Retry transient provider-agent restoration before warning, and restore no-key local Ollama agents without treating them as missing API credentials.
+
 ## [0.1.692] — 2026-08-02
 ### What changed
 - Restore the managed lead credential lifecycle by pinning the unified app to Manager 0.1.158 and keeping live Manager updates on the signed release frontier.

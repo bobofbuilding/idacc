@@ -200,6 +200,8 @@ assert.doesNotMatch(
 assert.match(mainSource, /subscribeUnifiedStackServiceReady\(\(event\) => \{/);
 assert.match(mainSource, /event\.name !== 'manager'/);
 assert.match(mainSource, /rehydrateProviderAgentsForReadyManager\(\)/);
+assert.match(mainSource, /resumeProviderAgentsWithStartupRetry\(abort\.signal\)/);
+assert.match(mainSource, /issue\.reason === 'manager_rebind_failed'/);
 assert.match(mainSource, /providerRuntimeRehydrationAbort\?\.abort\(\)/);
 assert.ok(
   (stackSource.match(/notifyServiceReady\(service\)/g) || []).length >= 2,

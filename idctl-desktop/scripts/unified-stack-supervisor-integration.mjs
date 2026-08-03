@@ -936,9 +936,10 @@ try {
   // instead of killing Electron while that security work is still running.
   const positiveSelftestTimeoutMs = isWindows ? 180_000 : 40_000;
   const negativeSelftestTimeoutMs = isWindows ? 150_000 : 20_000;
+  const isolatedElectronUserData = join(scratch, 'electron-user-data');
   const electronArgs = isGitHubActionsLinux
-    ? ['--no-sandbox', '.']
-    : ['.'];
+    ? ['--no-sandbox', `--user-data-dir=${isolatedElectronUserData}`, '.']
+    : [`--user-data-dir=${isolatedElectronUserData}`, '.'];
   const env = {
     ...process.env,
     IDACC_STACK_SELFTEST: '1',

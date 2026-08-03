@@ -17,7 +17,10 @@ import { CommandPalette } from './views/dashboard/CommandPalette.tsx';
 import { ControlDrawer } from './views/dashboard/ControlDrawer.tsx';
 import { CommandReceipts } from './views/dashboard/CommandReceipts.tsx';
 import type { CommandEnvironment } from './dashboard/commandRuntime.ts';
-import type { ConsumerOnboardingStatus } from '../shared/consumerOnboarding.ts';
+import {
+  consumerOnboardingModalOpen,
+  type ConsumerOnboardingStatus,
+} from '../shared/consumerOnboarding.ts';
 import {
   CONTROL_CENTER_API_VERSION,
   CONTROL_CENTER_EXTENSION,
@@ -312,7 +315,7 @@ export function App() {
       <WalletConnectPrompt />
       <FirstRunWizard
         status={onboarding}
-        open={Boolean(onboarding && (onboardingOpen || onboarding.phase === 'preparing' || onboarding.needsOnboarding))}
+        open={Boolean(onboarding && consumerOnboardingModalOpen(onboardingOpen, onboarding.needsOnboarding))}
         onStatus={(next) => {
           setOnboarding(next);
           if (next.phase === 'ready') setOnboardingOpen(true);

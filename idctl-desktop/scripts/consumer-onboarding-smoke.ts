@@ -10,6 +10,7 @@ import {
   setOnboardingAgentProgress,
 } from '../src/main/onboardingStore.ts';
 import {
+  consumerOnboardingModalOpen,
   evaluateConsumerReadiness,
   missingStarterAgentDefinitions,
   onboardingAssignmentAvailable,
@@ -31,6 +32,9 @@ async function main(): Promise<void> {
   process.env.IDACC_ONBOARDING_STATE = statePath;
 
   try {
+  assert.equal(consumerOnboardingModalOpen(false, false), false, 'a completed profile must not reopen setup during service restart');
+  assert.equal(consumerOnboardingModalOpen(false, true), true, 'an incomplete profile must keep setup visible');
+  assert.equal(consumerOnboardingModalOpen(true, false), true, 'the operator can explicitly reopen setup');
   assert.equal(loadOnboardingState().mode, 'required', 'a new profile must require onboarding');
   beginOnboarding({ runtime: 'codex', model: 'gpt-test' });
   setOnboardingAgentProgress('lead', 'preserved');

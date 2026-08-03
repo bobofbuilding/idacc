@@ -359,12 +359,12 @@ if (managerSource) {
   assert.match(
     managerSource,
     /if \(!this\.startupReady\) \{\s*return res\.status\(503\)\.json\(\{\s*status: 'starting'/,
-    'the Manager health endpoint must not advertise readiness during asynchronous startup restoration',
+    'the Manager health endpoint must not advertise readiness before its control plane is initialized',
   );
   assert.match(
     managerSource,
-    /await this\.restoreManagerOwnedAgentsAtStartup\(\);[\s\S]*this\.startupReady = true;[\s\S]*settled = true;/,
-    'the Manager may become health-ready only after its bounded restart restoration passes complete',
+    /this\.fleetRestoring = true;\s*this\.startupReady = true;\s*try \{\s*await this\.restoreManagerOwnedAgentsAtStartup\(\);\s*\} finally \{\s*this\.fleetRestoring = false;\s*\}[\s\S]*this\.schedulerService\.start\(\);[\s\S]*settled = true;/,
+    'the initialized control plane must become health-ready before bounded worker restoration, publish when restoration settles, and keep automatic schedules gated until then',
   );
   assert.match(
     managerSource,

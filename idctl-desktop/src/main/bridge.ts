@@ -119,6 +119,7 @@ interface SettingsSecretCodec {
 }
 
 let settingsSecretCodec: SettingsSecretCodec | null = null;
+const unlockedEncryptedProviderCredentials = new Set<string>();
 
 export function configureSettingsSecretCodec(codec: SettingsSecretCodec): void {
   settingsSecretCodec = codec;
@@ -133,9 +134,17 @@ function providerKey(provider: ProviderProfile): string | undefined {
   if (!providerTransportDecision(provider.baseUrl).ok) return undefined;
   if (provider.apiKeyEncrypted) {
     const decrypted = settingsSecretCodec?.decrypt(provider.apiKeyEncrypted);
-    if (decrypted) return decrypted;
+    if (decrypted) {
+      unlockedEncryptedProviderCredentials.add(provider.name);
+      return decrypted;
+    }
   }
   return resolveProviderKey(provider);
+}
+
+function backgroundProviderProbeAllowed(provider: ProviderProfile): boolean {
+  return !provider.apiKeyEncrypted
+    || unlockedEncryptedProviderCredentials.has(provider.name);
 }
 
 function providerForStorage(input: ProviderProfile): ProviderProfile {
@@ -921,9 +930,7 @@ async function runtimeFreshness(
   }));
 }
 
-/** Probe every enabled provider that backs a runtime, refresh its synced model list, and
- *  return the rebuilt per-runtime catalog. Shared by the manual `runtime:probe` method and
- *  the background model-refresh loop ("the checker that stays up to date"). */
+/** Probe every enabled provider that backs a runtime after an explicit operator action. */
 async function probeAllRuntimes(): Promise<Record<string, string[]>> {
   const providers = loadSettings().providers;
   await Promise.all(
@@ -947,6 +954,38 @@ async function probeAllRuntimes(): Promise<Record<string, string[]>> {
   return runtimeCatalogWithLiveCliModels({ refreshCli: true });
 }
 
+/**
+ * Keep background catalogs current without opening the operating-system
+ * credential store merely because IDACC restarted. Encrypted providers join
+ * the background refresh set after this process has already unlocked them for
+ * an explicit provider action or an active provider-agent restoration.
+ */
+async function probeBackgroundRuntimes(): Promise<Record<string, string[]>> {
+  const providers = loadSettings().providers;
+  await Promise.all(
+    providers
+      .filter((provider) => (
+        provider.enabled !== false
+        && backgroundProviderProbeAllowed(provider)
+      ))
+      .map(async (provider) => {
+        try {
+          const outcome = await probeConfiguredProvider(provider);
+          recordProviderSync(provider.name, {
+            at: Date.now(),
+            status: outcome.status,
+            modelCount: outcome.models.length,
+            models: outcome.models.slice(0, 200).map((model) => model.id),
+            keySource: keySourceOf(provider),
+          });
+        } catch {
+          // Preserve the last known-good catalog until an explicit reconnect.
+        }
+      }),
+  );
+  return runtimeCatalogWithLiveCliModels({ refreshCli: true });
+}
+
 /** Refresh loopback model servers without probing unrelated cloud/API backends. */
 async function probeLocalRuntimes(): Promise<Record<string, string[]>> {
   const providers = loadSettings().providers;
@@ -955,7 +994,11 @@ async function probeLocalRuntimes(): Promise<Record<string, string[]>> {
   runtimeCatalogWithLiveCliModels({ refreshClaude: true });
   await Promise.all(
     providers
-      .filter((p) => p.enabled !== false && isLocalProvider(p))
+      .filter((p) => (
+        p.enabled !== false
+        && isLocalProvider(p)
+        && backgroundProviderProbeAllowed(p)
+      ))
       .map(async (p) => {
         try {
           const outcome = await probeConfiguredProvider(p, 3000);
@@ -2934,7 +2977,7 @@ export function startModelRefreshLoop(onRefresh: (scope: 'local' | 'all') => voi
   const tick = (scope: 'local' | 'all'): Promise<void> => gate.run(async () => {
     try {
       if (scope === 'local') await probeLocalRuntimes();
-      else await probeAllRuntimes();
+      else await probeBackgroundRuntimes();
       if (gate.isStopped()) return;
       readCallCache.clear();
       onRefresh(scope);

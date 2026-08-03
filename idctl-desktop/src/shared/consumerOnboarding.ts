@@ -8,6 +8,18 @@ import {
   type StarterFleetAgentDefinition,
 } from './starterFleet.ts';
 
+/**
+ * Completed profiles must not be forced back into the setup modal while the
+ * bundled services are merely restarting. New/incomplete profiles still keep
+ * setup visible, and the operator can always reopen it explicitly.
+ */
+export function consumerOnboardingModalOpen(
+  manuallyOpen: boolean,
+  needsOnboarding: boolean,
+): boolean {
+  return manuallyOpen || needsOnboarding;
+}
+
 export type ConsumerOnboardingMode = 'required' | 'in_progress' | 'limited' | 'complete';
 export type ConsumerOnboardingPhase = 'preparing' | 'required' | 'in_progress' | 'limited' | 'ready' | 'degraded';
 export type StarterAgentSetupStatus = 'pending' | 'running' | 'ok' | 'failed' | 'preserved';
