@@ -9,6 +9,7 @@ import type { ActivityStep } from '../../../../idctl/src/api/types.ts';
 import { mergeExactQueryActivity } from '../../shared/chatActivity.ts';
 import {
   buildAuthorizedProjectInventory,
+  isPrimaryLeadChatTarget,
   shouldDelegatePrimaryLeadRequest,
   stripDirectLeadOverride,
 } from '../../shared/chatDelegation.ts';
@@ -1108,7 +1109,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
       setAttachments([]);
       // 2. Hand off to the resumable dispatch — it kicks the query, commits it to
       // session.inflight (which drives the UI), and polls until a reply lands.
-      const primaryLead = target === defaultTarget && !teamOverride;
+      const primaryLead = isPrimaryLeadChatTarget(team, target, store.coordinator);
       if (primaryLead && shouldDelegatePrimaryLeadRequest(text)) {
         await beginLeadDelegation(sid, replyId, scopedMessage);
       } else {

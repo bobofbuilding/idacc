@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.694] — 2026-08-03
+### What changed
+- Recognize the pinned default-team Dashboard chat as the primary lead surface, so actionable objectives use deterministic Manager fan-out instead of waiting on a direct lead reply.
+- Pin Manager 0.1.161 and withhold managed readiness until the primary lead, external team leads, and default validators complete their verified restoration pass.
+- Start stopped local agents on explicit `/ask` dispatch under the Manager lifecycle lock, allowing team leads to bring their selected workers online without racing restart recovery or dispatching to dead endpoints.
+
 ## [0.1.693] — 2026-08-03
 ### What changed
 - Keep completed profiles out of the private-workspace setup modal during ordinary service restarts while preserving setup for new or incomplete profiles.

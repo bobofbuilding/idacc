@@ -2,7 +2,7 @@
   "name": "idagents-control-center",
   "productName": "ID Agents Control Center",
   "desktopName": "idagents-control-center.desktop",
-  "version": "0.1.693",
+  "version": "0.1.694",
   "description": "Unified private AI-agent desktop application with bundled Manager and Brain.",
   "license": "MIT",
   "author": "IDACC Contributors",

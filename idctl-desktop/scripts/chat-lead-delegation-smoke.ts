@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   buildAuthorizedProjectInventory,
+  isPrimaryLeadChatTarget,
   shouldDelegatePrimaryLeadRequest,
   stripDirectLeadOverride,
 } from '../src/shared/chatDelegation.ts';
@@ -14,6 +15,10 @@ assert.equal(shouldDelegatePrimaryLeadRequest('what is happening with setup?'), 
 assert.equal(shouldDelegatePrimaryLeadRequest('hello, how are you?'), false);
 assert.equal(shouldDelegatePrimaryLeadRequest('/direct audit every project'), false);
 assert.equal(stripDirectLeadOverride('/direct audit every project'), 'audit every project');
+assert.equal(isPrimaryLeadChatTarget('default', 'lead', 'lead'), true);
+assert.equal(isPrimaryLeadChatTarget('default', 'lead'), true);
+assert.equal(isPrimaryLeadChatTarget('engineering-team', 'engineering-lead', 'engineering-lead'), false);
+assert.equal(isPrimaryLeadChatTarget('default', 'coder', 'lead'), false);
 const inventory = buildAuthorizedProjectInventory('audit each project one by one', [
   { id: 'alpha', name: 'Alpha', status: 'active', path: '/work/alpha', links: ['https://github.com/example/alpha'] },
   { id: 'paused', name: 'Paused', status: 'paused', path: '/work/paused' },
@@ -28,7 +33,7 @@ async function main(): Promise<void> {
   const bridge = await readFile(new URL('../src/main/bridge.ts', import.meta.url), 'utf8');
   const work = await readFile(new URL('../src/main/work.ts', import.meta.url), 'utf8');
 
-  assert.match(chat, /target === defaultTarget && !teamOverride/, 'only the primary lead chat should auto-delegate');
+  assert.match(chat, /isPrimaryLeadChatTarget\(team, target, store\.coordinator\)/, 'pinned Dashboard Chat should still recognize the default-team primary lead');
   assert.match(chat, /shouldDelegatePrimaryLeadRequest\(text\)/, 'Chat should classify actionable primary-lead work locally');
   assert.match(chat, /work:fanoutToTeamLeads/, 'Chat should use deterministic main-process delegation');
   assert.match(bridge, /fanOutObjectiveToActiveTeamLeads/, 'the bridge should expose active team-lead fan-out');

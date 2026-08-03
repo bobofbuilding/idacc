@@ -21,6 +21,25 @@ export function stripDirectLeadOverride(text: string): string {
   return String(text || '').replace(/(?:^|\s)\/(?:direct|lead-only)\b/ig, ' ').replace(/\s{2,}/g, ' ').trim();
 }
 
+/**
+ * Dashboard Chat is deliberately pinned to the default team with a
+ * `teamOverride`, so the presence of an override cannot be used to decide
+ * whether the selected target is the fleet's primary lead. Keep that decision
+ * tied to the durable default-team coordinator identity instead.
+ */
+export function isPrimaryLeadChatTarget(
+  team: string | undefined,
+  target: string | undefined,
+  coordinator?: string,
+): boolean {
+  const normalizedTeam = String(team || 'default').trim().toLowerCase();
+  const normalizedTarget = String(target || '').trim().toLowerCase();
+  const normalizedCoordinator = String(coordinator || 'lead').trim().toLowerCase();
+  return normalizedTeam === 'default'
+    && !!normalizedTarget
+    && (normalizedTarget === normalizedCoordinator || normalizedTarget === 'lead');
+}
+
 export interface DelegationProjectInventoryEntry {
   id: string;
   name: string;
