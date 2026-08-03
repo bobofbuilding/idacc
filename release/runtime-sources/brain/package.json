@@ -1,6 +1,6 @@
 {
   "name": "@idagents/brain",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Persistent skill knowledge graph and agent memory store",
   "license": "MIT",
   "type": "module",
@@ -28,7 +28,7 @@
   },
   "overrides": {
     "@hono/node-server": "2.0.11",
-    "fast-uri": "3.1.4"
+    "fast-uri": "3.1.5"
   },
   "devDependencies": {
     "electron": "^42.5.0"

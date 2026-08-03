@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.696] — 2026-08-03
+### What changed
+- Refresh desktop production locks to `brace-expansion` 5.0.9 and `fast-uri` 3.1.5, clearing newly published high-severity registry advisories across clean Linux release runners.
+- Pin Manager 0.1.162 with its corresponding `fast-uri` and Hono security updates while retaining the leadership-first restore and start-on-dispatch guarantees introduced in Manager 0.1.161.
+- Pin Brain 0.1.7 and regenerate its consumer capsule with patched URL, CORS, and IP-address parsers, keeping all three unified components clear of the new production audit findings.
+
 ## [0.1.695] — 2026-08-03
 ### What changed
 - Update the clean-runner unified-stack contract to enforce the new leadership-first startup sequence: restore the primary lead and external team leads, publish readiness, then restore the remaining workers before enabling automatic schedules.
