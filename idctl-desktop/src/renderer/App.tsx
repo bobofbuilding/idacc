@@ -21,6 +21,7 @@ import {
   consumerOnboardingModalOpen,
   type ConsumerOnboardingStatus,
 } from '../shared/consumerOnboarding.ts';
+import { displayAppVersion } from '../shared/versionDisplay.ts';
 import {
   CONTROL_CENTER_API_VERSION,
   CONTROL_CENTER_EXTENSION,
@@ -231,7 +232,7 @@ export function App() {
     <PromptProvider>
     <div className="app">
       <div className="titlebar">
-        <span className="titlebar-name">ID Agents Control Center{version ? ` · v${version}` : ''}</span>
+        <span className="titlebar-name">ID Agents Control Center{version ? ` · v${displayAppVersion(version)}` : ''}</span>
         <button
           className="cmdk-trigger"
           title={`Command palette (${commandPaletteShortcut})`}

@@ -287,6 +287,7 @@ jobs:
           npm run test:dashboard-command-surface --prefix idctl-desktop
           npm run test:dashboard-coordination --prefix idctl-desktop
           npm run test:dashboard-activity-filter --prefix idctl-desktop
+          npm run test:version-display --prefix idctl-desktop
           npm run test:org-hierarchy --prefix idctl-desktop
           xvfb-run -a npm run test:dashboard-rendered --prefix idctl-desktop
           node scripts/release-command-smoke.mjs

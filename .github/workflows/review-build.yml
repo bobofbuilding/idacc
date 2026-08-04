@@ -108,6 +108,7 @@ jobs:
           npm run test:unified-stack-policy --prefix idctl-desktop
           npm run test:unified-runtime-contract --prefix idctl-desktop
           npm run test:renderer-store --prefix idctl-desktop
+          npm run test:version-display --prefix idctl-desktop
           npm run typecheck --prefix idctl-desktop
 
       - name: Gate unified consumer state, onboarding, and update authority

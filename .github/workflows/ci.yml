@@ -80,6 +80,7 @@ jobs:
           npm run test:org-hierarchy --prefix idctl-desktop
           npm run test:chat-delegation --prefix idctl-desktop
           npm run test:renderer-store --prefix idctl-desktop
+          npm run test:version-display --prefix idctl-desktop
           npm run test:release-platform-config --prefix idctl-desktop
           npm run test:review-build-workflow --prefix idctl-desktop
           npm run test:runtime-source-capsule --prefix idctl-desktop

@@ -8,6 +8,11 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.698] — 2026-08-04
+### What changed
+- Show the clean source version in the application title bar by hiding the CI-only `-review.N` sequence from the user-facing label.
+- Preserve the complete review version inside update metadata so prerelease ordering, download selection, and update safety remain unchanged.
+
 ## [0.1.697] — 2026-08-04
 ### What changed
 - Restore authenticated agent access to the bundled Brain by pinning Brain 0.1.8, whose MCP proxy now forwards the profile bearer, and Manager 0.1.163, whose goal-driver writes now use the same authenticated Brain headers.
