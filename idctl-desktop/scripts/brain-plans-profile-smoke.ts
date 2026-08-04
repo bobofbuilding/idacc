@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   brainPlansDir,
+  consolidateBrainPlans,
   createBrainPlan,
   getBrainPlan,
   listBrainPlans,
@@ -144,6 +145,56 @@ try {
     /\[Review &#91;v2&#93; launch &#124; privacy\]\([^)]+\.md\)/,
     'table-breaking title characters must be encoded without changing the UI title',
   );
+
+  const mergeA = createBrainPlan('Portal implementation', 'Build the user-facing portal.');
+  const mergeB = createBrainPlan('MCP launch validation', 'Validate the production MCP route.');
+  assert.equal(mergeA.ok && mergeB.ok, true);
+  const mergeAPlan = listBrainPlans().plans.find((plan) => plan.file === mergeA.file)!;
+  assert.equal(setBrainPlanStatus(mergeA.file!, 'done', undefined, {
+    status: mergeAPlan.status,
+    mtime: mergeAPlan.mtime,
+  }).ok, true);
+  const mergeSelection = listBrainPlans().plans.filter((plan) => (
+    plan.file === mergeA.file || plan.file === mergeB.file
+  ));
+  const mergeContents = new Map(mergeSelection.map((plan) => [
+    plan.file,
+    getBrainPlan(plan.file)?.content ?? '',
+  ]));
+  const mergedPlan = consolidateBrainPlans({
+    files: mergeSelection.map((plan) => plan.file),
+    expected: Object.fromEntries(mergeSelection.map((plan) => [
+      plan.file,
+      { status: plan.status, mtime: plan.mtime },
+    ])),
+  });
+  assert.equal(mergedPlan.ok, true);
+  assert.equal(mergedPlan.status, '🔄 PARTIAL');
+  assert.ok(mergedPlan.file);
+  assert.equal(listBrainPlans().plans.some((plan) => plan.file === mergeA.file), false);
+  assert.equal(listBrainPlans().plans.some((plan) => plan.file === mergeB.file), false);
+  assert.equal(listBrainPlans().plans.some((plan) => plan.file === mergedPlan.file), true);
+  for (const source of mergeSelection) {
+    const archived = join(dir, 'archive', source.file);
+    assert.equal(existsSync(archived), true);
+    assert.equal(readFileSync(archived, 'utf8'), mergeContents.get(source.file));
+    assert.match(getBrainPlan(mergedPlan.file!)?.content ?? '', new RegExp(source.file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  assert.equal(
+    consolidateBrainPlans({ files: [mergedPlan.file!, mergedPlan.file!] }).ok,
+    false,
+    'duplicate plan selections must be rejected without mutation',
+  );
+
+  const rollbackA = createBrainPlan('Rollback source A', 'Keep source A intact.');
+  const rollbackB = createBrainPlan('Rollback source B', 'Keep source B intact.');
+  const indexBeforeRollback = readFileSync(join(dir, 'README.md'), 'utf8');
+  writeFileSync(join(dir, 'archive', rollbackA.file!), 'pre-existing archive conflict\n');
+  const rollbackResult = consolidateBrainPlans({ files: [rollbackA.file!, rollbackB.file!] });
+  assert.equal(rollbackResult.ok, false);
+  assert.equal(getBrainPlan(rollbackA.file!)?.content.includes('Keep source A intact.'), true);
+  assert.equal(getBrainPlan(rollbackB.file!)?.content.includes('Keep source B intact.'), true);
+  assert.equal(readFileSync(join(dir, 'README.md'), 'utf8'), indexBeforeRollback);
 
   // Preserve legacy rows that used literal nested brackets before title
   // encoding was introduced.

@@ -63,6 +63,24 @@ export interface BrainPlanStatusExpectation {
   mtime?: number;
 }
 
+export interface BrainPlanConsolidationRequest {
+  files: string[];
+  title?: string;
+  configured?: string;
+  expected?: Record<string, BrainPlanStatusExpectation>;
+}
+
+export interface BrainPlanConsolidationResult {
+  ok: boolean;
+  file?: string;
+  num?: string;
+  title?: string;
+  status?: string;
+  archived?: string[];
+  error?: string;
+  stale?: boolean;
+}
+
 function profilePlansDir(): string {
   return join(configDir(resolveConfigPath()), 'brain-plans');
 }
@@ -676,5 +694,232 @@ export function setBrainPlanStatus(
     return { ok: true, from, to: label };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function consolidationStatus(plans: BrainPlan[]): string {
+  const statuses = plans.map((plan) => normStatusLabel(plan.status ?? '') ?? '⏳ PENDING');
+  if (statuses.every((status) => status === '✅ DONE')) return '✅ DONE';
+  if (statuses.some((status) => status === '🛑 ON HOLD')) return '🛑 ON HOLD';
+  if (statuses.some((status) => status === '🔄 PARTIAL' || status === '✅ DONE')) return '🔄 PARTIAL';
+  return '⏳ PENDING';
+}
+
+/**
+ * Consolidate multiple profile-owned plans into one recoverable record.
+ *
+ * Source documents are copied into the profile's private archive before any
+ * active record changes. The index and source mtimes are revalidated before
+ * commit; a failure restores the original index and source files.
+ */
+export function consolidateBrainPlans(
+  request: BrainPlanConsolidationRequest,
+): BrainPlanConsolidationResult {
+  const rawFiles = Array.isArray(request?.files) ? request.files.map((file) => String(file || '')) : [];
+  if (rawFiles.length < 2 || rawFiles.length > 12) {
+    return { ok: false, error: 'choose between 2 and 12 plans to consolidate' };
+  }
+  const files = rawFiles.map((file) => basename(file));
+  if (
+    new Set(files).size !== files.length
+    || files.some((file, index) => (
+      file !== rawFiles[index]
+      || !/\.md$/i.test(file)
+      || file.toLowerCase() === 'readme.md'
+    ))
+  ) {
+    return { ok: false, error: 'plan selection contains an invalid or duplicate file' };
+  }
+
+  const dir = brainPlansDir(request.configured);
+  const index = join(dir, 'README.md');
+  const listed = listBrainPlans(request.configured).plans;
+  const selected = files.map((file) => listed.find((plan) => plan.file === file));
+  if (selected.some((plan) => !plan)) {
+    return { ok: false, error: 'one or more selected plans no longer exist', stale: true };
+  }
+  const plans = selected as BrainPlan[];
+  for (const plan of plans) {
+    const expected = request.expected?.[plan.file];
+    if (
+      expectedStatusChanged(expected, plan.status)
+      || (
+        typeof expected?.mtime === 'number'
+        && (typeof plan.mtime !== 'number' || Math.abs(plan.mtime - expected.mtime) > 0.5)
+      )
+    ) {
+      return { ok: false, error: 'a selected plan changed; refresh before consolidating', stale: true };
+    }
+  }
+
+  const sourcePaths = files.map((file) => resolve(dir, file));
+  const sourceStats = new Map<string, Stats>();
+  try {
+    for (let i = 0; i < files.length; i += 1) {
+      const source = sourcePaths[i];
+      const stats = lstatSync(source);
+      if (!isContained(dir, source) || stats.isSymbolicLink() || !stats.isFile()) {
+        return { ok: false, error: `${files[i]} is not a regular profile plan`, stale: true };
+      }
+      sourceStats.set(files[i], stats);
+    }
+  } catch {
+    return { ok: false, error: 'a selected plan changed; refresh before consolidating', stale: true };
+  }
+
+  const numbers = containedPlanFiles(dir)
+    .map((name) => /^(\d+)/.exec(name)?.[1])
+    .filter((value): value is string => Boolean(value))
+    .map(Number);
+  const next = (numbers.length ? Math.max(...numbers) : 0) + 1;
+  const num = String(next).padStart(2, '0');
+  const sourceNums = plans.map((plan) => plan.num || /^(\d+)/.exec(plan.file)?.[1] || plan.file);
+  const title = normalizePlanTitle(
+    request.title?.trim() || `Consolidated plans ${sourceNums.join(' + ')}`,
+    120,
+  );
+  const file = `${num}-${slugify(title)}.md`;
+  const destination = resolve(dir, file);
+  if (!isContained(dir, destination) || existsSync(destination)) {
+    return { ok: false, error: 'the consolidated plan destination is not available' };
+  }
+
+  let indexSource = '';
+  let indexMtime = 0;
+  const contents = new Map<string, string>();
+  try {
+    indexSource = readFileSync(index, 'utf8');
+    indexMtime = statSync(index).mtimeMs;
+    for (let i = 0; i < files.length; i += 1) {
+      contents.set(files[i], readFileSync(sourcePaths[i], 'utf8'));
+    }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+
+  const selectedSet = new Set(files);
+  const indexDocument = splitIndexDocument(indexSource);
+  const indexWithoutSources = indexDocument
+    .filter((line) => !parseIndexRow(line.text, selectedSet))
+    .map((line) => `${line.text}${line.separator}`)
+    .join('');
+  const remainingDocument = splitIndexDocument(indexWithoutSources);
+  let lastRow = -1;
+  const remainingFiles = new Set(containedPlanFiles(dir).filter((candidate) => !selectedSet.has(candidate)));
+  for (let i = 0; i < remainingDocument.length; i += 1) {
+    if (parseIndexRow(remainingDocument[i].text, remainingFiles)) lastRow = i;
+  }
+  const status = consolidationStatus(plans);
+  const effort = [...new Set(plans.map((plan) => plan.effort).filter(Boolean))].join(' + ') || 'consolidated';
+  const newRow = formatIndexRow({
+    num,
+    title,
+    file,
+    status,
+    effort,
+    notes: `Consolidates plans ${sourceNums.join(', ')}; source files archived.`,
+  });
+  const updatedIndex = insertIndexRow(indexWithoutSources, remainingDocument, lastRow, newRow);
+  const body = plans.map((plan) => {
+    const source = contents.get(plan.file)?.trimEnd() ?? '';
+    return `## Source plan ${plan.num ?? plan.file} — ${plan.title}\n\n`
+      + `<!-- IDACC consolidated source: ${plan.file} -->\n${source}\n`
+      + `<!-- End IDACC consolidated source: ${plan.file} -->`;
+  }).join('\n\n---\n\n');
+  const consolidated = `# Plan ${next} - ${title}\n\n`
+    + `This record consolidates plans ${sourceNums.join(', ')}. The original files are retained in the private plan archive.\n\n`
+    + `${body}\n`;
+
+  const archiveDir = join(dir, 'archive');
+  const archivedPaths: string[] = [];
+  const removedSources: string[] = [];
+  let destinationWritten = false;
+  let indexWritten = false;
+  try {
+    if (existsSync(archiveDir)) {
+      const archiveStats = lstatSync(archiveDir);
+      if (archiveStats.isSymbolicLink() || !archiveStats.isDirectory()) {
+        throw new Error('private plan archive is not a safe directory');
+      }
+    } else {
+      mkdirSync(archiveDir, { mode: 0o700 });
+    }
+    for (let i = 0; i < files.length; i += 1) {
+      const archived = resolve(archiveDir, files[i]);
+      if (!isContained(archiveDir, archived) || existsSync(archived)) {
+        throw new Error(`archive already contains ${files[i]}`);
+      }
+      copyFilePrivateSync(sourcePaths[i], archived);
+      archivedPaths.push(archived);
+    }
+
+    atomicWrite(destination, consolidated);
+    destinationWritten = true;
+
+    if (Math.abs(statSync(index).mtimeMs - indexMtime) > 0.5) {
+      throw new Error('the plan index changed; refresh before consolidating');
+    }
+    for (const fileName of files) {
+      const before = sourceStats.get(fileName)!;
+      const current = lstatSync(resolve(dir, fileName));
+      if (
+        current.isSymbolicLink()
+        || !current.isFile()
+        || current.size !== before.size
+        || Math.abs(current.mtimeMs - before.mtimeMs) > 0.5
+      ) {
+        throw new Error(`${fileName} changed; refresh before consolidating`);
+      }
+    }
+
+    atomicWrite(index, updatedIndex);
+    indexWritten = true;
+    for (const fileName of files) {
+      const source = resolve(dir, fileName);
+      const before = sourceStats.get(fileName)!;
+      const current = lstatSync(source);
+      if (
+        current.isSymbolicLink()
+        || !current.isFile()
+        || current.size !== before.size
+        || Math.abs(current.mtimeMs - before.mtimeMs) > 0.5
+      ) {
+        throw new Error(`${fileName} changed before archival; the consolidation was rolled back`);
+      }
+      rmSync(source);
+      removedSources.push(fileName);
+    }
+    return {
+      ok: true,
+      file,
+      num,
+      title,
+      status,
+      archived: files.map((source) => `archive/${source}`),
+    };
+  } catch (error) {
+    let rollbackFailed = false;
+    for (const fileName of removedSources) {
+      const source = resolve(dir, fileName);
+      const archived = resolve(archiveDir, fileName);
+      try {
+        if (!existsSync(source) && existsSync(archived)) copyFilePrivateSync(archived, source);
+      } catch { rollbackFailed = true; }
+    }
+    try { if (indexWritten) atomicWrite(index, indexSource); } catch { rollbackFailed = true; }
+    try { if (destinationWritten) rmSync(destination, { force: true }); } catch { rollbackFailed = true; }
+    if (!rollbackFailed) {
+      for (const archived of archivedPaths) {
+        try { rmSync(archived, { force: true }); } catch { /* retained recovery copy */ }
+      }
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: rollbackFailed
+        ? `${message}; recovery copies remain in the private plan archive`
+        : message,
+      stale: /changed|refresh/i.test(message),
+    };
   }
 }

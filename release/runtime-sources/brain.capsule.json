@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "component": "brain",
   "repository": "https://github.com/bobofbuilding/brain.git",
-  "commit": "86b58bf03cc2c623fe43a8746d6a9fd54e8b5ea2",
-  "tree": "a2bf9c6cb77537fc4e54b8a72fe77e67107c45cf",
-  "version": "0.1.7",
-  "packageLockSha256": "a306881106465304c6c3938825af5305f4512e8b878f95db56483b7c144c2e7b",
+  "commit": "728c1cf45f35bdd5f360ab1bcb9aa8c871e3511d",
+  "tree": "af040b3871be747c97575e87258c0233db14a2f5",
+  "version": "0.1.8",
+  "packageLockSha256": "032347f169c34d76d24e7604ffd15f7273a4e1d5acc0fde71b54dde7b0e43290",
   "entrypoint": "brain.mjs",
   "serviceId": "idagents-brain",
   "upstreamMapping": "publisher-asserted-private-source-audit",
@@ -286,9 +286,9 @@
     {
       "path": "mcp/http-client.mjs",
       "mode": "100644",
-      "size": 3003,
-      "sha256": "25919b26cb9dadd04d883bbfd1a038c30b032d686c0cc83ab5e1ceceb49e550a",
-      "gitBlobSha1": "e0c903d31a9786eca04afec22d3d4201a81debc5"
+      "size": 3134,
+      "sha256": "84065cfd3164d24397109f6652bd0d46b3136c0c8613cd270bcf7d28981a8d15",
+      "gitBlobSha1": "87c0e803ddc5b11a06d1b83a38690a67ce62852e"
     },
     {
       "path": "mcp/server.mjs",
@@ -314,16 +314,16 @@
     {
       "path": "package-lock.json",
       "mode": "100644",
-      "size": 46166,
-      "sha256": "a306881106465304c6c3938825af5305f4512e8b878f95db56483b7c144c2e7b",
-      "gitBlobSha1": "eff2fd05bb5bbf1d4667879c4745ecd5b913ffa4"
+      "size": 52889,
+      "sha256": "032347f169c34d76d24e7604ffd15f7273a4e1d5acc0fde71b54dde7b0e43290",
+      "gitBlobSha1": "222ff091ce72034810b40937046375c601e50544"
     },
     {
       "path": "package.json",
       "mode": "100644",
-      "size": 1234,
-      "sha256": "aa972f30d34fa86b0de341f9eba2498957066fb983a59c976feb9029ea9ef06e",
-      "gitBlobSha1": "a3c93b487e5f737506239df534b77dfc8f7efedf"
+      "size": 1258,
+      "sha256": "812093fdf10799b2ccb445c2494e91aa982142e455fb412b1fb233847581707a",
+      "gitBlobSha1": "bbd0964c52d999d639a528a3133cfc6b79a8f1d6"
     },
     {
       "path": "parent-watchdog.mjs",
@@ -529,5 +529,5 @@
       "gitBlobSha1": "0fbdb2936996b6083174bd762969c8675dfd8a66"
     }
   ],
-  "treeSha256": "ce55ecf7cdaa8c35707c9a117101a829b21e7c75d0408080baa594033417918b"
+  "treeSha256": "68dcaf91c3c91ce797b67c67ac6a28612ca0f5e4e2ee3dc11c43f2b11ef3f1ec"
 }

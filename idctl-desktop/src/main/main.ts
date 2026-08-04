@@ -56,9 +56,9 @@ import {
 } from './system.ts';
 import { pickProjectFolder, openProjectFolder, projectReadme, projectGit, projectGitRun, githubMeta, cloneGithub, projectDiff, createGithubRepo, linkGithubRepo, forkGithub, commitProject, detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { pickChatFiles, saveChatFiles, savePastedFile } from './chatfiles.ts';
-import { listChats, listInflightChats, getChat, saveChat, renameChat, removeChat, genTitle, genReason, unreadChatCount, markChatRead, patchChat, type ChatSession, type ChatPatch } from './chatstore.ts';
+import { listChats, listInflightChats, getChat, saveChat, renameChat, removeChat, genTitle, unreadChatCount, markChatRead, patchChat, type ChatSession, type ChatPatch } from './chatstore.ts';
 import { listPlans, getPlan, savePlan, removePlan, type Plan } from './planstore.ts';
-import { listBrainPlans, getBrainPlan, setBrainPlanStatus, createBrainPlan } from './brainplans.ts';
+import { listBrainPlans, getBrainPlan, setBrainPlanStatus, createBrainPlan, consolidateBrainPlans, type BrainPlanConsolidationRequest } from './brainplans.ts';
 import { listLoops, getLoop, saveLoop, removeLoop, type Loop } from './loopstore.ts';
 import { listGoals, getGoal, saveGoal, removeGoal, type Goal } from './goalstore.ts';
 import { listDreams, getDream, saveDream, removeDream, type Dream } from './dreamstore.ts';
@@ -2931,8 +2931,6 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return patchChat(args[0] as string, (args[1] as ChatPatch) ?? {});
     case 'chat:genTitle':
       return genTitle(args[0] as string);
-    case 'chat:genReason':
-      return genReason(args[0] as string);
     case 'plans:list':
       await convertLearnTaskDraftPlans();
       return listPlans(args[0] as string | undefined);
@@ -2976,6 +2974,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       );
     case 'brain:createPlan':
       return createBrainPlan(args[0] as string, args[1] as string, args[2] as string | undefined);
+    case 'brain:consolidatePlans':
+      return consolidateBrainPlans((args[0] as BrainPlanConsolidationRequest | undefined) ?? { files: [] });
     // Loops: saved sequential agent→task chains (definition + last-run results).
     case 'loops:list':
       return listLoops(args[0] as string | undefined);

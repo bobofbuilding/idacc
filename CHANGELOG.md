@@ -8,6 +8,14 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.697] — 2026-08-04
+### What changed
+- Restore authenticated agent access to the bundled Brain by pinning Brain 0.1.8, whose MCP proxy now forwards the profile bearer, and Manager 0.1.163, whose goal-driver writes now use the same authenticated Brain headers.
+- Add a guarded IDACC-core plan consolidation action in Chat and Work: explicit numbered-plan requests require confirmation, reject stale records, create one conservative-status plan, and retain the original files in the private profile archive with rollback on failure.
+- Keep Work plans correctly identified as profile-owned application records rather than Brain-owned context, and require a core mutation receipt before an agent may claim that a plan lifecycle changed.
+- Replace model-generated “behind the scenes” action summaries with the exact query activity trace so the UI cannot invent work that did not occur.
+- Include Brain's previously undeclared blockchain client dependency so clean installations can run every shipped Brain tool.
+
 ## [0.1.696] — 2026-08-03
 ### What changed
 - Refresh desktop production locks to `brace-expansion` 5.0.9 and `fast-uri` 3.1.5, clearing newly published high-severity registry advisories across clean Linux release runners.

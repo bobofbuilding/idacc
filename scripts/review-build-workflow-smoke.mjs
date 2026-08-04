@@ -130,6 +130,7 @@ for (const script of [
   'test:provider-runtime-rehydration',
   'test:runtime-profile-isolation',
   'test:context-budget-retention',
+  'test:chat-failure',
   'test:brain-plans-profile',
   'test:goals-plan-separation',
   'test:consumer-onboarding',

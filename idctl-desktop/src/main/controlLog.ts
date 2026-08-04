@@ -258,6 +258,14 @@ function candidateForAction(method: string, args: unknown[], result: unknown, su
         tags: ['plan', 'brain-plan'],
         data: { file: data.file ?? args[0], status: args[1] },
       };
+    case 'brain:consolidatePlans':
+      return {
+        contributionType: 'plan-consolidation',
+        title: subject,
+        project: s(data.file),
+        tags: ['plan', 'brain-plan', 'consolidated'],
+        data: { file: data.file, num: data.num, status: data.status, archived: data.archived },
+      };
     case 'dreams:save':
       return {
         contributionType: 'dream-report',
@@ -532,6 +540,7 @@ const ACTIONS: Record<string, (args: unknown[], result: unknown) => Summary> = {
   // ── brain plans + dreams + questions (out-of-band fs/git; brain learned only incidentally) ──
   'brain:createPlan': (a, r) => ({ subject: `brain plan created: ${clip(a[0], 80)}`, data: obj(r), tags: ['brain-plan'] }),
   'brain:setPlanStatus': (a, r) => ({ subject: `plan ${s(a[0])} → ${s(a[1])}`, data: { file: s(a[0]), ...obj(r) }, tags: ['brain-plan'] }),
+  'brain:consolidatePlans': (a, r) => ({ subject: `plans consolidated → ${s(obj(r).file)}`, data: { files: arrayText(obj(a[0]).files), ...obj(r) }, tags: ['brain-plan', 'consolidated'] }),
   'dreams:save': (a) => { const d = obj(a[0]); return { subject: `dream saved: ${clip(d.title, 80)}`, data: { id: d.id, agent: d.agent, team: d.team, focus: d.focus }, tags: ['dream'] }; },
   'questions:add': (a) => { const q = obj(a[0]); return { subject: `blocker question: ${clip(q.question, 80)}`, data: { id: q.id, agent: q.agent, taskRef: q.taskRef, options: q.options, team: q.team }, tags: ['decision'] }; },
   'materials:save': (_a, r) => { const m = obj(r); return { subject: `learn material saved: ${clip(m.title, 80)}`, data: { id: m.id, kind: m.kind, priority: m.priority, status: m.status, stage: m.stage, source: m.source }, tags: ['learn', 'material'] }; },

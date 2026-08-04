@@ -120,6 +120,7 @@ jobs:
           npm run test:runtime-profile-isolation --prefix idctl-desktop
           npm run test:context-budget-retention --prefix idctl-desktop
           npm run test:chat-delegation --prefix idctl-desktop
+          npm run test:chat-failure --prefix idctl-desktop
           npm run test:brain-plans-profile --prefix idctl-desktop
           npm run test:goals-plan-separation --prefix idctl-desktop
           npm run test:consumer-onboarding --prefix idctl-desktop

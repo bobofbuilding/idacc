@@ -1,6 +1,6 @@
 {
   "name": "@idagents/brain",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Persistent skill knowledge graph and agent memory store",
   "license": "MIT",
   "type": "module",
@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "viem": "^2.55.10",
     "zod": "^4.4.3"
   },
   "overrides": {

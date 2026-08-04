@@ -48,6 +48,9 @@ type ChatSummary = { id: string; title: string; team: string; messageCount: numb
 type ImageResult = { ok: boolean; path?: string; dataUrl?: string; model?: string; costUsd?: number; error?: string };
 type QueryPoll = { status?: string; text?: string; error?: string };
 type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
+type LivePlan = { num?: string; title: string; file: string; status?: string; mtime?: number };
+type LivePlansResponse = { dir: string | null; plans: LivePlan[] };
+type PlanConsolidationResult = { ok: boolean; file?: string; num?: string; title?: string; status?: string; archived?: string[]; error?: string; stale?: boolean };
 
 /** Quote a free-text message as ONE token for the manager's tokenizer (matches client.ts qArg). */
 function qArg(s: string): string {
@@ -101,6 +104,17 @@ function isPlanRequest(text: string): boolean {
 function stripPlanCmd(text: string): string { return text.replace(PLAN_CMD, '').trim(); }
 function newPlanId(): string { return `plan_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
 
+function requestedPlanConsolidation(text: string): string[] | null {
+  if (!/\b(consolidat(?:e|ed|ing|ion)|merge|combine)\b/i.test(text)) return null;
+  const planAt = text.search(/\bplans?\b/i);
+  if (planAt < 0) return null;
+  const numbers = [...text.slice(planAt).matchAll(/#?(\d{1,3})\b/g)]
+    .map((match) => String(Number(match[1])))
+    .filter((value) => value !== '0');
+  const unique = [...new Set(numbers)];
+  return unique.length >= 2 && unique.length <= 12 ? unique : null;
+}
+
 const CHAT_CONTEXT_CHAR_BUDGET = 60_000;
 const CHAT_CONTEXT_MESSAGE_LIMIT = 80;
 const CHAT_MESSAGE_CHAR_BUDGET = 12_000;
@@ -150,6 +164,7 @@ function buildChatScopedPrompt(session: Session, target: string, currentMessage:
     session.projectId ? `Project focus id: ${session.projectId}` : '',
     '',
     'Context rule: answer this request using only the transcript below, the explicitly attached files/paths named in it, and any project focus stated in the transcript. Do not continue or rely on other Dashboard chats, other agent conversations, old runtime memory, or unrelated manager/task context unless it is quoted in this transcript.',
+    'Work-plan integrity rule: Work > Plans records are owned by IDACC core actions, not by Brain or an agent reply. Never claim a plan was created, consolidated, archived, or had its status changed unless this transcript includes an explicit IDACC core mutation receipt.',
     '',
     'Transcript:',
     transcript,
@@ -763,19 +778,15 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
         if (q?.status === 'delivered') {
           const { steps: own, delegations } = buildTrace(actSteps);
           const text = q.text || '(empty reply)';
-          // Deliver immediately with a deterministic reasoning rollup (never empty),
-          // then best-effort UPGRADE the summary to a free local-Ollama paraphrase
-          // of the reply — same path the title gen uses; leaves the rollup if Ollama
-          // is unavailable. Fired async so the reply isn't delayed by inference.
+          // Deliver with only the exact query activity trace. Model-generated
+          // paraphrases are intentionally excluded because they can invent an
+          // action that did not occur.
           await deliverInflight(sid, inf, {
             text,
             trace: own.length ? own : undefined,
             delegations: delegations.length ? delegations : undefined,
             reasoning: deterministicReason(own, delegations) || undefined,
           }, true);
-          void call<string>('chat:genReason', text)
-            .then((r) => { if (r && r.trim()) void resolveMsg(sid, inf.replyId, { reasoning: clip(r.trim(), 100) }); })
-            .catch(() => {});
           return;
         }
         if (q?.status === 'failed' || q?.status === 'expired') {
@@ -791,9 +802,6 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
               delegations: delegations.length ? delegations : undefined,
               reasoning: deterministicReason(own, delegations) || undefined,
             }, true);
-            void call<string>('chat:genReason', text)
-              .then((r) => { if (r && r.trim()) void resolveMsg(sid, inf.replyId, { reasoning: clip(r.trim(), 100) }); })
-              .catch(() => {});
             return;
           }
           if (confirmed.status === 'pending' || confirmed.status === 'processing') {
@@ -1072,6 +1080,69 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
         });
         return;
       }
+    }
+    const consolidationNumbers = text && attachments.length === 0
+      ? requestedPlanConsolidation(text)
+      : null;
+    if (consolidationNumbers) {
+      const sid = session.id;
+      const actionId = idRef.current++;
+      sendingRef.current = true;
+      stickRef.current = true;
+      setBusy(true);
+      pushMsgs(
+        { id: idRef.current++, role: 'you', who: 'you', text },
+        { id: actionId, role: 'system', who: '', text: 'Checking the selected Work plans…', pending: true },
+      );
+      setInput('');
+      autoTitle(text);
+      void genTitle(sid, text);
+      try {
+        const live = await call<LivePlansResponse>('brain:plans').catch(() => ({ dir: null, plans: [] }));
+        const selected = consolidationNumbers.map((number) => (
+          live.plans.find((plan) => String(Number(plan.num ?? /^(\d+)/.exec(plan.file)?.[1] ?? '0')) === number)
+        ));
+        const missing = consolidationNumbers.filter((_number, index) => !selected[index]);
+        if (missing.length) {
+          await resolveMsg(sid, actionId, {
+            text: `✗ No plans were changed. Plan${missing.length === 1 ? '' : 's'} ${missing.join(', ')} could not be found in the current Work plan list.`,
+            pending: false,
+          });
+          return;
+        }
+        const plans = selected as LivePlan[];
+        const label = plans.map((plan) => `${plan.num ?? plan.file} “${plan.title}”`).join(' and ');
+        if (!window.confirm(`Consolidate ${label}?\n\nThe original files will be retained in the private plan archive.`)) {
+          await resolveMsg(sid, actionId, { text: 'Plan consolidation cancelled; no records were changed.', pending: false });
+          return;
+        }
+        const expected = Object.fromEntries(plans.map((plan) => [
+          plan.file,
+          { status: plan.status, mtime: plan.mtime },
+        ]));
+        const result: PlanConsolidationResult = await call<PlanConsolidationResult>('brain:consolidatePlans', {
+          files: plans.map((plan) => plan.file),
+          expected,
+        }).catch((error): PlanConsolidationResult => ({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        if (!result.ok) {
+          await resolveMsg(sid, actionId, {
+            text: `✗ No plans were consolidated. ${result.error ?? 'The core plan action failed.'}${result.stale ? ' Refresh Work > Plans and try again.' : ''}`,
+            pending: false,
+          });
+          return;
+        }
+        await resolveMsg(sid, actionId, {
+          text: `✓ IDACC core consolidated plans ${consolidationNumbers.join(' + ')} into plan ${result.num} “${result.title}” (${result.status}). The ${result.archived?.length ?? plans.length} source files are retained in the private archive.`,
+          pending: false,
+        });
+      } finally {
+        setBusy(false);
+        sendingRef.current = false;
+      }
+      return;
     }
     // Unified composer: a clear image request (with no file attachments) generates
     // an image; everything else goes to the agent. Decision is free + local.

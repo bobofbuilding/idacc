@@ -1,8 +1,11 @@
 const DEFAULT_BASE_URL = (process.env.BRAIN_MCP_BASE_URL ?? `http://127.0.0.1:${process.env.BRAIN_PORT ?? 4200}`)
   .replace(/\/+$/, '');
 
-function jsonHeaders(body) {
-  return body === undefined ? {} : { 'content-type': 'application/json' };
+function jsonHeaders(body, token) {
+  return {
+    ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
 }
 
 function parsePayload(text) {
@@ -65,6 +68,7 @@ function normalizeErrorEnvelope(status, payload, meta) {
 export function createBrainHttpClient({
   baseUrl = DEFAULT_BASE_URL,
   fetchImpl = globalThis.fetch,
+  token = process.env.BRAIN_TOKEN ?? '',
 } = {}) {
   if (typeof fetchImpl !== 'function') {
     throw new Error('fetch implementation required for brain MCP client');
@@ -85,7 +89,7 @@ export function createBrainHttpClient({
     }
     const res = await fetchImpl(url, {
       method,
-      headers: jsonHeaders(body),
+      headers: jsonHeaders(body, token),
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await res.text();
