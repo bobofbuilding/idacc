@@ -2317,8 +2317,9 @@ async function verifySafeRehearsal(): Promise<{ ok: boolean; detail: string }> {
   }
 }
 
-async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
+async function keyProductionReadiness(options: { probeProtectedStorage?: boolean } = {}): Promise<KeyProductionReadiness> {
   const checkedAt = Date.now();
+  const probeProtectedStorage = options.probeProtectedStorage === true;
   const caps = await bridgeCall('keys:caps', []) as KeyCapabilities;
   const settings = loadSettings();
   const rootStatus = currentRootIdentityStatus();
@@ -2345,15 +2346,19 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
       : `${caps.provider} is simulation-only; it cannot deploy Safes or change authority.`,
     remediation: caps.live ? undefined : 'Install and configure the Safe 1.4.1 + Zodiac Roles live provider before provisioning.',
   });
-  const signerVault = agentSignerVaultStatus();
+  const signerVault = agentSignerVaultStatus({ verifyEncryption: probeProtectedStorage });
   checks.push({
     id: 'signer-custody',
     label: 'Agent signer custody',
-    status: signerVault.available ? 'pass' : 'block',
+    status: signerVault.verified && signerVault.available ? 'pass' : 'block',
     detail: signerVault.available
       ? `${signerVault.backend} is available; ${signerVault.signerCount} encrypted agent signer(s) are present.`
       : signerVault.error ?? 'Agent signer encryption is unavailable.',
-    remediation: signerVault.available ? undefined : 'Unlock or configure secure operating-system credential storage and retry. IDACC will not store plaintext agent keys.',
+    remediation: signerVault.available
+      ? undefined
+      : signerVault.verified
+        ? 'Unlock or configure secure operating-system credential storage and retry. IDACC will not store plaintext agent keys.'
+        : 'Choose Re-run preflight when you are ready for IDACC to verify protected storage.',
   });
   const walletConnect = settings.walletConnect ?? { enabled: false, projectId: '' };
   const connectorReady = walletConnect.enabled && /^[a-f0-9]{32}$/i.test(walletConnect.projectId);
@@ -2366,7 +2371,13 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
   });
 
   const rpc = rootIdentity ? ethereumMainnetRpc() : undefined;
-  if (!rpc || !rootIdentity) {
+  if (rpc && rootIdentity && !probeProtectedStorage) {
+    const deferred = 'Protected RPC and onchain checks are not run automatically. Choose Re-run preflight to verify them.';
+    checks.push({ id: 'ethereum-rpc', label: 'Ethereum mainnet RPC', status: 'block', detail: deferred });
+    checks.push({ id: 'asset-inspection', label: 'Asset revocation guard', status: 'block', detail: deferred });
+    checks.push({ id: 'module-attestation', label: 'Pinned module bytecode', status: 'block', detail: deferred });
+    checks.push({ id: 'root-safe-contract', label: 'Root Safe contract', status: 'block', detail: deferred });
+  } else if (!rpc || !rootIdentity) {
     checks.push({
       id: 'asset-inspection',
       label: 'Asset revocation guard',
@@ -2807,7 +2818,7 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'walletConnect:set':
       return setWalletConnectSettings((args[0] as Record<string, unknown>) ?? {}).walletConnect;
     case 'keys:productionReadiness':
-      return keyProductionReadiness();
+      return keyProductionReadiness({ probeProtectedStorage: args[0] === true });
     case 'subs:status':
       return subsStatus(
         args[0] && typeof args[0] === 'object'

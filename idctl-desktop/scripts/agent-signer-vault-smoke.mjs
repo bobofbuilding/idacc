@@ -59,6 +59,8 @@ assert.match(vault, /mode: 0o600/);
 assert.match(vault, /privateKey\.fill\(0\)/);
 assert.doesNotMatch(vault, /privateKey:\s*string/);
 assert.match(vault, /signAgentTransaction/);
+assert.match(vault, /options\.verifyEncryption === false/);
+assert.match(vault, /Secure storage is checked only when you explicitly run the production preflight/);
 assert.match(main, /id: 'signer-custody'/);
 assert.match(main, /secureStorageStatus\(safeStorage\)\.available/);
 assert.match(identity, /profile-scoped agent signer keys are Electron safeStorage-encrypted/);

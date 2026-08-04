@@ -94,13 +94,43 @@ function createRecord(agent: string, rotatedAt?: number): SignerRecord {
   }
 }
 
-export function agentSignerVaultStatus(): { available: boolean; backend: string; signerCount: number; error?: string } {
+export function agentSignerVaultStatus(options: { verifyEncryption?: boolean } = {}): {
+  available: boolean;
+  verified: boolean;
+  backend: string;
+  signerCount: number;
+  error?: string;
+} {
+  if (options.verifyEncryption === false) {
+    const backend = process.platform === 'darwin'
+      ? 'electron-safeStorage/macOS-Keychain'
+      : process.platform === 'win32'
+        ? 'electron-safeStorage/Windows-DPAPI'
+        : `electron-safeStorage/${process.platform || 'unknown'}`;
+    try {
+      return {
+        available: false,
+        verified: false,
+        backend,
+        signerCount: Object.keys(loadState().signers).length,
+        error: 'Secure storage is checked only when you explicitly run the production preflight.',
+      };
+    } catch (error) {
+      return {
+        available: false,
+        verified: false,
+        backend,
+        signerCount: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
   const storage = secureStorageStatus(safeStorage);
-  if (!storage.available) return { ...storage, signerCount: 0 };
+  if (!storage.available) return { ...storage, verified: true, signerCount: 0 };
   try {
-    return { available: true, backend: storage.backend, signerCount: Object.keys(loadState().signers).length };
+    return { available: true, verified: true, backend: storage.backend, signerCount: Object.keys(loadState().signers).length };
   } catch (error) {
-    return { available: false, backend: storage.backend, signerCount: 0, error: error instanceof Error ? error.message : String(error) };
+    return { available: false, verified: true, backend: storage.backend, signerCount: 0, error: error instanceof Error ? error.message : String(error) };
   }
 }
 

@@ -60,6 +60,7 @@ const view = readFileSync(join(root, 'src', 'renderer', 'views', 'ComputerUse.ts
 const broker = readFileSync(join(root, 'src', 'main', 'computeruse', 'broker.ts'), 'utf8');
 const capture = readFileSync(join(root, 'src', 'main', 'computeruse', 'capture.ts'), 'utf8');
 const permissions = readFileSync(join(root, 'src', 'main', 'computeruse', 'permissions.ts'), 'utf8');
+const driver = readFileSync(join(root, 'src', 'main', 'computeruse', 'driver.mac.ts'), 'utf8');
 const main = readFileSync(join(root, 'src', 'main', 'main.ts'), 'utf8');
 const mcp = readFileSync(join(root, 'resources', 'computeruse-mcp', 'server.mjs'), 'utf8');
 
@@ -98,5 +99,17 @@ assert.match(view, /if \(cuUnavailable\)/);
 assert.match(view, /Unavailable on this operating system/);
 assert.match(view, /permission links, and agent blessing are not started or shown here/);
 assert.match(permissions, /if \(process\.platform !== 'darwin'\)/);
+assert.doesNotMatch(
+  permissions,
+  /isTrustedAccessibilityClient\(true\)/,
+  'background permission checks must never ask macOS to open the Accessibility prompt',
+);
+assert.match(
+  broker,
+  /driverCapability\('passive'\)/,
+  'ordinary dashboard status must not initialize the native input controller',
+);
+assert.match(driver, /probe === 'passive' && !_tried/);
+assert.match(view, /onClick=\{\(\) => void call\('cu:openPermission', pane\)\}/);
 
 console.log('computer use policy smoke: ok');

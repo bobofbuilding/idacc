@@ -983,7 +983,7 @@ export function Identity({ store }: { store: FleetStore }) {
       if (configured) setContractChain(rootIdentityChainHex(configured) as (typeof EXECUTION_CHAINS)[number]['hex']);
     }).catch((err) => setError(err instanceof Error ? err.message : 'Failed to load root identity'));
     call<KeyCapabilities>('keys:caps').then(setCaps).catch((err) => setError(err instanceof Error ? err.message : 'Failed to load key capabilities'));
-    call<KeyProductionReadiness>('keys:productionReadiness').then(setProductionReadiness).catch((err) => setError(err instanceof Error ? err.message : 'Failed to run production readiness'));
+    call<KeyProductionReadiness>('keys:productionReadiness', false).then(setProductionReadiness).catch((err) => setError(err instanceof Error ? err.message : 'Failed to load production readiness'));
     call<{ scopes: SessionScope[]; ttls: { label: string; ms: number }[] }>('keys:presets').then(setPresets).catch((err) => setError(err instanceof Error ? err.message : 'Failed to load key presets'));
   }, []);
 
@@ -1568,7 +1568,7 @@ export function Identity({ store }: { store: FleetStore }) {
         reload(),
         call<RootIdentityStatus>('rootIdentity:get').then(setRootIdentityStatus),
         call<KeyCapabilities>('keys:caps').then(setCaps),
-        call<KeyProductionReadiness>('keys:productionReadiness').then(setProductionReadiness),
+        call<KeyProductionReadiness>('keys:productionReadiness', true).then(setProductionReadiness),
         call<{ scopes: SessionScope[]; ttls: { label: string; ms: number }[] }>('keys:presets').then(setPresets),
         call<EvmRpcRow[]>('evmRpc:list').then(setEvmRpcs),
         call<BrainControllerReport>('brain:controllerReport').then(setBrainControllers),

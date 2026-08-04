@@ -1205,8 +1205,15 @@ function resolveProviderLaneAssignment(runtime: string): { providerName: string;
   const p = loadSettings().providers.find((x) => x.name === providerName);
   if (!p) throw new Error(`provider lane "${providerName}" is no longer configured in Settings`);
   if (!providerRouteReadyForAssignment(p)) throw new Error(`provider lane "${providerName}" is not ready; Connect & sync it in Settings first`);
-  const apiKey = providerKey(p) || (!providerNeedsKey(p) && isLoopbackProvider(p) ? 'idacc-local-provider-no-key' : '');
-  if (providerNeedsKey(p) && !apiKey) throw new Error(`provider lane "${providerName}" is missing an API key`);
+  const needsKey = providerNeedsKey(p);
+  // A local/no-key provider may retain an obsolete encrypted key after its
+  // profile is edited. Never unlock the OS credential store for that dead
+  // field during automatic Manager restart restoration. Credential-backed
+  // providers still decrypt only when their live route actually needs it.
+  const apiKey = needsKey
+    ? providerKey(p)
+    : (isLoopbackProvider(p) ? 'idacc-local-provider-no-key' : '');
+  if (needsKey && !apiKey) throw new Error(`provider lane "${providerName}" is missing an API key`);
   return {
     providerName,
     provider: {

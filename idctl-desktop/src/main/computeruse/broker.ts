@@ -759,7 +759,7 @@ export function brokerStatus() {
     S.lastShot = null;
     S.lastSig = 0;
   }
-  return { available: true, armed: S.armed, watching: S.watching, port: S.port, url: S.port ? `http://127.0.0.1:${S.port}` : '', lastAgent: S.lastAgent, actions: S.actions, serverStaged: existsSync(brokerServerPath()), captureFailing: S.captureFailing, display, displays, blessed: [...S.blessed], driverOk: driver.driverCapability().ok, accessibility: accessibilityGranted(), supervised: S.controlMode === 'supervised', fullControl: S.controlMode === 'full-control', controlMode: S.controlMode, paused: S.paused, pending: pendingList(), panicHotkey: panicHotkeyOk };
+  return { available: true, armed: S.armed, watching: S.watching, port: S.port, url: S.port ? `http://127.0.0.1:${S.port}` : '', lastAgent: S.lastAgent, actions: S.actions, serverStaged: existsSync(brokerServerPath()), captureFailing: S.captureFailing, display, displays, blessed: [...S.blessed], driverOk: driver.driverCapability('passive').ok, accessibility: accessibilityGranted(), supervised: S.controlMode === 'supervised', fullControl: S.controlMode === 'full-control', controlMode: S.controlMode, paused: S.paused, pending: pendingList(), panicHotkey: panicHotkeyOk };
 }
 
 export function stopBroker(): Promise<void> {

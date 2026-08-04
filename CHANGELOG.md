@@ -8,6 +8,13 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.700] — 2026-08-04
+### What changed
+- Stop automatic Manager restart restoration from opening macOS Keychain for local/no-key providers that retain an obsolete encrypted credential field.
+- Load Identity readiness passively after launch and reserve Keychain/RPC verification for the user-clicked production preflight.
+- Keep Dashboard and Computer Use status checks passive so they do not initialize the native input controller or ask macOS to open Accessibility settings.
+- Preserve explicit secure behavior: credential-backed provider agents still unlock when genuinely required, and only a user-clicked permission action opens System Settings.
+
 ## [0.1.699] — 2026-08-04
 ### What changed
 - Keep completed private-workspace setup durable when the lead, coder, researcher, Manager, or Brain is temporarily offline; live readiness remains available as operational health instead of reopening first-run setup.
