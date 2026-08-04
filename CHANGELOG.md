@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.699] — 2026-08-04
+### What changed
+- Keep completed private-workspace setup durable when the lead, coder, researcher, Manager, or Brain is temporarily offline; live readiness remains available as operational health instead of reopening first-run setup.
+- Suppress stale legacy “Setup needs attention” sidebar alerts for profiles whose setup record is already complete, while preserving genuine incomplete and Limited-mode recovery actions.
+- Align the Windows ACL release smoke with the shipped helper's bounded two-minute allowance so transient hosted-runner security scanning does not reject an otherwise healthy Windows package.
+
 ## [0.1.698] — 2026-08-04
 ### What changed
 - Show the clean source version in the application title bar by hiding the CI-only `-review.N` sequence from the user-facing label.

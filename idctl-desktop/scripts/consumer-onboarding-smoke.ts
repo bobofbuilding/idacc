@@ -11,6 +11,8 @@ import {
 } from '../src/main/onboardingStore.ts';
 import {
   consumerOnboardingModalOpen,
+  consumerOnboardingPhase,
+  consumerOnboardingResumeKind,
   evaluateConsumerReadiness,
   missingStarterAgentDefinitions,
   onboardingAssignmentAvailable,
@@ -35,6 +37,12 @@ async function main(): Promise<void> {
   assert.equal(consumerOnboardingModalOpen(false, false), false, 'a completed profile must not reopen setup during service restart');
   assert.equal(consumerOnboardingModalOpen(false, true), true, 'an incomplete profile must keep setup visible');
   assert.equal(consumerOnboardingModalOpen(true, false), true, 'the operator can explicitly reopen setup');
+  assert.equal(consumerOnboardingPhase(true, 'complete'), 'ready', 'completed setup must remain complete when a starter agent is temporarily offline');
+  assert.equal(consumerOnboardingPhase(false, 'complete'), 'preparing', 'service startup remains an operational preparation state');
+  assert.equal(consumerOnboardingPhase(true, 'in_progress'), 'in_progress');
+  assert.equal(consumerOnboardingResumeKind({ phase: 'degraded', needsOnboarding: false }), null, 'a legacy degraded response must not re-notify a completed profile');
+  assert.equal(consumerOnboardingResumeKind({ phase: 'degraded', needsOnboarding: true }), 'attention');
+  assert.equal(consumerOnboardingResumeKind({ phase: 'limited', needsOnboarding: false }), 'finish');
   assert.equal(loadOnboardingState().mode, 'required', 'a new profile must require onboarding');
   beginOnboarding({ runtime: 'codex', model: 'gpt-test' });
   setOnboardingAgentProgress('lead', 'preserved');

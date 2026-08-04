@@ -63,6 +63,11 @@ assert.equal(isTrustedPrivatePathOwner(1001, 1001), true);
 assert.equal(isTrustedPrivatePathOwner(1002, 1001), false);
 assert.equal(isTrustedPrivatePathOwner(1002, undefined), false);
 
+// Match the production ACL helper's bounded normal-mode allowance. Hosted
+// Windows security scanning can delay a fresh PowerShell process beyond the
+// old 30-second smoke-only limit even though the operation remains healthy.
+const WINDOWS_PROFILE_ACL_TEST_TIMEOUT_MS = 2 * 60_000;
+
 function windowsPowerShellForTest(script: string, profileRoot: string): string {
   const systemRoot = String(process.env.SystemRoot || process.env.WINDIR || '');
   assert.ok(systemRoot, 'Windows ACL smoke requires SystemRoot or WINDIR');
@@ -96,7 +101,7 @@ function windowsPowerShellForTest(script: string, profileRoot: string): string {
     },
     input: script,
     maxBuffer: 1024 * 1024,
-    timeout: 30_000,
+    timeout: WINDOWS_PROFILE_ACL_TEST_TIMEOUT_MS,
     windowsHide: true,
   });
   assert.equal(result.error, undefined, 'Windows ACL test helper must not time out');
@@ -137,7 +142,7 @@ function windowsProfileAclBootstrapStatusForTest(script: string): number | null 
     },
     input: script,
     maxBuffer: 1024 * 1024,
-    timeout: 30_000,
+    timeout: WINDOWS_PROFILE_ACL_TEST_TIMEOUT_MS,
     windowsHide: true,
   });
   assert.equal(result.error, undefined, 'Windows ACL bootstrap must launch');

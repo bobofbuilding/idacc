@@ -19,6 +19,7 @@ import { CommandReceipts } from './views/dashboard/CommandReceipts.tsx';
 import type { CommandEnvironment } from './dashboard/commandRuntime.ts';
 import {
   consumerOnboardingModalOpen,
+  consumerOnboardingResumeKind,
   type ConsumerOnboardingStatus,
 } from '../shared/consumerOnboarding.ts';
 import { displayAppVersion } from '../shared/versionDisplay.ts';
@@ -227,6 +228,8 @@ export function App() {
     }
   }
 
+  const onboardingResumeKind = consumerOnboardingResumeKind(onboarding);
+
   return (
     <ToastProvider>
     <PromptProvider>
@@ -259,13 +262,13 @@ export function App() {
               ) : null}
             </button>
           ))}
-          {onboarding?.phase === 'limited' || onboarding?.phase === 'degraded' ? (
+          {onboardingResumeKind ? (
             <button
-              className={`nav-item onboarding-resume${onboarding.phase === 'degraded' ? ' attention' : ''}`}
+              className={`nav-item onboarding-resume${onboardingResumeKind === 'attention' ? ' attention' : ''}`}
               onClick={() => setOnboardingOpen(true)}
             >
-              <span className="nav-icon">{onboarding.phase === 'degraded' ? '!' : '○'}</span>
-              <span className="nav-label">{onboarding.phase === 'degraded' ? 'Setup needs attention' : 'Finish setup'}</span>
+              <span className="nav-icon">{onboardingResumeKind === 'attention' ? '!' : '○'}</span>
+              <span className="nav-label">{onboardingResumeKind === 'attention' ? 'Setup needs attention' : 'Finish setup'}</span>
             </button>
           ) : null}
           {update?.available && update.staged && dismissed !== update.latest ? (

@@ -20,6 +20,35 @@ export function consumerOnboardingModalOpen(
   return manuallyOpen || needsOnboarding;
 }
 
+/**
+ * Setup completion is durable profile state. Live service or agent health is
+ * reported separately through currentReady/gates and must not send a completed
+ * profile back through first-run setup.
+ */
+export function consumerOnboardingPhase(
+  stackReady: boolean,
+  mode: ConsumerOnboardingMode,
+): ConsumerOnboardingPhase {
+  if (!stackReady) return 'preparing';
+  if (mode === 'complete') return 'ready';
+  if (mode === 'limited') return 'limited';
+  if (mode === 'in_progress') return 'in_progress';
+  return 'required';
+}
+
+/**
+ * Keep the sidebar recovery entry scoped to unfinished setup. This also
+ * protects upgraded clients from a cached legacy `degraded` response for a
+ * profile that is already complete.
+ */
+export function consumerOnboardingResumeKind(
+  status: Pick<ConsumerOnboardingStatus, 'phase' | 'needsOnboarding'> | null | undefined,
+): 'finish' | 'attention' | null {
+  if (status?.phase === 'limited') return 'finish';
+  if (status?.phase === 'degraded' && status.needsOnboarding) return 'attention';
+  return null;
+}
+
 export type ConsumerOnboardingMode = 'required' | 'in_progress' | 'limited' | 'complete';
 export type ConsumerOnboardingPhase = 'preparing' | 'required' | 'in_progress' | 'limited' | 'ready' | 'degraded';
 export type StarterAgentSetupStatus = 'pending' | 'running' | 'ok' | 'failed' | 'preserved';

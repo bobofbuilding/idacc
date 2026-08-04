@@ -12,6 +12,7 @@ import {
   updateOnboardingState,
 } from './onboardingStore.ts';
 import {
+  consumerOnboardingPhase,
   evaluateConsumerReadiness,
   orchestrateMissingStarterAgents,
   orchestratePreservedStarterRepairs,
@@ -355,13 +356,7 @@ async function buildStatus(force = false): Promise<ConsumerOnboardingStatus> {
     });
   }
 
-  let phase: ConsumerOnboardingStatus['phase'];
-  if (!stack.ready) phase = 'preparing';
-  else if (state.mode === 'complete' && readiness.ready) phase = 'ready';
-  else if (state.mode === 'complete') phase = 'degraded';
-  else if (state.mode === 'limited') phase = 'limited';
-  else if (state.mode === 'in_progress') phase = 'in_progress';
-  else phase = 'required';
+  const phase = consumerOnboardingPhase(stack.ready, state.mode);
 
   return {
     phase,
