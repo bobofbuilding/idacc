@@ -8,6 +8,11 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.705] — 2026-08-05
+### What changed
+- Route explicit General Council requests directly to legal counsel, preserve bounded parallel lead intake, and include the corrected Manager verification pin.
+- Fix General Council lead routing
+
 ## [0.1.704] — 2026-08-05
 ### What changed
 - Pin Manager 0.1.166 so a profile-scoped IDACC launch creates only its active
