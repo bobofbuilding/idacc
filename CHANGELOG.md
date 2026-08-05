@@ -8,6 +8,16 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.703] — 2026-08-05
+### What changed
+- Pin Manager 0.1.165 so every managed worker refreshes its authenticated
+  Manager and profile-scoped Brain guidance before startup.
+- Reconcile configured skills across supported runtime roots without losing
+  unavailable optional capabilities, with byte-for-byte recovery archives for
+  migrated stale copies.
+- Accept immutable managed-agent IDs in task ownership routes so authenticated
+  `/news-to` delegation can create auditable child-task receipts.
+
 ## [0.1.702] — 2026-08-05
 ### What changed
 - Unify the v0.1.701 clean release branches and advance the active IDACC app line
