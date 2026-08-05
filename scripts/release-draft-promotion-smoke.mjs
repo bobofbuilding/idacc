@@ -64,8 +64,8 @@ function writeChecksums(directory) {
     'ID-Agents-Control-Center-1.2.3-x64.dmg',
     'ID-Agents-Control-Center-1.2.3-arm64.zip',
     'ID-Agents-Control-Center-1.2.3-x64.zip',
-    'ID-Agents-Control-Center-1.2.3-x64.AppImage',
-    'ID-Agents-Control-Center-1.2.3-x64.deb',
+    'ID-Agents-Control-Center-1.2.3-x86_64.AppImage',
+    'ID-Agents-Control-Center-1.2.3-amd64.deb',
     'ID-Agents-Control-Center-1.2.3-x64.exe',
     'IDACC-provenance-darwin-arm64.tar.gz',
     'IDACC-provenance-darwin-x64.tar.gz',
@@ -91,8 +91,8 @@ function writeBundle(directory, marker, sourceCommit = commit) {
     ['ID-Agents-Control-Center-1.2.3-arm64.zip', 'darwin', 'arm64'],
     ['ID-Agents-Control-Center-1.2.3-x64.zip', 'darwin', 'x64'],
     ['ID-Agents-Control-Center-1.2.3-x64.exe', 'win32', 'x64'],
-    ['ID-Agents-Control-Center-1.2.3-x64.AppImage', 'linux', 'x64'],
-    ['ID-Agents-Control-Center-1.2.3-x64.deb', 'linux', 'x64'],
+    ['ID-Agents-Control-Center-1.2.3-x86_64.AppImage', 'linux', 'x64'],
+    ['ID-Agents-Control-Center-1.2.3-amd64.deb', 'linux', 'x64'],
   ];
   for (const [name] of nativeArtifacts) {
     writeFileSync(join(directory, name), `${name}:${marker}\n`);

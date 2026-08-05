@@ -49,8 +49,8 @@ const nativeArtifacts = [
   ['ID-Agents-Control-Center-1.2.3-arm64.zip', 'darwin', 'arm64'],
   ['ID-Agents-Control-Center-1.2.3-x64.zip', 'darwin', 'x64'],
   ['ID-Agents-Control-Center-1.2.3-x64.exe', 'win32', 'x64'],
-  ['ID-Agents-Control-Center-1.2.3-x64.AppImage', 'linux', 'x64'],
-  ['ID-Agents-Control-Center-1.2.3-x64.deb', 'linux', 'x64'],
+  ['ID-Agents-Control-Center-1.2.3-x86_64.AppImage', 'linux', 'x64'],
+  ['ID-Agents-Control-Center-1.2.3-amd64.deb', 'linux', 'x64'],
 ];
 const assets = new Map(nativeArtifacts.map(([name]) => [name, bytes(name)]));
 for (const name of [
@@ -83,10 +83,10 @@ assets.set(
   'latest-linux.yml',
   updateYaml(
     [
-      'ID-Agents-Control-Center-1.2.3-x64.AppImage',
-      'ID-Agents-Control-Center-1.2.3-x64.deb',
+      'ID-Agents-Control-Center-1.2.3-x86_64.AppImage',
+      'ID-Agents-Control-Center-1.2.3-amd64.deb',
     ],
-    'ID-Agents-Control-Center-1.2.3-x64.AppImage',
+    'ID-Agents-Control-Center-1.2.3-x86_64.AppImage',
   ),
 );
 
@@ -315,15 +315,15 @@ try {
   assets.set(
     'latest-linux.yml',
     updateYaml(
-      ['ID-Agents-Control-Center-1.2.3-x64.AppImage'],
-      'ID-Agents-Control-Center-1.2.3-x64.AppImage',
+      ['ID-Agents-Control-Center-1.2.3-x86_64.AppImage'],
+      'ID-Agents-Control-Center-1.2.3-x86_64.AppImage',
     ),
   );
   refreshChecksums();
   const missingDebUpdate = await runVerifier();
   assert.notEqual(missingDebUpdate.status, 0);
   assert.match(missingDebUpdate.stderr, /latest-linux\.yml exact updater file set differs/);
-  assert.match(missingDebUpdate.stderr, /x64\.deb/);
+  assert.match(missingDebUpdate.stderr, /amd64\.deb/);
   assets.set('latest-linux.yml', validLinuxDescriptor);
   refreshChecksums();
 
