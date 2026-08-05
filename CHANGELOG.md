@@ -15,6 +15,9 @@ subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 - Preserve the 0.1.703 managed-worker authentication, skill refresh, and
   immutable agent-ID delegation repairs while completing legacy-data
   retirement cleanly.
+- Align the final public-release verifier with electron-builder's native Linux
+  `x86_64.AppImage` and `amd64.deb` filenames so a fully published release ends
+  with a successful consumer-path check.
 
 ## [0.1.703] — 2026-08-05
 ### What changed

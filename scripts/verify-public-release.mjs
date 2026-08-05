@@ -120,8 +120,8 @@ const expectedInstallers = [
   `ID-Agents-Control-Center-${version}-arm64.zip`,
   `ID-Agents-Control-Center-${version}-x64.zip`,
   `ID-Agents-Control-Center-${version}-x64.exe`,
-  `ID-Agents-Control-Center-${version}-x64.AppImage`,
-  `ID-Agents-Control-Center-${version}-x64.deb`,
+  `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
+  `ID-Agents-Control-Center-${version}-amd64.deb`,
 ];
 const expectedUpdaterPayloads = expectedInstallers.filter((name) => !name.endsWith('.dmg'));
 const requestHeaders = Object.freeze({
@@ -659,10 +659,10 @@ for (const descriptorName of ['latest-mac.yml', 'latest.yml', 'latest-linux.yml'
         }
       : {
           files: [
-            `ID-Agents-Control-Center-${version}-x64.AppImage`,
-            `ID-Agents-Control-Center-${version}-x64.deb`,
+            `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
+            `ID-Agents-Control-Center-${version}-amd64.deb`,
           ],
-          primary: `ID-Agents-Control-Center-${version}-x64.AppImage`,
+          primary: `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
         };
   sameNames(descriptorExpectation.files, names, `${descriptorName} exact updater file set`);
   expect(

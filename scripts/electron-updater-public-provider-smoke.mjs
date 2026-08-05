@@ -23,8 +23,8 @@ function updateYaml(platform, version = '1.2.3') {
     : platform === 'win32'
       ? [`ID-Agents-Control-Center-${version}-x64.exe`]
       : [
-          `ID-Agents-Control-Center-${version}-x64.AppImage`,
-          `ID-Agents-Control-Center-${version}-x64.deb`,
+          `ID-Agents-Control-Center-${version}-x86_64.AppImage`,
+          `ID-Agents-Control-Center-${version}-amd64.deb`,
         ];
   const primary = platform === 'darwin'
     ? files[1]
@@ -63,8 +63,8 @@ try {
     ]],
     ['win32', 'latest.yml', ['ID-Agents-Control-Center-1.2.3-x64.exe']],
     ['linux', 'latest-linux.yml', [
-      'ID-Agents-Control-Center-1.2.3-x64.AppImage',
-      'ID-Agents-Control-Center-1.2.3-x64.deb',
+      'ID-Agents-Control-Center-1.2.3-x86_64.AppImage',
+      'ID-Agents-Control-Center-1.2.3-amd64.deb',
     ]],
   ]) {
     const requests = [];
