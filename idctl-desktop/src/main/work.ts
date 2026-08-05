@@ -1112,6 +1112,22 @@ export async function delegateObjectiveToTeamLeads(
 export interface TeamLead { team: string; lead: string | null; activeCount: number; totalCount: number }
 export interface FanoutResult { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string }
 
+const EXPLICIT_GENERAL_COUNSEL_REQUEST = /\b(?:idacc\s+)?general[-\s]+coun(?:cil|sel)\b|\bgeneral-counsel\b/i;
+const REPOSITORY_ACTION = /\b(?:audit|review|reconcile|merge|push|release|update|upgrade|validate|verify)\b/i;
+const REPOSITORY_OBJECT = /\b(?:git|repos?(?:itories)?|branches?|commits?|pull[-\s]+requests?)\b/i;
+const PROJECT_PORTFOLIO = /\b(?:all|each|every)\b[^.?!\n]{0,60}\bprojects?\b|\bprojects?\b[^.?!\n]{0,60}\b(?:one by one|1 by 1|across the board)\b/i;
+
+/**
+ * Keep the privileged repository path narrow. Ordinary policy or product text
+ * often contains both "update" and "projects"; that must not turn a legal or
+ * governance request into the hard-coded operations repository audit.
+ */
+export function isRepositoryAuthorityObjective(objective: string): boolean {
+  const value = String(objective || '');
+  return REPOSITORY_ACTION.test(value)
+    && (REPOSITORY_OBJECT.test(value) || PROJECT_PORTFOLIO.test(value));
+}
+
 /** For each team, report its active lead + how many agents are running. Drives the
  *  fan-out picker so the UI can show which teams can actually take work right now. */
 export async function teamLeads(client: ManagerClient, teams: string[]): Promise<TeamLead[]> {
@@ -1188,8 +1204,25 @@ export async function fanOutObjectiveToActiveTeamLeads(
       detail: 'no active non-default team leads are available',
     }];
   }
-  const repositoryAuthorityRequest = /\b(?:audit|review|reconcile|merge|push|release|update|upgrade|validate|verify)\b/i.test(objective)
-    && /\b(?:git|projects?|repos?(?:itories)?|branches?|commits?)\b/i.test(objective);
+  // An operator's explicit named destination outranks broad content routing.
+  // "General Council" is the user-facing name for legal/general-counsel.
+  if (EXPLICIT_GENERAL_COUNSEL_REQUEST.test(objective)) {
+    const legal = targets.find((target) => (
+      /^(?:legal|legal-team)$/i.test(target.team)
+      || /^general[-\s]+counsel$/i.test(target.lead)
+    ));
+    if (!legal) {
+      return [{
+        team: 'legal',
+        lead: 'general-counsel',
+        status: 'no-active-agent',
+        detail: 'the General Council was explicitly requested, but legal/general-counsel is not active',
+      }];
+    }
+    return fanOutObjective(client, objective, [legal.team]);
+  }
+
+  const repositoryAuthorityRequest = isRepositoryAuthorityObjective(objective);
   if (!repositoryAuthorityRequest) {
     return fanOutObjective(client, objective, targets.map((target) => target.team));
   }
