@@ -13,6 +13,7 @@ subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 - Make HR runtime/model changes atomic, preflighted, verified, and durable across Manager restarts.
 - Unify local-provider readiness, reduce model refresh latency, and separate backend health from parked agents.
 - Add bounded worker recovery and secure MCP connections as encrypted Settings-owned, process-local bindings.
+- Pin Manager 0.1.164 so atomic configuration and safe MCP-reference contracts match the packaged IDACC client.
 - Park the unstable BrowserMCP adapter and pin supported built-in MCP package versions.
 - Present Self-update as a single IDACC release, without separate Agent manager, Brain, or unified-stack product rows.
 - Use the clean version tag as the stable GitHub release title, including owner-authorized unsigned releases.
