@@ -8,6 +8,23 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.702] — 2026-08-05
+### What changed
+- Unify the v0.1.701 clean release branches and advance the active IDACC app line
+- pin clean-runner Manager fix
+- pin compatible Manager runtime
+- align MCP capability safeguard test
+- clean IDACC release presentation
+- prevent repeated macOS permission prompts
+- separate setup completion from live agent health
+- show base version in app label
+- restore Brain access and plan integrity
+- clear unified runtime audit gate
+- enforce leadership-first release policy
+- restore lead delegation startup guarantees
+- stop restart setup and credential regressions
+- restore authorized operations-lead routing
+
 ## [0.1.701] — 2026-08-04
 ### What changed
 - Make HR runtime/model changes atomic, preflighted, verified, and durable across Manager restarts.
