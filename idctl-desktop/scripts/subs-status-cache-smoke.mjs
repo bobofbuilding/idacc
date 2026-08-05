@@ -97,8 +97,8 @@ assert.ok(
   'managed subscription sign-in should not assume a fixed OAuth completion time',
 );
 assert.ok(
-  teams.includes("'subs:assignmentStatus'") && teams.includes("'runtime:probeLocal'") && teams.includes('Refresh runtimes'),
-  'Teams Build should refresh assignable subscription readiness and local liveness without probing unrelated backends',
+  teams.includes("'subs:assignmentStatus'") && teams.includes("'runtime:probe'") && teams.includes('Refresh runtimes'),
+  'Teams Build should refresh assignable subscription readiness and model catalogs only after an explicit action',
 );
 assert.ok(
   subscriptions.includes("'grok', 'antigravity', 'copilot', 'kiro-cli'")

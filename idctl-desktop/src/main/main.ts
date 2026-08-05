@@ -20,7 +20,6 @@ import {
   startDraftDispatcher,
   startGoalDriver,
   startOrgSync,
-  startModelRefreshLoop,
   stopDraftDispatcherWork,
 } from './bridge.ts';
 import {
@@ -232,7 +231,6 @@ let stopDraftDispatcher: BackgroundStop | null = null;
 let stopBrainApprovalAutomation: BackgroundStop | null = null;
 let stopScheduledDreamArchive: BackgroundStop | null = null;
 let stopOrgSyncRunner: BackgroundStop | null = null;
-let stopModelRefreshRunner: BackgroundStop | null = null;
 let stopProviderRuntimeRehydrationListener: BackgroundStop | null = null;
 let providerRuntimeRehydrationWork: Promise<void> | null = null;
 let providerRuntimeRehydrationPending = false;
@@ -975,7 +973,6 @@ function quiesceConsumerBackgroundActivities(): void {
   // shutdown paths cannot invoke a partially stopped loop twice.
   const stops = [
     stopOrgSyncRunner,
-    stopModelRefreshRunner,
     stopProviderRuntimeRehydrationListener,
     stopGoalDriver,
     stopLearnQueueRunner,
@@ -986,7 +983,6 @@ function quiesceConsumerBackgroundActivities(): void {
     stopScheduledDreamArchive,
   ];
   stopOrgSyncRunner = null;
-  stopModelRefreshRunner = null;
   stopProviderRuntimeRehydrationListener = null;
   stopGoalDriver = null;
   stopLearnQueueRunner = null;
@@ -1247,9 +1243,12 @@ function kickGoalDriverAfterMutation(goal: Goal | null | undefined, action: stri
   delayedGoalDriverWork.schedule(250, async () => {
     if (appShutdown.isQuiescing()) return;
     try {
-      await bridgeCall('goalDriver:runOnce', []);
+      // Goal edits must become visible to Brain immediately, but they must not
+      // bypass the configured manager cadence and create another burst of work.
+      // The explicit Run now control remains the only force-run path.
+      await bridgeCall('goalDriver:syncNow', []);
     } catch (e) {
-      console.warn(`[goals] ${action}: saved locally, but immediate Autopilot run failed:`, e);
+      console.warn(`[goals] ${action}: saved locally, but Autopilot cadence sync failed:`, e);
     }
   });
 }
@@ -3619,12 +3618,6 @@ if (!ownsSingleInstanceLock) {
       // Reactive org-sync: keep every agent's goals & instructions file composed from the lead
       // hierarchy + brain team-instructions (first pass ~15s after boot, then every 5 min).
       try { stopOrgSyncRunner = startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }
-      // Keep model lanes current and notify mounted pickers after each bounded refresh pass.
-      try {
-        stopModelRefreshRunner = startModelRefreshLoop(() => publishStoreChange('runtime:probe'));
-      } catch (e) {
-        console.warn('[model-refresh] failed to start:', e);
-      }
       // Globally available by default, but only active goals whose own Autopilot
       // switch is enabled can gap-fill fleet tasks.
       try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }

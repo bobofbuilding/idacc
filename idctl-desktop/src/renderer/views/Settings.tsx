@@ -120,6 +120,13 @@ function compareDisplayedVersions(left: string | undefined, right: string | unde
   return 0;
 }
 
+function isAheadOfUpdateChannel(status: SettingsUpdateStatus | null): boolean {
+  return Boolean(
+    status?.latest
+    && compareDisplayedVersions(status.current, status.latest) > 0,
+  );
+}
+
 function updateChannelSummary(status: SettingsUpdateStatus | null): string {
   if (!status) return 'up to date';
   if (status.checking) return 'checking…';
@@ -129,8 +136,8 @@ function updateChannelSummary(status: SettingsUpdateStatus | null): string {
   if (status.error) return `error: ${status.error}`;
   if (status.available && status.staged) return `verified v${status.latest} ready to install`;
   if (status.available) return `v${status.latest} available to download`;
-  if (status.latest && compareDisplayedVersions(status.current, status.latest) > 0) {
-    return `ahead of ${status.channel ?? 'production'} channel (latest v${status.latest})`;
+  if (isAheadOfUpdateChannel(status)) {
+    return `${status.channel ?? 'production'} channel is behind this installation (channel latest v${status.latest})`;
   }
   return status.latest ? `up to date (latest v${status.latest})` : 'up to date';
 }
@@ -3029,6 +3036,17 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         <h3>Brain learning automation</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           Event learning runs with the unified app and resumes from a private profile cursor. The mutation-capable maintenance cycle stays off until you explicitly enable its non-overlapping schedule.
+          {' '}
+          <a
+            className="ext-link"
+            href="#"
+            onClick={(event) => {
+              event.preventDefault();
+              void call('brain:openDashboard', 'skills');
+            }}
+          >
+            Open Brain dashboard ↗
+          </a>
         </p>
         <div className="kv">
           <span>event learning</span>
@@ -3094,7 +3112,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           <span>IDACC version</span>
           <b className="mono">v{version || '—'}</b>
           <span>IDACC status</span>
-          <b className={updStatus?.error ? 'status-error' : updStatus?.available ? 'warn-text' : 'ok-text'}>
+          <b className={updStatus?.error ? 'status-error' : updStatus?.available || isAheadOfUpdateChannel(updStatus) ? 'warn-text' : 'ok-text'}>
             {updateChannelSummary(updStatus)}
           </b>
           <span>Legal</span>
@@ -3119,9 +3137,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             <span className="muted small">when off, Check IDACC then choose Download update; every install still requires Restart & update</span>
           </b>
         </div>
-        {updStatus?.latest && compareDisplayedVersions(updStatus.current, updStatus.latest) > 0 ? (
+        {isAheadOfUpdateChannel(updStatus) ? (
           <div className="muted small" style={{ marginTop: 8 }}>
-            This installation is newer than its {updStatus.channel ?? 'production'} channel. Automatic checks remain active and will resume downloads when a newer release is published on that channel.
+            This is not an up-to-date confirmation. This app only checks the isolated {updStatus?.channel ?? 'production'} channel, and that channel currently has no release matching this installation. Automatic checks will resume downloads when a newer release is published there.
           </div>
         ) : null}
         <div className="row-actions" style={{ marginTop: 10 }}>

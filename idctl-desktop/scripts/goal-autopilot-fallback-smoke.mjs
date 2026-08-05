@@ -5,6 +5,9 @@ const work = await readFile(new URL('../src/main/work.ts', import.meta.url), 'ut
 const goaldriver = await readFile(new URL('../src/main/goaldriver.ts', import.meta.url), 'utf8');
 const settingsSchema = await readFile(new URL('../../idctl/src/settings/schema.ts', import.meta.url), 'utf8');
 const goalsView = await readFile(new URL('../src/renderer/views/Goals.tsx', import.meta.url), 'utf8');
+const workLearningStatus = await readFile(new URL('../src/renderer/views/WorkLearningStatus.tsx', import.meta.url), 'utf8');
+const tasksView = await readFile(new URL('../src/renderer/views/Tasks.tsx', import.meta.url), 'utf8');
+const main = await readFile(new URL('../src/main/main.ts', import.meta.url), 'utf8');
 
 assert.match(
   work,
@@ -29,7 +32,7 @@ assert.match(
 assert.match(
   settingsSchema,
   /maxOpenTasksPerGoal:\s*3/,
-  'Goal driver should request a bounded number of manager-owned tasks per pass',
+  'Goal driver should default to bounded goal starts per cycle',
 );
 assert.match(
   work,
@@ -42,4 +45,21 @@ assert.match(
   'Goal driver should document the single-producer ownership boundary',
 );
 assert.match(goalsView, /Live manager task progress for this goal/, 'Goals should show actual live manager progress instead of only lifetime task refs');
-assert.match(goalsView, /tasks\/run/, 'Goal driver control should describe the manager task request cap accurately');
+assert.match(goalsView, /starts\/cycle/, 'Goal driver control should describe its per-cycle coordination limit accurately');
+assert.match(goalsView, /last automated/, 'Goals should distinguish automation activity from local edit age');
+assert.match(
+  main,
+  /function kickGoalDriverAfterMutation[\s\S]*?goalDriver:syncNow[\s\S]*?^}/m,
+  'Saving a goal should sync the manager control state without force-running Autopilot',
+);
+assert.doesNotMatch(
+  main.match(/function kickGoalDriverAfterMutation[\s\S]*?^}/m)?.[0] ?? '',
+  /goalDriver:runOnce/,
+  'Saving a goal must not bypass the configured cadence',
+);
+assert.match(
+  tasksView,
+  /tab === 'goals'.*tab === 'learn'.*tab === 'schedule'.*tab === 'loops'.*tab === 'dream'/,
+  'The requested Work tabs should share one Active Learning status surface',
+);
+assert.match(workLearningStatus, /Goal autopilot[\s\S]*Learn queue[\s\S]*Recurring work[\s\S]*Brain maintenance/, 'The Work status surface should expose the coordinated automation lifecycle');

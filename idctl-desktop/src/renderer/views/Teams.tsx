@@ -14,6 +14,7 @@ import { TeamGraph, type GraphSelection } from './TeamGraph.tsx';
 import { Health } from './Health.tsx';
 import {
   getRuntimeCatalogSnapshot,
+  loadRuntimeCatalogSnapshot,
   primeRuntimeCatalogSnapshot,
   type ManagedRuntimeStatus,
   type RuntimeCatalogProvider as ProviderRow,
@@ -48,7 +49,6 @@ type HrBuildSkillCatalogCache = {
   skillCatalog: string[];
 };
 let hrBuildSkillCatalogCache: HrBuildSkillCatalogCache | null = null;
-const HR_RUNTIME_CATALOG_UI_CACHE_MS = 5 * 60_000;
 
 type GoalStatus = 'draft' | 'active' | 'done' | 'archived';
 type GoalPriority = 'primary' | 'secondary' | 'general';
@@ -910,9 +910,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   }
 
   // Catalogs for the Onboard modal (runtimes/models, library skills, providers).
-  const cachedRuntimeCatalog = getRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
-    maxAgeMs: HR_RUNTIME_CATALOG_UI_CACHE_MS,
-  });
+  const cachedRuntimeCatalog = getRuntimeCatalogSnapshot(hrRuntimeCatalogVersion);
   const [modelCatalog, setModelCatalog] = useState<Record<string, string[]>>(() => cachedRuntimeCatalog?.modelCatalog ?? {});
   const [skillCatalog, setSkillCatalog] = useState<string[]>(() => hrBuildSkillCatalogCache?.skillCatalog ?? []);
   const [providers, setProviders] = useState<ProviderRow[]>(() => cachedRuntimeCatalog?.providers ?? []);
@@ -922,21 +920,17 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   const refreshBuildRuntimeCatalog = useCallback(async (force = false) => {
     setRuntimeCatalogChecking(true);
     try {
-      const managedPromise = call<Record<string, ManagedRuntimeStatus>>(
-        'subs:assignmentStatus',
-        { force, maxAgeMs: force ? 0 : HR_RUNTIME_CATALOG_UI_CACHE_MS },
-      ).catch(() => ({}));
-      const models = await call<Record<string, string[]>>('runtime:probeLocal')
-        .catch(() => call<Record<string, string[]>>('runtime:models').catch(() => ({})));
-      const [providerRows, managed] = await Promise.all([
-        call<ProviderRow[]>('providers:list').catch(() => [] as ProviderRow[]),
-        managedPromise,
-      ]);
-      const nextCache = primeRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
-        modelCatalog: models,
-        providers: providerRows,
-        managedRuntimes: managed,
-      });
+      const nextCache = force
+        ? await Promise.all([
+            call<Record<string, string[]>>('runtime:probe'),
+            call<ProviderRow[]>('providers:list').catch(() => [] as ProviderRow[]),
+            call<Record<string, ManagedRuntimeStatus>>('subs:assignmentStatus', { force: true, maxAgeMs: 0 }).catch(() => ({})),
+          ]).then(([modelCatalog, providerRows, managedRuntimes]) => primeRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
+            modelCatalog,
+            providers: providerRows,
+            managedRuntimes,
+          }))
+        : await loadRuntimeCatalogSnapshot(hrRuntimeCatalogVersion);
       setModelCatalog(nextCache.modelCatalog);
       setProviders(nextCache.providers);
       setManagedRuntimes(nextCache.managedRuntimes);
@@ -947,13 +941,13 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
 
   useEffect(() => {
     if (tab !== 'build') return;
-    const cached = getRuntimeCatalogSnapshot(hrRuntimeCatalogVersion, {
-      maxAgeMs: HR_RUNTIME_CATALOG_UI_CACHE_MS,
-    });
+    const cached = getRuntimeCatalogSnapshot(hrRuntimeCatalogVersion);
     if (cached) {
       setModelCatalog(cached.modelCatalog);
       setProviders(cached.providers);
       setManagedRuntimes(cached.managedRuntimes);
+      setRuntimeCatalogChecking(false);
+      return;
     }
     let live = true;
     void refreshBuildRuntimeCatalog(false).catch(() => {

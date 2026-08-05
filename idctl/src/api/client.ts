@@ -1015,7 +1015,7 @@ export class ManagerClient {
   async applyAgentConfiguration(
     agentId: string,
     configuration: { runtime: string; model: string; effort?: string; speed?: string },
-    expected: { runtime?: string; model?: string; effort?: string; speed?: string; status?: string },
+    expected: { runtime?: string; model?: string; effort?: string; speed?: string },
     provider?: { name: string; kind?: string; baseUrl: string; apiKey?: string; keyEnv?: string },
     signal?: AbortSignal,
   ): Promise<{

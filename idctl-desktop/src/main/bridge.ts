@@ -61,7 +61,7 @@ import { headroomCoreAudit, headroomStatus } from './headroom.ts';
 import { contextBudgetDryRun, contextBudgetReport, loadRecentContextBudgetRecords, optimizeAskCommand, readContextBudgetRecord } from './contextBudget.ts';
 import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayOptions } from './contextReplay.ts';
 import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, fanOutObjectiveToActiveTeamLeads, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
-import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, syncGoalDriverConfig, type GoalDriverConfig } from './goaldriver.ts';
+import { normalizeGoalDriverConfig, readGoalDriverStatus, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, syncGoalDriverConfig, type GoalDriverConfig } from './goaldriver.ts';
 import { discoverClaudeCliModels } from './claudeModels.ts';
 import {
   processDraftProposalsOnce,
@@ -70,7 +70,6 @@ import {
   stopDraftDispatcherWork,
 } from './draftDispatcher.ts';
 import { buildOrgHierarchy, previewOrgSync, syncOrg, startOrgSyncLoop } from './orgSync.ts';
-import { createSingleFlightBackgroundGate } from './backgroundActivity.ts';
 import { inspectOllamaStarterToolModels } from './starterToolCapability.ts';
 import {
   handleRuntimeFreshnessRequest,
@@ -726,15 +725,19 @@ function compareVersions(a: string | undefined, b: string): number {
   return 0;
 }
 
+let cachedCodexCliVersion: string | null | undefined;
 function codexCliVersion(): string | undefined {
+  if (cachedCodexCliVersion !== undefined) return cachedCodexCliVersion ?? undefined;
   try {
-    return execFileSync('codex', ['--version'], {
+    cachedCodexCliVersion = execFileSync('codex', ['--version'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 3000,
       env: cliEnv(),
     }).trim();
+    return cachedCodexCliVersion;
   } catch {
+    cachedCodexCliVersion = null;
     return undefined;
   }
 }
@@ -749,17 +752,52 @@ function filterCodexModelsForInstalledCli(models: string[], cachedModels: string
   return models.filter((model) => !CODEX_GPT56_RE.test(model));
 }
 
+function savedCliModelInfo(runtime: CliModelRuntime): CliModelCacheEntry | undefined {
+  const saved = loadSettings().runtimeModelCache?.[runtime];
+  if (!saved || !Number.isFinite(saved.at) || !Array.isArray(saved.models)) return undefined;
+  return {
+    at: saved.at,
+    models: Array.from(new Set(saved.models.map(String).map((model) => model.trim()).filter(Boolean))),
+  };
+}
+
+function saveCliModelInfo(runtime: CliModelRuntime, entry: CliModelCacheEntry): void {
+  const settings = loadSettings();
+  settings.runtimeModelCache = {
+    ...(settings.runtimeModelCache ?? {}),
+    [runtime]: entry,
+  };
+  saveSettings(settings);
+}
+
 function cachedCliModels(runtime: CliModelRuntime, refresh: boolean, load: () => string[]): string[] {
-  const cached = cliModelCache.get(runtime);
-  if (cached && !refresh) return cached.models;
+  const memory = cliModelCache.get(runtime);
+  if (memory && !refresh) return memory.models;
+  const saved = savedCliModelInfo(runtime);
+  if (saved && !refresh) {
+    cliModelCache.set(runtime, saved);
+    return saved.models;
+  }
+  const fallback = memory ?? saved;
   try {
-    const models = load();
-    cliModelCache.set(runtime, { at: Date.now(), models });
-    return models;
+    const models = Array.from(new Set(load().map((model) => model.trim()).filter(Boolean)));
+    if (!models.length && fallback?.models.length) {
+      cliModelCache.set(runtime, fallback);
+      return fallback.models;
+    }
+    const next = { at: Date.now(), models };
+    cliModelCache.set(runtime, next);
+    saveCliModelInfo(runtime, next);
+    return next.models;
   } catch {
-    if (cached) return cached.models;
-    cliModelCache.set(runtime, { at: Date.now(), models: [] });
-    return [];
+    if (fallback) {
+      cliModelCache.set(runtime, fallback);
+      return fallback.models;
+    }
+    const empty = { at: Date.now(), models: [] };
+    cliModelCache.set(runtime, empty);
+    saveCliModelInfo(runtime, empty);
+    return empty.models;
   }
 }
 
@@ -1004,38 +1042,6 @@ async function probeAllRuntimes(): Promise<Record<string, string[]>> {
           });
         } catch {
           /* leave the provider's last sync as-is on probe failure */
-        }
-      }),
-  );
-  return runtimeCatalogWithLiveCliModels({ refreshCli: true });
-}
-
-/**
- * Keep background catalogs current without opening the operating-system
- * credential store merely because IDACC restarted. Encrypted providers join
- * the background refresh set after this process has already unlocked them for
- * an explicit provider action or an active provider-agent restoration.
- */
-async function probeBackgroundRuntimes(): Promise<Record<string, string[]>> {
-  const providers = loadSettings().providers;
-  await Promise.all(
-    providers
-      .filter((provider) => (
-        provider.enabled !== false
-        && backgroundProviderProbeAllowed(provider)
-      ))
-      .map(async (provider) => {
-        try {
-          const outcome = await probeConfiguredProvider(provider);
-          recordProviderSync(provider.name, {
-            at: Date.now(),
-            status: outcome.status,
-            modelCount: outcome.models.length,
-            models: outcome.models.slice(0, 200).map((model) => model.id),
-            keySource: keySourceOf(provider),
-          });
-        } catch {
-          // Preserve the last known-good catalog until an explicit reconnect.
         }
       }),
   );
@@ -1296,7 +1302,7 @@ async function setAgentRuntimeFromSettings(agentId: string, runtime: string, tea
 async function applyAgentConfigurationFromSettings(
   agentId: string,
   configuration: { runtime: string; model: string; effort?: string; speed?: string },
-  expected: { runtime?: string; model?: string; effort?: string; speed?: string; status?: string },
+  expected: { runtime?: string; model?: string; effort?: string; speed?: string },
   team?: string,
 ) {
   const scoped = team ? client.withTeam(String(team)) : client;
@@ -2242,6 +2248,12 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     await syncGoalDriverConfig(client, next);
     return next;
   },
+  'goalDriver:getStatus': async () => readGoalDriverStatus(client, goalDriverConfig()),
+  'goalDriver:syncNow': async () => {
+    const config = goalDriverConfig();
+    await syncGoalDriverConfig(client, config);
+    return readGoalDriverStatus(client, config);
+  },
   'goalDriver:runOnce': async () => runGoalDriverOnce(() => client, goalDriverConfig()),
   'goals:syncInstructions': async () => {
     const goalSync = await syncActiveWorkGoalInstructions(client);
@@ -2386,7 +2398,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   applyAgentConfiguration: (
     id: string,
     configuration: { runtime: string; model: string; effort?: string; speed?: string },
-    expected: { runtime?: string; model?: string; effort?: string; speed?: string; status?: string },
+    expected: { runtime?: string; model?: string; effort?: string; speed?: string },
     team?: string,
   ) => applyAgentConfigurationFromSettings(
     String(id),
@@ -3047,36 +3059,3 @@ export function startDraftDispatcher(): () => Promise<void> {
 }
 
 export { resetDraftDispatcherWork, stopDraftDispatcherWork };
-
-/**
- * Background model refresh. Local loopback lanes are cheap to check and can appear or
- * disappear during a session, so refresh them frequently. Cloud/API catalogs change less
- * often and stay on a wider cadence. Every successful pass clears the read cache and notifies
- * the shell so mounted runtime pickers update without an operator pressing Refresh.
- */
-export function startModelRefreshLoop(onRefresh: (scope: 'local' | 'all') => void = () => {}): () => Promise<void> {
-  const gate = createSingleFlightBackgroundGate();
-  const tick = (scope: 'local' | 'all'): Promise<void> => gate.run(async () => {
-    try {
-      if (scope === 'local') await probeLocalRuntimes();
-      else await probeBackgroundRuntimes();
-      if (gate.isStopped()) return;
-      readCallCache.clear();
-      onRefresh(scope);
-    } catch {
-      // Preserve the last known-good catalog. The next bounded pass retries.
-    }
-  });
-  const first = setTimeout(() => void tick('all'), 10_000);
-  const local = setInterval(() => void tick('local'), 2 * 60 * 1000);
-  const all = setInterval(() => void tick('all'), 30 * 60 * 1000);
-  first.unref?.();
-  local.unref?.();
-  all.unref?.();
-  return () => {
-    clearTimeout(first);
-    clearInterval(local);
-    clearInterval(all);
-    return gate.stop();
-  };
-}

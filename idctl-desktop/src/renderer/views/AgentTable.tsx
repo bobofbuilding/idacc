@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { call, agentsLeadFirst, useSyncVersion, type FleetStore, type TeamAgent } from '../store.ts';
 import { statusClass } from '../agentStatus.ts';
 import type { RuntimeCooldown } from '../../../../idctl/src/api/client.ts';
@@ -26,9 +26,6 @@ type RuntimeCooldownCache = {
   rows: RuntimeCooldown[];
 };
 let runtimeCooldownCache: RuntimeCooldownCache | null = null;
-const RUNTIME_DETAILS_HOLD_MS = 5 * 60_000;
-const RUNTIME_CATALOG_UI_CACHE_MS = 5 * 60_000;
-
 type AgentConfigState = { runtime?: string; model?: string; effort: string; speed: string };
 type RuntimeRateLimitMeta = { laneId?: string; coolingUntilMs?: number; reason?: string; observedAtMs?: number; queryId?: string; resetText?: string; message?: string };
 type RuntimeFailoverMeta = { fromLaneId?: string; toLaneId?: string; queryId?: string; observedAtMs?: number };
@@ -37,13 +34,12 @@ interface AgentConfigDraft {
   id: string;
   name: string;
   team: string;
-  status: string;
   baseline: AgentConfigState;
   next: AgentConfigState;
 }
 const DEFAULT_BACKBONE_AGENTS = new Set(['lead', 'coder', 'researcher']);
 const SOURCE_LABEL: Record<RuntimeFreshness['source'], string> = {
-  'claude-cli': 'Claude CLI config/cache', 'codex-cache': 'codex CLI cache', 'grok-cli': 'grok CLI models', 'antigravity-cli': 'Antigravity CLI models', provider: 'live provider sync', curated: 'built-in defaults', none: 'no models',
+  'claude-cli': 'Claude cache', 'codex-cache': 'Codex cache', 'grok-cli': 'Grok cache', 'antigravity-cli': 'Antigravity cache', provider: 'saved provider catalog', curated: 'built-in defaults', none: 'no models',
 };
 const KIND_LABEL: Record<RuntimeModelLaneKind | 'harness', string> = {
   harness: 'harness',
@@ -217,7 +213,7 @@ function cooldownTitle(row: RuntimeCooldown): string {
   return [cooldownLabel(row), row.resetText ? `reset: ${row.resetText}` : '', row.message ?? ''].filter(Boolean).join('\n');
 }
 
-export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: FleetStore; onProbe?: (a: TeamAgent) => void; probeBusy?: string | null; navigate?: (view: string) => void }) {
+export function AgentTable({ store, onProbe, probeBusy }: { store: FleetStore; onProbe?: (a: TeamAgent) => void; probeBusy?: string | null; navigate?: (view: string) => void }) {
   const cols = onProbe ? 9 : 8;
   const hierarchyVersion = useSyncVersion(['org', 'agents']);
   const [selected, setSelected] = useState<string | null>(null);
@@ -231,16 +227,11 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   const [freshness, setFreshness] = useState<RuntimeFreshness[]>(() => initialRuntimeCatalog?.freshness ?? []);
   const [runtimeCooldowns, setRuntimeCooldowns] = useState<RuntimeCooldown[]>(() => runtimeCooldownCache?.rows ?? []);
   const [showModels, setShowModels] = useState(false);
-  const [runtimeDetailsRequested, setRuntimeDetailsRequested] = useState(false);
-  const [runtimeCatalogClock, setRuntimeCatalogClock] = useState(0);
   const [configDrafts, setConfigDrafts] = useState<Record<string, AgentConfigDraft>>({});
-  const autoRecommendedAgentKeys = useRef(new Set<string>());
+  const [configNotice, setConfigNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const configDraftList = Object.values(configDrafts);
-  const runtimeDetailsPinned = showModels || configDraftList.length > 0;
-  const hasUnsetModels = (store.viewAll ? store.allAgents : store.agents).some((agent) => Boolean(runtimeOf(agent)) && !agent.model);
-  const runtimeDetailsActive = runtimeDetailsRequested || runtimeDetailsPinned || hasUnsetModels;
   const runtimeCooldownActive = showModels;
-  const runtimeCatalogVersion = useSyncVersion(runtimeDetailsActive ? ['runtime-catalog'] : []);
+  const runtimeCatalogVersion = useSyncVersion(['runtime-catalog']);
   const runtimeCooldownVersion = useSyncVersion(runtimeCooldownActive ? ['agents'] : []);
   const viewAll = store.viewAll;
   const orderedAgents = useMemo(() => agentsLeadFirst(store.agents, store.coordinator), [store.agents, store.coordinator]);
@@ -296,43 +287,8 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   const groupRuntimeOpts = (runtimes: string[], group: ReturnType<typeof runtimePickerGroup>) =>
     runtimes.filter((rt) => runtimePickerGroup(rt) === group);
 
-  function requestRuntimeDetails() {
-    setRuntimeDetailsRequested(true);
-  }
-
   useEffect(() => {
-    if (!runtimeDetailsRequested || runtimeDetailsPinned) return undefined;
-    const t = setTimeout(() => setRuntimeDetailsRequested(false), RUNTIME_DETAILS_HOLD_MS);
-    return () => clearTimeout(t);
-  }, [runtimeDetailsRequested, runtimeDetailsPinned]);
-
-  useEffect(() => {
-    if (!runtimeDetailsActive) return undefined;
-    let lastLocalProbeAt = 0;
-    const refresh = (probeLocal = false) => {
-      setRuntimeCatalogClock((clock) => clock + 1);
-      if (!probeLocal || Date.now() - lastLocalProbeAt < 30_000) return;
-      lastLocalProbeAt = Date.now();
-      void call<Record<string, string[]>>('runtime:probeLocal')
-        .then((models) => setCatalog(models))
-        .catch(() => {});
-    };
-    const onFocus = () => refresh(true);
-    const onVisible = () => { if (!document.hidden) refresh(true); };
-    const timer = window.setInterval(refresh, RUNTIME_CATALOG_UI_CACHE_MS);
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [runtimeDetailsActive]);
-
-  useEffect(() => {
-    if (!runtimeDetailsActive) return;
     const cached = getRuntimeCatalogSnapshot(runtimeCatalogVersion, {
-      maxAgeMs: RUNTIME_CATALOG_UI_CACHE_MS,
       freshness: true,
     });
     if (cached?.freshness) {
@@ -346,7 +302,6 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     const load = async () => {
       const next = await loadRuntimeCatalogSnapshot(runtimeCatalogVersion, {
         freshness: true,
-        maxAgeMs: RUNTIME_CATALOG_UI_CACHE_MS,
       });
       if (!live) return;
       setCatalog(next.modelCatalog);
@@ -356,7 +311,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     };
     void load();
     return () => { live = false; };
-  }, [runtimeCatalogVersion, runtimeDetailsActive, runtimeCatalogClock]);
+  }, [runtimeCatalogVersion]);
 
   useEffect(() => {
     if (!runtimeCooldownActive) {
@@ -461,9 +416,10 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
       const next = { ...(prev[key]?.next ?? baseline), ...partial };
       const out = { ...prev };
       if (sameConfig(baseline, next)) delete out[key];
-      else out[key] = { key, id: a.id, name: a.name, team: teamFor(a), status: a.status, baseline, next };
+      else out[key] = { key, id: a.id, name: a.name, team: teamFor(a), baseline, next };
       return out;
     });
+    setConfigNotice(null);
   }
   function stageRuntime(a: TeamAgent, runtime: string) {
     if (!runtime) return;
@@ -482,31 +438,11 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
       const next = { ...current, runtime, model, effort, speed };
       const out = { ...prev };
       if (sameConfig(baseline, next)) delete out[key];
-      else out[key] = { key, id: a.id, name: a.name, team: teamFor(a), status: a.status, baseline, next };
+      else out[key] = { key, id: a.id, name: a.name, team: teamFor(a), baseline, next };
       return out;
     });
+    setConfigNotice(null);
   }
-
-  useEffect(() => {
-    if (!Object.keys(catalog).length) return;
-    setConfigDrafts((prev) => {
-      let changed = false;
-      const out = { ...prev };
-      for (const agent of shown) {
-        if (agent.model) continue;
-        const key = draftKeyFor(agent);
-        if (autoRecommendedAgentKeys.current.has(key)) continue;
-        const model = roleModelFor(agent);
-        if (!model) continue;
-        autoRecommendedAgentKeys.current.add(key);
-        const baseline = out[key]?.baseline ?? configOf(agent);
-        const next = { ...(out[key]?.next ?? baseline), model };
-        out[key] = { key, id: agent.id, name: agent.name, team: teamFor(agent), status: agent.status, baseline, next };
-        changed = true;
-      }
-      return changed ? out : prev;
-    });
-  }, [catalog, coords, shown]);
   async function applyConfigDrafts() {
     const drafts = Object.values(configDrafts);
     if (!drafts.length) return;
@@ -517,25 +453,20 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         if (!current) return [`${d.team}/${d.name}: agent is no longer visible in the fleet snapshot`];
         const reasons = configChanges(d.baseline, configOf(current)).map(([field, before, after]) => `${field} changed from ${displayValue(before)} to ${displayValue(after)}`);
         if (current.name !== d.name) reasons.push(`name changed from ${d.name} to ${current.name}`);
-        if (current.status !== d.status) reasons.push(`status changed from ${d.status} to ${current.status}`);
         return reasons.length ? [`${d.team}/${d.name}: ${reasons.join('; ')}`] : [];
       });
     };
     const freshList = await freshFleetAgents();
     if (!freshList) {
-      window.alert('Could not verify the current fleet before applying Health config. Refresh and try again.');
+      setConfigNotice({ kind: 'error', text: 'Could not verify the current fleet. Refresh the fleet and try again.' });
       return;
     }
     const staleRows = staleRowsFor(freshList);
     if (staleRows.length) {
-      window.alert([
-        'Staged Health config is stale.',
-        '',
-        ...staleRows.slice(0, 8).map((row) => `- ${row}`),
-        staleRows.length > 8 ? `- +${staleRows.length - 8} more` : '',
-        '',
-        'Discard and re-stage from the current fleet snapshot before applying.',
-      ].filter(Boolean).join('\n'));
+      setConfigNotice({
+        kind: 'error',
+        text: `Configuration changed elsewhere: ${staleRows.slice(0, 3).join(' · ')}${staleRows.length > 3 ? ` · +${staleRows.length - 3} more` : ''}. Review the refreshed rows and try again.`,
+      });
       store.refresh();
       return;
     }
@@ -546,15 +477,17 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     }
     const usesFastMode = drafts.some((d) => d.next.speed === 'fast');
     if (!window.confirm([
-      'Apply staged Health config changes?',
+      `Apply changes to ${drafts.length} agent${drafts.length === 1 ? '' : 's'}?`,
       '',
       ...summaries.slice(0, 14).map((row) => `- ${row}`),
       summaries.length > 14 ? `- +${summaries.length - 14} more` : '',
       ...(usesFastMode ? ['', `Fast mode notice: ${CLAUDE_FAST_MODE_NOTICE}`] : []),
       '',
-      'This writes manager config and rebuilds each touched agent once so the new runtime settings are picked up.',
+      'Running agents restart once to pick up the new harness and model. Stopped agents keep their stopped state.',
     ].filter(Boolean).join('\n'))) return;
-    setBusy('apply config changes');
+    setBusy(`applying ${drafts.length} agent change${drafts.length === 1 ? '' : 's'}`);
+    setConfigNotice(null);
+    const appliedKeys: string[] = [];
     try {
       for (const d of drafts) {
         if (!d.next.runtime || !d.next.model) {
@@ -570,15 +503,28 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
           model: d.baseline.model ?? '',
           effort: d.baseline.effort ?? '',
           speed: d.baseline.speed ?? '',
-          status: d.status ?? '',
         }, d.team);
+        appliedKeys.push(d.key);
       }
       setConfigDrafts({});
+      setConfigNotice({ kind: 'ok', text: `Applied ${drafts.length} agent change${drafts.length === 1 ? '' : 's'}.` });
       store.refresh();
-      setBusy(null);
     } catch (err) {
-      setBusy(`config apply failed — ${err instanceof Error ? err.message : String(err)}`);
-      setTimeout(() => setBusy(null), 5000);
+      if (appliedKeys.length) {
+        const applied = new Set(appliedKeys);
+        setConfigDrafts((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => !applied.has(key))));
+      }
+      const detail = err instanceof Error ? err.message : String(err);
+      const conflict = /\b409\b|agent_configuration_changed/i.test(detail);
+      setConfigNotice({
+        kind: 'error',
+        text: conflict
+          ? `${appliedKeys.length ? `${appliedKeys.length} applied; ` : ''}one agent changed while this was being saved. Nothing was overwritten. Review the remaining change${drafts.length - appliedKeys.length === 1 ? '' : 's'} and try again.`
+          : `${appliedKeys.length ? `${appliedKeys.length} applied; ` : ''}${detail}`,
+      });
+      store.refresh();
+    } finally {
+      setBusy(null);
     }
   }
   function confirmAgentChange(
@@ -602,26 +548,28 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
     return window.confirm(`${label} for ${team}/${a.name}?\n\n${detail}\n\n${state}${diff}${impact}${active}`);
   }
   async function probeRuntimes() {
-    setBusy('probe runtimes');
+    setBusy('refreshing models');
     try {
-      const [nextCatalog, nextManaged, nextFreshness] = await Promise.all([
-        call<Record<string, string[]>>('runtime:probeLocal'),
+      const nextCatalog = await call<Record<string, string[]>>('runtime:probe');
+      const [nextProviders, nextManaged] = await Promise.all([
+        call<ProviderRow[]>('providers:list').catch(() => providers),
         call<Record<string, ManagedRuntimeStatus>>('subs:status', true).catch(() => managedRuntimes),
-        call<RuntimeFreshness[]>('runtime:freshness').catch(() => freshness),
       ]);
+      const nextFreshness = await call<RuntimeFreshness[]>('runtime:freshness').catch(() => freshness);
       setCatalog(nextCatalog);
+      setProviders(nextProviders);
       setManagedRuntimes(nextManaged);
       setFreshness(nextFreshness);
       primeRuntimeCatalogSnapshot(runtimeCatalogVersion, {
         modelCatalog: nextCatalog,
-        providers,
+        providers: nextProviders,
         managedRuntimes: nextManaged,
         freshness: nextFreshness,
       });
-      requestRuntimeDetails();
       setShowModels(true);
+      setConfigNotice({ kind: 'ok', text: 'Model catalog refreshed and cached.' });
     }
-    catch (err) { window.alert(`probe failed: ${err instanceof Error ? err.message : String(err)}`); }
+    catch (err) { setConfigNotice({ kind: 'error', text: `Model refresh failed: ${err instanceof Error ? err.message : String(err)}` }); }
     finally { setBusy(null); }
   }
   async function run(label: string, cmd: string, team?: string) {
@@ -745,7 +693,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
         <td><span className={`dot ${statusClass(a)}`} /> {a.status}</td>
         <td onClick={(e) => e.stopPropagation()}>
           {isLocal ? (
-            <select className="cell-select" value={displayRuntime ?? ''} onFocus={requestRuntimeDetails} onChange={(e) => stageRuntime(a, e.target.value)}
+            <select className="cell-select" value={displayRuntime ?? ''} onChange={(e) => stageRuntime(a, e.target.value)}
               title="Settings-available subscription CLIs, synced local provider lanes, and synced API provider lanes are selectable.">
               {currentProviderLane ? <option value={currentProviderLane}>{runtimeLabel(currentProviderLane)} (current model lane)</option> : null}
               {subscriptionRuntimeOpts.length ? (
@@ -800,7 +748,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
           {cooling ? <span className="warn-text" title={cooldown ? cooldownTitle(cooldown) : 'runtime rate limit cooling'} style={{ marginLeft: 4, cursor: 'help' }}>⚠</span> : null}
         </td>
         <td onClick={(e) => e.stopPropagation()}>
-          <select className={`cell-select${mismatch ? ' mismatch' : ''}`} value={displayModel ?? ''} onFocus={requestRuntimeDetails} onChange={(e) => stageConfig(a, { model: e.target.value })} title={mismatch ?? undefined}>
+          <select className={`cell-select${mismatch ? ' mismatch' : ''}`} value={displayModel ?? ''} onChange={(e) => stageConfig(a, { model: e.target.value })} title={mismatch ?? undefined}>
             {!displayModel ? <option value="" disabled={modelDrift}>{modelDrift ? 'choose model' : '(default model)'}</option> : null}
             {modelOpts.map((m) => <option key={m} value={m}>{short(m)}</option>)}
           </select>
@@ -869,16 +817,20 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
               runtime cooldowns {coolingRows.length}
             </span>
           ) : null}
-          <button className="btn small" onClick={() => { requestRuntimeDetails(); setShowModels((v) => !v); }} title="Show automatically refreshed execution harness and provider model lanes, their source, and last check time">
-            {showModels ? 'Hide model lanes' : `Model lanes${visibleFreshness.length ? ` (${visibleFreshness.length})` : ''} · auto`}
+          <button className="btn small" onClick={() => setShowModels((v) => !v)} title="Show the cached harness and provider model catalog">
+            {showModels ? 'Hide models' : `Models${visibleFreshness.length ? ` (${visibleFreshness.length})` : ''}`}
           </button>
-          {navigate ? <button className="btn small" onClick={() => navigate('teams:route')} title="Change team coordinators and primary routing in HR Manager Manage → Hierarchy & sync">Open HR Manage</button> : null}
-          <button className="btn" disabled={!!busy} onClick={() => void probeRuntimes()} title="Optional immediate refresh. Model lanes already refresh in the background, on focus, and when Settings changes.">Refresh now</button>
         </div>
         {showModels ? (
           <div className="card model-lanes-panel">
-            <div className="muted small" style={{ marginBottom: 4 }}>
-              Subscription CLIs, local provider lanes, and API provider lanes. Re-check refreshes live lists and CLI account/config caches; built-in defaults are used only when no runtime signal exists.
+            <div className="model-lanes-toolbar">
+              <div>
+                <b>Cached model catalog</b>
+                <div className="muted small">Used for every runtime and model picker. It changes only after a manual refresh or a Settings change.</div>
+              </div>
+              <button className="btn small" disabled={!!busy} onClick={() => void probeRuntimes()} title="Explicitly re-check configured runtimes and replace the saved model catalog">
+                Refresh models
+              </button>
             </div>
             {visibleFreshness.length ? (
               <div className="model-lanes-grid">
@@ -886,7 +838,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
                 <div className="model-lanes-head">type</div>
                 <div className="model-lanes-head">models</div>
                 <div className="model-lanes-head">source</div>
-                <div className="model-lanes-head">checked</div>
+                <div className="model-lanes-head">updated</div>
                 {visibleFreshness.map((f) => {
                   const kind = f.kind ?? 'harness';
                   const unavailableHarness = kind === 'harness' && f.selectable === false;
@@ -905,7 +857,7 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
                         title={f.detail ?? (f.source === 'curated' ? 'No live model-list signal is available for this runtime. IDACC is showing built-in default models until the runtime or provider exposes a live list.' : SOURCE_LABEL[f.source])}>
                         {sourceText}
                       </span>
-                      <span className="muted small model-lane-checked">{f.lastCheckedMs ? `checked ${agoMs(f.lastCheckedMs)}` : f.source === 'curated' ? 'built-in' : '—'}</span>
+                      <span className="muted small model-lane-checked">{f.lastCheckedMs ? agoMs(f.lastCheckedMs) : f.source === 'curated' ? 'built-in' : '—'}</span>
                     </div>
                   );
                 })}
@@ -914,12 +866,17 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
             {freshness.length === 0 ? <div className="muted small">Loading model freshness…</div> : visibleFreshness.length === 0 ? <div className="muted small">No Settings-available harnesses or provider model lanes yet.</div> : null}
           </div>
         ) : null}
+        {configNotice ? (
+          <div className={`agent-config-notice ${configNotice.kind === 'error' ? 'status-error' : 'ok-text'}`} role="status">
+            {configNotice.text}
+          </div>
+        ) : null}
         {configDraftList.length ? (
           <div className="agent-config-draft">
-            <b>{configDraftList.length} staged config change{configDraftList.length === 1 ? '' : 's'}</b>
-            <span className="muted small">Empty models are staged with a role-fit recommendation. Apply reviews the full diff, blocks stale rows, and rebuilds each touched agent once.</span>
+            <b>{configDraftList.length} agent{configDraftList.length === 1 ? '' : 's'} changed</b>
+            <span className="muted small">Review and apply when ready. Running agents restart once; model discovery never creates changes.</span>
             <span className="grow" />
-            <button className="btn small" disabled={!!busy} onClick={() => setConfigDrafts({})}>Discard</button>
+            <button className="btn small" disabled={!!busy} onClick={() => { setConfigDrafts({}); setConfigNotice(null); }}>Discard</button>
             <button className="btn primary small" disabled={!!busy} onClick={() => void applyConfigDrafts()}>Apply changes</button>
           </div>
         ) : null}

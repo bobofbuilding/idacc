@@ -509,7 +509,7 @@ function LinkedDescription({ text }: { text?: string | null }) {
     if (match.index > last) parts.push(<Fragment key={`t-${last}`}>{text.slice(last, match.index)}</Fragment>);
     const [, label, href] = match;
     const url = new URL(href);
-    const brainTab = url.port === '4200' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost')
+    const brainTab = (url.hostname === '127.0.0.1' || url.hostname === 'localhost')
       ? brainDashboardTabForPath(url.pathname)
       : null;
     parts.push(brainTab ? (

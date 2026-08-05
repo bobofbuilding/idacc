@@ -202,7 +202,7 @@ async function setAgentRuntimeFromSettings(agentId: string, runtime: string, sel
 async function applyAgentConfigurationFromSettings(
   agentId: string,
   configuration: { runtime: string; model: string; effort?: string; speed?: string },
-  expected: { runtime?: string; model?: string; effort?: string; speed?: string; status?: string },
+  expected: { runtime?: string; model?: string; effort?: string; speed?: string },
   selectedTeam?: string,
 ) {
   const providerName = providerLaneName(configuration.runtime);
@@ -915,7 +915,7 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   applyAgentConfiguration: (
     id: string,
     configuration: { runtime: string; model: string; effort?: string; speed?: string },
-    expected: { runtime?: string; model?: string; effort?: string; speed?: string; status?: string },
+    expected: { runtime?: string; model?: string; effort?: string; speed?: string },
     selectedTeam?: string,
   ) => applyAgentConfigurationFromSettings(
     String(id),

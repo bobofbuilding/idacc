@@ -10,6 +10,7 @@ import { Plans } from './Plans.tsx';
 import { Dream } from './Dream.tsx';
 import { Goals } from './Goals.tsx';
 import { Learn } from './Learn.tsx';
+import { WorkLearningStatus } from './WorkLearningStatus.tsx';
 
 // Auto-decompose IPC shapes (mirror main/work.ts).
 type SubTask = { title: string; description: string; agent: string; dependsOn: number[] };
@@ -269,6 +270,7 @@ export function Tasks({ store, initialTab }: { store: FleetStore; initialTab?: T
     } catch { return 'plans'; }
   });
   function pick(t: Tab) { setTab(t); try { localStorage.setItem('idctl.tasks.tab', t); } catch { /* ignore */ } }
+  const showsLearningStatus = tab === 'goals' || tab === 'learn' || tab === 'schedule' || tab === 'loops' || tab === 'dream';
 
   return (
     <div className="view">
@@ -278,6 +280,7 @@ export function Tasks({ store, initialTab }: { store: FleetStore; initialTab?: T
           <button key={t.id} className={`tab${tab === t.id ? ' active' : ''}`} onClick={() => pick(t.id)}>{t.label}</button>
         ))}
       </div>
+      {showsLearningStatus ? <WorkLearningStatus /> : null}
       {tab === 'tasks' ? <TasksPanel store={store} /> : null}
       {tab === 'goals' ? <Goals store={store} /> : null}
       {tab === 'plans' ? <Plans store={store} /> : null}

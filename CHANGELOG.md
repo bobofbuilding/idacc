@@ -8,6 +8,13 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.706] — 2026-08-05
+### What changed
+- Unify Work automation with Brain Active Learning and bounded goal-cycle status.
+- Fix oversized Brain skill-catalog health reads and link Settings to the Brain dashboard.
+- Make runtime/model changes conflict-safe with a durable cache, and report updater channel mismatches accurately.
+- Pin Manager v0.1.167 to deduplicate legacy goal rows and enforce per-cycle task limits.
+
 ## [0.1.705] — 2026-08-05
 ### What changed
 - Route explicit General Council requests directly to legal counsel, preserve bounded parallel lead intake, and include the corrected Manager verification pin.

@@ -234,6 +234,7 @@ const MCP_CONNECTION_ENV_PREFIX = 'IDACC_MCP_CONNECTION_';
 let managerMcpConnectionEnvironment: Record<string, string> = {};
 const HEALTH_TIMEOUT_MS = 1_500;
 const MAX_HEALTH_BODY_BYTES = 64 * 1024;
+const MAX_SKILL_CATALOG_BODY_BYTES = 1024 * 1024;
 const HEALTH_INTERVAL_MS = 5_000;
 const INITIAL_HEALTH_DELAY_MS = 500;
 // A recovered consumer profile can contain dozens of locally managed agents.
@@ -1212,7 +1213,7 @@ async function probeBrainSkillCatalog(): Promise<void> {
   if (brainCatalogState.healthy && Date.now() - brainCatalogLastCheckedAt < 60_000) return;
   brainCatalogLastCheckedAt = Date.now();
   try {
-    const response = await fetch(`${brain.spec.url}/skills/index?limit=200`, {
+    const response = await fetch(`${brain.spec.url}/skills/index?q=brain&limit=25`, {
       redirect: 'error',
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS * 2),
       headers: {
@@ -1221,7 +1222,10 @@ async function probeBrainSkillCatalog(): Promise<void> {
       },
     });
     if (!response.ok) throw new Error(`skill catalog returned HTTP ${response.status}`);
-    const payload = await readBoundedJson(response) as {
+    const payload = await readBoundedJson(response, {
+      label: 'skill catalog',
+      maxBytes: MAX_SKILL_CATALOG_BODY_BYTES,
+    }) as {
       data?: { nodes?: Array<{ name?: string; skillId?: string }>; summary?: { idaccCatalogSkills?: number } };
       meta?: { source?: { authority?: string; idaccLibraryRows?: number } };
     };
@@ -1290,8 +1294,11 @@ async function startBrainCompanionsIfReady(): Promise<void> {
   return companionStartPromise;
 }
 
-async function readBoundedJson(response: Response): Promise<unknown> {
-  if (!response.body) throw new Error('health response did not contain a body');
+async function readBoundedJson(
+  response: Response,
+  { label, maxBytes }: { label: string; maxBytes: number },
+): Promise<unknown> {
+  if (!response.body) throw new Error(`${label} response did not contain a body`);
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -1300,9 +1307,9 @@ async function readBoundedJson(response: Response): Promise<unknown> {
     if (done) break;
     if (!value) continue;
     total += value.byteLength;
-    if (total > MAX_HEALTH_BODY_BYTES) {
+    if (total > maxBytes) {
       await reader.cancel();
-      throw new Error('health response exceeded the size limit');
+      throw new Error(`${label} response exceeded the size limit`);
     }
     chunks.push(value);
   }
@@ -1323,7 +1330,10 @@ async function probeHealth(service: ManagedService): Promise<HealthValidation> {
     if (!response.ok) return failedHealth(`health endpoint returned HTTP ${response.status}`);
     const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
     if (!contentType.includes('json')) return failedHealth('health endpoint did not return JSON');
-    const payload = await readBoundedJson(response);
+    const payload = await readBoundedJson(response, {
+      label: 'health',
+      maxBytes: MAX_HEALTH_BODY_BYTES,
+    });
     return validateServiceHealth(service.spec.name, payload, {
       expectedVersion: service.spec.expectedVersion,
       expectedServiceId: service.spec.serviceId,
@@ -1367,7 +1377,10 @@ async function probeManagerCompatibility(force = false): Promise<ManagerCompatib
     if (!response.ok) throw new Error(`capabilities endpoint returned HTTP ${response.status}`);
     const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
     if (!contentType.includes('json')) throw new Error('capabilities endpoint did not return JSON');
-    const capabilities = await readBoundedJson(response) as ControlCenterCapabilities;
+    const capabilities = await readBoundedJson(response, {
+      label: 'Manager capabilities',
+      maxBytes: MAX_HEALTH_BODY_BYTES,
+    }) as ControlCenterCapabilities;
     const compatibility = evaluateControlCenterCapabilities(capabilities, { exactSurface: true });
     managerCompatibilityState = {
       ...compatibility,

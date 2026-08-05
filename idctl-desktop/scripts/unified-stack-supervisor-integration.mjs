@@ -388,6 +388,7 @@ const server = createServer(async (req, res) => {
       data: {
         nodes,
         summary: { idaccCatalogSkills: nodes.length },
+        diagnosticPadding: 'x'.repeat(70 * 1024),
       },
       meta: {
         source: {

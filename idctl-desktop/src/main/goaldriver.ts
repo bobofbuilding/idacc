@@ -27,6 +27,28 @@ export interface GoalDriverSummary {
   errors: string[];
 }
 
+export interface GoalDriverRuntimeState {
+  lastStartedAt?: number;
+  lastCompletedAt?: number;
+  lastError?: string | null;
+    lastResult?: {
+      ok?: boolean;
+      consideredGoals?: number;
+      drivenGoals?: number;
+      tasksSpawned?: number;
+      errorCount?: number;
+    };
+}
+
+export interface GoalDriverStatus {
+  config: GoalDriverConfig;
+  managerConfig: GoalDriverConfig | null;
+  synced: boolean;
+  runtime: GoalDriverRuntimeState | null;
+  lastRunAt: number | null;
+  nextRunAt: number | null;
+}
+
 interface ManagerGoalAutopilotSyncResult {
   consideredGoals?: number;
   drivenGoals?: number;
@@ -65,6 +87,58 @@ export function goalDriverControlValue(input?: Partial<GoalDriverConfig> | null)
     enabled: config.enabled,
     cadenceMs: config.cadenceMs,
     maxTasksPerRun: config.maxOpenTasksPerGoal,
+  };
+}
+
+function goalDriverConfigFromControlState(
+  value: Record<string, unknown> | null | undefined,
+): GoalDriverConfig | null {
+  if (!value) return null;
+  return normalizeGoalDriverConfig({
+    enabled: typeof value.enabled === 'boolean' ? value.enabled : undefined,
+    cadenceMs: Number(value.cadenceMs),
+    maxOpenTasksPerGoal: Number(value.maxTasksPerRun),
+  });
+}
+
+function goalDriverConfigStamp(config: GoalDriverConfig): string {
+  return `${config.enabled ? 1 : 0}:${config.cadenceMs}:${config.maxOpenTasksPerGoal}`;
+}
+
+export function goalDriverNextRunAt(
+  config: GoalDriverConfig,
+  runtime: Pick<GoalDriverRuntimeState, 'lastStartedAt' | 'lastCompletedAt'> | null | undefined,
+): number | null {
+  if (!config.enabled) return null;
+  const lastStartedAt = Number(runtime?.lastStartedAt || 0);
+  const lastCompletedAt = Number(runtime?.lastCompletedAt || 0);
+  if (lastStartedAt > lastCompletedAt) {
+    return lastStartedAt + Math.max(config.cadenceMs, 15 * 60 * 1000);
+  }
+  return lastCompletedAt > 0 ? lastCompletedAt + config.cadenceMs : null;
+}
+
+export async function readGoalDriverStatus(
+  client: ManagerClient,
+  input?: Partial<GoalDriverConfig> | null,
+): Promise<GoalDriverStatus> {
+  const config = normalizeGoalDriverConfig(input);
+  const scoped = client.withTeam('default');
+  const [managerState, runtimeState] = await Promise.all([
+    scoped.controlStateGet<Record<string, unknown>>('global', 'goal-driver').catch(() => null),
+    scoped.controlStateGet<GoalDriverRuntimeState>('global', 'goal-driver-runtime').catch(() => null),
+  ]);
+  const managerConfig = goalDriverConfigFromControlState(managerState?.value);
+  const runtime = runtimeState?.value ?? null;
+  const effectiveConfig = managerConfig ?? config;
+  const lastRunAt = Number(runtime?.lastCompletedAt || 0) || null;
+  return {
+    config,
+    managerConfig,
+    synced: !!managerConfig && goalDriverConfigStamp(managerConfig) === goalDriverConfigStamp(config),
+    runtime,
+    lastRunAt,
+    nextRunAt: goalDriverNextRunAt(effectiveConfig, runtime),
   };
 }
 

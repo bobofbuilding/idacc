@@ -12,6 +12,7 @@ const {
   dedupeGoalInstructionMemories,
   goalBrainEntity,
   goalDriverControlValue,
+  goalDriverNextRunAt,
   normalizeGoalDriverConfig,
 } = await import('../src/main/goaldriver.ts');
 
@@ -102,6 +103,18 @@ try {
     cadenceMs: 30 * 60 * 1000,
     maxTasksPerRun: 3,
   });
+  assert.equal(goalDriverNextRunAt(
+    { enabled: true, cadenceMs: 30 * 60 * 1000, maxOpenTasksPerGoal: 3 },
+    { lastCompletedAt: now },
+  ), now + 30 * 60 * 1000);
+  assert.equal(goalDriverNextRunAt(
+    { enabled: true, cadenceMs: 30 * 60 * 1000, maxOpenTasksPerGoal: 3 },
+    { lastStartedAt: now, lastCompletedAt: now - 60 * 1000 },
+  ), now + 30 * 60 * 1000);
+  assert.equal(goalDriverNextRunAt(
+    { enabled: false, cadenceMs: 30 * 60 * 1000, maxOpenTasksPerGoal: 3 },
+    { lastCompletedAt: now },
+  ), null);
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }

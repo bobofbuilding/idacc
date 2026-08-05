@@ -65,8 +65,10 @@ assert.match(settingsView, /freshStatus\.latest !== stagedVersion/);
 assert.match(settingsView, /window\.confirm\(/);
 assert.match(settingsView, /await call<\{ applying\?: boolean \}>\('update:applyNow'\)/);
 assert.match(settingsView, /Restart & update/);
-assert.match(settingsView, /ahead of \$\{status\.channel \?\? 'production'\} channel/);
-assert.match(settingsView, /Automatic checks remain active and will resume downloads/);
+assert.match(settingsView, /channel is behind this installation/);
+assert.match(settingsView, /This is not an up-to-date confirmation/);
+assert.match(settingsView, /updStatus\?\.available \|\| isAheadOfUpdateChannel\(updStatus\) \? 'warn-text' : 'ok-text'/);
+assert.match(settingsView, /Automatic checks will resume downloads/);
 assert.match(settingsView, /const SETTINGS_STACK_REFRESH_MS = 5_000/);
 assert.match(
   settingsView,

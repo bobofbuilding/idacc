@@ -661,7 +661,7 @@ assert.ok(
   'the shutdown gate must be installed before Electron startup work begins',
 );
 assert.match(mainSource, /stopOrgSyncRunner = startOrgSync\(\)/);
-assert.match(mainSource, /stopModelRefreshRunner = startModelRefreshLoop\(/);
+assert.doesNotMatch(mainSource, /stopModelRefreshRunner|startModelRefreshLoop/);
 assert.match(mainSource, /if \(appShutdown\.isQuiescing\(\)\)/);
 assert.match(
   mainSource,

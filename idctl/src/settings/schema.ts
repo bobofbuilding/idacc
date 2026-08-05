@@ -152,11 +152,22 @@ export interface IdctlConfig {
    */
   localModelCatalog?: LocalModelCatalogEntry[];
   /**
+   * Last known model ids advertised by subscription CLI runtimes. Runtime and
+   * model pickers read this cache without launching provider CLIs; only an
+   * explicit model refresh replaces it. Contains model ids and timestamps only.
+   */
+  runtimeModelCache?: Record<string, RuntimeModelCacheEntry>;
+  /**
    * Optional Headroom pilot policy. This records operator intent and rollout
    * guardrails only; it does not install Headroom, start a proxy, mutate Brain,
    * or wrap agents by itself.
    */
   headroomPilot?: HeadroomPilotSettings;
+}
+
+export interface RuntimeModelCacheEntry {
+  at: number;
+  models: string[];
 }
 
 /** A local image-generation backend. */
@@ -253,6 +264,10 @@ export const DEFAULT_UPDATE_REPO = 'bobofbuilding/idacc';
 export interface GoalDriverSettings {
   enabled?: boolean;
   cadenceMs?: number;
+  /**
+   * Legacy storage key retained for profile compatibility. Despite its name,
+   * this is the maximum number of goal coordination starts in one due cycle.
+   */
   maxOpenTasksPerGoal?: number;
 }
 

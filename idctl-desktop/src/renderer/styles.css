@@ -196,6 +196,14 @@ input, textarea { -webkit-user-select: text; user-select: text; }
   padding: 8px 10px; margin: 0 0 8px;
 }
 .agent-config-draft b { color: var(--text); }
+.agent-config-notice {
+  border: 1px solid color-mix(in srgb, currentColor 34%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, currentColor 5%, var(--bg));
+  padding: 7px 10px;
+  margin: 0 0 8px;
+  font-size: 12px;
+}
 
 /* Lead hierarchy (#10) */
 .hierarchy { display: flex; flex-direction: column; gap: 5px; }
@@ -220,6 +228,33 @@ input, textarea { -webkit-user-select: text; user-select: text; }
 
 /* Tab bar (Modules sub-pages) */
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+.work-learning-status { margin: 10px 0; }
+.work-learning-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.work-learning-head > div { display: inline-flex; align-items: center; gap: 8px; }
+.work-learning-head > .muted { flex: 1 1 320px; }
+.work-learning-state { font-size: 11px; }
+.work-learning-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.work-learning-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+}
+.work-learning-grid b { font-size: 12px; }
+@media (max-width: 980px) { .work-learning-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) { .work-learning-grid { grid-template-columns: 1fr; } }
 .tab {
   padding: 8px 16px; border: 0; background: transparent; color: var(--muted);
   font: inherit; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
@@ -851,6 +886,15 @@ textarea.composer-input { resize: none; line-height: 1.4; min-height: 38px; max-
   margin: 0 0 8px;
   padding: 8px 10px;
 }
+.model-lanes-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.model-lanes-toolbar > div { min-width: 0; }
+.model-lanes-toolbar .btn { flex: 0 0 auto; }
 .model-lanes-grid {
   display: grid;
   grid-template-columns: minmax(150px, 1.1fr) 96px 78px minmax(210px, 1.4fr) 98px;
