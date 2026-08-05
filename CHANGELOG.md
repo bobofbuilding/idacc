@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.707] — 2026-08-05
+### What changed
+- Recover missing-material task blocks through a bounded persistent ownership ladder, requeue them when sources change, and surface genuine decisions in Inbox; bundle Manager v0.1.168.
+
 ## [0.1.706] — 2026-08-05
 ### What changed
 - Unify Work automation with Brain Active Learning and bounded goal-cycle status.

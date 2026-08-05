@@ -1,6 +1,6 @@
 {
   "name": "idctl",
-  "version": "0.1.706",
+  "version": "0.1.707",
   "description": "Advanced terminal interface for the unified IDACC Manager and private agent fleet.",
   "type": "module",
   "private": true,
