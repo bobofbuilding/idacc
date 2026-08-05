@@ -302,10 +302,9 @@ function validateSbomCapsuleProperties(sbom, runtimeLock, label) {
 function validateApplicationVersion(sourceVersion, applicationVersion) {
   if (
     !/^\d+\.\d+\.\d+$/.test(sourceVersion)
-    || !new RegExp(`^${sourceVersion.replaceAll('.', '\\.')}\\-review\\.[1-9][0-9]*$`)
-      .test(applicationVersion)
+    || applicationVersion !== sourceVersion
   ) {
-    fail('review application version must be <source-version>-review.<positive-run-number>');
+    fail('review application version must exactly match the stable source version');
   }
 }
 
@@ -369,8 +368,8 @@ function record(options) {
   validateCommit(commit);
   validateRepository(repository);
   validateApplicationVersion(pkg.version, applicationVersion);
-  if (!candidate.startsWith(`v${applicationVersion}-`)) {
-    fail('review candidate label must include the packaged prerelease identity');
+  if (!candidate.startsWith(`review-v${applicationVersion}-`)) {
+    fail('review candidate label must include the stable packaged version');
   }
   if (!existsSync(installers) || !lstatSync(installers).isDirectory()) {
     fail(`review installer directory is missing: ${installers}`);
@@ -743,8 +742,8 @@ function assemble(options) {
   validateCommit(commit);
   validateRepository(repository);
   validateApplicationVersion(sourceVersion, applicationVersion);
-  if (!candidate.startsWith(`v${applicationVersion}-`)) {
-    fail('review candidate label must include the packaged prerelease identity');
+  if (!candidate.startsWith(`review-v${applicationVersion}-`)) {
+    fail('review candidate label must include the stable packaged version');
   }
   if (!existsSync(input) || !lstatSync(input).isDirectory()) {
     fail(`downloaded review input directory is missing: ${input}`);
@@ -1049,7 +1048,7 @@ function verifyPackage(options) {
   const startupPolicyMarker = mainProcessStartupPolicyMarker('review');
   const startupPolicyBanner = mainProcessStartupBanner('review');
   if (packaged.version !== applicationVersion) {
-    fail('packaged review application does not use the expected prerelease identity');
+    fail('packaged review application does not use the expected stable version identity');
   }
   if (packaged.main !== 'out/main/main.cjs') {
     fail('packaged review application does not launch the guarded main process');

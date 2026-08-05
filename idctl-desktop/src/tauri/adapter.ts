@@ -199,6 +199,27 @@ async function setAgentRuntimeFromSettings(agentId: string, runtime: string, sel
   });
 }
 
+async function applyAgentConfigurationFromSettings(
+  agentId: string,
+  configuration: { runtime: string; model: string; effort?: string; speed?: string },
+  expected: { runtime?: string; model?: string; effort?: string; speed?: string; status?: string },
+  selectedTeam?: string,
+) {
+  const providerName = providerLaneName(configuration.runtime);
+  const scoped = clientFor(selectedTeam);
+  if (!providerName) return scoped.applyAgentConfiguration(String(agentId), configuration, expected);
+  const provider = lsGet<ProviderProfile[]>('idctl.providers', []).find((row) => row.name === providerName);
+  if (!provider) throw new Error(`provider lane "${providerName}" is no longer configured in Settings`);
+  if (!providerRouteReadyForAssignment(provider)) throw new Error(`provider lane "${providerName}" is not ready; Connect & sync it in Settings first`);
+  if (providerNeedsKey(provider) && !provider.apiKey) throw new Error(`provider lane "${providerName}" is missing an API key`);
+  return scoped.applyAgentConfiguration(String(agentId), configuration, expected, {
+    name: provider.name,
+    kind: provider.kind,
+    baseUrl: provider.baseUrl,
+    ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
+  });
+}
+
 function runtimeFreshnessLocal() {
   const providers = lsGet<ProviderProfile[]>('idctl.providers', []);
   const enrichedProviders = enrichProviders(providers);
@@ -891,6 +912,17 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
   setAgentDelegates: (id: string, delegates: string[] | null) => client.setAgentDelegates(String(id), delegates ?? null),
   setAgentRuntime: (id: string, runtime: string, selectedTeam?: string) =>
     setAgentRuntimeFromSettings(String(id), String(runtime), selectedTeam ? String(selectedTeam) : undefined),
+  applyAgentConfiguration: (
+    id: string,
+    configuration: { runtime: string; model: string; effort?: string; speed?: string },
+    expected: { runtime?: string; model?: string; effort?: string; speed?: string; status?: string },
+    selectedTeam?: string,
+  ) => applyAgentConfigurationFromSettings(
+    String(id),
+    configuration,
+    expected,
+    selectedTeam ? String(selectedTeam) : undefined,
+  ),
   setAgentEffort: (id: string, effort: string, selectedTeam?: string) => clientFor(selectedTeam).setAgentEffort(String(id), String(effort ?? '')),
   setAgentSpeed: (id: string, speed: string, selectedTeam?: string) => clientFor(selectedTeam).setAgentSpeed(String(id), String(speed ?? '')),
   spawnAgent: (spec: Parameters<ManagerClient['spawnAgent']>[0]) => client.spawnAgent(spec),
@@ -1011,24 +1043,19 @@ const M: Record<string, (...a: any[]) => Promise<unknown>> = {
     return scopedClient.agents().then((agents) => {
       const currentAgent = agents.find((agent) => agent.id === String(agentId));
       if (!currentAgent) throw new Error(`Agent "${agentId}" is no longer in ${team ? String(team) : (client.team ?? 'default')}.`);
-      const currentExact = (((currentAgent.metadata as any)?.mcpServers) ?? []) as McpServerSpec[];
-      if (tauriRendererAgentMcpStamp(expectedServers) !== tauriRendererAgentMcpStamp(currentExact)) {
+      const currentReviewed = (((currentAgent.metadata as any)?.mcpServers) ?? []) as McpServerSpec[];
+      if (tauriRendererAgentMcpStamp(expectedServers) !== tauriRendererAgentMcpStamp(currentReviewed)) {
         throw new Error('Agent MCP capabilities changed before this write. Refresh and review the current attachment list.');
       }
-      const currentByName = new Map(currentExact.map((server) => [server.name, server]));
       const registry = new Map(lsGet<McpServerProfile[]>('idctl.mcpServers', []).map((server) => [server.name, server]));
       const desiredExact = filterParkedMcpServers((servers ?? []).map((server) => {
-        const current = currentByName.get(server.name);
-        if (current && tauriRendererAgentMcpStamp([server]) === tauriRendererAgentMcpStamp([current])) {
-          return current;
-        }
         const registered = registry.get(server.name);
         if (!registered) {
           throw new Error(`MCP server "${server.name}" is no longer in the registry. Refresh capabilities and try again.`);
         }
         return registered as McpServerSpec;
       }));
-      return scopedClient.setAgentMcp(String(agentId), desiredExact, currentExact);
+      return scopedClient.setAgentMcp(String(agentId), desiredExact, currentReviewed);
     });
   }),
   rebuildAgent: (agent: string, team?: string) => (team ? client.withTeam(String(team)) : client).remote(`/agent ${agent} rebuild`),

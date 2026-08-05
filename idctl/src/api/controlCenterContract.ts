@@ -6,7 +6,7 @@
  * controls that rely on Control Center-only routes.
  */
 
-export const CONTROL_CENTER_API_VERSION = 5;
+export const CONTROL_CENTER_API_VERSION = 6;
 export const CONTROL_CENTER_EXTENSION = 'id-agents-control-center';
 
 export interface ControlCenterRoute {
@@ -36,6 +36,7 @@ export const CONTROL_CENTER_REQUIRED_ROUTES: ControlCenterRoute[] = [
   { method: 'GET', path: '/agents/:id/instructions', group: 'agent-config' },
   { method: 'POST', path: '/agents/:id/instructions', group: 'agent-config' },
   { method: 'POST', path: '/agents/:id/runtime', group: 'agent-config' },
+  { method: 'POST', path: '/agents/:id/configuration', group: 'agent-config' },
   { method: 'POST', path: '/agents/:id/mcp', group: 'agent-config' },
   { method: 'POST', path: '/agents/:id/delegates', group: 'agent-config' },
   { method: 'POST', path: '/agents/:id/team', group: 'agent-config' },
@@ -50,6 +51,7 @@ export const CONTROL_CENTER_REQUIRED_FEATURES = [
   'observability',
   'manager-controls',
   'runtime-preflight',
+  'atomic-agent-config',
   'agent-config',
   'team-config',
   'library',

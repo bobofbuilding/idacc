@@ -1154,7 +1154,7 @@ jobs:
               gh release create "$RELEASE_TAG" \
                 --verify-tag \
                 --draft \
-                --title "$RELEASE_TAG — owner-authorized unsigned stable release" \
+                --title "$RELEASE_TAG" \
                 --notes-file publish/UNSIGNED-STABLE-NOTICE.md
             else
               gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes

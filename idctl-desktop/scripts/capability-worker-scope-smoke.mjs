@@ -47,11 +47,11 @@ assert.match(
   'the rebuild affordance must remain after the final MCP attachment is removed',
 );
 assert.match(bridge, /expectedServers\?: McpServerSpec\[\]/);
-assert.match(bridge, /rendererAgentMcpStamp\(expectedServers\) !== rendererAgentMcpStamp\(currentExact\)/);
-assert.match(bridge, /setAgentMcp\(String\(agentId\), desiredExact, currentExact\)/);
+assert.match(bridge, /rendererAgentMcpStamp\(expectedServers\) !== rendererAgentMcpStamp\(currentReviewed\)/);
+assert.match(bridge, /setAgentMcp\(String\(agentId\), desiredExact, currentReviewed\)/);
 assert.match(bridge, /setAgentMcp:[\s\S]{0,180}serializeMcpRegistryWrite/);
 assert.match(bridge, /hydrateRequiredRegisteredMcp/);
-assert.match(tauri, /tauriRendererAgentMcpStamp\(expectedServers\) !== tauriRendererAgentMcpStamp\(currentExact\)/);
+assert.match(tauri, /tauriRendererAgentMcpStamp\(expectedServers\) !== tauriRendererAgentMcpStamp\(currentReviewed\)/);
 assert.match(tauri, /setAgentMcp:[\s\S]{0,260}serializeTauriMcpRegistryWrite/);
 assert.match(tauri, /result: sanitizeSecretPayload\(result\)/);
 assert.match(client, /\.\.\.\(Array\.isArray\(expectedServers\) \? \{ expectedServers \} : \{\}\)/);

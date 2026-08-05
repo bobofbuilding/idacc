@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   dirname,
@@ -63,6 +64,8 @@ const brainSource = resolve(option(
 const targetArch = option('--arch', process.env.IDACC_TARGET_ARCH || process.arch);
 const allowDirtyApplication = args.includes('--allow-dirty-application')
   || process.env.IDACC_ALLOW_DIRTY_APPLICATION === '1';
+const allowDirtyManager = args.includes('--allow-dirty-manager')
+  || process.env.IDACC_ALLOW_DIRTY_MANAGER === '1';
 
 const MANAGER_RUNTIME_ROOTS = [
   'dist/start-agent-manager.js',
@@ -252,7 +255,9 @@ const brainCapsuleManifest = brainDistribution?.mode === 'vendored-capsule'
   ? resolve(root, brainDistribution.manifest)
   : '';
 const inspections = {
-  manager: inspectComponentSource('manager', lock.components.manager, managerSource),
+  manager: inspectComponentSource('manager', lock.components.manager, managerSource, {
+    requireClean: !allowDirtyManager,
+  }),
 };
 if (brainDistribution?.mode === 'vendored-capsule') {
   requirePath(brainCapsuleRoot, 'Brain runtime capsule');
@@ -286,10 +291,32 @@ const scratch = mkdtempSync(join(scratchParent, '.idacc-runtime-stage-'));
 const payload = join(scratch, 'payload');
 const managerExport = join(scratch, 'manager-source');
 const brainExport = join(scratch, 'brain-source');
+let managerWorktreePatchSha256 = '';
 
 try {
   mkdirSync(payload, { recursive: true });
   exportCommit(managerSource, lock.components.manager.commit, managerExport, scratch);
+  if (allowDirtyManager) {
+    const status = git(managerSource, ['status', '--porcelain=v1', '--untracked-files=all']);
+    const untracked = status.split(/\r?\n/).filter((line) => line.startsWith('?? '));
+    if (untracked.length) {
+      fail(`dirty Manager staging does not accept untracked runtime source: ${untracked.slice(0, 5).join('; ')}`);
+    }
+    const patch = execFileSync('git', ['diff', '--binary', lock.components.manager.commit, '--'], {
+      cwd: managerSource,
+      encoding: null,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    if (patch.length) {
+      const patchPath = join(scratch, 'manager-worktree.patch');
+      writeFileSync(patchPath, patch);
+      execFileSync('git', ['apply', '--whitespace=nowarn', patchPath], {
+        cwd: managerExport,
+        stdio: 'inherit',
+      });
+      managerWorktreePatchSha256 = createHash('sha256').update(patch).digest('hex');
+    }
+  }
   if (brainDistribution?.mode === 'vendored-capsule') {
     materializeRuntimeSourceCapsule({
       root: brainCapsuleRoot,
@@ -303,13 +330,26 @@ try {
     exportCommit(brainSource, lock.components.brain.commit, brainExport, scratch);
   }
 
+  // Never trust tracked compiler output or incremental state from the source
+  // commit. A review build may intentionally apply a bounded Manager patch;
+  // forcing a clean compile guarantees the staged runtime reflects it.
+  rmSync(join(managerExport, 'dist'), { recursive: true, force: true });
+  rmSync(join(managerExport, 'dist-tui'), { recursive: true, force: true });
+  for (const name of ['tsconfig.tsbuildinfo', 'tsconfig.core.tsbuildinfo']) {
+    rmSync(join(managerExport, name), { force: true });
+  }
   npmCi(managerExport);
   runNpm(['run', 'build'], managerExport);
   requirePath(join(managerExport, lock.components.manager.entrypoint), 'built manager entrypoint');
+  const managerBuildRoot = allowDirtyManager ? managerSource : managerExport;
+  if (allowDirtyManager) {
+    runNpm(['run', 'build'], managerSource);
+    requirePath(join(managerBuildRoot, lock.components.manager.entrypoint), 'dirty Manager build entrypoint');
+  }
 
   const managerTarget = join(payload, 'manager');
   mkdirSync(managerTarget, { recursive: true });
-  copyRuntimeModuleGraph(managerExport, managerTarget, [
+  copyRuntimeModuleGraph(managerBuildRoot, managerTarget, [
     ...MANAGER_RUNTIME_ROOTS,
     lock.components.manager.entrypoint,
   ]);
@@ -351,6 +391,10 @@ try {
     'LICENSE',
   ], { required: true });
   copyAllowlistedPaths(brainExport, brainTarget, BRAIN_STATIC_ASSETS, { required: false });
+  cpSync(
+    join(desktop, 'runtime-tools', 'profile-backup.mjs'),
+    join(brainTarget, 'idacc-profile-backup.mjs'),
+  );
   npmCi(brainTarget, true);
 
   requirePath(join(managerTarget, lock.components.manager.entrypoint), 'staged manager entrypoint');
@@ -360,6 +404,7 @@ try {
     'brain-cycle.mjs',
     'brain-listener.mjs',
     'brain-mcp.mjs',
+    'idacc-profile-backup.mjs',
     'brain-connector-validate.mjs',
     'brain-connector.schema.json',
     'context/service.mjs',
@@ -404,6 +449,7 @@ try {
       node: process.version.replace(/^v/, ''),
       npm: runNpm(['--version'], root, { capture: true }),
       electron,
+      ...(managerWorktreePatchSha256 ? { managerWorktreePatchSha256 } : {}),
     },
     components: {
       manager: { ...lock.components.manager },

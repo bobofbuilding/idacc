@@ -111,7 +111,7 @@ assemble and publish the unified macOS, Windows, and Linux application.
 
 For installed-app review before a consumer release, run the **Review build**
 workflow. It publishes an isolated GitHub prerelease tagged
-`v<source-version>-review.<run-number>` with the `review` updater descriptors and
+`review-v<source-version>-<commit>` with the `review` updater descriptors and
 all supported operating-system packages. Review releases do not change the
 stable GitHub **Latest** release or the production `latest` update channel.
 

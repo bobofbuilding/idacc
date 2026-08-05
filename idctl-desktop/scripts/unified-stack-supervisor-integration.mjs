@@ -84,12 +84,13 @@ description: Read the profile-owned Brain through its curated MCP tools.
 writeFileSync(managerConfigEntry, 'defaults: {}\nagents: []\n', { mode: 0o600 });
 
 const managerCapabilities = {
-  cc_api_version: 5,
+  cc_api_version: 6,
   extension: 'id-agents-control-center',
   features: [
     'observability',
     'manager-controls',
     'runtime-preflight',
+    'atomic-agent-config',
     'agent-config',
     'team-config',
     'library',
@@ -120,6 +121,7 @@ const managerCapabilities = {
     ['GET', '/agents/:id/instructions', 'agent-config'],
     ['POST', '/agents/:id/instructions', 'agent-config'],
     ['POST', '/agents/:id/runtime', 'agent-config'],
+    ['POST', '/agents/:id/configuration', 'agent-config'],
     ['POST', '/agents/:id/mcp', 'agent-config'],
     ['POST', '/agents/:id/delegates', 'agent-config'],
     ['POST', '/agents/:id/team', 'agent-config'],
@@ -1048,7 +1050,7 @@ try {
     'retired dashboard session reached Brain instead of cancelling locally',
   );
   assert.equal(status.services.length, 2);
-  assert.equal(status.companions.length, 2);
+  assert.equal(status.companions.length, 4);
   assert.deepEqual(status.brainAutomation, {
     cycleEnabled: true,
     cycleCadenceHours: 24,

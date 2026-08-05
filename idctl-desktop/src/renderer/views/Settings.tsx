@@ -8,7 +8,7 @@ import { PROVIDER_CATALOG, findProvider, providerNeedsKey } from '../../../../id
 import { LOCAL_MODEL_CATALOG, TOP_LOCAL_MODEL_CATALOG, type ModelCapability, type LocalModelEntry } from '../../../../idctl/src/settings/modelCatalog.ts';
 import { TOP_LOCAL_STACKS, type LocalStackEntry } from '../../../../idctl/src/settings/localStacks.ts';
 import { primeCurrentRuntimeCatalogSnapshot, refreshCurrentRuntimeCatalogSnapshot, type ManagedRuntimeStatus } from '../runtimeCatalogCache.ts';
-import { buildRuntimeCatalog } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import { buildRuntimeCatalog, localProviderRouteIsLive } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 import {
   CONTROL_CENTER_API_VERSION,
   CONTROL_CENTER_REQUIRED_FEATURES,
@@ -765,8 +765,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       }
       const stagedVersion = stagedStatus.latest;
       const confirmed = window.confirm(
-        `Restart IDACC and install verified v${stagedVersion}?\n\n`
-        + 'IDACC, Agent manager, and Brain will update together.',
+        `Restart IDACC and install verified v${stagedVersion}?`,
       );
       if (!confirmed) return;
 
@@ -1993,11 +1992,15 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     return (p.lastSync?.modelCount ?? 0) > 0 || p.lastSync?.status === 'preset';
   }
   function providerRouteReady(p: ProviderRow): boolean {
+    if (isLocalProvider(p)) return providerKeyReady(p) && localProviderRouteIsLive(p);
     return p.enabled !== false && providerKeyReady(p) && providerModelReady(p);
   }
   function providerDefaultBlockReason(p: ProviderRow): string {
     if (p.enabled === false) return 'The backend is disabled.';
     if (!providerKeyReady(p)) return 'The backend is missing a required API key.';
+    if (isLocalProvider(p) && p.lastSync?.status === 'live' && !localProviderRouteIsLive(p)) {
+      return 'The last local health check is stale. Re-check the backend before assigning it.';
+    }
     if (providerStatus(p) === 'live' && !providerModelReady(p)) return 'The backend answered but returned no models.';
     if (!providerModelReady(p)) return 'The backend has no synced/preset model list yet.';
     return `Current status is ${providerStatus(p) ?? 'not synced'}.`;
@@ -3094,28 +3097,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           <b className={updStatus?.error ? 'status-error' : updStatus?.available ? 'warn-text' : 'ok-text'}>
             {updateChannelSummary(updStatus)}
           </b>
-          <span>Agent manager</span>
-          <b className={managerService?.healthy ? 'ok-text' : managerService ? 'warn-text' : 'muted'}>
-            <span className="mono">
-              {managerService?.expectedVersion || managerService?.version
-                ? `v${managerService.expectedVersion || managerService.version}`
-                : '—'}
-            </span>
-            {' · '}{componentStatus(managerService)}
-          </b>
-          <span>Brain</span>
-          <b className={brainService?.healthy ? 'ok-text' : brainService ? 'warn-text' : 'muted'}>
-            <span className="mono">
-              {brainService?.expectedVersion || brainService?.version
-                ? `v${brainService.expectedVersion || brainService.version}`
-                : '—'}
-            </span>
-            {' · '}{componentStatus(brainService)}
-          </b>
-          <span>Unified stack</span>
-          <b className={unifiedStack?.ready ? 'ok-text' : 'warn-text'}>
-            {unifiedStack?.ready ? 'all components ready' : 'one or more components need attention'}
-          </b>
           <span>Legal</span>
           <b>
             MIT licensed ·{' '}
@@ -3128,7 +3109,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             </a>
             <span className="muted small"> · notice included with every installed app</span>
           </b>
-          <span>auto-download</span>
+          <span>Auto-download</span>
           <b>
             <input
               type="checkbox"
@@ -3145,7 +3126,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         ) : null}
         <div className="row-actions" style={{ marginTop: 10 }}>
           <span className="muted small grow">
-            IDACC, Agent manager, and Brain ship and update together through the {updStatus?.channel ?? 'production'} channel as one verified application.
+            IDACC updates through the {updStatus?.channel ?? 'production'} channel.
           </span>
           <button
             className="btn"

@@ -292,8 +292,8 @@ assert.match(workflow, /--config\.publish\.channel=review/);
 assert.match(workflow, /if \[ "\$\{\{ matrix\.platform \}\}" = mac \]; then\s+sudo sysctl -w kern\.maxfiles=524288\s+sudo sysctl -w kern\.maxfilesperproc=524288\s+ulimit -n 524288\s+test "\$\(ulimit -n\)" = 524288\s+fi/);
 assert.match(workflow, /IDACC_REVIEW_BUILD:\s*"1"/);
 assert.match(workflow, /IDACC_REVIEW_VERSION:\s*\$\{\{\s*needs\.prepare\.outputs\.review_version\s*\}\}/);
-assert.match(workflow, /REVIEW_VERSION="\$\{VERSION\}-review\.\$\{GITHUB_RUN_NUMBER\}"/);
-assert.match(workflow, /candidate=v%s-%s/);
+assert.match(workflow, /REVIEW_VERSION="\$VERSION"/);
+assert.match(workflow, /candidate=review-v%s-%s/);
 assert.match(workflow, /review_version=%s/);
 assert.match(workflow, /--application-version "\$IDACC_REVIEW_VERSION"/);
 assert.match(workflow, /node scripts\/review-artifact-bundle\.mjs verify-package/);
@@ -889,8 +889,8 @@ assert.match(releaseStackHarness, /refusing ambiguous Linux sandbox smoke cleanu
 assert.doesNotMatch(releaseStackHarness, /--no-sandbox|--disable-setuid-sandbox/);
 
 const scratch = mkdtempSync(join(tmpdir(), 'idacc-review-workflow-'));
-const applicationVersion = `${pkg.version}-review.42`;
-const candidate = `v${applicationVersion}-aaaaaaaaaaaa`;
+const applicationVersion = pkg.version;
+const candidate = `review-v${applicationVersion}-aaaaaaaaaaaa`;
 const commit = 'a'.repeat(40);
 const sourceEpoch = '1767225600';
 const repository = 'bobofbuilding/idacc';

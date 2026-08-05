@@ -18,15 +18,10 @@ export type RuntimeApplicationVersionContractResult =
 
 const STABLE_SOURCE_VERSION = /^\d+\.\d+\.\d+$/;
 
-function escapeRegularExpression(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 /**
  * Bind a packaged application to the runtime staged from its exact source
- * version. Production packages keep the historical one-version equality.
- * Review packages may add only the compiled `-review.N` identity while the
- * immutable Manager/Brain manifest remains bound to the stable source version.
+ * version. Review is a distribution policy, not part of the version identity,
+ * so production and review packages both preserve one-version equality.
  */
 export function evaluateRuntimeApplicationVersionContract(
   input: RuntimeApplicationVersionContractInput,
@@ -45,20 +40,10 @@ export function evaluateRuntimeApplicationVersionContract(
     };
   }
 
-  if (input.reviewBuild) {
-    const expectedReviewPattern = new RegExp(
-      `^${escapeRegularExpression(sourceVersion)}-review\\.[1-9][0-9]*$`,
-    );
-    if (!expectedReviewPattern.test(compiledApplicationVersion)) {
-      return {
-        ok: false,
-        error: 'compiled review application identity is malformed',
-      };
-    }
-  } else if (compiledApplicationVersion !== sourceVersion) {
+  if (compiledApplicationVersion !== sourceVersion) {
     return {
       ok: false,
-      error: 'compiled production application identity does not match its source version',
+      error: 'compiled application identity does not match its source version',
     };
   }
 

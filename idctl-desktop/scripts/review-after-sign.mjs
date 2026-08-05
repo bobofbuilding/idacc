@@ -13,9 +13,9 @@ export default async function reviewAfterSign(context) {
   const expectedVersion = String(process.env.IDACC_REVIEW_VERSION || '').trim();
   if (
     process.env.IDACC_REVIEW_BUILD !== '1'
-    || !/^\d+\.\d+\.\d+-review\.[1-9][0-9]*$/.test(expectedVersion)
+    || !/^\d+\.\d+\.\d+$/.test(expectedVersion)
   ) {
-    fail('review root signing hook requires an exact review build identity');
+    fail('review root signing hook requires an exact stable application version');
   }
   if (process.platform !== 'darwin' || context?.electronPlatformName !== 'darwin') {
     fail('review root signing hook may run only for a macOS package');

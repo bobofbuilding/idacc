@@ -285,6 +285,10 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   const providerModelLaneOpts = visibleFreshness
     .filter((f) => f.kind === 'api' || f.kind === 'local')
     .sort((a, b) => (a.label ?? a.runtime).localeCompare(b.label ?? b.runtime));
+  const localRuntimeIds = new Set(['ollama', ...providerModelLaneOpts.filter((lane) => lane.kind === 'local').map((lane) => lane.runtime)]);
+  const localAgents = shown.filter((agent) => localRuntimeIds.has(runtimeOf(agent) ?? ''));
+  const activeLocalCount = localAgents.filter(isActive).length;
+  const parkedLocalCount = localAgents.length - activeLocalCount;
   const selectableProviderLaneOpts = providerModelLaneOpts.filter((f) => f.selectable !== false);
   const selectableHarnessRuntimeOpts = visibleFreshness
     .filter((f) => (f.kind ?? 'harness') === 'harness' && f.selectable !== false)
@@ -304,9 +308,17 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
 
   useEffect(() => {
     if (!runtimeDetailsActive) return undefined;
-    const refresh = () => setRuntimeCatalogClock((clock) => clock + 1);
-    const onFocus = () => refresh();
-    const onVisible = () => { if (!document.hidden) refresh(); };
+    let lastLocalProbeAt = 0;
+    const refresh = (probeLocal = false) => {
+      setRuntimeCatalogClock((clock) => clock + 1);
+      if (!probeLocal || Date.now() - lastLocalProbeAt < 30_000) return;
+      lastLocalProbeAt = Date.now();
+      void call<Record<string, string[]>>('runtime:probeLocal')
+        .then((models) => setCatalog(models))
+        .catch(() => {});
+    };
+    const onFocus = () => refresh(true);
+    const onVisible = () => { if (!document.hidden) refresh(true); };
     const timer = window.setInterval(refresh, RUNTIME_CATALOG_UI_CACHE_MS);
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisible);
@@ -542,40 +554,24 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
       '',
       'This writes manager config and rebuilds each touched agent once so the new runtime settings are picked up.',
     ].filter(Boolean).join('\n'))) return;
-    const latestList = await freshFleetAgents();
-    if (!latestList) {
-      window.alert('Could not verify the fleet immediately before writing Health config. Refresh and try again.');
-      return;
-    }
-    const latestStaleRows = staleRowsFor(latestList);
-    if (latestStaleRows.length) {
-      window.alert([
-        'Fleet changed after the review prompt.',
-        '',
-        ...latestStaleRows.slice(0, 8).map((row) => `- ${row}`),
-        latestStaleRows.length > 8 ? `- +${latestStaleRows.length - 8} more` : '',
-        '',
-        'No config was written. Review the latest Health table and try again.',
-      ].filter(Boolean).join('\n'));
-      store.refresh();
-      return;
-    }
     setBusy('apply config changes');
     try {
       for (const d of drafts) {
-        if (String(d.baseline.runtime ?? '') !== String(d.next.runtime ?? '') && d.next.runtime) {
-          await call('setAgentRuntime', d.id, d.next.runtime, d.team);
+        if (!d.next.runtime || !d.next.model) {
+          throw new Error(`${d.team}/${d.name} is missing a runtime or model`);
         }
-        if (String(d.baseline.model ?? '') !== String(d.next.model ?? '') && d.next.model) {
-          await call('remote', `/model ${d.name} ${d.next.model}`, undefined, d.team);
-        }
-        if (String(d.baseline.effort ?? '') !== String(d.next.effort ?? '')) {
-          await call('setAgentEffort', d.id, d.next.effort, d.team);
-        }
-        if (String(d.baseline.speed ?? '') !== String(d.next.speed ?? '')) {
-          await call('setAgentSpeed', d.id, d.next.speed, d.team);
-        }
-        await call('remote', `/agent ${d.name} rebuild`, undefined, d.team);
+        await call('applyAgentConfiguration', d.id, {
+          runtime: d.next.runtime,
+          model: d.next.model,
+          effort: d.next.effort ?? '',
+          speed: d.next.speed ?? '',
+        }, {
+          runtime: d.baseline.runtime ?? '',
+          model: d.baseline.model ?? '',
+          effort: d.baseline.effort ?? '',
+          speed: d.baseline.speed ?? '',
+          status: d.status ?? '',
+        }, d.team);
       }
       setConfigDrafts({});
       store.refresh();
@@ -608,9 +604,11 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
   async function probeRuntimes() {
     setBusy('probe runtimes');
     try {
-      const nextCatalog = await call<Record<string, string[]>>('runtime:probe');
-      const nextManaged = await call<Record<string, ManagedRuntimeStatus>>('subs:status', true).catch(() => managedRuntimes);
-      const nextFreshness = await call<RuntimeFreshness[]>('runtime:freshness').catch(() => freshness);
+      const [nextCatalog, nextManaged, nextFreshness] = await Promise.all([
+        call<Record<string, string[]>>('runtime:probeLocal'),
+        call<Record<string, ManagedRuntimeStatus>>('subs:status', true).catch(() => managedRuntimes),
+        call<RuntimeFreshness[]>('runtime:freshness').catch(() => freshness),
+      ]);
       setCatalog(nextCatalog);
       setManagedRuntimes(nextManaged);
       setFreshness(nextFreshness);
@@ -855,6 +853,11 @@ export function AgentTable({ store, onProbe, probeBusy, navigate }: { store: Fle
       <section className="card grow" style={{ minWidth: 0 }}>
         <div className="row-actions" style={{ alignItems: 'center', marginBottom: 8 }}>
           <h3 style={{ margin: 0 }}>Fleet <span className="muted small">· {activeCount} active{busy ? ` · ${busy}…` : ''}</span></h3>
+          {localAgents.length ? (
+            <span className="muted small" title="Local backend availability is shown separately from whether an individual local agent is running.">
+              local agents: {activeLocalCount} running · {parkedLocalCount} parked
+            </span>
+          ) : null}
           <span className="grow" />
           {stoppedCount ? (
             <label className="muted small" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer' }} title="By default only running agents are shown — reveal stopped ones to start/manage them">

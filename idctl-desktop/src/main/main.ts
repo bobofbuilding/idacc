@@ -14,6 +14,7 @@ import {
   configureManagedManager,
   configureSettingsSecretCodec,
   migrateSettingsSecrets,
+  managedMcpConnectionEnvironment,
   resumeManagedProviderAgentsAfterRestart,
   resetDraftDispatcherWork,
   startDraftDispatcher,
@@ -109,6 +110,7 @@ import {
 } from './appStatePrivacy.ts';
 import {
   configureUnifiedBrainAutomation,
+  configureUnifiedStackMcpConnections,
   startUnifiedStack,
   stopUnifiedStack,
   subscribeUnifiedStackServiceReady,
@@ -1749,6 +1751,7 @@ function configureSecureSettings(): void {
     if (migrated.providers || migrated.mcpServers) {
       console.info(`[settings] encrypted ${migrated.providers} provider and ${migrated.mcpServers} MCP connection secret set(s)`);
     }
+    configureUnifiedStackMcpConnections(managedMcpConnectionEnvironment());
   } catch (error) {
     // Linux keyrings can be temporarily unavailable before the desktop session
     // unlocks. Existing data remains untouched and migration retries next boot.

@@ -488,6 +488,11 @@ const ACTIONS: Record<string, (args: unknown[], result: unknown) => Summary> = {
 
   // ── agent/team config writes (manager-routed but event-SILENT → brain didn't learn) ──
   setAgentRuntime: (a) => ({ subject: `agent ${s(a[0])} runtime → ${s(a[1])}`, data: { id: s(a[0]), runtime: s(a[1]), team: s(a[2]) }, tags: ['agent-config'] }),
+  applyAgentConfiguration: (a) => ({
+    subject: `agent ${s(a[0])} runtime configuration applied`,
+    data: { id: s(a[0]), configuration: obj(a[1]), expected: obj(a[2]), team: s(a[3]) },
+    tags: ['agent-config', 'verified'],
+  }),
   setAgentEffort: (a) => ({ subject: `agent ${s(a[0])} effort → ${s(a[1])}`, data: { id: s(a[0]), effort: s(a[1]), team: s(a[2]) }, tags: ['agent-config'] }),
   setAgentSpeed: (a) => ({ subject: `agent ${s(a[0])} speed → ${s(a[1])}`, data: { id: s(a[0]), speed: s(a[1]), team: s(a[2]) }, tags: ['agent-config'] }),
   setAgentSkills: (a) => ({ subject: `agent ${s(a[0])} capabilities reconciled`, data: { id: s(a[0]), count: Array.isArray(a[1]) ? a[1].length : 0, team: s(a[2]) }, tags: ['agent-config', 'capability'] }),
