@@ -8,6 +8,14 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.704] — 2026-08-05
+### What changed
+- Pin Manager 0.1.166 so a profile-scoped IDACC launch creates only its active
+  database parent and no longer recreates the retired `~/.id-agents` path.
+- Preserve the 0.1.703 managed-worker authentication, skill refresh, and
+  immutable agent-ID delegation repairs while completing legacy-data
+  retirement cleanly.
+
 ## [0.1.703] — 2026-08-05
 ### What changed
 - Pin Manager 0.1.165 so every managed worker refreshes its authenticated
