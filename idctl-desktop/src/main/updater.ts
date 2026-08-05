@@ -105,9 +105,7 @@ export function compareVersions(a: string, b: string): number {
  * returns unexpected metadata.
  */
 export function isAllowedUpdateVersion(candidate: string, current: string): boolean {
-  const allowed = REVIEW_BUILD
-    ? /^v?\d+\.\d+\.\d+-review\.[1-9][0-9]*$/
-    : /^v?\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/;
+  const allowed = /^v?\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/;
   if (!allowed.test(candidate.trim())) return false;
   return compareVersions(candidate, current) > 0;
 }

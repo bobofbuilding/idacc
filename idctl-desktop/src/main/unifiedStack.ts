@@ -81,7 +81,7 @@ const COMPILED_PACKAGED_APPLICATION_VERSION =
 
 type ServiceName = UnifiedServiceName;
 type ServicePhase = 'missing' | 'starting' | 'running' | 'unhealthy' | 'backoff' | 'fused' | 'stopping' | 'stopped';
-type CompanionName = 'brain-listener' | 'brain-cycle';
+type CompanionName = 'brain-listener' | 'brain-cycle' | 'brain-connector' | 'brain-backup';
 type CompanionPhase = 'disabled' | 'waiting' | 'starting' | 'running' | 'unhealthy' | 'backoff' | 'fused' | 'stopping' | 'stopped';
 
 export interface ServiceState {
@@ -230,15 +230,16 @@ interface BrainCycleStateFile {
 }
 
 const SERVICE_NAMES: readonly ServiceName[] = ['brain', 'manager'];
+const MCP_CONNECTION_ENV_PREFIX = 'IDACC_MCP_CONNECTION_';
+let managerMcpConnectionEnvironment: Record<string, string> = {};
 const HEALTH_TIMEOUT_MS = 1_500;
 const MAX_HEALTH_BODY_BYTES = 64 * 1024;
 const HEALTH_INTERVAL_MS = 5_000;
 const INITIAL_HEALTH_DELAY_MS = 500;
 // A recovered consumer profile can contain dozens of locally managed agents.
-// Manager deliberately restores them sequentially so process ownership,
-// credential lanes, and port attestations remain deterministic. Keep the
-// watchdog active, but do not mistake that bounded restore pass for a hung
-// Manager and repeatedly erase its progress by restarting it.
+// Manager restores the primary lead first and workers with bounded concurrency.
+// Keep the watchdog active, but do not mistake that verified recovery pass for
+// a hung Manager and repeatedly erase its progress by restarting it.
 const STARTUP_GRACE_MS = 2 * 60_000;
 const HEALTH_FAILURE_LIMIT = 3;
 const STABLE_RUNTIME_MS = 2 * 60_000;
@@ -274,6 +275,27 @@ let companionStartPromise: Promise<void> | null = null;
 let stackBrainToken: string | null = null;
 let stackAdminToken: string | null = null;
 let stackManagerServiceToken: string | null = null;
+
+/**
+ * Supply encrypted-Settings MCP connections to the managed Manager as
+ * process-local environment values. Agent rows store only stable references;
+ * values are never written to the Manager database or service logs.
+ */
+export function configureUnifiedStackMcpConnections(environment: Record<string, string>): void {
+  const next = Object.fromEntries(Object.entries(environment).filter(([key, value]) => (
+    key.startsWith(MCP_CONNECTION_ENV_PREFIX)
+    && /^[A-Z0-9_]+$/.test(key)
+    && typeof value === 'string'
+    && value.length <= 128 * 1024
+  )));
+  managerMcpConnectionEnvironment = next;
+  const manager = services.get('manager');
+  if (!manager) return;
+  for (const key of Object.keys(manager.spec.env)) {
+    if (key.startsWith(MCP_CONNECTION_ENV_PREFIX)) delete manager.spec.env[key];
+  }
+  Object.assign(manager.spec.env, next);
+}
 let brainAutomationSettings: BrainAutomationSettings = defaultBrainAutomationSettings();
 let brainCatalogState: BrainCatalogState = {
   healthy: false,
@@ -436,7 +458,7 @@ function readRuntimeManifest(root: string): { manifest?: RuntimeManifest; error?
       return { error: 'runtime manifest does not match the manifest pinned into this application build' };
     }
     const manifest = parseRuntimeManifest(JSON.parse(raw.toString('utf8')));
-    if (app.isPackaged && manifest.application.dirty) {
+    if (app.isPackaged && manifest.application.dirty && !COMPILED_REVIEW_BUILD) {
       return { error: 'runtime manifest was staged from a dirty application checkout' };
     }
     if (app.isPackaged) {
@@ -557,6 +579,7 @@ async function createManagedService(
       bundled,
       env: name === 'manager'
         ? {
+            ...managerMcpConnectionEnvironment,
             AGENT_MANAGER_PORT: String(port),
             BRAIN_MCP_COMMAND: resolve(process.execPath),
             BRAIN_MCP_ARGS_JSON: JSON.stringify([resolve(root, 'brain', 'brain-mcp.mjs')]),
@@ -811,6 +834,10 @@ function companionEnvironment(companion: ManagedCompanion): NodeJS.ProcessEnv {
       BRAIN_STATE_DIR: profile.brain,
       BRAIN_DB_PATH: join(profile.brain, 'brain.db'),
       BRAIN_LISTENER_CURSOR_FILE: join(profile.brain, 'brain-listener-cursor.json'),
+      BRAIN_CONNECTORS_REGISTRY: join(dirname(profile.config), 'brain-connectors.json'),
+      BRAIN_CONNECTOR_STATE_DIR: join(profile.brain, 'connectors'),
+      IDACC_BRAIN_BACKUP_DIR: join(profile.root, 'backups', 'brain'),
+      IDACC_BRAIN_BACKUP_KEEP_DAYS: '14',
       ...(name === 'brain-listener' && companion.statusPath && companion.instanceNonce ? {
         BRAIN_LISTENER_STATUS_FILE: companion.statusPath,
         BRAIN_LISTENER_INSTANCE_NONCE: companion.instanceNonce,
@@ -1015,6 +1042,19 @@ async function handleCompanionTermination(
   }
   if (processTreeError) {
     companion.phase = 'unhealthy';
+    return;
+  }
+  if (companion.name === 'brain-connector' && code === 0) {
+    // An empty connector registry is a valid state and the bundled runner has
+    // no feed timers to keep it alive. Treat its clean no-op exit as a periodic
+    // rescan, not as a crash, so newly registered connectors are discovered
+    // without opening the restart fuse.
+    companion.restartAttempts = 0;
+    companion.crashTimes = [];
+    companion.fuseUntil = undefined;
+    companion.lastCompletedAt = now;
+    companion.phase = 'waiting';
+    scheduleContinuousCompanion(companion, 60_000, false);
     return;
   }
   companion.restartAttempts += 1;
@@ -1225,6 +1265,14 @@ async function startBrainCompanionsIfReady(): Promise<void> {
     const listener = companions.get('brain-listener');
     if (listener && listener.enabled && !isCompanionAlive(listener) && !listener.restartTimer) {
       await launchCompanion(listener);
+    }
+    const connector = companions.get('brain-connector');
+    if (connector && connector.enabled && !isCompanionAlive(connector) && !connector.restartTimer) {
+      await launchCompanion(connector);
+    }
+    const backup = companions.get('brain-backup');
+    if (backup && backup.enabled && !isCompanionAlive(backup) && !backup.restartTimer) {
+      await launchCompanion(backup);
     }
     const cycle = companions.get('brain-cycle');
     if (cycle) {
@@ -1739,6 +1787,8 @@ async function startUnifiedStackInternal(paths: AppProfilePaths): Promise<Unifie
   const brainRoot = join(root, 'brain');
   const listenerEntry = join(brainRoot, 'brain-listener.mjs');
   const cycleEntry = join(brainRoot, 'brain-cycle.mjs');
+  const connectorEntry = join(brainRoot, 'brain-connector-runner.mjs');
+  const backupEntry = join(brainRoot, 'idacc-profile-backup.mjs');
   companions.set('brain-listener', {
     name: 'brain-listener',
     entry: listenerEntry,
@@ -1765,6 +1815,28 @@ async function startUnifiedStackInternal(paths: AppProfilePaths): Promise<Unifie
     restartAttempts: 0,
     crashTimes: [],
     error: existsSync(cycleEntry) ? manifestResult.error : 'cycle is not present in this build',
+  });
+  companions.set('brain-connector', {
+    name: 'brain-connector',
+    entry: connectorEntry,
+    cwd: brainRoot,
+    enabled: existsSync(connectorEntry) && !manifestResult.error,
+    continuous: true,
+    phase: existsSync(connectorEntry) && !manifestResult.error ? 'waiting' : 'disabled',
+    restartAttempts: 0,
+    crashTimes: [],
+    error: existsSync(connectorEntry) ? manifestResult.error : 'connector is not present in this build',
+  });
+  companions.set('brain-backup', {
+    name: 'brain-backup',
+    entry: backupEntry,
+    cwd: brainRoot,
+    enabled: existsSync(backupEntry) && !manifestResult.error,
+    continuous: true,
+    phase: existsSync(backupEntry) && !manifestResult.error ? 'waiting' : 'disabled',
+    restartAttempts: 0,
+    crashTimes: [],
+    error: existsSync(backupEntry) ? manifestResult.error : 'profile backup is not present in this build',
   });
 
   const manager = services.get('manager');

@@ -228,16 +228,16 @@ try {
 
   {
     const { api, state } = loadUpdater({
-      currentVersion: '1.2.0-review.8',
-      checkImpl: async () => ({ updateInfo: { version: '1.2.0-review.10' } }),
+      currentVersion: '1.2.0',
+      checkImpl: async () => ({ updateInfo: { version: '1.2.1' } }),
       downloadImpl: async (updater) => {
-        updater.emit('update-downloaded', { version: '1.2.0-review.10' });
+        updater.emit('update-downloaded', { version: '1.2.1' });
         return ['/mock/review-update'];
       },
     }, true);
     const checked = await api.checkForUpdate();
     assert.equal(checked.channel, 'review');
-    assert.equal(checked.available, true, 'numeric review run 10 must be newer than review run 8');
+    assert.equal(checked.available, true, 'review-channel updates must use a newer stable application version');
     assert.equal(state.latestCalls, 0, 'review builds must not probe the stable Latest route');
     assert.equal(state.autoUpdater.allowPrerelease, true);
     assert.equal(state.autoUpdater.channel, 'review');
@@ -250,7 +250,7 @@ try {
     });
     const staged = await api.downloadUpdate();
     assert.equal(staged.staged, true);
-    assert.equal(staged.latest, '1.2.0-review.10');
+    assert.equal(staged.latest, '1.2.1');
   }
 
   {
@@ -258,10 +258,10 @@ try {
     process.env.IDCTL_UPDATE_NOOPEN = '1';
     try {
       const { api, state } = loadUpdater({
-        currentVersion: '1.2.0-review.8',
-        checkImpl: async () => ({ updateInfo: { version: '1.2.0-review.10' } }),
+        currentVersion: '1.2.0',
+        checkImpl: async () => ({ updateInfo: { version: '1.2.1' } }),
         downloadImpl: async (updater) => {
-          updater.emit('update-downloaded', { version: '1.2.0-review.10' });
+          updater.emit('update-downloaded', { version: '1.2.1' });
           return ['/mock/review-update'];
         },
       }, true);

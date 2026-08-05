@@ -132,14 +132,14 @@ assert.deepEqual(
 );
 assert.equal(
   evaluateRuntimeApplicationVersionContract({
-    applicationVersion: '1.2.3-review.7',
-    compiledApplicationVersion: '1.2.3-review.7',
+    applicationVersion: '1.2.3',
+    compiledApplicationVersion: '1.2.3',
     compiledSourceVersion: '1.2.3',
     manifestVersion: '1.2.3',
     reviewBuild: true,
   }).ok,
   true,
-  'an exact compiled review prerelease may use the runtime staged from its stable source version',
+  'a review-channel package must retain the stable source version',
 );
 for (const fixture of [
   {
@@ -147,32 +147,32 @@ for (const fixture of [
     compiledApplicationVersion: '1.2.3-review.7',
     compiledSourceVersion: '1.2.3',
     manifestVersion: '1.2.3',
-    reviewBuild: false,
+    reviewBuild: true,
   },
   {
-    applicationVersion: '1.2.3-review.0',
-    compiledApplicationVersion: '1.2.3-review.0',
+    applicationVersion: '1.2.4',
+    compiledApplicationVersion: '1.2.4',
     compiledSourceVersion: '1.2.3',
     manifestVersion: '1.2.3',
     reviewBuild: true,
   },
   {
-    applicationVersion: '1.2.3-review.8',
-    compiledApplicationVersion: '1.2.3-review.7',
+    applicationVersion: '1.2.4',
+    compiledApplicationVersion: '1.2.3',
     compiledSourceVersion: '1.2.3',
     manifestVersion: '1.2.3',
     reviewBuild: true,
   },
   {
-    applicationVersion: '1.2.3-review.7',
-    compiledApplicationVersion: '1.2.3-review.7',
+    applicationVersion: '1.2.3',
+    compiledApplicationVersion: '1.2.3',
     compiledSourceVersion: '1.2.3',
-    manifestVersion: '1.2.3-review.7',
+    manifestVersion: '1.2.4',
     reviewBuild: true,
   },
   {
-    applicationVersion: '1.2.3-review.7',
-    compiledApplicationVersion: '1.2.3-review.7',
+    applicationVersion: 'not-semver',
+    compiledApplicationVersion: 'not-semver',
     compiledSourceVersion: 'not-semver',
     manifestVersion: 'not-semver',
     reviewBuild: true,
@@ -192,7 +192,7 @@ assert.match(
 assert.match(
   desktopBuildSource,
   /__IDACC_PACKAGED_APPLICATION_VERSION__:\s*JSON\.stringify\([\s\S]*reviewVersion \|\| sourcePackageVersion/,
-  'the packaged supervisor must compile the exact normal or review application identity',
+  'the packaged supervisor must compile the exact application identity',
 );
 assert.match(
   unifiedStackSource,
@@ -409,7 +409,7 @@ assert.match(
 );
 assert.match(
   unifiedStackSource,
-  /if \(processTreeError\) \{\s*companion\.phase = 'unhealthy';\s*return;\s*\}\s*companion\.restartAttempts/,
+  /if \(processTreeError\) \{\s*companion\.phase = 'unhealthy';\s*return;\s*\}[\s\S]{0,900}companion\.restartAttempts/,
   'a companion replacement must stay blocked when prior-tree cleanup fails',
 );
 

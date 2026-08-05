@@ -32,7 +32,7 @@ function option(name) {
 
 for (let index = 0; index < args.length; index += 2) {
   if (!['--directory', '--version', '--channel'].includes(args[index]) || !args[index + 1]) {
-    fail('usage: scripts/verify-update-descriptors.mjs --directory <release-assets> --version X.Y.Z[-review.N] [--channel review]');
+    fail('usage: scripts/verify-update-descriptors.mjs --directory <release-assets> --version X.Y.Z [--channel review]');
   }
 }
 
@@ -42,9 +42,7 @@ const channelPositions = args.flatMap((arg, index) => arg === '--channel' ? [ind
 if (channelPositions.length > 1) fail('--channel may be provided at most once');
 const channel = channelPositions.length ? String(args[channelPositions[0] + 1] || '') : 'latest';
 if (!['latest', 'review'].includes(channel)) fail('--channel must be latest or review');
-const versionPattern = channel === 'review'
-  ? /^\d+\.\d+\.\d+-review\.[1-9][0-9]*$/
-  : /^\d+\.\d+\.\d+$/;
+const versionPattern = /^\d+\.\d+\.\d+$/;
 if (!versionPattern.test(version)) fail('--version does not match the selected update channel');
 
 function safeName(value, label) {

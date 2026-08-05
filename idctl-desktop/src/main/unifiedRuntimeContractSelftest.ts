@@ -842,14 +842,20 @@ export async function runUnifiedRuntimeContractSelftest(
     expected: [409],
     body: { servers: [], expectedServers: [] },
   });
+  const attachedSnapshot = Array.isArray(attached.body.mcpServers)
+    ? attached.body.mcpServers
+    : [];
   const detached = await requestJson(managerUrl, adminToken, `/agents/${encodeURIComponent(agentId)}/mcp`, {
     method: 'POST',
     expected: [200],
-    body: { servers: [], expectedServers: [fixtureServer] },
+    body: { servers: [], expectedServers: attachedSnapshot },
   });
   const mcpCompareAndSet = attached.body.needsRebuild === true
     && conflict.body.error === 'mcp_servers_changed'
-    && JSON.stringify(conflict.body.currentServers) === JSON.stringify([fixtureServer])
+    && JSON.stringify(conflict.body.currentServers) === JSON.stringify(attachedSnapshot)
+    && attachedSnapshot.length === 1
+    && typeof attachedSnapshot[0]?.connectionEnv === 'string'
+    && !Object.hasOwn(attachedSnapshot[0] ?? {}, 'args')
     && Array.isArray(detached.body.mcpServers)
     && detached.body.mcpServers.length === 0;
   if (!mcpCompareAndSet) throw new Error('bundled Manager MCP compare-and-set behavior failed');

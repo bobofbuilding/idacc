@@ -33,7 +33,9 @@ assert.doesNotMatch(main, /managerUpdate:/);
 assert.doesNotMatch(settings, /managerUpdate:|Check manager|Update & sync manager/);
 assert.doesNotMatch(teams, /managerUpdate:|Install & connect manager/);
 assert.doesNotMatch(syncDomains, /managerUpdate:/);
-assert.match(settings, /IDACC, Agent manager, and Brain ship and update together/);
+assert.match(settings, /IDACC updates through the/);
+assert.doesNotMatch(settings, /IDACC, Agent manager, and Brain (?:ship|will update) together/);
+assert.doesNotMatch(settings, /<span>Agent manager<\/span>|<span>Brain<\/span>|<span>Unified stack<\/span>/);
 for (const [surface, source] of [
   ['Teams', teams],
   ['desktop bridge', bridge],

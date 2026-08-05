@@ -165,7 +165,7 @@ try {
           ].join('\n');
         }
         if (url === `https://github.com/${repository}/releases/download/${reviewTag}/${reviewChannelName}`) {
-          return updateYaml(platform, '1.2.4-review.10');
+          return updateYaml(platform, '1.2.4');
         }
         throw new Error(`unexpected review updater request: ${url}`);
       },
@@ -181,7 +181,7 @@ try {
       {
         channel: 'review',
         allowPrerelease: true,
-        currentVersion: parseSemver('1.2.4-review.8'),
+        currentVersion: parseSemver('1.2.3'),
         fullChangelog: false,
       },
       {
@@ -192,14 +192,14 @@ try {
     );
     const reviewInfo = await reviewProvider.getLatestVersion();
     assert.equal(reviewInfo.tag, reviewTag);
-    assert.equal(reviewInfo.version, '1.2.4-review.10');
+    assert.equal(reviewInfo.version, '1.2.4');
     assert.deepEqual(
       reviewRequests.map(pathOf),
       [
         `https://github.com/${repository}/releases.atom`,
         `https://github.com/${repository}/releases/download/${reviewTag}/${reviewChannelName}`,
       ],
-      `${platform} review updater must select only the matching prerelease channel`,
+      `${platform} review updater must select only its channel while retaining a stable application version`,
     );
     assert.equal(
       reviewRequests.every((request) => !Object.keys(request.headers || {}).some((name) => name.toLowerCase() === 'authorization')),

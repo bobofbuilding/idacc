@@ -34,7 +34,7 @@ if (
 ) {
   console.error(
     'usage: run-review-builder.mjs --platform mac|win|linux '
-    + '--application-version X.Y.Z-review.N [--policy-only] -- <electron-builder arguments>',
+    + '--application-version X.Y.Z [--policy-only] -- <electron-builder arguments>',
   );
   process.exit(2);
 }
@@ -42,11 +42,8 @@ if (
 const sourceVersion = JSON.parse(
   readFileSync(join(desktop, 'package.json'), 'utf8'),
 ).version;
-if (
-  !new RegExp(`^${sourceVersion.replaceAll('.', '\\.')}\\-review\\.[1-9][0-9]*$`)
-    .test(applicationVersion)
-) {
-  fail('review application version must be <source-version>-review.<positive-run-number>');
+if (applicationVersion !== sourceVersion || !/^\d+\.\d+\.\d+$/.test(applicationVersion)) {
+  fail('review application version must exactly match the stable source version');
 }
 if (
   process.env.IDACC_REVIEW_BUILD !== '1'

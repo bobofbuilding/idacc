@@ -8,6 +8,15 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.701] — 2026-08-04
+### What changed
+- Make HR runtime/model changes atomic, preflighted, verified, and durable across Manager restarts.
+- Unify local-provider readiness, reduce model refresh latency, and separate backend health from parked agents.
+- Add bounded worker recovery and secure MCP connections as encrypted Settings-owned, process-local bindings.
+- Park the unstable BrowserMCP adapter and pin supported built-in MCP package versions.
+- Present Self-update as a single IDACC release, without separate Agent manager, Brain, or unified-stack product rows.
+- Use the clean version tag as the stable GitHub release title, including owner-authorized unsigned releases.
+
 ## [0.1.700] — 2026-08-04
 ### What changed
 - Stop automatic Manager restart restoration from opening macOS Keychain for local/no-key providers that retain an obsolete encrypted credential field.

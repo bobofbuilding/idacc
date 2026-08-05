@@ -1007,6 +1007,35 @@ export class ManagerClient {
   }
 
   /**
+   * Atomically apply a reviewed HR runtime configuration. Newer managers
+   * preflight, rebuild once, verify the live worker, and restore the previous
+   * configuration when launch fails. The expected snapshot prevents a stale
+   * Health row from overwriting a concurrent change.
+   */
+  async applyAgentConfiguration(
+    agentId: string,
+    configuration: { runtime: string; model: string; effort?: string; speed?: string },
+    expected: { runtime?: string; model?: string; effort?: string; speed?: string; status?: string },
+    provider?: { name: string; kind?: string; baseUrl: string; apiKey?: string; keyEnv?: string },
+    signal?: AbortSignal,
+  ): Promise<{
+    ok?: boolean;
+    verified?: boolean;
+    rolledBack?: boolean;
+    rollbackRestored?: boolean;
+    rebuilt?: boolean;
+    before?: Record<string, unknown>;
+    after?: Record<string, unknown>;
+  }> {
+    return this.requireRoute('Apply agent runtime configuration', () =>
+      this.post(`/agents/${encodeURIComponent(agentId)}/configuration`, {
+        configuration,
+        expected,
+        ...(provider ? { provider } : {}),
+      }, signal));
+  }
+
+  /**
    * Switch an agent to a Settings-backed provider API lane. The manager stores
    * only safe lane metadata and keeps the supplied API key process-local for the
    * immediate rebuild.

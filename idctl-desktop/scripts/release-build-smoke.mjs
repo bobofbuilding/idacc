@@ -74,9 +74,10 @@ assert.equal(
   'build provenance must carry the exact packaged application identity',
 );
 if (expectedReviewBuild) {
-  assert.match(
-    String(buildMode.applicationVersion || ''),
-    new RegExp(`^${sourcePackage.version.replaceAll('.', '\\.')}\\-review\\.[1-9][0-9]*$`),
+  assert.equal(
+    buildMode.applicationVersion,
+    sourcePackage.version,
+    'review channel must not alter the stable application version',
   );
 }
 assert.ok(

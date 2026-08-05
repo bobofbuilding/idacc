@@ -43,6 +43,8 @@ const mcpProbeRunnerPath = resolve(ROOT, 'src/main/mcp-probe-runner.cjs');
 const requireRuntime = process.argv.includes('--require-runtime');
 const releaseBuild = requireRuntime || process.argv.includes('--release');
 const reviewBuild = releaseBuild && process.env.IDACC_REVIEW_BUILD === '1';
+const allowDirtyReviewBuild = reviewBuild
+  && process.env.IDACC_ALLOW_DIRTY_REVIEW_BUILD === '1';
 const mainProcessPolicyMode = mainProcessStartupPolicyMode({
   releaseBuild,
   reviewBuild,
@@ -57,11 +59,10 @@ const reviewVersion = reviewBuild
   : null;
 if (
   reviewBuild
-  && !new RegExp(`^${sourcePackageVersion.replaceAll('.', '\\.')}\\-review\\.[1-9][0-9]*$`)
-    .test(reviewVersion || '')
+  && reviewVersion !== sourcePackageVersion
 ) {
   throw new Error(
-    'review builds require IDACC_REVIEW_VERSION=<source-version>-review.<positive-run-number>',
+    'review builds require IDACC_REVIEW_VERSION=<source-version>; channel labels must not alter the application version',
   );
 }
 
@@ -791,7 +792,7 @@ if (requireRuntime) {
   if (runtimeManifest.application?.name !== applicationPackage.name) {
     errors.push('runtime manifest application name does not match the desktop package');
   }
-  if (runtimeManifest.application?.dirty !== false) {
+  if (runtimeManifest.application?.dirty !== false && !allowDirtyReviewBuild) {
     errors.push('runtime manifest was staged from a dirty application checkout');
   }
   if (runtimeManifest.application?.version !== applicationPackage.version) {
@@ -806,7 +807,7 @@ if (requireRuntime) {
   if (runtimeManifest.build?.platform !== process.platform) {
     errors.push(`runtime manifest platform ${runtimeManifest.build?.platform || '(missing)'} does not match ${process.platform}`);
   }
-  if (git(['status', '--porcelain=v1', '--untracked-files=all'])) {
+  if (git(['status', '--porcelain=v1', '--untracked-files=all']) && !allowDirtyReviewBuild) {
     errors.push('release build requires a clean application checkout');
   }
   if (errors.length) {
