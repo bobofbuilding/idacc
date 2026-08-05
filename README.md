@@ -5,6 +5,23 @@ coordinating private AI-agent teams. The consumer application includes the
 desktop interface, Agent manager, and Brain together; a new user does not need a
 separate manager or Brain checkout.
 
+## Current release: v0.1.704
+
+The current application line completes the move to one profile-owned, unified
+desktop runtime:
+
+- managed workers refresh their authenticated Manager and Brain guidance, plus
+  their configured skills, before startup;
+- delegation accepts immutable managed-agent IDs and records auditable child-task
+  receipts;
+- a profile-scoped launch no longer recreates the retired `~/.id-agents` data
+  path; and
+- the durable first-run state, atomic agent configuration, secure MCP bindings,
+  guarded plan consolidation, and passive health checks from recent releases all
+  remain part of the same application.
+
+See [CHANGELOG.md](CHANGELOG.md) for the detailed release history.
+
 ## What ships
 
 | Component | Responsibility | Distribution |
@@ -44,13 +61,22 @@ history also have bounded age, file-count, and size retention.
 ## Install and first run
 
 Use [Download the latest IDACC release](https://github.com/bobofbuilding/idacc/releases/latest)
-to open the verified public release and choose the installer for your platform.
+to open the public stable release, read its signing notice, and choose the
+installer for your platform. You do not need Git, Node.js, a source checkout, or
+a separate Manager install.
 
-Production releases provide:
+| Operating system | Choose | Install |
+|---|---|---|
+| macOS on Apple Silicon (M1 or newer) | `arm64.dmg` | Open the DMG and drag IDACC to Applications. The `arm64.zip` is available for manual placement. |
+| macOS on Intel | `x64.dmg` | Open the DMG and drag IDACC to Applications. The `x64.zip` is available for manual placement. |
+| Windows 10/11 on x64 | `x64.exe` | Run the NSIS installer. |
+| Linux on x64 | `x86_64.AppImage` or `amd64.deb` | Use AppImage for a portable, in-app-updatable install, or DEB for system package integration. |
 
-- macOS DMG and ZIP for Apple Silicon and Intel;
-- Windows x64 NSIS installer; and
-- Linux x64 AppImage and Debian package.
+The release also includes `SHA256SUMS`, a machine-readable release index, SBOM
+provenance bundles, and update descriptors. When release notes identify a build
+as owner-authorized unsigned, macOS Gatekeeper or Windows SmartScreen may warn
+on first launch; verify the download against the release checksums before
+continuing.
 
 Download the artifact for the current release, install it normally, and open
 IDACC. On first launch, IDACC:
@@ -107,12 +133,14 @@ The desktop updater:
   application shutdown; and
 - installs only after the user chooses **Restart & update**.
 
-macOS and Windows production jobs require signing credentials and verify the
-resulting signatures. macOS additionally requires notarization, Gatekeeper
-acceptance, and staple validation. Linux artifacts ship with release checksums,
-SBOMs, and build-provenance attestations. Linux in-app replacement is available
-only for the AppImage build; Debian-package installs update through the system
-package manager or by installing the newer `.deb`.
+Signed macOS and Windows production jobs require signing credentials and verify
+the resulting signatures. macOS additionally requires notarization, Gatekeeper
+acceptance, and staple validation. The separately guarded owner-authorized
+unsigned path keeps the same exact-source, runtime, checksum, SBOM, provenance,
+and cross-platform packaging gates while labeling the missing platform
+signatures in the release notes. Linux in-app replacement is available only for
+the AppImage build; Debian-package installs update through the system package
+manager or by installing the newer `.deb`.
 
 Linux review and production builds enable Electron's sandbox before bundled
 application modules load and refuse to continue when `--no-sandbox` or
