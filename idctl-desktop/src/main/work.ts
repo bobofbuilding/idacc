@@ -1128,6 +1128,12 @@ const EXPLICIT_GENERAL_COUNSEL_REQUEST = /\b(?:idacc\s+)?general[-\s]+coun(?:cil
 const REPOSITORY_ACTION = /\b(?:audit|review|reconcile|merge|push|release|update|upgrade|validate|verify)\b/i;
 const REPOSITORY_OBJECT = /\b(?:git|repos?(?:itories)?|branches?|commits?|pull[-\s]+requests?)\b/i;
 const PROJECT_PORTFOLIO = /\b(?:all|each|every)\b[^.?!\n]{0,60}\bprojects?\b|\bprojects?\b[^.?!\n]{0,60}\b(?:one by one|1 by 1|across the board)\b/i;
+const REPOSITORY_AUTHORITY_TASK_NAME = 'audit-reconcile-authorized-projects';
+const REPOSITORY_AUTHORITY_TASK_TITLE = 'Audit reconcile authorized projects';
+
+function repositoryAuthorityRunId(now = new Date()): string {
+  return now.toISOString().replace(/\.\d{3}Z$/, 'Z').replace(/[^0-9TZ]/g, '').toLowerCase();
+}
 
 /**
  * Keep the privileged repository path narrow. Ordinary policy or product text
@@ -1252,21 +1258,24 @@ export async function fanOutObjectiveToActiveTeamLeads(
   const existing = [
     ...(await scoped.tasksByStatus('todo').catch(() => [] as Task[])),
     ...(await scoped.tasksByStatus('doing').catch(() => [] as Task[])),
-  ].find((task) => task.name === 'audit-reconcile-authorized-projects');
+  ].find((task) => task.name === REPOSITORY_AUTHORITY_TASK_NAME);
   if (existing) {
-    const ref = existing.shortId || existing.name || 'audit-reconcile-authorized-projects';
+    const ref = existing.shortId || existing.name || REPOSITORY_AUTHORITY_TASK_NAME;
     await scoped.remote(`/task jumpstart-stalled --task ${qArg(ref)}`).catch(() => {});
     return [{
       team: operations.team,
       lead: operations.lead,
       status: 'dispatched',
-      detail: `reused task ${ref}`,
+      detail: `reused open task ${ref}; jumpstart requested`,
     }];
   }
 
+  const terminalHistory = (await scoped.tasksByStatus('done', { limit: WORK_COMPLETION_DONE_TASK_LIMIT }).catch(() => [] as Task[]))
+    .find((task) => task.name === REPOSITORY_AUTHORITY_TASK_NAME);
+  const runId = terminalHistory ? repositoryAuthorityRunId() : undefined;
   const packet = FANOUT_PROMPT(objective, operations.team);
   const created = await createAndDispatchPlan(scoped, objective, [{
-    title: 'Audit reconcile authorized projects',
+    title: runId ? `${REPOSITORY_AUTHORITY_TASK_TITLE} ${runId}` : REPOSITORY_AUTHORITY_TASK_TITLE,
     agent: operations.lead,
     description: packet,
     dependsOn: [],
@@ -1277,6 +1286,7 @@ export async function fanOutObjectiveToActiveTeamLeads(
     ownerOpenTaskCap: Math.max(WORK_OWNER_OPEN_TASK_CAP, WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP),
     coordinator: operations.lead,
     leadCoordination: true,
+    planId: runId ? `${REPOSITORY_AUTHORITY_TASK_NAME}-${runId}` : undefined,
   });
   const task = created.created[0];
   if (!task?.ok) {
@@ -1291,7 +1301,9 @@ export async function fanOutObjectiveToActiveTeamLeads(
     team: operations.team,
     lead: operations.lead,
     status: 'dispatched',
-    detail: `created task ${task.ref}`,
+    detail: terminalHistory
+      ? `created fresh task ${task.ref}; previous ${REPOSITORY_AUTHORITY_TASK_NAME} is terminal`
+      : `created task ${task.ref}`,
   }];
 }
 

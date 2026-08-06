@@ -51,6 +51,7 @@ async function main(): Promise<void> {
 
   const dispatched: Array<{ team: string; command: string }> = [];
   const activeQueries: Record<string, number> = {};
+  const taskRows: Record<string, Record<string, any[]>> = {};
   const rosters: Record<string, Array<{ id: string; name: string; status: string; port: number; createdAt: number }>> = {
     default: [{ id: 'primary', name: 'lead', status: 'running', port: 4101, createdAt: Date.now() }],
     engineering: [{ id: 'eng-lead', name: 'engineering-lead', status: 'running', port: 4102, createdAt: Date.now() }],
@@ -67,7 +68,7 @@ async function main(): Promise<void> {
     team,
     teams: async () => Object.keys(rosters).map((name) => ({ id: name, name, agentCount: rosters[name].length })),
     agents: async () => rosters[team] || [],
-    tasksByStatus: async () => [],
+    tasksByStatus: async (status: string) => taskRows[team]?.[status] ?? [],
     activeAgentQueries: async () => ({ count: activeQueries[team] ?? 0, queries: [] }),
     remote: async (command: string) => {
       dispatched.push({ team, command });
@@ -95,6 +96,33 @@ async function main(): Promise<void> {
   assert.ok(dispatched.some((row) => row.team === 'legal' && /^\/ask general-counsel\b/.test(row.command)), 'General Council requests must route directly to legal/general-counsel');
   assert.equal(dispatched.some((row) => row.team === 'operations-team'), false, 'explicit General Council requests must not spill into operations');
   assert.equal(policyResult[0]?.status, 'dispatched', 'a lead with three active queries must still accept a fourth parallel request');
+
+  dispatched.length = 0;
+  taskRows['operations-team'] = {
+    todo: [{ name: 'audit-reconcile-authorized-projects', shortId: 'audit-open', title: 'Audit reconcile authorized projects', status: 'todo' }],
+    doing: [],
+    done: [],
+  };
+  const reuseResult = await fanOutObjectiveToActiveTeamLeads(makeClient('default'), 'Audit every project and ship verified fixes.', 'default');
+  assert.deepEqual(reuseResult.map((row) => [row.team, row.lead, row.status]), [['operations-team', 'ops-lead', 'dispatched']]);
+  assert.match(reuseResult[0]?.detail || '', /reused open task audit-open; jumpstart requested/);
+  assert.ok(dispatched.some((row) => row.team === 'operations-team' && /\/task jumpstart-stalled --task "audit-open"/.test(row.command)), 'open repository audit task should be jumpstarted');
+  assert.equal(dispatched.some((row) => /^\/task create\b/.test(row.command)), false, 'open repository audit task should be reused instead of recreated');
+
+  dispatched.length = 0;
+  taskRows['operations-team'] = {
+    todo: [],
+    doing: [],
+    done: [{ name: 'audit-reconcile-authorized-projects', shortId: 'audit-done', title: 'Audit reconcile authorized projects', status: 'done' }],
+  };
+  const freshResult = await fanOutObjectiveToActiveTeamLeads(makeClient('default'), 'Audit every project and ship verified fixes again.', 'default');
+  assert.deepEqual(freshResult.map((row) => [row.team, row.lead, row.status]), [['operations-team', 'ops-lead', 'dispatched']]);
+  assert.match(freshResult[0]?.detail || '', /created fresh task .*previous audit-reconcile-authorized-projects is terminal/);
+  const createRow = dispatched.find((row) => row.team === 'operations-team' && /^\/task create\b/.test(row.command));
+  assert.ok(createRow, 'terminal repository audit history should create a fresh tracked run');
+  assert.match(createRow.command, /^\/task create "Audit reconcile authorized projects \d{8}t\d{6}z" --owner ops-lead\b/);
+  assert.match(createRow.command, / --plan "audit-reconcile-authorized-projects-\d{8}t\d{6}z"/);
+  assert.doesNotMatch(createRow.command, /^\/task create "Audit reconcile authorized projects" --owner ops-lead\b/, 'terminal history must not recreate the fixed task slug');
 
   console.log('chat primary-lead delegation guard ok');
 }
