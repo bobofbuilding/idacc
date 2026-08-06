@@ -8,6 +8,14 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.708] — 2026-08-06
+### What changed
+- Fix terminal task completion collision handling and guard task-name reuse across fresh repository runs.
+- test(work): align open task reuse assertion
+- test(work): cover terminal task name reuse
+- fix(work): avoid terminal task name collisions
+- Fix terminal task completion collision
+
 ## [0.1.707] — 2026-08-05
 ### What changed
 - Recover missing-material task blocks through a bounded persistent ownership ladder, requeue them when sources change, and surface genuine decisions in Inbox; bundle Manager v0.1.168.
