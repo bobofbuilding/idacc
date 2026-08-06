@@ -96,7 +96,7 @@ if (scenario === 'all' || scenario === 'open') {
 
   assert.deepEqual(statuses, ['todo', 'doing'], 'open-task reuse should remain bounded to live task states');
   assert.equal(result[0]?.status, 'dispatched');
-  assert.match(result[0]?.detail || '', /reused task #open001/);
+  assert.match(result[0]?.detail || '', /reused open task #open001; jumpstart requested/);
   assert.equal(commands.filter((command) => /^\/task create\b/.test(command)).length, 0, 'an open canonical task must not be duplicated');
   assert.deepEqual(commands, ['/task jumpstart-stalled --task "#open001"']);
 }
