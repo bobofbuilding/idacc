@@ -123,6 +123,7 @@
     "test:plans-team-lead-delegation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/plans-team-lead-delegation-smoke.mjs",
     "test:plans-work": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/plans-work-smoke.mjs",
     "test:work-delegation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/work-delegation-smoke.mjs",
+    "test:work-terminal-history": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/work-terminal-history-smoke.mjs",
     "test:work-reconcile": "node scripts/work-reconcile-smoke.mjs",
     "test:renderer-store": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/renderer-store-poll-smoke.mjs",
     "test:version-display": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/version-display-smoke.ts",
