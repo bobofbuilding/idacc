@@ -1,12 +1,28 @@
-# ID Agents Control Center
+# IDACC — ID Agents Control Center
 
-A standalone **control center** for an [id-agents](https://github.com/idchain-world/id-agents)
-manager — the multi‑agent orchestration platform that runs a team of AI coding
-agents (Claude Code CLI, OpenAI Codex, Cursor CLI, …) as real processes behind a
-daemon on `:4100`.
+See what every agent is doing, unblock work, and steer the whole team from one
+desktop control center.
 
-This repo ships **two front‑ends over the same backend**, so you can drive a
-running fleet visually instead of by chat command:
+IDACC gives operators a live, visual workspace for an
+[id-agents](https://github.com/idchain-world/id-agents) team. It connects to a
+running manager so you can monitor agents, talk to the manager, manage tasks and
+schedules, and configure team capabilities without editing the manager's data.
+
+> **Release status:** IDACC is an actively developed macOS desktop app with
+> continuous `v0.1.x` releases, plus a terminal interface in the same repository.
+> It is not a hosted service and requires a running compatible manager. Some
+> advanced manager integrations need the maintained compatible fork, and the
+> Identity & Keys signing backend is currently simulated. Read
+> [Manager compatibility](#how-this-relates-to-id-agents-the-difference) before
+> relying on extension-only features.
+
+**[Install IDACC and its compatible manager](#quick-start)**
+
+[Latest releases](https://github.com/bobofbuilding/idacc/releases/latest)
+· [Security policy](SECURITY.md)
+· [Build from source](#desktop-gui)
+
+IDACC ships **two front-ends over the same backend**:
 
 | Package | What it is | Build target |
 |---|---|---|
@@ -254,3 +270,5 @@ manager by [idchain-world](https://github.com/idchain-world). This is an
 independent client; it depends on a running manager but vendors none of its code.
 
 Licensed under the MIT License — see [LICENSE](LICENSE).
+
+<sub>Created by Bittrees.</sub>
