@@ -184,6 +184,7 @@ export interface ChatPatch {
   unread?: boolean;
   inflight?: { queryId: string; replyId: number; target: string; startedAt: number; plan?: { request: boolean; text: string } } | null; // set to null to clear
   appendMessage?: ChatMessage;
+  appendMessages?: ChatMessage[];
   patchMessage?: { id: number; patch: Partial<ChatMessage> };
   touch?: boolean;          // bump updatedAt (default true; false = don't reorder)
 }
@@ -201,6 +202,7 @@ export function patchChat(id: string, p: ChatPatch): { ok: boolean; session?: Ch
     if (p.inflight !== undefined) s.inflight = p.inflight; // {…} to set, null to clear
     if (Array.isArray(s.messages) === false) s.messages = [];
     if (p.appendMessage) s.messages = [...s.messages, stripPending(p.appendMessage)];
+    if (p.appendMessages?.length) s.messages = [...s.messages, ...p.appendMessages.map(stripPending)];
     if (p.patchMessage) s.messages = s.messages.map((m) => (m.id === p.patchMessage!.id ? stripPending({ ...m, ...p.patchMessage!.patch }) : m));
     if (p.touch !== false) s.updatedAt = Date.now();
     writeSession(f, s);
@@ -285,38 +287,6 @@ export async function genTitle(text: string): Promise<string> {
     let t = String(((await r.json()) as { response?: string }).response ?? '');
     t = t.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^[\s"'`]+|[\s"'`]+$/g, '').split('\n')[0].replace(/[.!?]+$/, '').trim();
     return t.slice(0, 60);
-  } catch {
-    return '';
-  }
-}
-
-/** One-line, plain-English summary of what produced an agent reply — drives the
- *  chat's "behind the scenes" summary line. Local Ollama (free, no cloud cost);
- *  returns '' on any failure (the caller keeps a deterministic rollup fallback). */
-export async function genReason(text: string): Promise<string> {
-  const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
-  if (!clean) return '';
-  const ollama = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/+$/, '');
-  let installed: string[] = [];
-  try {
-    const r = await fetch(`${ollama}/api/tags`, { signal: AbortSignal.timeout(3000) });
-    if (r.ok) installed = ((await r.json()) as { models?: { name: string }[] }).models?.map((m) => m.name) ?? [];
-  } catch { return ''; }
-  // Prefer the smallest installed model for a fast, cheap summary.
-  const order = ['llama3.2:1b', 'qwen3:1.7b', 'qwen2.5:3b', 'qwen3:4b', 'llama3.2:latest'];
-  const model = order.find((m) => installed.includes(m)) || installed[0];
-  if (!model) return '';
-  const prompt = `In one short sentence (max ~14 words, plain English, no quotes, no trailing punctuation), summarize what the assistant did or decided to produce this reply:\n"${clean}"\nSummary:`;
-  try {
-    const r = await fetch(`${ollama}/api/generate`, {
-      method: 'POST',
-      body: JSON.stringify({ model, prompt, stream: false, options: { num_predict: 48, temperature: 0.2 } }),
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!r.ok) return '';
-    let t = String(((await r.json()) as { response?: string }).response ?? '');
-    t = t.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^[\s"'`]+|[\s"'`]+$/g, '').split('\n')[0].replace(/[.!?]+$/, '').trim();
-    return t.slice(0, 120);
   } catch {
     return '';
   }

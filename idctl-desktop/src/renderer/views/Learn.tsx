@@ -568,7 +568,19 @@ export function Learn({ store }: { store: FleetStore }) {
 
               {selected.routing?.length ? (
                 <div>
-                  <h3>Routing</h3>
+                  <h3>
+                    Routing
+                    {selected.routingCompletedAt
+                      ? ' - complete'
+                      : selected.routingAttempts
+                        ? ` - ${selected.routingAttempts}/3 attempt${selected.routingAttempts === 1 ? '' : 's'}${selected.routingAttempts >= 3 ? ' - parked' : ''}`
+                        : ''}
+                  </h3>
+                  {!selected.routingCompletedAt && selected.routingNextAt ? (
+                    <div className="muted small" style={{ marginBottom: 6 }}>
+                      next bounded retry {new Date(selected.routingNextAt).toLocaleString()}
+                    </div>
+                  ) : null}
                   {selected.routing.map((r) => (
                     <div className="small" key={`${r.team}-${r.lead ?? r.status}`}>
                       <b>{r.team}</b> - {r.status}{r.lead ? ` via ${r.lead}` : ''}{r.queryId ? ` - ${r.queryId}` : ''}{r.detail ? ` - ${r.detail}` : ''}
@@ -615,7 +627,11 @@ function RecommendationRow({ rec, disabled, onAccept, onDismiss }: {
       {rec.options?.length ? <div className="muted small" style={{ marginTop: 6 }}>{rec.options.join(' / ')}</div> : null}
       {rec.autoTaskStatus ? (
         <div className="muted small" style={{ marginTop: 6 }}>
-          task automation: {rec.autoTaskStatus}{rec.autoTaskRef ? ` · ${rec.autoTaskRef}` : ''}{rec.autoTaskError ? ` · ${rec.autoTaskError}` : ''}
+          task automation: {rec.autoTaskStatus}
+          {rec.autoTaskAttempts ? ` · attempt ${rec.autoTaskAttempts}/3` : ''}
+          {rec.autoTaskNextAt ? ` · retry ${new Date(rec.autoTaskNextAt).toLocaleString()}` : ''}
+          {rec.autoTaskRef ? ` · ${rec.autoTaskRef}` : ''}
+          {rec.autoTaskError ? ` · ${rec.autoTaskError}` : ''}
         </div>
       ) : null}
       <div className="row-actions" style={{ marginTop: 8, gap: 6 }}>

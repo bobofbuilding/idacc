@@ -2,12 +2,14 @@
  * Background driver for active Goals.
  *
  * Global `goalDriver.enabled` defaults on, but per-goal `autopilot` must also
- * be true before anything can spawn. The loop is single-flight and best-effort:
- * errors are logged and recorded on the goal, never allowed to crash the app.
+ * be true before anything can spawn. IDACC publishes the operator configuration;
+ * the manager owns the durable cadence and single-flight execution.
  */
 
 import type { ManagerClient } from '../../../idctl/src/api/client.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
+import { defaultGoalDriverSettings } from '../../../idctl/src/settings/schema.ts';
+import { createSingleFlightBackgroundGate } from './backgroundActivity.ts';
 import { getGoal, goalPriorityRank, listGoals, normalizeGoalPriority, type Goal } from './goalstore.ts';
 
 export interface GoalDriverConfig {
@@ -25,6 +27,28 @@ export interface GoalDriverSummary {
   errors: string[];
 }
 
+export interface GoalDriverRuntimeState {
+  lastStartedAt?: number;
+  lastCompletedAt?: number;
+  lastError?: string | null;
+    lastResult?: {
+      ok?: boolean;
+      consideredGoals?: number;
+      drivenGoals?: number;
+      tasksSpawned?: number;
+      errorCount?: number;
+    };
+}
+
+export interface GoalDriverStatus {
+  config: GoalDriverConfig;
+  managerConfig: GoalDriverConfig | null;
+  synced: boolean;
+  runtime: GoalDriverRuntimeState | null;
+  lastRunAt: number | null;
+  nextRunAt: number | null;
+}
+
 interface ManagerGoalAutopilotSyncResult {
   consideredGoals?: number;
   drivenGoals?: number;
@@ -32,20 +56,108 @@ interface ManagerGoalAutopilotSyncResult {
   errors?: Array<{ goal?: string; error?: string }>;
 }
 
+const sharedGoalDriverDefaults = defaultGoalDriverSettings();
+
 export const GOAL_DRIVER_DEFAULTS: GoalDriverConfig = {
-  enabled: true,
-  cadenceMs: 15 * 60 * 1000,
-  maxOpenTasksPerGoal: 3,
+  enabled: sharedGoalDriverDefaults.enabled !== false,
+  cadenceMs: sharedGoalDriverDefaults.cadenceMs ?? 15 * 60 * 1000,
+  maxOpenTasksPerGoal: sharedGoalDriverDefaults.maxOpenTasksPerGoal ?? 3,
 };
 
 export function normalizeGoalDriverConfig(input?: Partial<GoalDriverConfig> | null): GoalDriverConfig {
+  const requestedCadence = Number(input?.cadenceMs);
+  const requestedTasks = Number(input?.maxOpenTasksPerGoal);
   return {
-    enabled: input?.enabled === true,
-    cadenceMs: Number.isFinite(input?.cadenceMs) && Number(input?.cadenceMs) > 0 ? Math.floor(Number(input!.cadenceMs)) : GOAL_DRIVER_DEFAULTS.cadenceMs,
-    maxOpenTasksPerGoal: Number.isFinite(input?.maxOpenTasksPerGoal) && Number(input?.maxOpenTasksPerGoal) > 0
-      ? Math.floor(Number(input!.maxOpenTasksPerGoal))
+    enabled: typeof input?.enabled === 'boolean'
+      ? input.enabled
+      : GOAL_DRIVER_DEFAULTS.enabled,
+    cadenceMs: Number.isFinite(requestedCadence) && requestedCadence > 0
+      ? Math.max(5 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Math.floor(requestedCadence)))
+      : GOAL_DRIVER_DEFAULTS.cadenceMs,
+    maxOpenTasksPerGoal: Number.isFinite(requestedTasks) && requestedTasks > 0
+      ? Math.max(1, Math.min(12, Math.floor(requestedTasks)))
       : GOAL_DRIVER_DEFAULTS.maxOpenTasksPerGoal,
   };
+}
+
+export function goalDriverControlValue(input?: Partial<GoalDriverConfig> | null): Record<string, number | boolean> {
+  const config = normalizeGoalDriverConfig(input);
+  return {
+    schemaVersion: 1,
+    enabled: config.enabled,
+    cadenceMs: config.cadenceMs,
+    maxTasksPerRun: config.maxOpenTasksPerGoal,
+  };
+}
+
+function goalDriverConfigFromControlState(
+  value: Record<string, unknown> | null | undefined,
+): GoalDriverConfig | null {
+  if (!value) return null;
+  return normalizeGoalDriverConfig({
+    enabled: typeof value.enabled === 'boolean' ? value.enabled : undefined,
+    cadenceMs: Number(value.cadenceMs),
+    maxOpenTasksPerGoal: Number(value.maxTasksPerRun),
+  });
+}
+
+function goalDriverConfigStamp(config: GoalDriverConfig): string {
+  return `${config.enabled ? 1 : 0}:${config.cadenceMs}:${config.maxOpenTasksPerGoal}`;
+}
+
+export function goalDriverNextRunAt(
+  config: GoalDriverConfig,
+  runtime: Pick<GoalDriverRuntimeState, 'lastStartedAt' | 'lastCompletedAt'> | null | undefined,
+): number | null {
+  if (!config.enabled) return null;
+  const lastStartedAt = Number(runtime?.lastStartedAt || 0);
+  const lastCompletedAt = Number(runtime?.lastCompletedAt || 0);
+  if (lastStartedAt > lastCompletedAt) {
+    return lastStartedAt + Math.max(config.cadenceMs, 15 * 60 * 1000);
+  }
+  return lastCompletedAt > 0 ? lastCompletedAt + config.cadenceMs : null;
+}
+
+export async function readGoalDriverStatus(
+  client: ManagerClient,
+  input?: Partial<GoalDriverConfig> | null,
+): Promise<GoalDriverStatus> {
+  const config = normalizeGoalDriverConfig(input);
+  const scoped = client.withTeam('default');
+  const [managerState, runtimeState] = await Promise.all([
+    scoped.controlStateGet<Record<string, unknown>>('global', 'goal-driver').catch(() => null),
+    scoped.controlStateGet<GoalDriverRuntimeState>('global', 'goal-driver-runtime').catch(() => null),
+  ]);
+  const managerConfig = goalDriverConfigFromControlState(managerState?.value);
+  const runtime = runtimeState?.value ?? null;
+  const effectiveConfig = managerConfig ?? config;
+  const lastRunAt = Number(runtime?.lastCompletedAt || 0) || null;
+  return {
+    config,
+    managerConfig,
+    synced: !!managerConfig && goalDriverConfigStamp(managerConfig) === goalDriverConfigStamp(config),
+    runtime,
+    lastRunAt,
+    nextRunAt: goalDriverNextRunAt(effectiveConfig, runtime),
+  };
+}
+
+export function dedupeGoalInstructionMemories<T extends { mem_key?: string; project?: string }>(memories: T[]): T[] {
+  const canonicalProjects = new Set(
+    memories
+      .filter((memory) => String(memory.mem_key || '').startsWith('goals:active:'))
+      .map((memory) => String(memory.project || memory.mem_key?.slice('goals:active:'.length) || '')),
+  );
+  return memories.filter((memory) => {
+    const key = String(memory.mem_key || '');
+    if (!key.startsWith('goals:autopilot:')) return true;
+    const project = String(memory.project || key.slice('goals:autopilot:'.length));
+    return !canonicalProjects.has(project);
+  });
+}
+
+export async function syncGoalDriverConfig(client: ManagerClient, input?: Partial<GoalDriverConfig> | null): Promise<void> {
+  await client.withTeam('default').controlStateSet('global', 'goal-driver', goalDriverControlValue(input));
 }
 
 function clip(s: string, n: number): string {
@@ -90,33 +202,39 @@ function goalPriorityLabel(goal: Goal): string {
   return priority === 'primary' ? 'Primary' : priority === 'secondary' ? 'Secondary' : 'General';
 }
 
-function teamGoalInstructions(team: string, goals: Goal[]): string {
-  if (!goals.length) return '';
-  const lines = goals
-    .slice()
-    .sort((a, b) => goalPriorityRank(a.priority) - goalPriorityRank(b.priority) || b.updatedAt - a.updatedAt)
-    .map((g) => `- [${goalPriorityLabel(g)}] ${g.title || g.id} (${g.id}): ${clip(g.content || g.idea || '', 220)}`);
+export function buildActiveGoalInstructions(_team: string, goals: Goal[]): string {
+  const lines = goals.slice().sort((a, b) => goalPriorityRank(a.priority) - goalPriorityRank(b.priority) || b.updatedAt - a.updatedAt).map((g) => {
+    const owner = g.agent ? ` · agent: ${g.agent}` : '';
+    const automation = g.autopilot ? ' · Autopilot' : '';
+    return `- [${goalPriorityLabel(g)}${automation}] ${g.title || g.id} (${g.id}${owner}): ${clip(g.content || g.idea || '', 220)}`;
+  });
   return [
-    '## Active autopilot goals',
+    '## Active goals',
     '',
-    `Keep this team's work aligned with these active operator goals:`,
+    lines.length
+      ? `Keep this team's work aligned with these active goals. Autopilot marks goals eligible for bounded cadence work; it is not a second goal source.`
+      : `No active goals are currently assigned to this team.`,
     ...lines,
   ].join('\n');
 }
 
-function teamActiveWorkGoalInstructions(team: string, goals: Goal[]): string {
-  const lines = goals.slice().sort((a, b) => goalPriorityRank(a.priority) - goalPriorityRank(b.priority) || b.updatedAt - a.updatedAt).map((g) => {
-    const owner = g.agent ? ` · agent: ${g.agent}` : '';
-    return `- [${goalPriorityLabel(g)}] ${g.title || g.id} (${g.id}${owner}): ${clip(g.content || g.idea || '', 220)}`;
-  });
-  return [
-    '## Active Work goals',
-    '',
-    lines.length
-      ? `Keep this team's work aligned with these active Work goals:`
-      : `No active Work goals are currently assigned to this team.`,
-    ...lines,
-  ].join('\n');
+export function goalBrainEntity(goal: Goal) {
+  const priority = normalizeGoalPriority(goal.priority);
+  return {
+    id: `goal:${goal.id}`,
+    type: 'goal',
+    name: goal.title || goal.id,
+    status: goal.status,
+    tags: ['goal', priority, 'dashboard-state', goal.autopilot ? 'autopilot' : 'manual'],
+    data: {
+      team: goal.team || 'default',
+      priority,
+      agent: goal.agent,
+      autopilot: goal.autopilot === true,
+    },
+    exactId: true,
+    mergeAliases: false,
+  };
 }
 
 export async function syncActiveWorkGoalInstructions(client: ManagerClient): Promise<{ teamsSynced: number; activeGoals: number; errors: string[] }> {
@@ -127,13 +245,21 @@ export async function syncActiveWorkGoalInstructions(client: ManagerClient): Pro
   if (!teams.size) teams.add(client.team ?? 'default');
 
   const errors: string[] = [];
+  for (const goal of goals) {
+    try {
+      if (!(await brain.entity(goalBrainEntity(goal)))) errors.push(`goal ${goal.id}: Brain entity sync failed`);
+    } catch (e) {
+      errors.push(`goal ${goal.id}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   let teamsSynced = 0;
   for (const team of teams) {
     try {
       const teamGoals = goals.filter((g) => g.team === team);
       const wrote = await brain.memory('team-instructions', {
         key: `goals:active:${team}`,
-        content: teamActiveWorkGoalInstructions(team, teamGoals),
+        content: buildActiveGoalInstructions(team, teamGoals),
         tags: ['team-instruction', 'goals', 'work'],
         shared: true,
         project: team,
@@ -146,56 +272,41 @@ export async function syncActiveWorkGoalInstructions(client: ManagerClient): Pro
   return { teamsSynced, activeGoals: goals.length, errors };
 }
 
-async function syncTeamGoalInstructions(client: ManagerClient, goals: Goal[], errors: string[]): Promise<number> {
-  const teams = new Set<string>();
-  for (const g of goals) if (g.team) teams.add(g.team);
-  for (const t of await client.teams().catch(() => [])) if (t.name) teams.add(t.name);
-  if (!teams.size) teams.add(client.team ?? 'default');
-
-  let ok = 0;
-  for (const team of teams) {
-    try {
-      const teamGoals = goals.filter((g) => g.team === team);
-      const wrote = await brain.memory('team-instructions', {
-        key: `goals:autopilot:${team}`,
-        content: teamGoalInstructions(team, teamGoals),
-        tags: ['team-instruction', 'goals', 'autopilot'],
-        shared: true,
-        project: team,
-      });
-      if (wrote) ok++;
-    } catch (e) {
-      errors.push(`team ${team}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-  return ok;
-}
-
 export async function runGoalDriverOnce(getClient: () => ManagerClient, rawCfg: Partial<GoalDriverConfig> = {}): Promise<GoalDriverSummary> {
   const cfg = normalizeGoalDriverConfig(rawCfg);
   const summary: GoalDriverSummary = { enabled: cfg.enabled, consideredGoals: 0, drivenGoals: 0, tasksSpawned: 0, teamsSynced: 0, errors: [] };
   if (!cfg.enabled) return summary;
 
   const client = getClient();
+  try {
+    await syncGoalDriverConfig(client, cfg);
+  } catch (e) {
+    summary.errors.push(`manager cadence sync: ${e instanceof Error ? e.message : String(e)}`);
+    return summary;
+  }
   let goals = activeAutopilotGoals();
   summary.consideredGoals = goals.length;
-  summary.teamsSynced = await syncTeamGoalInstructions(client, goals, summary.errors);
+  const instructionSync = await syncActiveWorkGoalInstructions(client);
+  summary.teamsSynced = instructionSync.teamsSynced;
+  summary.errors.push(...instructionSync.errors);
   const afterSyncGoals = activeAutopilotGoals();
   if (goalListDriverStamp(afterSyncGoals) !== goalListDriverStamp(goals)) {
-    summary.errors.push('active Autopilot goals changed during team-instruction sync; resynced latest goals and skipped task spawn for this run');
+    summary.errors.push('active goals changed during canonical instruction sync; resynced latest goals and skipped task spawn for this run');
     summary.consideredGoals = afterSyncGoals.length;
-    summary.teamsSynced += await syncTeamGoalInstructions(client, afterSyncGoals, summary.errors);
+    const latestSync = await syncActiveWorkGoalInstructions(client);
+    summary.teamsSynced += latestSync.teamsSynced;
+    summary.errors.push(...latestSync.errors);
     return summary;
   }
   goals = afterSyncGoals;
 
-  // The manager is the durable owner of goal execution: it remains alive when
-  // IDACC closes and already enforces per-team, per-lead, duplicate, backlog,
-  // and query-capacity guards. IDACC synchronizes goal knowledge and triggers
-  // that single producer instead of creating a second, competing task fanout.
+  // The Manager is the authoritative goal executor while the unified app is
+  // running and already enforces per-team, per-lead, duplicate, backlog, and
+  // query-capacity guards. IDACC synchronizes goal knowledge and triggers that
+  // single producer instead of creating a second, competing task fanout.
   try {
     const envelope = await client.withTeam('default').remote<ManagerGoalAutopilotSyncResult>(
-      `/task sync-autopilot-goals --limit ${Math.max(1, Math.min(20, cfg.maxOpenTasksPerGoal, goals.length || 1))}`,
+      `/task sync-autopilot-goals --limit ${Math.max(1, Math.min(12, cfg.maxOpenTasksPerGoal, goals.length || 1))}`,
     );
     const report = envelope.result;
     summary.consideredGoals = Number(report?.consideredGoals) || summary.consideredGoals;
@@ -211,36 +322,29 @@ export async function runGoalDriverOnce(getClient: () => ManagerClient, rawCfg: 
   return summary;
 }
 
-export function startGoalDriverLoop(getClient: () => ManagerClient, getCfg: () => Partial<GoalDriverConfig>): () => void {
-  let stopped = false;
-  let running = false;
-  let lastRunAt = 0;
+export function startGoalDriverLoop(getClient: () => ManagerClient, getCfg: () => Partial<GoalDriverConfig>): () => Promise<void> {
+  const gate = createSingleFlightBackgroundGate();
+  let lastConfigStamp = '';
 
-  const tick = async () => {
-    if (stopped || running) return;
+  const tick = (): Promise<void> => gate.run(async () => {
     const cfg = normalizeGoalDriverConfig(getCfg());
-    if (!cfg.enabled) return;
-    const now = Date.now();
-    if (now - lastRunAt < cfg.cadenceMs) return;
-    running = true;
-    lastRunAt = now;
+    const stamp = JSON.stringify(goalDriverControlValue(cfg));
+    if (stamp === lastConfigStamp) return;
     try {
-      const summary = await runGoalDriverOnce(getClient, cfg);
-      if (summary.tasksSpawned || summary.errors.length) console.log('[goaldriver]', summary);
+      await syncGoalDriverConfig(getClient(), cfg);
+      lastConfigStamp = stamp;
     } catch (e) {
-      console.warn('[goaldriver] run failed:', e);
-    } finally {
-      running = false;
+      console.warn('[goaldriver] manager cadence sync failed:', e);
     }
-  };
+  });
 
-  const t0 = setTimeout(() => void tick(), 20_000);
+  const t0 = setTimeout(() => void tick(), 5_000);
   const iv = setInterval(() => void tick(), 60_000);
   (t0 as { unref?: () => void }).unref?.();
   (iv as { unref?: () => void }).unref?.();
   return () => {
-    stopped = true;
     clearTimeout(t0);
     clearInterval(iv);
+    return gate.stop();
   };
 }

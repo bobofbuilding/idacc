@@ -18,7 +18,7 @@
  *   POST /entities           { id, type, name, source, status, tags, data, exactId?, mergeAliases? }
  *   POST /facts/bulk         { facts: [{ entity_id, field, value, source }] }
  *   POST /text-units/ingest  { source_kind, source_id, title, content, metadata, process_config }
- *   POST /memory/:agentId    { key, content, tags, shared?, project? }
+ *   POST /memory/:agentId    { key, content, tags, shared?, project?, tier? }
  *   GET  /memory/:agentId/:key        -> { memory: { content } }
  *   GET  /memory/shared?tag=&project= -> { memories: [{ content, id, agent_id, mem_key }] }
  */
@@ -188,6 +188,7 @@ export interface BrainCoreHealthReport {
   nodes?: number;
   edges?: number;
   memories?: number;
+  memoryTiers?: BrainMemoryTierSummary | null;
   entities?: number;
   timelineEvents?: number;
   facts?: number;
@@ -277,6 +278,40 @@ export interface SharedMemory {
   id?: number;
   agent_id?: string;
   mem_key?: string;
+  memory_tier?: BrainMemoryTier;
+  expires_at?: number | null;
+}
+
+export type BrainMemoryTier = 'core' | 'long_term' | 'medium_term' | 'short_term';
+
+export interface BrainMemoryTierSummary {
+  total?: number;
+  active?: number;
+  shared?: number;
+  by_tier?: Partial<Record<BrainMemoryTier, {
+    total?: number;
+    active?: number;
+    shared?: number;
+  }>>;
+}
+
+export function inferBrainMemoryTier(input: {
+  agentId?: string;
+  tags?: string[];
+  project?: string;
+  taskId?: string;
+  sessionId?: string;
+  turnId?: string;
+  tier?: BrainMemoryTier;
+}): BrainMemoryTier {
+  if (input.tier) return input.tier;
+  const tags = new Set((input.tags ?? []).map((tag) => String(tag).toLowerCase()));
+  const has = (...values: string[]) => values.some((value) => tags.has(value));
+  if (input.agentId === 'team-instructions' || has('core', 'team-instruction', 'identity', 'authority', 'safety-policy', 'org-policy')) return 'core';
+  if (has('persistent-memory', 'validated-reusable', 'skill-catalog', 'reference', 'durable')) return 'long_term';
+  if (input.taskId || input.sessionId || input.turnId || has('task-local', 'session', 'turn', 'runtime', 'telemetry', 'checkin')) return 'short_term';
+  if (input.project || has('goal', 'plan', 'project', 'schedule', 'loop', 'autopilot')) return 'medium_term';
+  return 'long_term';
 }
 
 export interface BrainClientOptions {
@@ -721,13 +756,28 @@ export class BrainClient {
   }
 
   /** Upsert keyed memory for an agent id (e.g. 'control-center' / 'team-instructions'). */
-  async memory(agentId: string, input: { key: string; content: string; tags?: string[]; shared?: boolean; project?: string }): Promise<boolean> {
+  async memory(agentId: string, input: {
+    key: string;
+    content: string;
+    tags?: string[];
+    shared?: boolean;
+    project?: string;
+    taskId?: string;
+    sessionId?: string;
+    turnId?: string;
+    tier?: BrainMemoryTier;
+  }): Promise<boolean> {
+    const tier = inferBrainMemoryTier({ agentId, ...input });
     const r = await this.req('POST', `/memory/${encodeURIComponent(agentId)}`, {
       key: input.key,
       content: input.content,
       tags: input.tags ?? [],
+      tier,
       ...(input.shared ? { shared: true } : {}),
       ...(input.project ? { project: input.project } : {}),
+      ...(input.taskId ? { task_id: input.taskId } : {}),
+      ...(input.sessionId ? { session_id: input.sessionId } : {}),
+      ...(input.turnId ? { turn_id: input.turnId } : {}),
     });
     return r !== null;
   }
@@ -739,10 +789,11 @@ export class BrainClient {
   }
 
   /** Read shared memories (used to pull team-instructions back into agent sidecars). */
-  async sharedMemory(opts: { tag?: string; project?: string; limit?: number } = {}): Promise<SharedMemory[]> {
+  async sharedMemory(opts: { tag?: string; project?: string; tier?: BrainMemoryTier; limit?: number } = {}): Promise<SharedMemory[]> {
     const q = new URLSearchParams();
     if (opts.tag) q.set('tag', opts.tag);
     if (opts.project) q.set('project', opts.project);
+    if (opts.tier) q.set('tier', opts.tier);
     q.set('limit', String(opts.limit ?? 8));
     const r = await this.req<{ memories?: SharedMemory[] }>('GET', `/memory/shared?${q.toString()}`);
     return r?.memories ?? [];

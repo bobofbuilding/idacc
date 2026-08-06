@@ -1,13 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { call, type FleetStore } from '../store.ts';
+import { buildFleetStructureSnapshot } from '../fleetStructure.ts';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
+import { computerUseRuntimeEligible, type ComputerUseControlMode } from '../../shared/computerUsePolicy.ts';
 
 /**
- * Computer Use (Phase 1): watch your Mac live, and let a blessed Claude/codex
- * agent SEE your screen and DRIVE the mouse + keyboard. Everything routes through
- * the in-app broker, which only acts while ARMED — the single switch that turns
- * the whole capability on and off — and only for agents you've blessed.
+ * Computer Use (Phase 1): watch your Mac live, and let a blessed agent on a
+ * Manager-executable MCP runtime SEE your screen and DRIVE the mouse + keyboard.
+ * Everything routes through the in-app broker, which only acts while ARMED — the
+ * single switch that turns the capability on and off — and only for agents you've
+ * blessed.
  */
 
 type PermissionState = 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unknown';
@@ -20,9 +23,16 @@ interface Perms {
   tcc: { readable: boolean; error?: string };
   platform: string;
 }
+interface ComputerDisplay {
+  id: number;
+  label: string;
+  primary: boolean;
+  bounds: { x: number; y: number; width: number; height: number };
+  scaleFactor: number;
+}
 interface PendingAction { id: string; agent: string; action: string; preview: string; ts: number; expiresAt: number }
-interface Status { armed: boolean; watching: boolean; port: number; url: string; lastAgent: string; actions: number; serverStaged: boolean; captureFailing: boolean; blessed: string[]; driverOk: boolean; accessibility: boolean; supervised: boolean; paused: boolean; pending: PendingAction[]; panicHotkey: boolean; available?: boolean; unavailableReason?: string }
-interface FrameMsg { jpegBase64: string; width: number; height: number; ts: number; display?: { bounds: { width: number; height: number } } }
+interface Status { armed: boolean; watching: boolean; port: number; url: string; lastAgent: string; actions: number; serverStaged: boolean; captureFailing: boolean; display?: ComputerDisplay; displays?: ComputerDisplay[]; blessed: string[]; driverOk: boolean; accessibility: boolean; supervised: boolean; fullControl?: boolean; controlMode?: ComputerUseControlMode; paused: boolean; pending: PendingAction[]; panicHotkey: boolean; available?: boolean; unavailableReason?: string }
+interface FrameMsg { jpegBase64: string; width: number; height: number; ts: number; display?: ComputerDisplay }
 interface AuditEntry { ts: number; agent: string; action: string; detail: string; decision: 'executed' | 'blocked'; reason?: string }
 type AttachedAgent = { id: string; name: string; team?: string; authority?: string };
 type ComputerUseTarget = Agent & { team?: string };
@@ -41,7 +51,6 @@ const MANUAL_PERMISSION_KEY = 'idacc.cu.manual-permissions.v1';
 function agentRuntime(a: { runtime?: string; metadata?: { runtime?: string } }): string {
   return a.runtime ?? a.metadata?.runtime ?? '';
 }
-function mcpCapable(rt: string): boolean { return /claude|codex/i.test(rt); }
 function sortedKey(values: string[]): string {
   return [...new Set(values.map(String).filter(Boolean))].sort().join('|');
 }
@@ -145,6 +154,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
   const [allowEmptyArm, setAllowEmptyArm] = useState(false);
   const [manualPerms, setManualPerms] = useState<ManualPermissionReview>(() => loadManualPermissionReview());
   const lastFrameAt = useRef(0);
+  const refreshSeq = useRef(0);
   const resolvedRef = useRef<Set<string>>(new Set()); // approval ids the user already answered → never resurrect via a stale snapshot
 
   // Apply an incoming pending list, dropping ids the user already answered locally
@@ -160,14 +170,18 @@ export function ComputerUse({ store }: { store: FleetStore }) {
   const teamOf = (a: { team?: string }, fallbackTeam = activeTeam) => a.team ?? fallbackTeam;
   const authorityOf = (a: { name: string; team?: string; authority?: string }, fallbackTeam = activeTeam) => a.authority ?? `${teamOf(a, fallbackTeam)}:${a.name}`;
   const targetKey = (a: { id?: string; name: string; team?: string }, fallbackTeam = activeTeam) => `${teamOf(a, fallbackTeam)}:${a.id || a.name}`;
-  const rosterTargets = (store.allAgents.length
-    ? store.allAgents
-    : store.agents.map((a) => ({ ...a, team: activeTeam })))
-    .map((a) => ({ ...a, team: teamOf(a) })) as ComputerUseTarget[];
-  const rosterTeamNames = [...new Set([activeTeam, ...rosterTargets.map((a) => teamOf(a))].filter(Boolean))];
+  const fleetStructure = useMemo(() => buildFleetStructureSnapshot({
+    teams: store.teams,
+    allAgents: store.allAgents,
+    activeAgents: store.agents,
+    activeTeam,
+    primaryTeam: 'default',
+  }), [store.teams, store.allAgents, store.agents, activeTeam]);
+  const rosterTargets = fleetStructure.agents as ComputerUseTarget[];
+  const rosterTeamNames = fleetStructure.teamNames;
   const rosterTeamKey = sortedKey(rosterTeamNames);
   const eligible = rosterTargets
-    .filter((a) => mcpCapable(agentRuntime(a)))
+    .filter((a) => computerUseRuntimeEligible(agentRuntime(a)))
     .filter((a, i, arr) => arr.findIndex((x) => targetKey(x) === targetKey(a)) === i);
   const availableBlessTargets = eligible.filter((a) => !attached.some((x) => authorityOf(x) === authorityOf(a)));
   const availableBlessKey = sortedKey(availableBlessTargets.map((a) => targetKey(a)));
@@ -181,6 +195,16 @@ export function ComputerUse({ store }: { store: FleetStore }) {
   const axGranted = perms?.accessibility === true;
   const imGranted = perms?.inputMonitoring === 'granted';
   const automationGranted = perms?.automation?.status === 'granted';
+  const controllerReady = Boolean(status?.port && status?.serverStaged);
+  const inputReady = Boolean(controllerReady && srGranted && axGranted && status?.driverOk);
+  const fullControlReady = Boolean(inputReady && attached.length && armed);
+  const controlMode: ComputerUseControlMode = status?.controlMode
+    ?? (status?.fullControl ? 'full-control' : status?.supervised === false ? 'guarded' : 'supervised');
+  const controlModeLabel = controlMode === 'full-control'
+    ? 'Full control'
+    : controlMode === 'guarded'
+      ? 'Guarded autonomy'
+      : 'Approve every action';
   const imManuallyVerified = !imGranted && perms?.platform === 'darwin' && perms?.inputMonitoring === 'unknown' && manualPerms.inputMonitoring === true;
   const automationManuallyVerified = !automationGranted && perms?.platform === 'darwin' && perms?.automation?.status === 'unknown' && manualPerms.automation === true;
   const recentlyActed = auditLog.length > 0 && Date.now() - auditLog[auditLog.length - 1].ts < 3500;
@@ -261,13 +285,19 @@ export function ComputerUse({ store }: { store: FleetStore }) {
   async function armAttachedTeams(list: AttachedAgent[], fallbackTeams: string[]): Promise<void> {
     const teams = attachedTeams(list);
     const teamsToArm = teams.length ? teams : [...new Set(fallbackTeams.length ? fallbackTeams : [activeTeam])];
-    for (const team of teamsToArm) {
-      const scoped = attachedForTeam(list, team);
-      await call('cu:arm', team, attachedStamp(scoped, team));
+    try {
+      for (const team of teamsToArm) {
+        const scoped = attachedForTeam(list, team);
+        await call('cu:arm', team, attachedStamp(scoped, team));
+      }
+    } catch (error) {
+      await call('cu:disarm').catch(() => {});
+      throw new Error(`Computer Use could not arm every reviewed team, so the partial session was disarmed. ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   async function refresh() {
+    const request = ++refreshSeq.current;
     const authorityTargets = eligible.map((a) => ({ name: a.name, team: teamOf(a) }));
     const [p, s, at, au, legacy] = await Promise.all([
       call<Perms>('cu:permissions').catch(() => null),
@@ -276,6 +306,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
       call<AuditEntry[]>('cu:audit', 40).catch(() => []),
       call<LegacyComputerUseAuthority[]>('cu:legacyAuthority', authorityTargets).catch(() => []),
     ]);
+    if (request !== refreshSeq.current) return;
     if (p) setPerms(p);
     if (s) { setStatus(s); applyPending(s.pending ?? []); }
     setAttached(at ?? []);
@@ -293,26 +324,42 @@ export function ComputerUse({ store }: { store: FleetStore }) {
       setMsg(`✗ couldn't panic-stop Computer Use: ${e instanceof Error ? e.message : e}`);
     }
   }
-  async function toggleSupervised() {
+  async function setControlMode(next: ComputerUseControlMode) {
     const rendered = status;
     try {
       const current = await call<Status>('cu:status');
-      if (rendered && current.supervised !== rendered.supervised) {
+      const currentMode = current.controlMode ?? (current.fullControl ? 'full-control' : current.supervised === false ? 'guarded' : 'supervised');
+      const renderedMode = rendered?.controlMode ?? (rendered?.fullControl ? 'full-control' : rendered?.supervised === false ? 'guarded' : 'supervised');
+      if (rendered && currentMode !== renderedMode) {
         setStatus(current);
         applyPending(current.pending ?? []);
         setMsg('Safety mode changed since this page rendered. Refreshed; review the current mode before changing it.');
         return;
       }
-      const next = current.supervised === false;
-      if (!next && !window.confirm('Turn off approval for ordinary Computer Use actions?\n\nBlessed agents will be able to click and type without per-action approval. Risky actions still require approval.')) return;
+      if (currentMode === next) return;
+      if (currentMode === 'supervised' && next === 'guarded' && !window.confirm('Enable guarded autonomy?\n\nBlessed agents can perform ordinary clicks and typing without per-action approval. Destructive shortcuts and dangerous commands will still be held for approval.')) return;
+      if (next === 'full-control') {
+        if (!fullControlReady) {
+          setMsg('Full control is not ready. Verify the controller, Screen Recording, Accessibility, native input, and at least one blessed agent first.');
+          return;
+        }
+        if (!window.confirm('Grant Full control for this armed session?\n\nBlessed agents can see the selected display and use the mouse and keyboard without per-action approval, including destructive shortcuts or commands. The scoped agent grant, activity log, Pause, Disarm, and PANIC remain active.\n\nDisarming or PANIC automatically returns to Approve every action.')) return;
+      }
       const afterPrompt = await call<Status>('cu:status');
-      if (afterPrompt.supervised !== current.supervised) {
+      const afterMode = afterPrompt.controlMode ?? (afterPrompt.fullControl ? 'full-control' : afterPrompt.supervised === false ? 'guarded' : 'supervised');
+      if (afterMode !== currentMode) {
         setStatus(afterPrompt);
         applyPending(afterPrompt.pending ?? []);
         setMsg('Safety mode changed during confirmation. Refreshed; review the current mode before changing it.');
         return;
       }
-      await call('cu:setSupervised', next);
+      if (next === 'full-control') await call('cu:setFullControl', true, currentMode);
+      else await call('cu:setSupervised', next === 'supervised', currentMode);
+      setMsg(next === 'full-control'
+        ? 'Full control granted for this Computer Use session. Disarm or PANIC to revoke it.'
+        : next === 'guarded'
+          ? 'Guarded autonomy enabled; risky actions still require approval.'
+          : 'Every mouse and keyboard action now requires approval.');
     } catch (e) {
       setMsg(`✗ couldn't change mode: ${e instanceof Error ? e.message : e}`);
     } finally {
@@ -329,7 +376,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
         setMsg('Pause state changed since this page rendered. Refreshed; review the current state before changing it.');
         return;
       }
-      await call('cu:pause', !current.paused);
+      await call('cu:pause', !current.paused, current.paused);
     } catch (e) {
       setMsg(`✗ couldn't ${status?.paused ? 'resume' : 'pause'}: ${e instanceof Error ? e.message : e}`);
     } finally {
@@ -381,7 +428,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
     }) ?? (() => {});
     const offPending = eventApi?.onComputerPending?.((e) => { const ev = e as { pending?: PendingAction[] }; applyPending(ev?.pending ?? []); }) ?? (() => {});
     const offPanic = eventApi?.onComputerPanic?.(() => { setPanicFlash(true); setTimeout(() => setPanicFlash(false), 2500); void refresh(); }) ?? (() => {});
-    return () => { clearInterval(t); off(); offPending(); offPanic(); void call('cu:watch', false); };
+    return () => { refreshSeq.current++; clearInterval(t); off(); offPending(); offPanic(); void call('cu:watch', false); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTeam, rosterTeamKey]);
   useEffect(() => {
@@ -489,7 +536,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
         store.refresh();
         return null;
       }
-      if (!mcpCapable(agentRuntime(current))) {
+      if (!computerUseRuntimeEligible(agentRuntime(current))) {
         setMsg(`${label} blocked: ${team}/${current.name} no longer supports MCP-backed Computer Use. Refreshed; review the target and try again.`);
         store.refresh();
         return null;
@@ -532,11 +579,36 @@ export function ComputerUse({ store }: { store: FleetStore }) {
     const currentStatus = await call<Status>('cu:status');
     if (!currentStatus.armed) return false;
     const scopedTeams = [...new Set(teams.length ? teams : [activeTeam])];
-    for (const team of scopedTeams) {
-      const latestAttached = (await call<AttachedAgent[]>('cu:attached', team)).map((a) => ({ ...a, team: a.team ?? team }));
-      await call('cu:arm', team, attachedStamp(latestAttached ?? [], team));
+    try {
+      for (const team of scopedTeams) {
+        const latestAttached = (await call<AttachedAgent[]>('cu:attached', team)).map((a) => ({ ...a, team: a.team ?? team }));
+        await call('cu:arm', team, attachedStamp(latestAttached ?? [], team));
+      }
+    } catch (error) {
+      // A partial multi-team refresh could leave an older authority live. Stop
+      // the broker instead of preserving a mixed blessed snapshot.
+      await call('cu:disarm').catch(() => {});
+      throw new Error(`The armed authority refresh was interrupted, so Computer Use was disarmed. ${error instanceof Error ? error.message : String(error)}`);
     }
     return true;
+  }
+
+  async function chooseDisplay(displayId: number) {
+    setBusy(true);
+    setMsg('');
+    try {
+      const selected = await call<{ display: ComputerDisplay }>('cu:setDisplay', displayId);
+      setFrame('');
+      setFrameMeta(null);
+      lastFrameAt.current = 0;
+      await refresh();
+      setMsg(`Live view and agent coordinates now use ${selected.display.label}.`);
+    } catch (error) {
+      setMsg(`✗ couldn't switch displays: ${error instanceof Error ? error.message : String(error)}`);
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function blessMany(renderedTargets: ComputerUseTarget[]) {
@@ -582,14 +654,28 @@ export function ComputerUse({ store }: { store: FleetStore }) {
         try {
           setMsg(`Attaching computer-use to ${team}/${target.name} (${attachedCount + 1}/${stillAttachable.length})...`);
           await call('cu:attach', target.id, target.name, team);      // throws on failure -> caught below (never silently "succeeds")
-          attachedCount++;
           try {
             await call('rebuildAgent', target.name, team);       // the rebuild is what actually wires the tool
+            attachedCount++;
           } catch (e) {
-            rebuildFailures.push(`${team}/${target.name}: ${e instanceof Error ? e.message : String(e)}`);
+            const reason = e instanceof Error ? e.message : String(e);
+            try {
+              await call('cu:detach', target.id, target.name, team);
+              // Detach revokes the per-agent bearer token immediately. A
+              // best-effort cleanup rebuild then removes any stale process copy.
+              await call('rebuildAgent', target.name, team).catch(() => {});
+              rebuildFailures.push(`${team}/${target.name}: rebuild failed and the attachment was rolled back (${reason})`);
+            } catch (rollbackError) {
+              rebuildFailures.push(`${team}/${target.name}: rebuild failed; attachment rollback also needs Repair/Remove (${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)})`);
+            }
           }
         } catch (e) {
-          attachFailures.push(`${team}/${target.name}: ${e instanceof Error ? e.message : String(e)}`);
+          const latest = await call<AttachedAgent[]>('cu:attached', team).catch(() => null);
+          const ambiguous = latest && findAttached(
+            latest.map((agent) => ({ ...agent, team: agent.team ?? team })),
+            { id: target.id, name: target.name, team },
+          );
+          attachFailures.push(`${team}/${target.name}: ${e instanceof Error ? e.message : String(e)}${ambiguous ? '; attachment is present after the interrupted response and needs Repair or Remove' : latest ? '' : '; current attachment state could not be verified'}`);
         }
       }
       const armedListRefreshed = await syncArmedBlessedForTeams(teamsFromTargets(stillAttachable)); // re-sync the live bless-list from the current attached list if already armed
@@ -597,8 +683,8 @@ export function ComputerUse({ store }: { store: FleetStore }) {
       setSelectedBlessIds((prev) => prev.filter((id) => !stillAttachable.some((a) => targetKey(a) === id)));
       if (attachFailures.length || rebuildFailures.length) {
         const parts = [
-          attachedCount ? `attached ${attachedCount}/${stillAttachable.length}` : '',
-          rebuildFailures.length ? `rebuild review needed for ${rebuildFailures.length}` : '',
+          attachedCount ? `wired ${attachedCount}/${stillAttachable.length}` : '',
+          rebuildFailures.length ? `rolled back or needs repair ${rebuildFailures.length}` : '',
           attachFailures.length ? `attach failed for ${attachFailures.length}` : '',
         ].filter(Boolean);
         setMsg(`⚠ Computer Use batch finished with review: ${parts.join('; ')}.`);
@@ -609,6 +695,45 @@ export function ComputerUse({ store }: { store: FleetStore }) {
       setMsg(`✗ Couldn't bless selected agents: ${e instanceof Error ? e.message : e}`);
     } finally { setBusy(false); }
   }
+
+  async function repairBlessed(a: AttachedAgent) {
+    setBusy(true);
+    setMsg('');
+    const team = a.team ?? activeTeam;
+    try {
+      const current = await ensureFreshAttached({ ...a, team }, 'Repair');
+      if (!current) return;
+      const groups = await freshGroups();
+      const exactAgent = findFreshTargetById(groups, { id: current.id, name: current.name, team });
+      if (!exactAgent) {
+        setMsg(`Repair blocked: ${team}/${current.name} is no longer in the current roster. Remove its stale Computer Use authority instead.`);
+        return;
+      }
+      if (!computerUseRuntimeEligible(agentRuntime(exactAgent))) {
+        setMsg(`Repair blocked: ${team}/${current.name} no longer has a Manager-executable MCP runtime. Change its runtime in HR Manager or remove Computer Use.`);
+        return;
+      }
+      if (!window.confirm(`Repair Computer Use for ${team}/${current.name}?\n\nThis re-attaches the bundled server to mint or refresh the scoped bearer token, compare-and-set writes the current MCP metadata, rebuilds the Agent, and refreshes the armed broker list.`)) return;
+      const afterConfirm = await ensureFreshAttached(current, 'Repair');
+      if (!afterConfirm) return;
+      const afterGroups = await freshGroups();
+      const afterAgent = findFreshTargetById(afterGroups, { id: afterConfirm.id, name: afterConfirm.name, team });
+      if (!afterAgent || !computerUseRuntimeEligible(agentRuntime(afterAgent))) {
+        setMsg(`Repair blocked: ${team}/${afterConfirm.name} changed or no longer has an eligible MCP runtime after confirmation.`);
+        return;
+      }
+      await call('cu:attach', afterAgent.id, afterAgent.name, team);
+      await call('rebuildAgent', afterAgent.name, team);
+      await syncArmedBlessedForTeams([team]);
+      await refresh();
+      setMsg(`✅ Refreshed the scoped token, rebuilt, and re-synchronized Computer Use for ${team}/${current.name}.`);
+    } catch (error) {
+      setMsg(`✗ Repair failed for ${team}/${a.name}: ${error instanceof Error ? error.message : String(error)}. The attachment remains visible; retry Repair or Remove it.`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function unbless(a: AttachedAgent) {
     setBusy(true); setMsg('');
     const team = a.team ?? activeTeam;
@@ -621,10 +746,19 @@ export function ComputerUse({ store }: { store: FleetStore }) {
       const groups = await freshGroups();
       const exactAgent = findFreshTargetById(groups, { id: afterConfirm.id, name: afterConfirm.name, team });
       await call('cu:detach', afterConfirm.id, afterConfirm.name, team);
-      if (exactAgent) await call('rebuildAgent', exactAgent.name, team).catch(() => {});
+      let rebuildError = '';
+      if (exactAgent) {
+        try {
+          await call('rebuildAgent', exactAgent.name, team);
+        } catch (error) {
+          rebuildError = error instanceof Error ? error.message : String(error);
+        }
+      }
       await syncArmedBlessedForTeams([team]);
       await refresh();
-      setMsg(exactAgent
+      setMsg(exactAgent && rebuildError
+        ? `Removed Computer Use authority from ${team}/${afterConfirm.name}; the bearer token is revoked, but the cleanup rebuild needs review: ${rebuildError}`
+        : exactAgent
         ? `Removed computer-use from ${team}/${afterConfirm.name}.`
         : `Removed stale Computer Use authority for ${team}/${afterConfirm.name}; skipped rebuild because that exact agent is no longer in the current roster.`);
     } catch (e) {
@@ -633,6 +767,25 @@ export function ComputerUse({ store }: { store: FleetStore }) {
   }
 
   const liveStale = frame && Date.now() - lastFrameAt.current > 4000;
+
+  if (cuUnavailable) {
+    return (
+      <div className="view cu-view">
+        <header className="view-head">
+          <h1>Computer Use</h1>
+          <span className="cu-armpill">Unavailable on this operating system</span>
+        </header>
+        <section className="card">
+          <h3>macOS-only capability</h3>
+          <p>{cuUnavailableReason}</p>
+          <p className="muted small">
+            The rest of IDACC, Manager, and Brain remains available in this review build.
+            Screen capture, input control, permission links, and agent blessing are not started or shown here.
+          </p>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="view cu-view">
@@ -651,8 +804,8 @@ export function ComputerUse({ store }: { store: FleetStore }) {
             ? <button className="btn icon-danger" onClick={() => void disarm()}>Disarm</button>
             : <button
                 className="btn primary"
-                disabled={busy || cuUnavailable || !srGranted || (emptyArmNeedsReview && !allowEmptyArm)}
-                title={cuUnavailable ? cuUnavailableReason : !srGranted ? 'Grant Screen Recording first' : emptyArmNeedsReview && !allowEmptyArm ? 'Review empty arm first' : ''}
+                disabled={busy || cuUnavailable || !srGranted || !controllerReady || (emptyArmNeedsReview && !allowEmptyArm)}
+                title={cuUnavailable ? cuUnavailableReason : !srGranted ? 'Grant Screen Recording first' : !controllerReady ? 'Restart or repair the bundled Computer Use controller' : emptyArmNeedsReview && !allowEmptyArm ? 'Review empty arm first' : ''}
                 onClick={() => void arm()}
               >Arm</button>}
         </div>
@@ -677,8 +830,17 @@ export function ComputerUse({ store }: { store: FleetStore }) {
 
       <div className="cu-intro muted small">
         Let a blessed agent <b>see and drive</b> your Mac — mouse, keyboard, scrolling — and watch it live here.
-        Nothing happens unless you <b>Arm</b> it; only agents you bless can act; and while it's driving, <b>move your
-        own mouse or hit Disarm to take back control</b>. Every action is logged below.
+        Nothing happens unless you <b>Arm</b> it; only agents you bless can act; and while it's driving, <b>use
+        Pause, Disarm, or PANIC to take back control</b>. Every requested screen or input action is logged below.
+      </div>
+      <div className={`cu-readiness${fullControlReady ? ' ready' : ''}`} role="status">
+        <b>Full-control readiness</b>
+        <span className={controllerReady ? 'ok-text' : 'warn-text'}>{controllerReady ? '✓ controller' : '○ controller'}</span>
+        <span className={srGranted ? 'ok-text' : 'warn-text'}>{srGranted ? '✓ screen' : '○ screen'}</span>
+        <span className={axGranted && status?.driverOk ? 'ok-text' : 'warn-text'}>{axGranted && status?.driverOk ? '✓ mouse + keyboard' : '○ mouse + keyboard'}</span>
+        <span className={attached.length ? 'ok-text' : 'warn-text'}>{attached.length ? `✓ ${attached.length} blessed` : '○ bless an agent'}</span>
+        <span className={armed ? 'ok-text' : 'warn-text'}>{armed ? '✓ armed' : '○ arm session'}</span>
+        <span className={controlMode === 'full-control' ? 'ok-text' : 'muted'}>{controlModeLabel}</span>
       </div>
       {cuUnavailable ? <div className="cu-msg small">{cuUnavailableReason}</div> : null}
       {emptyArmNeedsReview ? (
@@ -694,7 +856,23 @@ export function ComputerUse({ store }: { store: FleetStore }) {
       <div className="cols cu-cols">
         {/* LEFT: the live pane */}
         <section className="card cu-stage">
-          <h3>Live view <span className="muted small">· your primary display</span></h3>
+          <div className="row-actions">
+            <h3 className="grow">Live view <span className="muted small">· {status?.display?.label ?? 'current display'}</span></h3>
+            {(status?.displays?.length ?? 0) > 1 ? (
+              <label className="small">
+                <span className="muted">Display </span>
+                <select
+                  value={status?.display?.id ?? ''}
+                  disabled={busy || cuUnavailable}
+                  onChange={(event) => void chooseDisplay(Number(event.target.value))}
+                >
+                  {(status?.displays ?? []).map((display) => (
+                    <option key={display.id} value={display.id}>{display.label}{display.primary ? ' (primary)' : ''}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+          </div>
           <div className="cu-screen">
             {!srGranted ? (
               <div className="cu-placeholder">
@@ -720,7 +898,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
             {liveStale ? <div className="cu-stale">live view paused</div> : null}
             {armed && recentlyActed ? <div className="cu-driving">● {status?.lastAgent || 'agent'} is driving — move your mouse or hit Disarm to take over</div> : null}
           </div>
-          {frameMeta ? <div className="muted small cu-screen-meta">{frameMeta.display?.bounds.width}×{frameMeta.display?.bounds.height} pts · streaming</div> : null}
+          {frameMeta ? <div className="muted small cu-screen-meta">{frameMeta.display?.label ?? 'Display'} · {frameMeta.display?.bounds.width}×{frameMeta.display?.bounds.height} pts · streaming</div> : null}
         </section>
 
         {/* RIGHT: permissions + bless + safety */}
@@ -826,6 +1004,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
                 {attached.map((a) => (
                   <div key={targetKey(a)} className="cu-blessed-row">
                     <span>🖥️ {a.team ?? activeTeam}/{a.name}</span>
+                    <button className="btn" disabled={busy || cuUnavailable} title={cuUnavailable ? cuUnavailableReason : 'Rebuild and re-synchronize this attached Computer Use tool'} onClick={() => void repairBlessed(a)}>Repair</button>
                     <button className="btn icon-danger" disabled={busy || cuUnavailable} title={cuUnavailable ? cuUnavailableReason : undefined} onClick={() => void unbless(a)}>Remove</button>
                   </div>
                 ))}
@@ -883,12 +1062,24 @@ export function ComputerUse({ store }: { store: FleetStore }) {
           <section className="card cu-safety">
             <h3>Safety</h3>
             <label className="cu-mode-row">
-              <input type="checkbox" checked={status?.supervised !== false} disabled={cuUnavailable} onChange={() => void toggleSupervised()} />
+              <input type="radio" name="computer-use-mode" checked={controlMode === 'supervised'} disabled={busy || cuUnavailable} onChange={() => void setControlMode('supervised')} />
               <span>
                 <b>Approve every action</b> <span className="muted small">(recommended)</span>
-                <div className="muted small">{status?.supervised !== false
-                  ? 'Every click & keystroke is held for your OK.'
-                  : 'Auto-allowing ordinary actions — but still asking before risky ones (quit, empty Trash, dangerous commands).'}</div>
+                <div className="muted small">Every click and keystroke is held for your approval.</div>
+              </span>
+            </label>
+            <label className="cu-mode-row">
+              <input type="radio" name="computer-use-mode" checked={controlMode === 'guarded'} disabled={busy || cuUnavailable} onChange={() => void setControlMode('guarded')} />
+              <span>
+                <b>Guarded autonomy</b>
+                <div className="muted small">Ordinary actions run automatically; destructive shortcuts and dangerous commands still require approval.</div>
+              </span>
+            </label>
+            <label className={`cu-mode-row cu-full-control${controlMode === 'full-control' ? ' active' : ''}`}>
+              <input type="radio" name="computer-use-mode" checked={controlMode === 'full-control'} disabled={busy || cuUnavailable || !fullControlReady} onChange={() => void setControlMode('full-control')} />
+              <span>
+                <b>Full control</b> <span className="muted small">(explicit session grant)</span>
+                <div className="muted small">All mouse and keyboard actions run without per-action approval. Requires the complete readiness row above and resets on Disarm or PANIC.</div>
               </span>
             </label>
             <ul className="muted small">

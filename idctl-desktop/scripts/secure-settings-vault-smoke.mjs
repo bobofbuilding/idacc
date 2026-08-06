@@ -1,0 +1,52 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const bridge = readFileSync(join(root, 'src', 'main', 'bridge.ts'), 'utf8');
+const main = readFileSync(join(root, 'src', 'main', 'main.ts'), 'utf8');
+const policy = readFileSync(join(root, 'src', 'main', 'secureStoragePolicy.ts'), 'utf8');
+const onboarding = readFileSync(join(root, 'src', 'main', 'consumerOnboarding.ts'), 'utf8');
+const schema = readFileSync(join(root, '..', 'idctl', 'src', 'settings', 'schema.ts'), 'utf8');
+const providerClient = readFileSync(join(root, '..', 'idctl', 'src', 'settings', 'ProviderClient.ts'), 'utf8');
+const providerStore = readFileSync(join(root, '..', 'idctl', 'src', 'settings', 'store.ts'), 'utf8');
+const providerTransport = readFileSync(join(root, '..', 'idctl', 'src', 'settings', 'providerTransport.ts'), 'utf8');
+const identity = readFileSync(join(root, 'src', 'renderer', 'views', 'Identity.tsx'), 'utf8');
+
+assert.match(schema, /apiKeyEncrypted\?: string/);
+assert.match(schema, /connectionEncrypted\?: string/);
+assert.match(bridge, /function providerForStorage/);
+assert.match(bridge, /function mcpForStorage/);
+assert.match(bridge, /function hydrateRegisteredMcp/);
+assert.match(bridge, /export function migrateSettingsSecrets/);
+assert.match(bridge, /apiKeyEncrypted:\s*provider\.apiKeyEncrypted \|\| codec\.encrypt/);
+assert.match(bridge, /connectionEncrypted:\s*codec\.encrypt/);
+assert.match(bridge, /const \{ apiKey: _apiKey, apiKeyEncrypted: _apiKeyEncrypted/);
+assert.match(main, /secureStorageStatus\(safeStorage\)\.available/);
+assert.match(policy, /selectedBackend === 'basic_text'/);
+assert.match(policy, /macOS-Keychain/);
+assert.match(policy, /Windows-DPAPI/);
+assert.match(main, /configureSettingsSecretCodec/);
+assert.match(main, /migrateSettingsSecrets\(\)/);
+assert.match(providerTransport, /Plain HTTP providers are allowed only on exact localhost, 127\.0\.0\.1, or \[::1\]/);
+assert.match(providerTransport, /Provider URLs cannot contain a query string/);
+assert.match(providerTransport, /Provider URLs cannot contain a fragment/);
+assert.match(providerClient, /Transport validation happens before authentication headers are built/);
+assert.match(providerStore, /normalizeProviderBaseUrl\(p\.baseUrl\)/);
+assert.match(onboarding, /normalizeProviderBaseUrl\(String\(input\.baseUrl/);
+assert.match(bridge, /async function probeConfiguredProvider/);
+assert.match(bridge, /function providerKey[\s\S]*providerTransportDecision\(provider\.baseUrl\)\.ok\) return undefined;[\s\S]*provider\.apiKeyEncrypted/);
+assert.match(bridge, /function providerForStorage[\s\S]*normalizeProviderBaseUrl\(input\.baseUrl\)[\s\S]*requireSettingsSecretCodec\(\)\.encrypt/);
+assert.match(
+  bridge,
+  /const needsKey = providerNeedsKey\(p\);[\s\S]*const apiKey = needsKey[\s\S]*\? providerKey\(p\)[\s\S]*: \(isLoopbackProvider\(p\) \? 'idacc-local-provider-no-key' : ''\)/,
+  'automatic restart restoration must not decrypt obsolete credentials for local/no-key providers',
+);
+assert.match(main, /keyProductionReadiness\(options:[\s\S]*probeProtectedStorage/);
+assert.match(main, /agentSignerVaultStatus\(\{ verifyEncryption: probeProtectedStorage \}\)/);
+assert.match(main, /args\[0\] === true/);
+assert.match(identity, /call<KeyProductionReadiness>\('keys:productionReadiness', false\)/);
+assert.match(identity, /call<KeyProductionReadiness>\('keys:productionReadiness', true\)/);
+
+process.stdout.write('secure settings vault smoke: ok\n');

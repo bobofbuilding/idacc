@@ -73,47 +73,85 @@ function readCallKey(method: string, args: unknown[]): string {
 }
 
 function isForcedRead(method: string, args: unknown[]): boolean {
-  if (method === 'subs:status' && args[0] === true) return true;
-  if (method !== 'agents:allTeams') return false;
+  if (method === 'subs:status') {
+    const first = args[0];
+    return first === true
+      || (
+        typeof first === 'object'
+        && first !== null
+        && (first as { force?: unknown }).force === true
+      );
+  }
+  if (method !== 'agents:allTeams' && method !== 'runtime:freshness') return false;
   const first = args[0];
   return typeof first === 'object' && first !== null && (first as { force?: unknown }).force === true;
 }
 
 function cacheKeyArgs(method: string, args: unknown[]): unknown[] {
-  if (method === 'agents:allTeams' && isForcedRead(method, args)) return [];
+  if (method === 'subs:status') return [];
+  if (
+    (method === 'agents:allTeams' || method === 'runtime:freshness')
+    && isForcedRead(method, args)
+  ) return [];
   return args;
 }
 
 export class ReadCallCache {
   private readonly inFlight = new Map<string, Promise<unknown>>();
   private readonly results = new Map<string, { at: number; result: unknown }>();
+  private readonly latestRequest = new Map<string, { epoch: number; sequence: number }>();
+  private epoch = 0;
+  private sequence = 0;
 
   clear(): void {
+    this.epoch += 1;
     this.inFlight.clear();
     this.results.clear();
+    this.latestRequest.clear();
   }
 
   async run(method: string, args: unknown[], run: () => Promise<unknown>): Promise<unknown> {
     const forced = isForcedRead(method, args);
     const key = readCallKey(method, cacheKeyArgs(method, args));
-    const cacheable = !(method === 'subs:status' && args[0] === true);
-    const ttl = cacheable ? READ_CACHE_TTL_MS.get(method) ?? 0 : 0;
+    const ttl = READ_CACHE_TTL_MS.get(method) ?? 0;
+    if (forced) this.results.delete(key);
     if (!forced && ttl > 0) {
       const cached = this.results.get(key);
       if (cached && Date.now() - cached.at < ttl) return cached.result;
     }
     const current = this.inFlight.get(key);
     if (!forced && current) return current;
+    const epoch = this.epoch;
+    const sequence = ++this.sequence;
+    this.latestRequest.set(key, { epoch, sequence });
     let next: Promise<unknown>;
     next = run()
       .then((result) => {
-        if (ttl > 0) this.results.set(key, { at: Date.now(), result });
+        const latest = this.latestRequest.get(key);
+        if (
+          ttl > 0
+          && this.epoch === epoch
+          && latest?.epoch === epoch
+          && latest.sequence === sequence
+        ) {
+          this.results.set(key, { at: Date.now(), result });
+        }
         return result;
       })
       .finally(() => {
-        if (!forced && this.inFlight.get(key) === next) this.inFlight.delete(key);
+        if (this.inFlight.get(key) === next) this.inFlight.delete(key);
+        const latest = this.latestRequest.get(key);
+        if (
+          latest?.epoch === epoch
+          && latest.sequence === sequence
+        ) {
+          this.latestRequest.delete(key);
+        }
       });
-    if (!forced) this.inFlight.set(key, next);
+    // A forced request supersedes an older ordinary read. Point subsequent
+    // ordinary callers at the newest admitted work while still allowing a
+    // second explicit force to start its own authoritative request.
+    this.inFlight.set(key, next);
     return next;
   }
 }

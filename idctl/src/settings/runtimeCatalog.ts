@@ -32,15 +32,16 @@ export const RUNTIMES = [
   'gemini',
   'copilot',
   'kiro-cli',
+  'kimi-cli',
   'q',
   'ollama',
 ];
 
 /**
  * Concrete runtime ids the current bundled id-agents manager can execute as
- * agent harnesses. Subscription CLIs can still be linked in Settings and shown
- * as model lanes, but they must not become assignable until the manager ships a
- * matching harness/adapter.
+ * agent harnesses. Legacy/current-only CLIs can still be linked in Settings and
+ * shown as model lanes, but they must not become assignable without a matching
+ * entry here and verified readiness evidence.
  */
 export const MANAGER_EXECUTION_RUNTIMES = [
   'claude-agent-sdk',
@@ -52,6 +53,7 @@ export const MANAGER_EXECUTION_RUNTIMES = [
   'antigravity',
   'copilot',
   'kiro-cli',
+  'kimi-cli',
   'ollama',
 ];
 
@@ -84,6 +86,7 @@ const RUNTIME_LABELS: Record<string, string> = {
   gemini: 'Gemini CLI',
   copilot: 'GitHub Copilot',
   'kiro-cli': 'Kiro',
+  'kimi-cli': 'Kimi Code',
   q: 'Amazon Q',
   ollama: 'Ollama',
 };
@@ -130,14 +133,10 @@ export type RuntimeCapability = 'mcp' | 'plugins' | 'portablePlugins' | 'skills'
  * table as a blanket "can select target" gate for portable capabilities.
  *
  * MCP — hard runtime feature: the Claude runtimes embed the SDK/CLI MCP client,
- * codex received `-c mcp_servers.*` config injection (2026-06), and ollama now
- * ships the agentic tool-calling loop (id-agents OllamaHarness.runWithTools +
- * McpToolHub) so local models with tool support can call MCP tools. A non-tool
- * ollama model degrades gracefully to plain text. Grok Build, GitHub Copilot
- * CLI, Kiro CLI, and the legacy Amazon Q CLI are listed as
- * managed CLI runtimes with MCP-capable vendor surfaces, but manager execution
- * still depends on a matching harness/adapter. cursor-cli and the remote runtime
- * still don't consume our McpServerSpec.
+ * codex receives `mcp_servers.*` config injection, ollama ships the manager's
+ * tool-calling loop, and concrete `provider:*` lanes resolve to the bundled
+ * provider-api harness. The current bundled Cursor, Grok, Antigravity, Copilot,
+ * Kiro, Kimi, and remote harnesses do not consume our McpServerSpec directly.
  *
  * skills — the manager deploys SKILL.md files to a runtime-aware dir for every
  * LOCAL runtime (`.claude/skills`, `.agents/skills` for codex/grok/antigravity/
@@ -151,10 +150,10 @@ export type RuntimeCapability = 'mcp' | 'plugins' | 'portablePlugins' | 'skills'
  * adapters still gate independently through MCP or native plugin support.
  */
 const RUNTIME_CAPABILITIES: Record<RuntimeCapability, string[]> = {
-  mcp: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'grok', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
-  skills: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
+  mcp: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'ollama'],
+  skills: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'kimi-cli', 'q', 'ollama'],
   plugins: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local'],
-  portablePlugins: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'q', 'ollama'],
+  portablePlugins: ['claude-agent-sdk', 'claude-code-cli', 'claude-code-local', 'codex', 'cursor-cli', 'grok', 'antigravity', 'gemini', 'copilot', 'kiro-cli', 'kimi-cli', 'q', 'ollama'],
 };
 
 /** Short, user-facing reason a runtime can't use a capability (for tooltips). */
@@ -168,7 +167,42 @@ const CAPABILITY_DENY_REASON: Record<RuntimeCapability, string> = {
 /** Does this runtime support the given capability? Unknown runtime → false. */
 export function runtimeSupports(runtime: string | undefined, cap: RuntimeCapability): boolean {
   if (!runtime) return false;
+  if (runtime.startsWith('provider:') && runtime.length > 'provider:'.length) {
+    return cap === 'mcp' || cap === 'skills' || cap === 'portablePlugins';
+  }
   return RUNTIME_CAPABILITIES[cap]?.includes(runtime) ?? false;
+}
+
+/**
+ * Starter setup has a stricter contract than the general agent picker.
+ *
+ * A runtime-level MCP client (Claude/Codex) is enough evidence for every model
+ * exposed by that route. Ollama needs model-specific `capabilities: ["tools"]`
+ * evidence from its native `/api/show` endpoint. The generic provider-api
+ * harness is structurally able to translate MCP tools, but an arbitrary
+ * OpenAI-compatible model may reject tool calls, so provider lanes other than a
+ * native Ollama lane stay out of the starter picker until a deterministic
+ * per-model capability probe exists.
+ */
+export type StarterMcpCapabilityPolicy = 'runtime' | 'ollama-model' | 'unverified' | 'unsupported';
+
+export function starterMcpCapabilityPolicy(
+  runtime: string | undefined,
+  providerKind?: ProviderKind,
+): StarterMcpCapabilityPolicy {
+  if (!runtimeSupports(runtime, 'mcp')) return 'unsupported';
+  if (
+    runtime === 'claude-agent-sdk'
+    || runtime === 'claude-code-cli'
+    || runtime === 'claude-code-local'
+    || runtime === 'codex'
+  ) {
+    return 'runtime';
+  }
+  if (runtime === 'ollama' || (runtime?.startsWith('provider:') && providerKind === 'ollama')) {
+    return 'ollama-model';
+  }
+  return 'unverified';
 }
 
 /** Human-readable reason a runtime lacks a capability (empty if it has it). */
@@ -282,7 +316,7 @@ function managedRuntimeReady(s: ManagedRuntimeForOffer): boolean {
   // linked evidence. Gemini CLI is excluded from managed sign-ins; use
   // Google Gemini API under Inference backends. Existing gemini assignments
   // remain current-only via keep.
-  return s.runtime === 'copilot' && s.installed === true && s.linked === true;
+  return (s.runtime === 'copilot' || s.runtime === 'kimi-cli') && s.installed === true && s.linked === true;
 }
 
 /**
@@ -357,14 +391,17 @@ export function runtimeHasEffort(runtime?: string): boolean {
 }
 
 /**
- * Output speed options per runtime. Claude Code's interactive `/fast` toggle is
- * exposed in the UI for Claude Code runtimes only; other runtimes have no speed
- * knob.
+ * Output speed options per runtime. Claude Code supports process-local launch
+ * settings, so Manager can apply fastMode without changing the person's
+ * persistent Claude settings. Other runtimes have no reviewed speed contract.
  */
 export const RUNTIME_SPEEDS: Record<string, string[]> = {
   'claude-code-cli': ['default', 'fast'],
   'claude-code-local': ['default', 'fast'],
 };
+
+export const CLAUDE_FAST_MODE_NOTICE =
+  'Fast keeps the supported Claude Opus model’s quality and capabilities and does not lower Effort, but it can replace another selected model with a Fast-compatible Opus. It costs more per token, is billed from usage credits as extra usage, and requires a compatible Claude Code release plus any required organization approval. Claude Code falls back to standard speed when Fast is unavailable or rate-limited.';
 
 /** The speed scale this runtime honors (empty if it has no speed knob). */
 export function speedOptions(runtime?: string): string[] {
@@ -374,6 +411,16 @@ export function speedOptions(runtime?: string): string[] {
 /** Does this runtime have an output-speed knob at all? */
 export function runtimeHasSpeed(runtime?: string): boolean {
   return speedOptions(runtime).length > 0;
+}
+
+/** Normalize untrusted agent metadata before binding it to the speed picker. */
+export function normalizeSpeedPreference(speed: unknown): 'default' | 'fast' {
+  return speed === 'fast' ? 'fast' : 'default';
+}
+
+/** Consumer-facing labels keep Fast's model and billing impact visible. */
+export function speedOptionLabel(speed: string): string {
+  return speed === 'fast' ? 'Fast (Opus · usage credits)' : 'Standard';
 }
 
 /** Current known models per runtime, used when no probeable provider is configured. */
@@ -392,6 +439,7 @@ export const RUNTIME_CURATED: Record<string, string[]> = {
   gemini: ['default'],
   copilot: ['default'],
   'kiro-cli': ['auto', 'claude-sonnet-4.5', 'claude-sonnet-4', 'claude-haiku-4.5', 'deepseek-3.2', 'minimax-m2.5', 'minimax-m2.1', 'glm-5', 'qwen3-coder-next'],
+  'kimi-cli': ['kimi-code/kimi-for-coding', 'kimi-code/kimi-for-coding-highspeed'],
   q: ['default'],
   ollama: [],
 };

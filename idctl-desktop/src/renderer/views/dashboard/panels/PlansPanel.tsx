@@ -1,11 +1,26 @@
 // SPDX-License-Identifier: MIT
 import { useEffect, useState } from 'react';
 import { call } from '../../../store.ts';
+import type { CommandEnvironment } from '../../../dashboard/commandRuntime.ts';
+import {
+  DRAWER_COMMANDS,
+  drawerCommandStatus,
+  runDrawerCommand,
+} from '../../../dashboard/drawerCommands.ts';
+import { useDrawerGuard, type DrawerGuardReporter } from '../drawerGuard.ts';
 
 type BrainPlan = { file: string; num?: string; title: string; status: string; mtime?: number };
 type DraftPlan = { id: string; title: string; status: string };
 
-export function PlansPanel({ onOpenWork }: { onOpenWork: () => void }) {
+export function PlansPanel({
+  onOpenWork,
+  commandEnvironment,
+  onGuardChange,
+}: {
+  onOpenWork: () => void;
+  commandEnvironment: CommandEnvironment;
+  onGuardChange?: DrawerGuardReporter;
+}) {
   const [brainPlans, setBrainPlans] = useState<BrainPlan[]>([]);
   const [drafts, setDrafts] = useState<DraftPlan[]>([]);
   const [title, setTitle] = useState('');
@@ -21,22 +36,46 @@ export function PlansPanel({ onOpenWork }: { onOpenWork: () => void }) {
     setDrafts(local);
   };
   useEffect(() => { void load(); }, []);
+  useDrawerGuard(
+    onGuardChange,
+    Boolean(title.trim() || content.trim()),
+    busy,
+    busy ? 'A Brain plan update is still running.' : 'The new plan title or objective has not been created.',
+  );
   const create = async () => {
     if (!title.trim() || !content.trim() || busy) return;
     setBusy(true); setStatus('Creating plan through Manager…');
-    try {
-      await call('brain:createPlan', title.trim(), content.trim());
-      setTitle(''); setContent(''); setStatus('Plan created.'); await load();
-    } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
-    finally { setBusy(false); }
+    const result = await runDrawerCommand({
+      metadata: DRAWER_COMMANDS.planCreate,
+      environment: commandEnvironment,
+      label: 'Create Brain plan',
+      resourceRefs: [`plan-title:${title.trim()}`],
+      operation: () => call('brain:createPlan', title.trim(), content.trim()),
+    });
+    if (result.receipt.state === 'succeeded') {
+      setTitle('');
+      setContent('');
+      await load();
+    }
+    setStatus(drawerCommandStatus('Create Brain plan', result, 'Plan created.'));
+    setBusy(false);
   };
   const updateStatus = async (plan: BrainPlan, next: string) => {
     setBusy(true); setStatus(`Updating ${plan.title}…`);
-    try {
-      await call('brain:setPlanStatus', plan.file, next, null, { status: plan.status, mtime: plan.mtime });
-      setStatus(`Plan marked ${next}.`); await load();
-    } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
-    finally { setBusy(false); }
+    const result = await runDrawerCommand({
+      metadata: DRAWER_COMMANDS.planStatus,
+      environment: commandEnvironment,
+      label: `Mark plan ${next}`,
+      resourceRefs: [`plan:${plan.file}`],
+      operation: ({ idempotencyKey }) => call('brain:setPlanStatus', plan.file, next, null, {
+        status: plan.status,
+        mtime: plan.mtime,
+        idempotencyKey,
+      }),
+    });
+    if (result.receipt.state === 'succeeded') await load();
+    setStatus(drawerCommandStatus(`Mark plan ${next}`, result, `Plan marked ${next}.`));
+    setBusy(false);
   };
   return (
     <div className="driver-panel">

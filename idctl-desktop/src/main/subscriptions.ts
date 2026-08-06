@@ -8,14 +8,20 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { shell } from 'electron';
 import { runInTerminal } from './system.ts';
+import {
+  executableCandidatePaths,
+  executableRequiresShell,
+  installCommandSupported,
+} from '../shared/subscriptionPortability.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
 
 const execFileP = promisify(execFile);
 const SUBS_STATUS_CACHE_TTL_MS = 60_000;
 
-export type SubProvider = 'claude' | 'chatgpt' | 'cursor' | 'grok' | 'antigravity' | 'copilot' | 'kiro-cli' | 'q';
+export type SubProvider = 'claude' | 'chatgpt' | 'cursor' | 'grok' | 'antigravity' | 'copilot' | 'kiro-cli' | 'kimi' | 'q';
 export interface SubsStatusOptions { force?: boolean; maxAgeMs?: number; staleOk?: boolean }
 
 type LoginMode = 'spawn' | 'terminal';
@@ -68,12 +74,17 @@ export interface SubStatus {
   installOpensApp?: boolean;
 }
 
-const SUB_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'q'];
+const SUB_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'kimi', 'q'];
+let subsStatusGeneration = 0;
+let subsStatusRequestSequence = 0;
+let latestSubsStatusRequestSequence = 0;
 let subsStatusCache: { at: number; rows: Record<SubProvider, SubStatus> } | null = null;
 let subsStatusInflight: Promise<Record<SubProvider, SubStatus>> | null = null;
+let assignmentSubsStatusRequestSequence = 0;
+let latestAssignmentSubsStatusRequestSequence = 0;
 let assignmentSubsStatusCache: { at: number; rows: Partial<Record<SubProvider, SubStatus>> } | null = null;
 let assignmentSubsStatusInflight: Promise<Partial<Record<SubProvider, SubStatus>>> | null = null;
-const ASSIGNMENT_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli'];
+const ASSIGNMENT_PROVIDERS: SubProvider[] = ['claude', 'chatgpt', 'cursor', 'grok', 'antigravity', 'copilot', 'kiro-cli', 'kimi'];
 
 const SUB_META: Record<SubProvider, SubProviderMeta> = {
   claude: {
@@ -158,6 +169,18 @@ const SUB_META: Record<SubProvider, SubProviderMeta> = {
     installOpensApp: true,
     postInstall: 'The official macOS installer may open Kiro once to finish CLI setup. IDACC will re-check for kiro-cli after install; sign-in is still a separate action.',
   },
+  kimi: {
+    provider: 'kimi',
+    runtime: 'kimi-cli',
+    label: 'Kimi Code',
+    bin: 'kimi',
+    login: ['kimi', ['login']],
+    loginMode: 'terminal',
+    install: 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash',
+    installHint: 'Kimi Code CLI not installed',
+    postInstall: 'After install, use Manage account to authorize your Kimi membership through the official browser device-code flow.',
+    statusNote: 'Installed. IDACC detects Kimi OAuth by credential-file presence without reading or returning credential contents.',
+  },
   q: {
     provider: 'q',
     runtime: 'q',
@@ -174,47 +197,72 @@ const SUB_META: Record<SubProvider, SubProviderMeta> = {
 /** Candidate CLI dirs (GUI apps inherit a minimal PATH). */
 function cliDirs(): string[] {
   const home = homedir();
+  const env = process.env;
   const nvmBins = (() => {
+    if (process.platform === 'win32') return [];
     try {
-      return readdirSync(`${home}/.nvm/versions/node`, { withFileTypes: true })
+      return readdirSync(join(home, '.nvm', 'versions', 'node'), { withFileTypes: true })
         .filter((entry) => entry.isDirectory())
         .sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }))
-        .map((entry) => `${home}/.nvm/versions/node/${entry.name}/bin`);
+        .map((entry) => join(home, '.nvm', 'versions', 'node', entry.name, 'bin'));
     } catch {
       return [];
     }
   })();
+  const platformDirs = process.platform === 'win32'
+    ? [
+        env.APPDATA ? join(env.APPDATA, 'npm') : join(home, 'AppData', 'Roaming', 'npm'),
+        env.LOCALAPPDATA ? join(env.LOCALAPPDATA, 'Programs', 'nodejs') : undefined,
+        env.ProgramFiles ? join(env.ProgramFiles, 'nodejs') : undefined,
+        env['ProgramFiles(x86)'] ? join(env['ProgramFiles(x86)'], 'nodejs') : undefined,
+        env.NVM_SYMLINK,
+        env.NVM_HOME,
+      ]
+    : [
+        '/opt/homebrew/bin',
+        '/opt/homebrew/sbin',
+        '/usr/local/bin',
+        '/usr/local/sbin',
+        '/usr/bin',
+        '/bin',
+      ];
   return Array.from(new Set([
-    '/opt/homebrew/bin',
-    '/opt/homebrew/sbin',
-    `${home}/.local/bin`,
-    `${home}/.npm-global/bin`,
-    `${home}/.volta/bin`,
-    `${home}/.bun/bin`,
-    `${home}/.asdf/shims`,
-    `${home}/.mise/shims`,
-    `${home}/.local/share/mise/shims`,
-    `${home}/.local/share/pnpm`,
-    `${home}/Library/pnpm`,
-    `${home}/.local/share/fnm/aliases/default/bin`,
-    `${home}/.grok/bin`,
+    ...platformDirs,
+    join(home, '.local', 'bin'),
+    join(home, '.npm-global', 'bin'),
+    env.VOLTA_HOME ? join(env.VOLTA_HOME, 'bin') : join(home, '.volta', 'bin'),
+    env.BUN_INSTALL ? join(env.BUN_INSTALL, 'bin') : join(home, '.bun', 'bin'),
+    join(home, '.asdf', 'shims'),
+    join(home, '.mise', 'shims'),
+    join(home, '.local', 'share', 'mise', 'shims'),
+    env.PNPM_HOME,
+    join(home, '.local', 'share', 'pnpm'),
+    join(home, 'Library', 'pnpm'),
+    join(home, '.local', 'share', 'fnm', 'aliases', 'default', 'bin'),
+    join(home, '.grok', 'bin'),
     ...nvmBins,
-    '/usr/local/bin',
-    '/usr/local/sbin',
-    '/usr/bin',
-    '/bin',
-    ...(process.env.PATH ? process.env.PATH.split(':') : []),
-  ]));
+    ...(env.PATH ? env.PATH.split(delimiter) : []),
+  ].filter((value): value is string => Boolean(value))));
 }
 
 /** GUI apps inherit a minimal PATH; add the usual CLI locations. */
 function cliEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, PATH: cliDirs().join(':') };
+  return externalChildEnvironment(process.env, {
+    PATH: cliDirs().join(delimiter),
+  });
 }
 
 /** Is a CLI binary installed (resolvable on the augmented PATH)? */
 function cliPath(bin: string): string | undefined {
-  return cliDirs().map((d) => `${d}/${bin}`).find((p) => existsSync(p));
+  if (isAbsolute(bin)) return existsSync(bin) ? bin : undefined;
+  for (const directory of cliDirs()) {
+    const found = executableCandidatePaths(directory, bin, {
+      platform: process.platform,
+      pathExt: process.env.PATHEXT,
+    }).find((candidate) => existsSync(candidate));
+    if (found) return found;
+  }
+  return undefined;
 }
 
 function firstCliPath(bins: string[]): { bin: string; path: string } | undefined {
@@ -225,8 +273,35 @@ function firstCliPath(bins: string[]): { bin: string; path: string } | undefined
   return undefined;
 }
 
+/**
+ * Environment inherited by the bundled Manager. Keep its runtime preflight and
+ * workers on the exact augmented PATH/executable paths used by desktop
+ * subscription detection.
+ */
+export function subscriptionRuntimeEnvironment(): NodeJS.ProcessEnv {
+  const claude = cliPath('claude');
+  const codex = cliPath('codex');
+  const cursor = cliPath('cursor-agent');
+  const grok = cliPath('grok');
+  const antigravity = firstCliPath(['agy', 'antigravity'])?.path;
+  const copilot = cliPath('copilot');
+  const kiro = cliPath('kiro-cli');
+  const kimi = cliPath('kimi');
+  return {
+    ...cliEnv(),
+    ...(claude && { CLAUDE_PATH: claude }),
+    ...(codex && { ID_AGENT_CODEX_BIN: codex }),
+    ...(cursor && { CURSOR_AGENT_PATH: cursor }),
+    ...(grok && { GROK_CLI_PATH: grok }),
+    ...(antigravity && { ANTIGRAVITY_CLI_PATH: antigravity }),
+    ...(copilot && { COPILOT_CLI_PATH: copilot }),
+    ...(kiro && { KIRO_CLI_PATH: kiro }),
+    ...(kimi && { KIMI_CLI_PATH: kimi }),
+  };
+}
+
 function expandHome(p: string): string {
-  return p.replace(/^~(?=\/|$)/, homedir());
+  return p.replace(/^~(?=[/\\]|$)/, homedir());
 }
 
 function installEvidence(meta: SubProviderMeta): { installed: boolean; source?: string; detail?: string; cliPath?: string } {
@@ -245,7 +320,19 @@ function shellQuote(arg: string): string {
 }
 
 function commandLine([bin, args]: CommandSpec): string {
-  return [bin, ...args].map(shellQuote).join(' ');
+  if (process.platform !== 'win32') return [bin, ...args].map(shellQuote).join(' ');
+  return [bin, ...args]
+    .map((arg) => /^[A-Za-z0-9_./:=@%+\\-]+$/.test(arg) ? arg : `"${arg.replace(/"/g, '""')}"`)
+    .join(' ');
+}
+
+function execCli(bin: string, args: string[], timeout: number) {
+  const executable = cliPath(bin) ?? bin;
+  return execFileP(executable, args, {
+    env: cliEnv(),
+    timeout,
+    shell: executableRequiresShell(executable),
+  });
 }
 
 function truncateDetail(s: string): string {
@@ -299,7 +386,7 @@ function baseStatus(provider: SubProvider, patch: Partial<SubStatus>): SubStatus
     statusSupported: false,
     loginSupported: Boolean(meta.login),
     logoutSupported: Boolean(meta.logout),
-    installSupported: Boolean(meta.install),
+    installSupported: Boolean(meta.install && installCommandSupported(meta.install)),
     installOpensApp: meta.installOpensApp,
     postInstall: meta.postInstall,
     detail: evidence.detail ?? meta.statusNote,
@@ -315,7 +402,7 @@ function notInstalled(provider: SubProvider): SubStatus {
 async function claudeStatus(): Promise<SubStatus> {
   if (!cliPath(SUB_META.claude.bin)) return notInstalled('claude');
   try {
-    const { stdout } = await execFileP('claude', ['auth', 'status'], { env: cliEnv(), timeout: 8000 });
+    const { stdout } = await execCli('claude', ['auth', 'status'], 8000);
     const j = JSON.parse(stdout) as { loggedIn?: boolean; authMethod?: string; subscriptionType?: string; email?: string };
     return baseStatus('claude', { loggedIn: !!j.loggedIn, installed: true, statusSupported: true, plan: j.subscriptionType, email: j.email, account: j.email, accountSource: 'claude auth status', method: j.authMethod });
   } catch (e: unknown) {
@@ -364,7 +451,7 @@ function codexAccount(): { email?: string; plan?: string } {
 async function codexStatus(): Promise<SubStatus> {
   if (!cliPath(SUB_META.chatgpt.bin)) return notInstalled('chatgpt');
   try {
-    const { stdout, stderr } = await execFileP('codex', ['login', 'status'], { env: cliEnv(), timeout: 8000 });
+    const { stdout, stderr } = await execCli('codex', ['login', 'status'], 8000);
     const out = `${stdout}${stderr}`.trim();
     const loggedIn = /logged in/i.test(out);
     const acct = loggedIn ? codexAccount() : {};
@@ -379,7 +466,7 @@ async function codexStatus(): Promise<SubStatus> {
 async function cursorStatus(): Promise<SubStatus> {
   if (!cliPath(SUB_META.cursor.bin)) return notInstalled('cursor');
   try {
-    const { stdout, stderr } = await execFileP('cursor-agent', ['status'], { env: cliEnv(), timeout: 8000 });
+    const { stdout, stderr } = await execCli('cursor-agent', ['status'], 8000);
     const out = `${stdout}${stderr}`.trim();
     const loggedIn = /logged in|authenticated|signed in/i.test(out) && !/not logged in|not authenticated|signed out/i.test(out);
     const email = out.match(/[\w.+-]+@[\w.-]+\.\w+/)?.[0];
@@ -418,7 +505,7 @@ async function grokStatus(): Promise<SubStatus> {
   if (!cliPath(SUB_META.grok.bin)) return notInstalled('grok');
   const account = grokAccount();
   try {
-    const { stdout, stderr } = await execFileP('grok', ['models'], { env: cliEnv(), timeout: 15000 });
+    const { stdout, stderr } = await execCli('grok', ['models'], 15000);
     const out = `${stdout}${stderr}`.trim();
     const loggedIn = /available models/i.test(out) && !/not authenticated|not logged in|signed out|login required/i.test(out);
     return baseStatus('grok', {
@@ -476,7 +563,7 @@ async function antigravityStatus(): Promise<SubStatus> {
   if (!cli) return notInstalled('antigravity');
   const account = googleAccountHint();
   try {
-    const { stdout, stderr } = await execFileP(cli.path, ['models'], { env: cliEnv(), timeout: 15000 });
+    const { stdout, stderr } = await execCli(cli.path, ['models'], 15000);
     const out = `${stdout}${stderr}`.trim();
     const models = stdout
       .split(/\r?\n/)
@@ -521,7 +608,7 @@ async function whoamiStatus(provider: 'kiro-cli' | 'q', command: CommandSpec): P
     });
   }
   try {
-    const { stdout, stderr } = await execFileP(command[0], command[1], { env: cliEnv(), timeout: 8000 });
+    const { stdout, stderr } = await execCli(command[0], command[1], 8000);
     const out = `${stdout}${stderr}`.trim();
     const loggedIn = Boolean(out) && !/not logged in|not authenticated|signed out|no credentials|login required/i.test(out);
     const email = out.match(/[\w.+-]+@[\w.-]+\.\w+/)?.[0];
@@ -545,6 +632,32 @@ async function cliPresenceStatus(provider: 'copilot'): Promise<SubStatus> {
   });
 }
 
+function kimiCredentialEvidence(): string | undefined {
+  const roots = Array.from(new Set([
+    process.env.KIMI_CODE_HOME,
+    join(homedir(), '.kimi-code'),
+    join(homedir(), '.kimi'),
+  ].filter((value): value is string => Boolean(value))));
+  return roots
+    .map((root) => join(expandHome(root), 'credentials', 'kimi-code.json'))
+    .find((file) => existsSync(file));
+}
+
+async function kimiStatus(): Promise<SubStatus> {
+  if (!cliPath(SUB_META.kimi.bin)) return notInstalled('kimi');
+  const credentialFile = kimiCredentialEvidence();
+  return baseStatus('kimi', {
+    installed: true,
+    statusSupported: false,
+    linked: Boolean(credentialFile),
+    account: credentialFile ? 'Kimi membership' : undefined,
+    accountSource: credentialFile ? 'Kimi OAuth credential file presence' : undefined,
+    detail: credentialFile
+      ? 'Kimi OAuth is linked. IDACC verified only the credential file location; credential contents were not read.'
+      : SUB_META.kimi.statusNote,
+  });
+}
+
 async function providerStatus(provider: SubProvider): Promise<SubStatus> {
   switch (provider) {
     case 'claude': return claudeStatus();
@@ -553,6 +666,7 @@ async function providerStatus(provider: SubProvider): Promise<SubStatus> {
     case 'grok': return grokStatus();
     case 'antigravity': return antigravityStatus();
     case 'kiro-cli': return whoamiStatus('kiro-cli', ['kiro-cli', ['whoami']]);
+    case 'kimi': return kimiStatus();
     case 'q': return whoamiStatus('q', ['q', ['whoami']]);
     case 'copilot':
       return cliPresenceStatus(provider);
@@ -560,8 +674,11 @@ async function providerStatus(provider: SubProvider): Promise<SubStatus> {
 }
 
 export function invalidateSubsStatusCache(): void {
+  subsStatusGeneration += 1;
   subsStatusCache = null;
+  subsStatusInflight = null;
   assignmentSubsStatusCache = null;
+  assignmentSubsStatusInflight = null;
 }
 
 export function cachedSubsStatus(): Record<SubProvider, SubStatus> | null {
@@ -575,14 +692,26 @@ export async function subsStatus(opts: SubsStatusOptions = {}): Promise<Record<S
     : SUBS_STATUS_CACHE_TTL_MS;
   if (!opts.force && subsStatusCache && (opts.staleOk || now - subsStatusCache.at < maxAgeMs)) return subsStatusCache.rows;
   if (!opts.force && subsStatusInflight) return subsStatusInflight;
-  subsStatusInflight = Promise.all(SUB_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const))
+  if (opts.force) subsStatusCache = null;
+  const generation = subsStatusGeneration;
+  const requestSequence = ++subsStatusRequestSequence;
+  latestSubsStatusRequestSequence = requestSequence;
+  const request = Promise.all(SUB_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const))
     .then((rows) => {
       const result = Object.fromEntries(rows) as Record<SubProvider, SubStatus>;
-      subsStatusCache = { at: Date.now(), rows: result };
+      if (
+        subsStatusGeneration === generation
+        && latestSubsStatusRequestSequence === requestSequence
+      ) {
+        subsStatusCache = { at: Date.now(), rows: result };
+      }
       return result;
     })
-    .finally(() => { subsStatusInflight = null; });
-  return subsStatusInflight;
+    .finally(() => {
+      if (subsStatusInflight === request) subsStatusInflight = null;
+    });
+  subsStatusInflight = request;
+  return request;
 }
 
 /** Authoritative readiness for subscription harnesses that Team Builder can assign. */
@@ -597,14 +726,26 @@ export async function assignmentSubsStatus(
     return assignmentSubsStatusCache.rows;
   }
   if (!opts.force && assignmentSubsStatusInflight) return assignmentSubsStatusInflight;
-  assignmentSubsStatusInflight = Promise.all(
+  if (opts.force) assignmentSubsStatusCache = null;
+  const generation = subsStatusGeneration;
+  const requestSequence = ++assignmentSubsStatusRequestSequence;
+  latestAssignmentSubsStatusRequestSequence = requestSequence;
+  const request = Promise.all(
     ASSIGNMENT_PROVIDERS.map(async (provider) => [provider, await providerStatus(provider)] as const),
   ).then((rows) => {
     const result = Object.fromEntries(rows) as Partial<Record<SubProvider, SubStatus>>;
-    assignmentSubsStatusCache = { at: Date.now(), rows: result };
+    if (
+      subsStatusGeneration === generation
+      && latestAssignmentSubsStatusRequestSequence === requestSequence
+    ) {
+      assignmentSubsStatusCache = { at: Date.now(), rows: result };
+    }
     return result;
-  }).finally(() => { assignmentSubsStatusInflight = null; });
-  return assignmentSubsStatusInflight;
+  }).finally(() => {
+    if (assignmentSubsStatusInflight === request) assignmentSubsStatusInflight = null;
+  });
+  assignmentSubsStatusInflight = request;
+  return request;
 }
 
 /** Recheck only the managed subscription runtimes present in a pending assignment batch. */
@@ -621,13 +762,20 @@ export async function subsStatusForRuntimes(
 }
 
 /**
- * Kick off a visible CLI install. Opens the user's Terminal and runs the vendor's
- * official installer there — visible and abortable — and returns the command either
- * way so the UI can fall back to clipboard if macOS blocks Terminal automation.
+ * Kick off a visible CLI install. On supported platforms this opens the user's
+ * terminal and runs the vendor's official installer there. Otherwise it returns
+ * the command untouched so the UI can offer a manual, clipboard-based fallback.
  */
 export async function subsInstall(provider: SubProvider): Promise<{ ok: boolean; ran: boolean; command?: string; error?: string; postInstall?: string; installOpensApp?: boolean }> {
   const meta = SUB_META[provider];
   if (!meta?.install) return { ok: false, ran: false, error: 'no installer available for this provider' };
+  if (!installCommandSupported(meta.install)) {
+    return {
+      ok: false,
+      ran: false,
+      error: `The reviewed ${meta.label} installer is not supported on this operating system. Use the vendor's platform-specific installation instructions, then re-check IDACC.`,
+    };
+  }
   const r = await runInTerminal(meta.install);
   return { ok: r.ok, ran: r.ran, command: r.command, error: r.error, postInstall: meta.postInstall, installOpensApp: meta.installOpensApp };
 }
@@ -648,13 +796,17 @@ export function subsSignin(provider: SubProvider): Promise<{ started: boolean; u
     return Promise.resolve({ started: false, error: detail });
   }
   if (meta.loginMode === 'terminal') {
-    const cmd = commandLine(meta.login);
+    const cmd = commandLine([cliPath(bin) ?? bin, args]);
     return runInTerminal(cmd).then((r) => ({ started: r.ran, command: r.command, error: r.ran ? undefined : r.error }));
   }
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(bin, args, { env: cliEnv() });
+      const executable = cliPath(bin) ?? bin;
+      child = spawn(executable, args, {
+        env: cliEnv(),
+        shell: executableRequiresShell(executable),
+      });
     } catch (e) {
       return resolve({ started: false, error: e instanceof Error ? e.message : String(e) });
     }
@@ -692,7 +844,7 @@ export async function subsSignout(provider: SubProvider): Promise<{ ok: boolean;
   if (!meta?.logout) return { ok: false, error: 'no sign-out command available for this provider' };
   const [bin, args] = meta.logout;
   try {
-    await execFileP(bin, args, { env: cliEnv(), timeout: 15000 });
+    await execCli(bin, args, 15000);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

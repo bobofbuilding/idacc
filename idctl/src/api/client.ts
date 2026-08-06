@@ -29,6 +29,7 @@ import type {
 } from './types.ts';
 import type { Config } from '../config.ts';
 import { slugName, type ParsedTeamSpec } from './teamSpec.ts';
+import type { ControlCenterCapabilities } from './controlCenterContract.ts';
 
 /** One agent in an AI-designed team — richer than a ParsedTeamSpec agent: it also
  *  carries a suggested runtime/model/skills the team builder can apply per agent,
@@ -292,12 +293,23 @@ export function normalizeManagerEvent(raw: unknown): ManagerEvent | null {
   };
 }
 
-function normalizeAgentRecord(raw: unknown): Agent | null {
+export function normalizeAgentRecord(raw: unknown): Agent | null {
   const row = objectRecord(raw);
   const id = textField(row.id) ?? textField(row.name);
   const name = textField(row.name) ?? textField(row.alias) ?? id;
   if (!id || !name) return null;
   const metadata = objectRecord(row.metadata);
+  const rawBrainTools = objectRecord(row.brainTools);
+  const brainTools = {
+    ...(typeof rawBrainTools.skillInstalled === 'boolean' ? { skillInstalled: rawBrainTools.skillInstalled } : {}),
+    ...(typeof rawBrainTools.contextInjection === 'boolean' ? { contextInjection: rawBrainTools.contextInjection } : {}),
+    ...(typeof rawBrainTools.mcpExplicit === 'boolean' ? { mcpExplicit: rawBrainTools.mcpExplicit } : {}),
+    ...(typeof rawBrainTools.mcpAttached === 'boolean' ? { mcpAttached: rawBrainTools.mcpAttached } : {}),
+    ...(numberField(rawBrainTools.mcpServerCount) != null ? { mcpServerCount: numberField(rawBrainTools.mcpServerCount) } : {}),
+    ...(typeof rawBrainTools.localRuntime === 'boolean' ? { localRuntime: rawBrainTools.localRuntime } : {}),
+    ...(typeof rawBrainTools.runtimeSupportsMcp === 'boolean' ? { runtimeSupportsMcp: rawBrainTools.runtimeSupportsMcp } : {}),
+    ...(typeof rawBrainTools.activeToolAccess === 'boolean' ? { activeToolAccess: rawBrainTools.activeToolAccess } : {}),
+  };
   return {
     id,
     name,
@@ -313,6 +325,7 @@ function normalizeAgentRecord(raw: unknown): Agent | null {
     createdAt: numberField(row.createdAt ?? row.created_at) ?? 0,
     lastHealthCheck: numberField(row.lastHealthCheck ?? row.last_health_check),
     ...(Object.keys(metadata).length ? { metadata } : {}),
+    ...(Object.keys(brainTools).length ? { brainTools } : {}),
     ...(textField(row.teamName ?? row.team_name ?? row.team) ? { teamName: textField(row.teamName ?? row.team_name ?? row.team) } : {}),
     ...(textField(row.deploymentShape) === 'remote-endpoint' ? { deploymentShape: 'remote-endpoint' as const } : textField(row.deploymentShape) === 'local-process' ? { deploymentShape: 'local-process' as const } : {}),
     pid: numberField(row.pid) ?? null,
@@ -493,6 +506,32 @@ export class ManagerClient {
     }
   }
 
+  private async deleteJson<T>(
+    path: string,
+    body: unknown,
+    signal?: AbortSignal,
+    timeoutMs = DEFAULT_MANAGER_TIMEOUT_MS,
+  ): Promise<T> {
+    const req = this.requestSignal(signal, timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(`${this.cfg.managerUrl}${path}`, {
+        method: 'DELETE',
+        headers: this.headers(),
+        body: JSON.stringify(body ?? {}),
+        signal: req.signal,
+      });
+    } catch (err) {
+      req.cleanup();
+      throw this.requestError('DELETE', path, err, req.timedOut());
+    }
+    try {
+      return await this.jsonOrThrow<T>('DELETE', path, res);
+    } finally {
+      req.cleanup();
+    }
+  }
+
   private async post<T>(path: string, body: unknown, signal?: AbortSignal, timeoutMs = DEFAULT_MANAGER_TIMEOUT_MS): Promise<T> {
     const req = this.requestSignal(signal, timeoutMs);
     let res: Response;
@@ -527,9 +566,10 @@ export class ManagerClient {
     } catch (err) {
       if (err instanceof ManagerError && err.status === 404) {
         throw new ManagerError(
-          `"${feature}" isn't available on the id-agents manager at ${this.cfg.managerUrl}. ` +
-          `The endpoint returned 404 — this control-center feature needs a manager that ` +
-          `includes it (a stock/older id-agents won't). Update the manager you're pointed at.`,
+          `"${feature}" isn't available from the bundled service at ${this.cfg.managerUrl}. ` +
+          `The endpoint returned 404, so this control-center feature needs a newer unified ` +
+          `runtime. Update or repair the unified IDACC application from Settings; Manager ` +
+          `and Brain are updated with it.`,
           404,
         );
       }
@@ -618,9 +658,21 @@ export class ManagerClient {
     return { key: response.item.state_key, value: response.item.value, version: Number(response.item.version), updatedAt: Number(response.item.updated_at) };
   }
 
-  async controlStateDelete(scope: 'global' | 'team' | 'project', key: string, signal?: AbortSignal): Promise<boolean> {
+  async controlStateDelete(
+    scope: 'global' | 'team' | 'project',
+    key: string,
+    expectedVersion: number,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+      throw new Error('controlStateDelete requires the current positive version');
+    }
     const response = await this.requireRoute('Manager control state', () =>
-      this.del<{ ok: boolean; deleted?: boolean }>(`/control/state/${scope}/${encodeURIComponent(key)}`, signal));
+      this.deleteJson<{ ok: boolean; deleted?: boolean }>(
+        `/control/state/${scope}/${encodeURIComponent(key)}`,
+        { expected_version: expectedVersion },
+        signal,
+      ));
     return response.deleted === true;
   }
 
@@ -788,7 +840,7 @@ export class ManagerClient {
 
   /** Control Center capability discovery — which CC-only routes this manager supports.
    *  Returns null on a stock/older manager (no /capabilities), so the GUI can degrade. */
-  async capabilities(signal?: AbortSignal): Promise<{ cc_api_version?: number; features?: string[]; routes?: { method: string; path: string; group: string }[] } | null> {
+  async capabilities(signal?: AbortSignal): Promise<ControlCenterCapabilities | null> {
     try {
       return await this.get('/capabilities', signal);
     } catch {
@@ -904,10 +956,28 @@ export class ManagerClient {
 
   /**
    * Set an agent's output speed (default|fast, '' = default) via metadata. Only
-   * Claude Code runtimes currently expose this knob. Needs a rebuild to apply.
+   * Claude Code runtimes expose this knob. Fast uses Claude Code fast mode,
+   * which can switch to an eligible Opus model and incur higher extra-usage
+   * pricing. Needs a rebuild to apply.
    */
   async setAgentSpeed(agentId: string, speed: string, signal?: AbortSignal): Promise<{ metadata?: Record<string, unknown> }> {
     return this.post(`/agents/${encodeURIComponent(agentId)}/metadata`, { metadata: { speed } }, signal);
+  }
+
+  /**
+   * Replace an agent's complete skill reference list without deploying it.
+   * This is intentionally separate from installSkill/uninstallSkill: those
+   * routes live-deploy after every individual mutation, so they cannot repair
+   * a legacy profile that contains more than one unavailable skill reference.
+   * The caller must rebuild once after the reconciled list is complete.
+   */
+  async setAgentSkills(agentId: string, skills: string[], signal?: AbortSignal): Promise<{ metadata?: Record<string, unknown> }> {
+    const normalized = Array.from(new Set(
+      (Array.isArray(skills) ? skills : [])
+        .map((skill) => String(skill ?? '').trim())
+        .filter(Boolean),
+    ));
+    return this.post(`/agents/${encodeURIComponent(agentId)}/metadata`, { metadata: { skills: normalized } }, signal);
   }
 
   /**
@@ -937,6 +1007,35 @@ export class ManagerClient {
   }
 
   /**
+   * Atomically apply a reviewed HR runtime configuration. Newer managers
+   * preflight, rebuild once, verify the live worker, and restore the previous
+   * configuration when launch fails. The expected snapshot prevents a stale
+   * Health row from overwriting a concurrent change.
+   */
+  async applyAgentConfiguration(
+    agentId: string,
+    configuration: { runtime: string; model: string; effort?: string; speed?: string },
+    expected: { runtime?: string; model?: string; effort?: string; speed?: string },
+    provider?: { name: string; kind?: string; baseUrl: string; apiKey?: string; keyEnv?: string },
+    signal?: AbortSignal,
+  ): Promise<{
+    ok?: boolean;
+    verified?: boolean;
+    rolledBack?: boolean;
+    rollbackRestored?: boolean;
+    rebuilt?: boolean;
+    before?: Record<string, unknown>;
+    after?: Record<string, unknown>;
+  }> {
+    return this.requireRoute('Apply agent runtime configuration', () =>
+      this.post(`/agents/${encodeURIComponent(agentId)}/configuration`, {
+        configuration,
+        expected,
+        ...(provider ? { provider } : {}),
+      }, signal));
+  }
+
+  /**
    * Switch an agent to a Settings-backed provider API lane. The manager stores
    * only safe lane metadata and keeps the supplied API key process-local for the
    * immediate rebuild.
@@ -949,6 +1048,32 @@ export class ManagerClient {
   ): Promise<{ runtime?: string; executionRuntime?: string; needsRebuild?: boolean; message?: string }> {
     return this.requireRoute('Switch agent provider runtime', () =>
       this.post(`/agents/${encodeURIComponent(agentId)}/runtime`, { runtime, provider }, signal));
+  }
+
+  /**
+   * Rebind an encrypted-settings provider credential after the managed
+   * Manager restarts, and resume only an agent carrying the durable
+   * managerRestartRequested marker. The credential is a privileged,
+   * process-local handoff and is never returned by the Manager.
+   */
+  async rebindAndResumeAgentProviderRuntime(
+    agentId: string,
+    runtime: string,
+    provider: { name: string; kind?: string; baseUrl: string; apiKey?: string },
+    signal?: AbortSignal,
+  ): Promise<{
+    runtime?: string;
+    executionRuntime?: string;
+    status?: string;
+    resumed?: boolean;
+    message?: string;
+  }> {
+    return this.requireRoute('Restore provider runtime after Manager restart', () =>
+      this.post(`/agents/${encodeURIComponent(agentId)}/runtime`, {
+        runtime,
+        provider,
+        resumeAfterManagerRestart: true,
+      }, signal));
   }
 
   /**
@@ -1253,7 +1378,7 @@ export class ManagerClient {
    *  still has agents (400 with a count); remove its agents first. */
   async deleteTeam(name: string, signal?: AbortSignal): Promise<{ success: boolean; name: string; message: string }> {
     return this.requireRoute('Delete a team', () =>
-      this.del(`/teams/${encodeURIComponent(name)}`, signal));
+      this.del(`/teams/${encodeURIComponent(name)}?confirm=${encodeURIComponent(name)}`, signal));
   }
 
   /**
@@ -1380,10 +1505,22 @@ export class ManagerClient {
       this.post('/library/skills/uninstall', { skill, agent }, signal));
   }
 
-  /** Attach external MCP servers to an agent. Takes effect on next rebuild. */
-  async setAgentMcp(agentId: string, servers: McpServerSpec[], signal?: AbortSignal): Promise<SetMcpResult> {
+  /**
+   * Attach external MCP servers to an agent. `expectedServers` enables a
+   * compare-and-set write so a concurrent capability edit cannot be silently
+   * replaced. Takes effect on the next rebuild.
+   */
+  async setAgentMcp(
+    agentId: string,
+    servers: McpServerSpec[],
+    expectedServers?: McpServerSpec[],
+    signal?: AbortSignal,
+  ): Promise<SetMcpResult> {
     return this.requireRoute('Attach MCP servers', () =>
-      this.post(`/agents/${encodeURIComponent(agentId)}/mcp`, { servers }, signal));
+      this.post(`/agents/${encodeURIComponent(agentId)}/mcp`, {
+        servers,
+        ...(Array.isArray(expectedServers) ? { expectedServers } : {}),
+      }, signal));
   }
 
   // ---- News feed --------------------------------------------------------

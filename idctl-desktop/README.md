@@ -1,83 +1,159 @@
-# ID Agents Control Center — Desktop (GUI)
+# ID Agents Control Center — desktop
 
-A real **mouse + keyboard desktop application** (Electron) for the id-agents
-manager — a window you click around, not a terminal. Live fleet dashboard,
-conversational manager chat, team management, inbox, and more.
+This package is the supported consumer desktop application. It combines the
+React/Electron interface, pinned Agent manager, and pinned Brain into one
+installable application.
 
-It **reuses the idctl backend unchanged**: the manager API client, settings,
-and key-management logic all run in Electron's main process (Node, no CORS,
-secrets off the UI) and are exposed to the React window over a small, allow-listed
-IPC bridge (`window.idagents.call(...)`).
+For product behavior, privacy boundaries, supported platforms, and the full
+release workflow, see the repository [README](../README.md) and
+[release-provenance guide](../docs/RELEASE_PROVENANCE.md).
 
-## Run from source
+## Development
 
-```bash
-cd idctl-desktop
-npm install      # first time
-npm start        # build + launch the window
-```
-
-## Build the standalone app (download & double-click)
+From the repository root:
 
 ```bash
-npm run dist     # → release/mac-arm64/ID Agents Control Center.app  (.app, Bob icon)
-npm run dmg      # → a .dmg installer (drag-to-Applications)
+npm ci --prefix idctl
+npm ci --prefix idctl-desktop
+npm run typecheck --prefix idctl-desktop
+npm run start --prefix idctl-desktop
 ```
 
-`npm run dist` intentionally keeps its local app for manual installation. The
-repository release workflow removes this generated directory after GitHub has
-verified the uploaded release, so repeated published updates do not accumulate
-unpacked app copies.
+`npm start` creates a development bundle. It does not require a staged Manager
+or Brain.
 
-The `.app` bundles Electron + the UI, so it runs with no Node and no install —
-double-click it like any consumer Mac app. It carries the Bob brand icon
-(`build/icon.icns`, generated from `assets/icon-source.jpg`).
+## Distributable builds
 
-> Ad-hoc/local build. For public distribution, sign with an Apple Developer ID
-> and notarize (set the `CSC_*` env vars and remove `CSC_IDENTITY_AUTO_DISCOVERY=false`).
+Release packaging requires a clean Manager source checkout matching
+`../release/runtime-lock.json`. The exact Brain runtime ships in the repository
+as a verified, consumer-safe capsule, so no Brain checkout or private
+runtime-source credential is required:
 
-## Architecture
+```bash
+IDACC_MANAGER_SOURCE="$PWD/.runtime-sources/manager" \
+npm run stage:runtimes --prefix idctl-desktop
 
-```
- React renderer (DOM, mouse+keyboard)         Electron main (Node)            manager :4100
- ┌───────────────────────────┐  IPC          ┌──────────────────────┐  HTTP  ┌──────────────┐
- │ App shell · sidebar nav    │──call(...)──▶ │ bridge.ts            │──────▶ │ /agents      │
- │ Dashboard · Chat · Teams   │               │  reuses idctl        │        │ /events      │
- │ Capabilities · Settings …  │ ◀──result──── │  ManagerClient       │ ◀───── │ /remote …    │
- └───────────────────────────┘               └──────────────────────┘        └──────────────┘
+npm run verify:runtimes --prefix idctl-desktop
+npm run build:release --prefix idctl-desktop
 ```
 
-- `src/main/` — Electron main + IPC bridge (imports the idctl `ManagerClient`).
-- `src/preload/` — `contextBridge` exposing `window.idagents`.
-- `src/renderer/` — React UI (`store.ts` live hook, `views/*`), `styles.css`.
-- `scripts/build.mjs` — esbuild bundles main/preload/renderer.
+Publishers with access to the private Brain repository can additionally pass
+`--brain-source` to `scripts/validate-runtime-lock.mjs` to audit the capsule
+against its pinned upstream revision. That checkout is not needed to build or
+review the application.
 
-## Views
+Native packages must be built on their target operating system:
 
-All panels are wired:
+```bash
+# macOS (requires Developer ID and notarization credentials)
+npm run release:mac --prefix idctl-desktop
 
-- **Dashboard** — live fleet + activity feed + agent detail; validate runtime ↔
-  model pairings and switch a running agent's runtime/model in place.
-- **Chat** — talk to the team's `lead` manager agent; streams the reply.
-- **Inbox** — answer questions the manager is blocked on.
-- **Tasks** — create / claim / assign / complete tasks.
-- **Health** — probe agent liveness, plus a local‑model (Ollama) token
-  throughput gauge and 24h/7d token‑usage averages (cloud API runtimes excluded).
-- **Identity & Keys** — per‑agent ENS / ID Chain / OWS wallet, Safe smart
-  account, and scoped (optionally non‑expiring) ERC‑4337 session keys.
-- **Schedule** — per‑agent heartbeat intervals and recurring calendar check‑ins.
-- **Teams** — switch, create from the default template, an add‑agent form, and
-  cross‑team relay policy (with per‑agent overrides).
-- **Capabilities** — attach MCP servers (catalog + live connection Test); a
-  searchable, tag‑filtered **skill catalog** that follows the
-  [agentskills.io](https://agentskills.io) `SKILL.md` standard, including a
-  **create‑skill** form (name/description/tags/license/compatibility/allowed‑tools
-  + Markdown body); and a plugins view showing each plugin's provider. Install or
-  assign to one or many agents/teams.
-- **Settings** — connect managers and inference backends (Ollama, LM Studio, any
-  OpenAI‑compatible server, Anthropic, OpenAI) with live model discovery;
-  Subscriptions (runtime OAuth sign‑in status); and Self‑update.
+# Windows (requires Authenticode credentials)
+npm run release:win --prefix idctl-desktop
 
-Sibling project [`../idctl`](../idctl) is the terminal (TUI) build of the same
-control center and shares the backend. The upstream platform this drives is
-[id-agents](https://github.com/idchain-world/id-agents).
+# Linux
+npm run release:linux --prefix idctl-desktop
+```
+
+Windows source and package builds require Visual Studio Build Tools with the
+Roslyn Compiler component and .NET Framework 4.8 targeting pack. The build
+discovers that toolchain through `vswhere`, compiles both app-owned helpers
+twice, and rejects non-deterministic output before packaging.
+
+The AppImage target supports the unified in-app updater. Debian packages are
+updated through the system package manager or by installing the next `.deb`;
+the application reports that distinction instead of offering an unsupported
+self-replacement.
+
+With automatic download off, Settings checks the compiled release feed first
+and then offers **Download update** for the exact newer stable version. The
+single unified updater reports progress, verifies and stages one shared IDACC +
+Manager + Brain artifact, and still requires **Restart & update** to install.
+
+The production GitHub workflow builds macOS arm64/x64, Windows x64, and Linux
+x64 independently, verifies the clean-profile Manager/Brain startup, and
+publishes only after every signing, payload, checksum, SBOM, and provenance gate
+passes.
+
+## Runtime and profile boundary
+
+`resources/idacc-runtime` is generated and immutable. Its manifest is hashed
+into the desktop main bundle, and every staged runtime file is re-hashed before
+either service starts.
+
+At runtime, all mutable state is redirected to the active IDACC profile:
+
+- Manager database, workspaces, skills, plugins, and configuration;
+- Brain database, memory, living plans, and generated state;
+- goals, local plans, chats, questions, learning records, and caches; and
+- credentials, Computer Use state/audits, and service logs.
+
+No profile data belongs in the application bundle or a release artifact.
+
+## Process architecture
+
+```text
+React renderer
+    │ trusted, allowlisted IPC
+Electron main
+    ├── verified Agent manager child ── random 127.0.0.1 port
+    │       └── Brain-skilled agents ── private stdio MCP ──────┐
+    ├── verified Brain child ────────── random 127.0.0.1 port ◀─┤
+    ├── managed event listener ──────── Manager events → Brain ┤
+    └── scheduled Brain cycle ───────── non-overlapping one-shot┘
+
+Profile-owned Manager skills ────────── Brain searchable skill index
+```
+
+The renderer is sandboxed with Node integration disabled. Manager control
+operations require a per-launch in-memory bearer that is never sent to Brain,
+companions, or agents. A separate Brain credential is confined to Manager's
+Brain transport, app-owned companions, and the private MCP process attached only
+to agents configured with the Brain skill. Core services and the continuous
+listener are supervised with health/liveness checks, bounded logs, restart
+backoff, a crash fuse, and graceful shutdown. POSIX services run in app-owned
+process groups; Windows services run inside per-service Job Objects whose
+kernel-enforced lifetime remains bounded even if a service or the desktop
+process crashes. A single-instance lock is acquired before profile selection,
+migration, or crash-state persistence. A secondary launch never starts services
+or mutates a profile; it restores and focuses the existing primary window unless
+that instance is already shutting down. Every quit, relaunch, and update-install
+path passes through one early shutdown gate before Electron is allowed to exit.
+New work is refused synchronously, and already-admitted startup/background work
+shares a 45-second aggregate drain deadline before process trees stop. A missed
+deadline fails closed into a generic Retry Shutdown dialog; no force-exit,
+restart, or update bypass is offered. The deterministic
+maintenance cycle is off on a fresh profile and starts only after explicit
+opt-in in Settings. Once enabled, its schedule is stored in the profile and
+can be changed or disabled without disabling event learning.
+
+During an orderly quit, IDACC confirms that every bundled process group has
+stopped before Electron exits. On POSIX, bundled roots also watch the desktop
+parent and request self-shutdown after an abrupt parent exit; this is a
+best-effort safeguard rather than the Windows Job Object's kernel guarantee.
+Manager schedules and the opt-in maintenance cycle run only while IDACC is
+open, then resume from profile-owned state after the next launch. The consumer
+application does not install a separate background service.
+
+Loopback services share the current operating-system user's trust boundary;
+random ports do not isolate IDACC from hostile same-user processes. The exact
+protected and intentionally agent-accessible surfaces are documented in the
+repository's [local security model](../docs/SECURITY_MODEL.md).
+
+## Key verification commands
+
+```bash
+npm run typecheck
+npm run test:profile-migrations
+npm run test:brain-plans-profile
+npm run test:consumer-onboarding
+npm run test:consumer-onboarding-integration
+npm run test:unified-stack-policy
+npm run test:unified-stack-integration
+npm run test:runtime-profile-isolation
+npm run test:legacy-manager-updater-retired
+npm run test:unified-updater-integrity
+npm run test:unified-updater-download
+npm run test:release-provenance
+npm run test:release-platform-config
+```

@@ -10,6 +10,13 @@
  */
 import type { FleetStore } from '../store.ts';
 import { call } from '../store.ts';
+import type {
+  CommandConfirmation,
+  CommandMetadata,
+  CommandOperationContext,
+  CommandReceiptKind,
+  CommandRisk,
+} from './commandRuntime.ts';
 
 export type Navigate = (view: string) => void;
 export type OpenDrawer = (panelId: string) => void;
@@ -18,6 +25,8 @@ export interface CommandCtx {
   store: FleetStore;
   navigate: Navigate;
   openDrawer: OpenDrawer;
+  /** Stable invocation identity shared with the durable command receipt. */
+  command: CommandOperationContext;
   /** Transient one-line feedback shown in the palette while/after a command runs. */
   setStatus: (msg: string) => void;
 }
@@ -26,11 +35,31 @@ export interface Command {
   id: string;
   label: string;
   group: string;
+  /** Full-page owner for deeper review, recovery, and receipts. */
+  ownerView: string;
+  /** Manager capability-manifest features required before execution. */
+  requiredFeatures: readonly string[];
+  risk: CommandRisk;
+  confirmation: CommandConfirmation;
+  receiptKind: CommandReceiptKind;
+  /** Stable resources shown in receipts and used for operator recovery. */
+  resourceRefs?: readonly string[];
   /** Extra search terms (space-separated) so a command is findable by intent, not just label. */
   keywords?: string;
   /** Right-aligned hint (target view, shortcut, …). */
   hint?: string;
   run: (ctx: CommandCtx) => void | Promise<void>;
+}
+
+export function commandMetadata(command: Command): CommandMetadata {
+  return {
+    commandId: command.id,
+    ownerView: command.ownerView,
+    requiredFeatures: command.requiredFeatures,
+    risk: command.risk,
+    confirmation: command.confirmation,
+    receiptKind: command.receiptKind,
+  };
 }
 
 const DEFAULT_DASHBOARD_TEAM = 'default';
@@ -84,13 +113,23 @@ export function slashCommandFromQuery(query: string, store: FleetStore): Command
     id: `remote.${parsed.name}`,
     label: `Send /${parsed.name} to ${targetName}`,
     group: 'Agents',
+    ownerView: 'dashboard',
+    requiredFeatures: [],
+    risk: 'medium',
+    confirmation: 'required',
+    receiptKind: 'message',
+    resourceRefs: resolved.teamName
+      ? [`agent:${resolved.teamName}/${targetName}`]
+      : [`agent:${targetName}`],
     keywords: 'ask hey lead message chat',
     hint: resolved.teamName ? resolved.teamName : 'route',
     run: async (c) => {
       const route = resolveAgentTargetTeam(parsed.name, targetName, c.store.allAgents);
       if (route.error) throw new Error(route.error);
       c.setStatus(`Sending /${parsed.name} to ${targetName}…`);
-      await call('remote', parsed.raw, undefined, route.teamName);
+      await call('remote', parsed.raw, undefined, route.teamName, undefined, {
+        idempotencyKey: c.command.idempotencyKey,
+      });
       c.setStatus(`Sent /${parsed.name} to ${targetName}${route.teamName ? ` (${route.teamName})` : ''}`);
       c.store.refresh();
     },
@@ -117,39 +156,82 @@ export function buildCommands(store: FleetStore): Command[] {
 
   // ── Navigate ──
   for (const v of VIEWS) {
-    cmds.push({ id: `go.${v.id}`, label: `Go to ${v.label}`, group: 'Navigate', keywords: v.kw, hint: 'view', run: (c) => c.navigate(v.id) });
+    cmds.push({
+      id: `go.${v.id}`,
+      label: `Go to ${v.label}`,
+      group: 'Navigate',
+      ownerView: v.id,
+      requiredFeatures: [],
+      risk: 'none',
+      confirmation: 'none',
+      receiptKind: 'navigation',
+      keywords: v.kw,
+      hint: 'view',
+      run: (c) => c.navigate(v.id),
+    });
   }
 
   // ── Control panels (slide-over) ──
-  cmds.push({ id: 'panel.quick', label: 'Open quick controls', group: 'Control', keywords: 'drawer panel actions', hint: 'drawer', run: (c) => c.openDrawer('quick') });
-  cmds.push({ id: 'panel.plans', label: 'Manage plans', group: 'Work', keywords: 'brain plan objective status pause work', hint: 'drawer', run: (c) => c.openDrawer('plans') });
-  cmds.push({ id: 'panel.board', label: 'Manage task board', group: 'Work', keywords: 'kanban lane dependency review backlog todo doing', hint: 'drawer', run: (c) => c.openDrawer('board') });
-  cmds.push({ id: 'panel.control-center', label: 'Configure runtimes and capabilities', group: 'Control', keywords: 'provider model mcp concurrency settings', hint: 'drawer', run: (c) => c.openDrawer('control-center') });
+  cmds.push({
+    id: 'panel.quick', label: 'Open quick controls', group: 'Control', ownerView: 'dashboard',
+    requiredFeatures: [], risk: 'none', confirmation: 'none', receiptKind: 'drawer',
+    keywords: 'drawer panel actions', hint: 'drawer', run: (c) => c.openDrawer('quick'),
+  });
+  cmds.push({
+    id: 'panel.plans', label: 'Manage plans', group: 'Work', ownerView: 'tasks',
+    requiredFeatures: [], risk: 'none', confirmation: 'none', receiptKind: 'drawer',
+    keywords: 'brain plan objective status pause work', hint: 'drawer', run: (c) => c.openDrawer('plans'),
+  });
+  cmds.push({
+    id: 'panel.board', label: 'Manage task board', group: 'Work', ownerView: 'tasks',
+    requiredFeatures: [], risk: 'none', confirmation: 'none', receiptKind: 'drawer',
+    keywords: 'kanban lane dependency review backlog todo doing', hint: 'drawer', run: (c) => c.openDrawer('board'),
+  });
+  cmds.push({
+    id: 'panel.control-center', label: 'Configure runtimes and capabilities', group: 'Control', ownerView: 'settings',
+    requiredFeatures: [], risk: 'none', confirmation: 'none', receiptKind: 'drawer',
+    keywords: 'provider model mcp concurrency settings', hint: 'drawer', run: (c) => c.openDrawer('control-center'),
+  });
 
   // ── Owner-page handoffs for high-impact actions ──
   // Dashboard stays observe/talk first. The owner pages hold the richer previews for
   // project tracker writes and org hierarchy/goal rewrites; the drawer still exposes
   // advanced direct shortcuts for operators who explicitly open it.
   cmds.push({
-    id: 'projects.sync',
+    id: 'panel.project-driver',
     label: 'Register or sync a project',
     group: 'Projects',
+    ownerView: 'projects',
+    requiredFeatures: [],
+    risk: 'none',
+    confirmation: 'none',
+    receiptKind: 'drawer',
     keywords: 'workspace import scan folder root project',
     hint: 'drawer',
     run: (c) => c.openDrawer('project-driver'),
   });
   cmds.push({
-    id: 'org.sync',
+    id: 'panel.org',
     label: 'Promote or assign a team lead',
     group: 'Org',
+    ownerView: 'teams',
+    requiredFeatures: [],
+    risk: 'none',
+    confirmation: 'none',
+    receiptKind: 'drawer',
     keywords: 'coordinator hierarchy lead org instructions rebuild brain',
     hint: 'drawer',
     run: (c) => c.openDrawer('org'),
   });
   cmds.push({
-    id: 'work.dispatch',
+    id: 'panel.work-dispatch',
     label: 'Decompose and dispatch work',
     group: 'Work',
+    ownerView: 'tasks',
+    requiredFeatures: [],
+    risk: 'none',
+    confirmation: 'none',
+    receiptKind: 'drawer',
     keywords: 'objective plan delegate fanout task create assignment',
     hint: 'drawer',
     run: (c) => c.openDrawer('project-driver'),
@@ -158,17 +240,29 @@ export function buildCommands(store: FleetStore): Command[] {
     id: 'fleet.probe',
     label: 'Probe all agents (health check)',
     group: 'Fleet',
+    ownerView: 'teams',
+    requiredFeatures: ['observability'],
+    risk: 'low',
+    confirmation: 'none',
+    receiptKind: 'mutation',
+    resourceRefs: ['fleet'],
     keywords: 'health status ping liveness',
     run: async (c) => {
       c.setStatus('Probing every agent…');
-      try { await call('probeAll'); c.setStatus('Probe dispatched to all agents'); }
-      catch (e) { c.setStatus(`Probe failed: ${e instanceof Error ? e.message : String(e)}`); }
+      await call('probeAll');
+      c.setStatus('Probe dispatched to all agents');
     },
   });
   cmds.push({
     id: 'fleet.refresh',
     label: 'Refresh fleet snapshot',
     group: 'Fleet',
+    ownerView: 'dashboard',
+    requiredFeatures: [],
+    risk: 'none',
+    confirmation: 'none',
+    receiptKind: 'refresh',
+    resourceRefs: ['fleet'],
     keywords: 'reload update poll',
     run: (c) => { c.store.refresh(); c.setStatus('Refreshed'); },
   });

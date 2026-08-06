@@ -22,7 +22,7 @@ type GoalField = 'title' | 'status' | 'priority' | 'autopilot' | 'content' | 'up
 interface GoalDriverConfig { enabled: boolean; cadenceMs: number; maxOpenTasksPerGoal: number }
 interface GoalDriverSummary { enabled: boolean; consideredGoals: number; drivenGoals: number; tasksSpawned: number; teamsSynced: number; errors: string[] }
 type TaskLite = { title: string; description?: string | null; status: string; createdAt?: number; updatedAt?: number };
-type GoalProgress = { todo: number; doing: number; stalled: number; done: number };
+type GoalProgress = { todo: number; doing: number; stalled: number; done: number; lastAutomationAt?: number };
 
 const STATUSES: GoalStatus[] = ['draft', 'active', 'done', 'archived'];
 const PRIORITIES: GoalPriority[] = ['primary', 'secondary', 'general'];
@@ -44,6 +44,10 @@ function ago(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
   if (s < 60) return `${s}s ago`; if (s < 3600) return `${Math.round(s / 60)}m ago`;
   if (s < 86400) return `${Math.round(s / 3600)}h ago`; return `${Math.round(s / 86400)}d ago`;
+}
+function epochMs(ts: number | undefined): number {
+  const value = Number(ts || 0);
+  return value > 0 && value < 1e12 ? value * 1000 : value;
 }
 const ASSIST_PROMPT = (idea: string) =>
   `Help write a clear, motivating goal. Return ONLY the goal text in Markdown: a one-line objective statement, then 2–4 bullet points describing what success looks like (measurable where possible). Be specific and outcome-focused; no preamble.\n\nRough idea: ${idea}`;
@@ -138,7 +142,16 @@ export function Goals({ store }: { store: FleetStore }) {
         }).length;
         const done = related.filter((task) => /done|complete/i.test(task.status || '')).length;
         const open = related.filter((task) => !/done|complete|cancel|archive|reject/i.test(task.status || '')).length;
-        next[goal.id] = { todo, stalled, done, doing: Math.max(0, open - todo - stalled) };
+        const lastAutomationAt = related
+          .filter((task) => /goal autopilot sync/i.test(String(task.description || '')))
+          .reduce((latest, task) => Math.max(latest, epochMs(task.createdAt)), 0);
+        next[goal.id] = {
+          todo,
+          stalled,
+          done,
+          doing: Math.max(0, open - todo - stalled),
+          ...(lastAutomationAt ? { lastAutomationAt } : {}),
+        };
       }
       setGoalProgress(next);
     };
@@ -183,7 +196,12 @@ export function Goals({ store }: { store: FleetStore }) {
       id: newId(), title: (title.trim() || clip(content, 60)), idea: idea.trim(), agent: genAgent, team,
       origin: 'goals', status: 'draft', priority, autopilot: false, content, createdAt: now, updatedAt: now,
     };
-    await call('goals:save', goal);
+    try {
+      await call('goals:save', goal);
+    } catch (err) {
+      if (aliveRef.current) setMsg(`goal not saved: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
     if (!aliveRef.current) return;
     const saved = await call<Goal | null>('goals:get', goal.id).catch(() => goal);
     setIdea(''); setDraft(''); setTitle(''); setPriority('general'); setShowNew(false); setMsg('goal saved ✓');
@@ -224,15 +242,21 @@ export function Goals({ store }: { store: FleetStore }) {
   async function patchGoal(p: Partial<Goal>) {
     if (!detail) return;
     if (p.status && p.status !== detail.status && !window.confirm(`Change goal "${detail.title}" status to ${p.status}?\n\nThis writes the saved goal lifecycle state.`)) return;
-    if (p.autopilot === true && !detail.autopilot && !window.confirm(`Enable Autopilot for "${detail.title}"?\n\nThis goal can sync Brain instructions and top up bounded team-lead work immediately and on the driver cadence.`)) return;
+    if (p.autopilot === true && !detail.autopilot && !window.confirm(`Enable Autopilot for "${detail.title}"?\n\nThis goal will sync to Brain immediately and become eligible for bounded team-lead work on the configured cadence.`)) return;
     const cur = await ensureGoalFresh(detail, `Update goal ${detail.title}`, ['updatedAt']);
     if (!cur) return;
     const next = { ...cur, ...p, updatedAt: Date.now() };
-    await call('goals:save', next).catch(() => {});
+    try {
+      await call('goals:save', next);
+    } catch (err) {
+      setDetail(cur);
+      setMsg(`goal not updated: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
     const saved = await call<Goal | null>('goals:get', next.id).catch(() => next);
     setDetail(saved ?? next);
     if ((saved ?? next).status === 'active' && (saved ?? next).autopilot) {
-      setMsg('Autopilot queued: syncing Brain instructions and checking bounded task fanout...');
+      setMsg('Autopilot synced to Brain; bounded work will start on the next cadence.');
     }
     if (aliveRef.current) await reload();
   }
@@ -260,7 +284,7 @@ export function Goals({ store }: { store: FleetStore }) {
     const changes: string[] = [];
     if (next.enabled !== current.enabled) changes.push(`Master: ${current.enabled ? 'enabled' : 'disabled'} -> ${next.enabled ? 'enabled' : 'disabled'}`);
     if (next.cadenceMs !== current.cadenceMs) changes.push(`Cadence: ${cadenceLabel(current.cadenceMs)} -> ${cadenceLabel(next.cadenceMs)}`);
-    if (next.maxOpenTasksPerGoal !== current.maxOpenTasksPerGoal) changes.push(`Manager tasks requested per pass: ${current.maxOpenTasksPerGoal} -> ${next.maxOpenTasksPerGoal}`);
+    if (next.maxOpenTasksPerGoal !== current.maxOpenTasksPerGoal) changes.push(`Goal starts per cycle: ${current.maxOpenTasksPerGoal} -> ${next.maxOpenTasksPerGoal}`);
     const increasesActivity = (next.enabled && !current.enabled)
       || (current.enabled && activeGoals.length > 0 && next.cadenceMs < current.cadenceMs)
       || (current.enabled && activeGoals.length > 0 && next.maxOpenTasksPerGoal > current.maxOpenTasksPerGoal);
@@ -310,11 +334,11 @@ export function Goals({ store }: { store: FleetStore }) {
       '',
       `Current master: ${pre.cfg.enabled ? 'enabled' : 'disabled'}`,
       `Cadence: ${cadenceLabel(pre.cfg.cadenceMs)}`,
-      `Manager tasks requested per pass: ${pre.cfg.maxOpenTasksPerGoal}`,
+      `Goal starts per cycle: ${pre.cfg.maxOpenTasksPerGoal}`,
       `Active Autopilot goals across all teams: ${pre.activeGoals.length}`,
       activeGoalPreview(pre.activeGoals),
       '',
-      'This can spawn task work and sync Brain team instructions for active Autopilot goals.',
+      'This explicit run can start goal work immediately and sync Brain team instructions.',
     ].join('\n'))) return;
     const fresh = await driverPreflight();
     if (driverConfigStamp(fresh.cfg) !== driverConfigStamp(pre.cfg) || goalSummaryStamp(fresh.activeGoals) !== goalSummaryStamp(pre.activeGoals)) {
@@ -370,7 +394,7 @@ export function Goals({ store }: { store: FleetStore }) {
             <input type="checkbox" checked={driverCfg.enabled} disabled={driverBusy} onChange={(e) => void patchDriver({ enabled: e.target.checked })} />
             <b>Autopilot master</b>
           </label>
-          <span className="muted small">Runs only for active goals with Autopilot on; IDACC syncs Brain instructions and asks the manager to create bounded work.</span>
+          <span className="muted small">Runs only for active goals with Autopilot on; Brain receives edits immediately and the Manager starts bounded work only when the cadence is due.</span>
           <span className="grow" />
           <label className="small muted" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
             cadence
@@ -379,8 +403,8 @@ export function Goals({ store }: { store: FleetStore }) {
             </select>
           </label>
           <label className="small muted" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-            tasks/run
-            <input className="chat-title" style={{ width: 54 }} type="number" min={1} max={12} value={driverCfg.maxOpenTasksPerGoal} disabled={driverBusy} onChange={(e) => void patchDriver({ maxOpenTasksPerGoal: Number(e.target.value) })} />
+            starts/cycle
+            <input className="chat-title" style={{ width: 54 }} title="Maximum goal coordination tasks started by one due cycle. Each start may delegate child tasks afterward." type="number" min={1} max={12} value={driverCfg.maxOpenTasksPerGoal} disabled={driverBusy} onChange={(e) => void patchDriver({ maxOpenTasksPerGoal: Number(e.target.value) })} />
           </label>
           <button className="btn" disabled={driverBusy} onClick={() => void runDriverNow()}>{driverBusy ? 'Running...' : 'Run now'}</button>
         </div>
@@ -430,6 +454,9 @@ export function Goals({ store }: { store: FleetStore }) {
               const progressText = progress && (progress.todo || progress.doing || progress.stalled || progress.done)
                 ? `${progress.doing} doing${progress.todo ? ` · ${progress.todo} todo` : ''}${progress.stalled ? ` · ${progress.stalled} stalled` : ''}${progress.done ? ` · ${progress.done} recently done` : ''}`
                 : '';
+              const activityText = g.autopilot
+                ? `${progress?.lastAutomationAt ? `last automated ${ago(progress.lastAutomationAt)}` : 'not automated yet'} · edited ${ago(g.updatedAt)}`
+                : `edited ${ago(g.updatedAt)}`;
               return (
                 <div className={`skill-card${isOpen ? ' editing' : ''}`} key={g.id}>
                   <div className="skill-card-head" style={{ cursor: 'pointer' }} onClick={() => void open(g.id)}>
@@ -439,7 +466,7 @@ export function Goals({ store }: { store: FleetStore }) {
                     {g.agent ? <span className="muted small">· {g.agent}</span> : null}
                     {progressText ? <span className="muted small" title="Live manager task progress for this goal">· {progressText}</span> : null}
                     <span className="grow" />
-                    <span className="muted small">{ago(g.updatedAt)}</span>
+                    <span className="muted small" title={g.autopilot ? 'Manager automation activity and local goal edit time' : 'Local goal edit time'}>{activityText}</span>
                     <span className="muted">{isOpen ? '▾' : '▸'}</span>
                   </div>
 

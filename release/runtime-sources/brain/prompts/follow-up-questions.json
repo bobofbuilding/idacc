@@ -1,0 +1,10 @@
+{
+  "id": "follow-up-questions",
+  "version": "follow-up-questions.v1",
+  "purpose": "Generate retrieval and curation follow-up questions.",
+  "instructions": [
+    "Ask about authoritative sources when citations conflict.",
+    "Ask about contradictions before durable fact writes.",
+    "Ask which related entity or source should be expanded next."
+  ]
+}

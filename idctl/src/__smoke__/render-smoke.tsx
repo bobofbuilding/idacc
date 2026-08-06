@@ -28,7 +28,11 @@ async function main() {
       await delay(350);
     }
     const frame = lastFrame() ?? '';
-    const ok = frame.trim().length > 0 && !/undefined is not|Cannot read|TypeError/.test(frame);
+    const staleOnboardingCapture = i > 1 && /Onboard agent · step/.test(frame);
+    const ok =
+      frame.trim().length > 0
+      && !/undefined is not|Cannot read|TypeError/.test(frame)
+      && !staleOnboardingCapture;
     if (!ok) failures++;
     process.stdout.write(`\n===== view ${i + 1}: ${VIEWS[i].label} ${ok ? 'OK' : 'FAIL'} =====\n`);
     process.stdout.write(frame + '\n');

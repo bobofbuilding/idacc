@@ -1,69 +1,146 @@
 /**
- * Self-update for the desktop app — "notify while running, upgrade when requested".
+ * Unified application updater.
  *
- * Flow:
- *   1. On launch + every checkIntervalHours, fetch an update manifest
- *      ({ version, zipUrl, notes }) from updateManifestUrl, or the latest
- *      GitHub release from updateRepo.
- *   2. If the manifest version > the running version, download/stage the zip
- *      into userData/staged-update/ and notify the renderer (banner).
- *   3. When the user clicks "Restart & update", a detached helper waits for
- *      this process to exit, swaps the new .app over the installed bundle, and
- *      relaunches it. Background checks never restart the app by themselves.
- *
- * Bundle replacement can't happen in-process (the running .app is locked), so
- * the swap runs in a small shell helper spawned detached right before quit.
+ * Manager and Brain are immutable resources inside the IDACC application, so
+ * there is exactly one update authority. electron-updater verifies the
+ * electron-builder SHA-512 metadata and, on macOS, the replacement application
+ * signature before installing. No custom shell, quarantine removal, inferred
+ * asset name, or delete-before-copy path remains.
  */
-
 import { app, BrowserWindow, Notification } from 'electron';
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, copyFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import {
+  autoUpdater,
+  type ProgressInfo,
+  type UpdateInfo,
+} from 'electron-updater';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { loadSettings } from '../../../idctl/src/settings/store.ts';
-import type { UpdateSettings } from '../../../idctl/src/settings/schema.ts';
+import { DEFAULT_UPDATE_REPO, type UpdateSettings } from '../../../idctl/src/settings/schema.ts';
 import { evaluateUpdateTarget, type UpdateTargetReadiness } from '../shared/updateTarget.ts';
 
-export interface UpdateManifest {
-  version: string;
-  zipUrl: string;
-  notes?: string;
-}
+declare const __IDACC_REVIEW_BUILD__: boolean;
+declare const __IDACC_UPDATE_CHANNEL_POLICY__: string;
+const REVIEW_UPDATE_POLICY = 'idacc-review-updater-enabled:v1';
+const UPDATE_CHANNEL_POLICY = typeof __IDACC_UPDATE_CHANNEL_POLICY__ === 'undefined'
+  ? REVIEW_UPDATE_POLICY
+  : __IDACC_UPDATE_CHANNEL_POLICY__;
+const REVIEW_BUILD_FLAG = typeof __IDACC_REVIEW_BUILD__ !== 'undefined'
+  && __IDACC_REVIEW_BUILD__ === true;
+const REVIEW_BUILD = REVIEW_BUILD_FLAG
+  || UPDATE_CHANNEL_POLICY === REVIEW_UPDATE_POLICY;
 
 export interface UpdateStatus {
   current: string;
+  channel: 'production' | 'review';
   latest?: string;
-  available: boolean;   // a newer version exists upstream
-  staged: boolean;      // the newer build is downloaded and ready to apply
+  available: boolean;
+  staged: boolean;
   checking: boolean;
+  downloading?: boolean;
+  downloadPercent?: number;
   notes?: string;
   error?: string;
   lastChecked?: number;
+  verification: 'electron-builder-sha512-and-platform-signature-where-supported';
 }
 
-let status: UpdateStatus = { current: app.getVersion(), available: false, staged: false, checking: false };
+let status: UpdateStatus = {
+  current: app.getVersion(),
+  channel: REVIEW_BUILD ? 'review' : 'production',
+  available: false,
+  staged: false,
+  checking: false,
+  verification: 'electron-builder-sha512-and-platform-signature-where-supported',
+};
 let timer: ReturnType<typeof setInterval> | null = null;
+let initialCheckTimer: ReturnType<typeof setTimeout> | null = null;
 let mainWindow: BrowserWindow | null = null;
-type PruneReport = { removed: number; errors: string[] };
+let focusWindow: BrowserWindow | null = null;
+let focusHandler: (() => void) | null = null;
+let eventsBound = false;
+let lastFocusCheck = 0;
+let lastNotifiedVersion: string | null = null;
+let stagedInstallPrepared = false;
+let activeUpdateCheck: Promise<UpdateStatus> | null = null;
+let activeUpdateDownload: Promise<UpdateStatus> | null = null;
 
-function stagedDir(): string {
-  return join(app.getPath('userData'), 'staged-update');
-}
-function stagedMetaPath(): string {
-  return join(stagedDir(), 'staged.json');
+/** Numeric semver compare: prerelease labels are treated as lower than release. */
+export function compareVersions(a: string, b: string): number {
+  const parse = (value: string): { numbers: number[]; prerelease: string[] } => {
+    const clean = value.trim().replace(/^v/, '');
+    const [core, prerelease = ''] = clean.split('-', 2);
+    return {
+      numbers: core.split('.').map((part) => Number.parseInt(part, 10) || 0),
+      prerelease: prerelease ? prerelease.split('.') : [],
+    };
+  };
+  const left = parse(a);
+  const right = parse(b);
+  for (let index = 0; index < Math.max(left.numbers.length, right.numbers.length); index += 1) {
+    const delta = (left.numbers[index] ?? 0) - (right.numbers[index] ?? 0);
+    if (delta !== 0) return delta > 0 ? 1 : -1;
+  }
+  if (!left.prerelease.length && right.prerelease.length) return 1;
+  if (left.prerelease.length && !right.prerelease.length) return -1;
+  for (let index = 0; index < Math.max(left.prerelease.length, right.prerelease.length); index += 1) {
+    const aPart = left.prerelease[index];
+    const bPart = right.prerelease[index];
+    if (aPart === undefined) return -1;
+    if (bPart === undefined) return 1;
+    if (aPart === bPart) continue;
+    const aNumeric = /^\d+$/.test(aPart);
+    const bNumeric = /^\d+$/.test(bPart);
+    if (aNumeric && bNumeric) return BigInt(aPart) > BigInt(bPart) ? 1 : -1;
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    return aPart > bPart ? 1 : -1;
+  }
+  return 0;
 }
 
-/** Path to the installed `.app` bundle, derived from the running executable. */
-function appBundlePath(): string {
-  // process.execPath = <App>.app/Contents/MacOS/<bin>
-  return resolve(process.execPath, '..', '..', '..');
+/**
+ * Update artifacts must be stable, valid three-part semantic versions newer
+ * than the running application. electron-updater also rejects prereleases,
+ * but this check keeps the manual-download path fail-closed if a provider ever
+ * returns unexpected metadata.
+ */
+export function isAllowedUpdateVersion(candidate: string, current: string): boolean {
+  const allowed = /^v?\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/;
+  if (!allowed.test(candidate.trim())) return false;
+  return compareVersions(candidate, current) > 0;
+}
+
+export function parseUpdateRepository(value: string | undefined): { owner: string; repo: string } {
+  const clean = String(value || '').trim();
+  const match = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]{1,100})$/.exec(clean);
+  if (!match || match[2].startsWith('.') || match[2].endsWith('.')) {
+    throw new Error('Update repository must be an exact GitHub owner/name pair.');
+  }
+  return { owner: match[1], repo: match[2] };
+}
+
+function settings(): UpdateSettings {
+  return loadSettings().update ?? {
+    autoUpgrade: false,
+    updateRepo: undefined,
+    checkIntervalHours: 4,
+  };
 }
 
 function updateTargetReadiness(): UpdateTargetReadiness {
-  const bundle = appBundlePath();
+  const bundle = process.platform === 'darwin'
+    ? resolve(process.execPath, '..', '..', '..')
+    : app.getAppPath();
   return evaluateUpdateTarget({
     isPackaged: app.isPackaged,
+    platform: process.platform,
     bundlePath: bundle,
-    appAsarExists: existsSync(join(bundle, 'Contents', 'Resources', 'app.asar')),
+    appImagePath: process.platform === 'linux' ? process.env.APPIMAGE : undefined,
+    appAsarExists: existsSync(
+      process.platform === 'darwin'
+        ? resolve(bundle, 'Contents', 'Resources', 'app.asar')
+        : app.getAppPath(),
+    ),
   });
 }
 
@@ -74,366 +151,502 @@ function updateUnavailable(readiness: UpdateTargetReadiness): UpdateStatus {
     available: false,
     staged: false,
     checking: false,
+    downloading: false,
     error: readiness.reason ? `Self-update unavailable: ${readiness.reason}.` : 'Self-update unavailable.',
   };
   return status;
 }
 
-/** Numeric semver compare: 1 if a>b, -1 if a<b, 0 if equal. Ignores pre-release. */
-export function compareVersions(a: string, b: string): number {
-  const pa = a.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
-  const pb = b.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
-    if (d !== 0) return d > 0 ? 1 : -1;
+function notes(info: UpdateInfo): string | undefined {
+  if (typeof info.releaseNotes === 'string') return info.releaseNotes;
+  if (Array.isArray(info.releaseNotes)) {
+    return info.releaseNotes
+      .map((entry) => typeof entry === 'string' ? entry : entry.note)
+      .filter(Boolean)
+      .join('\n\n') || undefined;
   }
-  return 0;
-}
-
-function settings(): UpdateSettings | undefined {
-  return loadSettings().update;
+  return undefined;
 }
 
 function emit(): void {
-  mainWindow?.webContents.send('update:status', status);
+  mainWindow?.webContents.send('update:status', { ...status });
 }
 
-let lastNotifiedVersion: string | null = null;
-/**
- * Fire a native OS notification the first time a given version is freshly staged,
- * so a background-detected update surfaces system-wide — even when the app is
- * unfocused, minimized, or the user is on a page other than Settings. Once per
- * version per session; clicking it brings the window forward.
- */
-function notifyStaged(version: string, notes?: string): void {
-  if (lastNotifiedVersion === version) return;
+function notifyStaged(version: string, detail?: string): void {
+  if (lastNotifiedVersion === version || process.env.IDCTL_SHOT) return;
   lastNotifiedVersion = version;
-  if (process.env.IDCTL_SHOT) return; // headless screenshot runs
   try {
     if (!Notification.isSupported()) return;
-    const n = new Notification({
-      title: 'Update ready',
-      body: `v${version} downloaded — restart the app to apply.`,
-      subtitle: notes ? notes.split('\n')[0].slice(0, 120) : undefined,
-      silent: false,
+    const notification = new Notification({
+      title: 'Verified IDACC update ready',
+      body: `v${version} is verified and ready. Restart IDACC to install it.`,
+      subtitle: detail?.split('\n')[0].slice(0, 120),
     });
-    n.on('click', () => {
+    notification.on('click', () => {
       if (!mainWindow) return;
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
       mainWindow.focus();
     });
-    n.show();
+    notification.show();
   } catch {
-    /* notifications are best-effort */
+    // Native notifications are best-effort.
   }
 }
 
-async function readManifest(url: string): Promise<UpdateManifest> {
-  if (url.startsWith('file://') || url.startsWith('/')) {
-    const path = url.replace(/^file:\/\//, '');
-    return JSON.parse(readFileSync(path, 'utf8')) as UpdateManifest;
-  }
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`manifest ${res.status}`);
-  return (await res.json()) as UpdateManifest;
-}
-
-/** Fetch the manifest from updateManifestUrl, or the latest GitHub release. */
-async function fetchLatest(s: UpdateSettings): Promise<UpdateManifest | null> {
-  if (s.updateManifestUrl) return readManifest(s.updateManifestUrl);
-  if (s.updateRepo) {
-    // PRIMARY: resolve the latest release via the github.com redirect
-    // (github.com/<repo>/releases/latest → /releases/tag/<tag>). This avoids the
-    // api.github.com 60-requests/hour UNAUTHENTICATED rate limit that surfaces as
-    // intermittent "github 403" errors when the app polls often.
-    try {
-      const r = await fetch(`https://github.com/${s.updateRepo}/releases/latest`, { headers: { 'User-Agent': 'idctl-updater' } });
-      const m = r.url.match(/\/releases\/tag\/(v?[^/?#]+)/);
-      if (m) {
-        const tag = m[1];
-        const version = tag.replace(/^v/, '');
-        // Asset name convention for this app's releases.
-        const zipUrl = `https://github.com/${s.updateRepo}/releases/download/${tag}/ID-Agents-Control-Center-${version}-arm64.zip`;
-        return { version, zipUrl };
-      }
-      // Redirect landed on /releases (no tag) → no published release yet.
-      if (/\/releases\/?($|[?#])/.test(r.url)) return null;
-    } catch { /* network hiccup on the redirect — fall back to the API below */ }
-    // FALLBACK: the rate-limited API. 404 = no releases; 403 = rate-limited right now —
-    // both are "nothing to do this cycle", NOT a hard error (so no scary red banner).
-    const res = await fetch(`https://api.github.com/repos/${s.updateRepo}/releases/latest`, {
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'idctl-updater' },
-    });
-    if (res.status === 404 || res.status === 403) return null;
-    if (!res.ok) throw new Error(`github ${res.status}`);
-    const rel = (await res.json()) as { tag_name?: string; body?: string; assets?: { name: string; browser_download_url: string }[] };
-    const asset = (rel.assets ?? []).find((a) => /\.zip$/i.test(a.name));
-    if (!rel.tag_name || !asset) return null;
-    return { version: rel.tag_name.replace(/^v/, ''), zipUrl: asset.browser_download_url, notes: rel.body };
-  }
-  return null;
-}
-
-/** Copy/download the update zip into the staging dir. */
-async function stage(manifest: UpdateManifest): Promise<string> {
-  mkdirSync(stagedDir(), { recursive: true });
-  const dest = join(stagedDir(), `update-${manifest.version}.zip`);
-  if (manifest.zipUrl.startsWith('file://') || manifest.zipUrl.startsWith('/')) {
-    copyFileSync(manifest.zipUrl.replace(/^file:\/\//, ''), dest);
-  } else {
-    const res = await fetch(manifest.zipUrl);
-    if (!res.ok) throw new Error(`download ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    writeFileSync(dest, buf);
-  }
-  writeFileSync(stagedMetaPath(), JSON.stringify({ version: manifest.version, zip: dest, notes: manifest.notes ?? '' }));
-  requirePruned(pruneStaged(dest));
-  return dest;
-}
-
-/** Remove spent download zips from the staging dir, keeping only `keep` when a
- *  pending staged update still exists. Without this, every staged version's
- *  ~100MB zip can pile up forever. */
-function pruneStaged(keep?: string): PruneReport {
-  const report: PruneReport = { removed: 0, errors: [] };
-  const dir = stagedDir();
-  if (!existsSync(dir)) return report;
-  const keepPath = keep ? resolve(keep) : '';
-  try {
-    for (const f of readdirSync(dir)) {
-      if (!/\.zip$/i.test(f)) continue;
-      const full = join(dir, f);
-      if (keepPath && resolve(full) === keepPath) continue;
-      try {
-        rmSync(full, { force: true });
-        if (existsSync(full)) report.errors.push(`${f}: still exists after remove`);
-        else report.removed += 1;
-      } catch (err) {
-        report.errors.push(`${f}: ${err instanceof Error ? err.message : String(err)}`);
-      }
+function bindUpdaterEvents(): void {
+  if (eventsBound) return;
+  eventsBound = true;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.allowDowngrade = false;
+  autoUpdater.allowPrerelease = REVIEW_BUILD;
+  autoUpdater.channel = REVIEW_BUILD ? 'review' : 'latest';
+  autoUpdater.on('checking-for-update', () => {
+    status = { ...status, checking: true, error: undefined };
+    emit();
+  });
+  autoUpdater.on('update-available', (info) => {
+    const available = isAllowedUpdateVersion(info.version, app.getVersion());
+    status = {
+      ...status,
+      checking: false,
+      latest: info.version,
+      available,
+      staged: false,
+      downloading: false,
+      downloadPercent: undefined,
+      notes: notes(info),
+      lastChecked: Date.now(),
+      error: undefined,
+    };
+    emit();
+  });
+  autoUpdater.on('update-not-available', (info) => {
+    status = {
+      ...status,
+      checking: false,
+      latest: info.version,
+      available: false,
+      staged: false,
+      downloading: false,
+      downloadPercent: undefined,
+      lastChecked: Date.now(),
+      error: undefined,
+    };
+    emit();
+  });
+  autoUpdater.on('download-progress', (progress: ProgressInfo) => {
+    const percent = Number.isFinite(progress.percent)
+      ? Math.max(0, Math.min(100, progress.percent))
+      : (status.downloadPercent ?? 0);
+    status = {
+      ...status,
+      checking: false,
+      downloading: true,
+      downloadPercent: percent,
+      error: undefined,
+    };
+    emit();
+  });
+  autoUpdater.on('update-downloaded', (info) => {
+    const matchesCheckedRelease = Boolean(
+      status.available
+      && status.latest === info.version
+      && isAllowedUpdateVersion(info.version, app.getVersion()),
+    );
+    if (!matchesCheckedRelease) {
+      status = {
+        ...status,
+        checking: false,
+        downloading: false,
+        downloadPercent: undefined,
+        staged: false,
+        error: 'The downloaded update did not match the stable release that was checked.',
+        lastChecked: Date.now(),
+      };
+      emit();
+      return;
     }
-  } catch (err) {
-    report.errors.push(err instanceof Error ? err.message : String(err));
-  }
-  return report;
+    status = {
+      ...status,
+      checking: false,
+      downloading: false,
+      downloadPercent: 100,
+      latest: info.version,
+      available: true,
+      staged: true,
+      notes: notes(info),
+      lastChecked: Date.now(),
+      error: undefined,
+    };
+    notifyStaged(info.version, notes(info));
+    emit();
+  });
+  autoUpdater.on('error', (error) => {
+    status = {
+      ...status,
+      checking: false,
+      downloading: false,
+      error: error.message || String(error),
+      lastChecked: Date.now(),
+    };
+    emit();
+  });
 }
 
-function pruneError(report: PruneReport): string | undefined {
-  if (!report.errors.length) return undefined;
-  return `staged zip prune failed: ${report.errors.slice(0, 3).join('; ')}`;
+function configureUpdater(): UpdateSettings {
+  const current = settings();
+  // Do not let profile data redirect executable update authority. The release
+  // repository is compiled into the app and settings normalization discards
+  // legacy/custom feeds.
+  const repository = parseUpdateRepository(DEFAULT_UPDATE_REPO);
+  autoUpdater.setFeedURL({
+    provider: 'github',
+    owner: repository.owner,
+    repo: repository.repo,
+    private: false,
+    channel: REVIEW_BUILD ? 'review' : 'latest',
+  });
+  return current;
 }
 
-function markPruneError(report: PruneReport): void {
-  const error = pruneError(report);
-  if (error) status = { ...status, error };
-}
-
-function requirePruned(report: PruneReport): void {
-  const error = pruneError(report);
-  if (error) throw new Error(error);
-}
-
-function readStaged(): { version: string; zip: string; notes: string } | null {
-  try {
-    if (!existsSync(stagedMetaPath())) return null;
-    const m = JSON.parse(readFileSync(stagedMetaPath(), 'utf8'));
-    if (m?.zip && existsSync(m.zip) && compareVersions(m.version, status.current) > 0) return m;
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
-
-/** Keep a valid pending update zip and remove everything else, including stale
- * staged metadata for versions older than or equal to the running app. */
-function cleanupStagedState(): { version: string; zip: string; notes: string } | null {
-  const staged = readStaged();
-  if (staged) {
-    markPruneError(pruneStaged(staged.zip));
-    return staged;
-  }
-  try { rmSync(stagedMetaPath(), { force: true }); } catch { /* ignore */ }
-  markPruneError(pruneStaged());
-  return null;
+/**
+ * Read GitHub's stable-channel pointer without consuming legacy updater
+ * metadata. Older IDACC releases predate electron-builder's latest-*.yml
+ * files, but GitHub's /releases/latest redirect still provides an authoritative
+ * stable tag. If that tag is not newer than this app, no artifact lookup is
+ * necessary. A failed probe falls back to electron-updater so a transient
+ * GitHub redirect issue can never suppress a real update.
+ */
+async function probeLatestStableVersion(
+  repository: { owner: string; repo: string },
+): Promise<string | undefined> {
+  const releaseUrl = new URL(
+    `https://github.com/${repository.owner}/${repository.repo}/releases/latest`,
+  );
+  const response = await fetch(releaseUrl, {
+    method: 'HEAD',
+    redirect: 'manual',
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status < 300 || response.status >= 400) return undefined;
+  const location = response.headers.get('location');
+  if (!location) return undefined;
+  const target = new URL(location, releaseUrl);
+  const prefix = `/${repository.owner}/${repository.repo}/releases/tag/`;
+  if (target.protocol !== 'https:' || target.hostname !== 'github.com') return undefined;
+  if (!target.pathname.startsWith(prefix)) return undefined;
+  const tag = decodeURIComponent(target.pathname.slice(prefix.length));
+  if (!/^v?\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/.test(tag)) return undefined;
+  return tag.replace(/^v/, '');
 }
 
 export function getStatus(): UpdateStatus {
   const readiness = updateTargetReadiness();
   if (!readiness.ok) return updateUnavailable(readiness);
-  const staged = cleanupStagedState();
-  status = {
-    ...status,
-    current: app.getVersion(),
-    staged: !!staged,
-    available: status.available || !!staged,
-    latest: staged?.version ?? status.latest,
-    notes: staged?.notes ?? status.notes,
-  };
-  return status;
+  return { ...status, current: app.getVersion() };
 }
 
-/** Check upstream for a newer version; stage it when found. */
-export async function checkForUpdate(): Promise<UpdateStatus> {
+/** Check signed release metadata and optionally download its exact platform asset. */
+async function checkForUpdateInternal(): Promise<UpdateStatus> {
   const readiness = updateTargetReadiness();
   if (!readiness.ok) {
     updateUnavailable(readiness);
     emit();
-    return status;
+    return { ...status };
   }
-  const s = settings();
+  // Once a verified artifact is staged, keep its displayed version and install
+  // approval bound together until restart instead of replacing the metadata
+  // underneath it with a later check.
+  if (status.staged || status.checking || status.downloading) return { ...status };
+  bindUpdaterEvents();
   status = { ...status, checking: true, error: undefined };
   emit();
   try {
-    const stagedBeforeCheck = cleanupStagedState();
-    if (!s || (!s.updateManifestUrl && !s.updateRepo)) {
-      status = { ...status, checking: false, available: !!stagedBeforeCheck, staged: !!stagedBeforeCheck, latest: stagedBeforeCheck?.version ?? status.latest, notes: stagedBeforeCheck?.notes ?? status.notes, lastChecked: Date.now() };
-      return status;
-    }
-    const latest = await fetchLatest(s);
-    const lastChecked = Date.now();
-    if (latest && compareVersions(latest.version, status.current) > 0) {
-      if (s.autoUpgrade === false) {
-        const staged = cleanupStagedState();
-        status = {
-          ...status,
-          checking: false,
-          available: true,
-          staged: !!staged,
-          latest: latest.version,
-          notes: staged?.notes ?? latest.notes,
-          lastChecked,
-        };
-      } else {
-        // Newer version — download and stage it so the explicit Restart & update
-        // button can apply it. Do not restart from a background check.
-        const already = readStaged();
-        const freshlyStaged = !already || already.version !== latest.version;
-        if (freshlyStaged) await stage(latest);
-        status = { ...status, checking: false, available: true, staged: true, latest: latest.version, notes: latest.notes, lastChecked };
-        // Ping the OS the first time we download a given version — so it surfaces
-        // even when the user isn't on the Settings page. Skip on cold-start of an
-        // already-staged build (the sidebar chip handles that quietly).
-        if (freshlyStaged) notifyStaged(latest.version, latest.notes);
+    const repository = parseUpdateRepository(DEFAULT_UPDATE_REPO);
+    let latestStable: string | undefined;
+    if (!REVIEW_BUILD) {
+      try {
+        latestStable = await probeLatestStableVersion(repository);
+      } catch {
+        // Compatibility probing is an optimization only. electron-updater
+        // remains the fail-closed authority for every actual artifact.
       }
-    } else {
-      const staged = cleanupStagedState();
-      status = { ...status, checking: false, available: !!staged, staged: !!staged, latest: staged?.version ?? latest?.version, notes: staged?.notes ?? status.notes, lastChecked };
     }
-  } catch (err) {
-    status = { ...status, checking: false, error: err instanceof Error ? err.message : String(err), lastChecked: Date.now() };
+    if (!REVIEW_BUILD && latestStable && compareVersions(latestStable, app.getVersion()) <= 0) {
+      status = {
+        ...status,
+        checking: false,
+        latest: latestStable,
+        available: false,
+        staged: false,
+        downloading: false,
+        downloadPercent: undefined,
+        lastChecked: Date.now(),
+        error: undefined,
+      };
+      emit();
+      return { ...status };
+    }
+    const current = configureUpdater();
+    const result = await autoUpdater.checkForUpdates();
+    const info = result?.updateInfo;
+    const available = Boolean(info && isAllowedUpdateVersion(info.version, app.getVersion()));
+    status = {
+      ...status,
+      checking: false,
+      latest: info?.version,
+      available,
+      staged: false,
+      downloading: false,
+      downloadPercent: undefined,
+      notes: info ? notes(info) : status.notes,
+      lastChecked: Date.now(),
+      error: undefined,
+    };
+    emit();
+    if (available && current.autoUpgrade && !status.staged) {
+      observeDetachedUpdateOperation(startUpdateDownload(true));
+    }
+  } catch (error) {
+    status = {
+      ...status,
+      checking: false,
+      downloading: false,
+      error: error instanceof Error ? error.message : String(error),
+      lastChecked: Date.now(),
+    };
+    emit();
   }
-  emit();
-  return status;
+  return { ...status };
+}
+
+export function checkForUpdate(): Promise<UpdateStatus> {
+  if (activeUpdateCheck) return activeUpdateCheck;
+  const check = checkForUpdateInternal();
+  activeUpdateCheck = check;
+  void check.then(
+    () => { if (activeUpdateCheck === check) activeUpdateCheck = null; },
+    () => { if (activeUpdateCheck === check) activeUpdateCheck = null; },
+  );
+  return check;
+}
+
+function observeDetachedUpdateOperation(operation: Promise<UpdateStatus>): void {
+  void operation.catch((error) => {
+    status = {
+      ...status,
+      checking: false,
+      downloading: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+    emit();
+  });
 }
 
 /**
- * Apply the staged update on restart: spawn a detached helper that waits for
- * this process to exit, swaps the new bundle over the installed one, and
- * relaunches it. Then quit. Returns false if nothing is staged.
+ * Start the network metadata check without retaining the renderer IPC request.
+ * The updater status event carries completion and any automatic-download
+ * continuation; shutdown continues to own both operations through
+ * `drainUpdater()`.
  */
-export function applyStagedAndRelaunch(): boolean {
+export function beginUpdateCheck(): UpdateStatus {
+  observeDetachedUpdateOperation(checkForUpdate());
+  return getStatus();
+}
+
+async function downloadUpdateInternal(allowActiveCheck: boolean): Promise<UpdateStatus> {
+  const readiness = updateTargetReadiness();
+  if (!readiness.ok) {
+    updateUnavailable(readiness);
+    emit();
+    return { ...status };
+  }
+  bindUpdaterEvents();
+  if (!allowActiveCheck && (activeUpdateCheck || status.checking)) {
+    return {
+      ...status,
+      error: 'An update check is still in progress. Wait for it to finish before downloading.',
+    };
+  }
+  if (status.staged) return { ...status };
+
+  try {
+    // Reapply the compiled feed immediately before every download. Profile
+    // settings can enable automatic download, but cannot redirect executable
+    // update authority.
+    configureUpdater();
+    if (
+      !status.available
+      || !status.latest
+      || !isAllowedUpdateVersion(status.latest, app.getVersion())
+    ) {
+      status = {
+        ...status,
+        checking: false,
+        downloading: false,
+        downloadPercent: undefined,
+        staged: false,
+        error: `No newer ${REVIEW_BUILD ? 'review' : 'stable'} IDACC update is available to download.`,
+      };
+      emit();
+      return { ...status };
+    }
+
+    status = {
+      ...status,
+      checking: false,
+      downloading: true,
+      downloadPercent: 0,
+      staged: false,
+      error: undefined,
+    };
+    emit();
+    await autoUpdater.downloadUpdate();
+    if (!status.staged && !status.error) {
+      status = {
+        ...status,
+        downloading: false,
+        downloadPercent: undefined,
+        error: 'The update download finished without verified staging confirmation.',
+      };
+      emit();
+    }
+  } catch (error) {
+    status = {
+      ...status,
+      checking: false,
+      downloading: false,
+      downloadPercent: undefined,
+      staged: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+    emit();
+  }
+  return { ...status };
+}
+
+function startUpdateDownload(allowActiveCheck: boolean): Promise<UpdateStatus> {
+  if (activeUpdateDownload) return activeUpdateDownload;
+  const download = downloadUpdateInternal(allowActiveCheck);
+  activeUpdateDownload = download;
+  void download.then(
+    () => { if (activeUpdateDownload === download) activeUpdateDownload = null; },
+    () => { if (activeUpdateDownload === download) activeUpdateDownload = null; },
+  );
+  return download;
+}
+
+/** Download and verify the stable release discovered by the latest check. */
+export function downloadUpdate(): Promise<UpdateStatus> {
+  return startUpdateDownload(false);
+}
+
+/**
+ * Start a manual download without keeping the renderer IPC request open for
+ * the artifact transfer. Progress and completion travel over `update:status`,
+ * while `drainUpdater()` retains ownership of the exact background promise.
+ */
+export function beginUpdateDownload(): UpdateStatus {
+  if (activeUpdateCheck || status.checking) {
+    return {
+      ...status,
+      current: app.getVersion(),
+      error: 'An update check is still in progress. Wait for it to finish before downloading.',
+    };
+  }
+  const download = downloadUpdate();
+  observeDetachedUpdateOperation(download);
+  return getStatus();
+}
+
+export async function drainUpdater(): Promise<void> {
+  // A metadata check can start an automatic download before it settles. Loop
+  // until both single-flight operations are gone so terminal shutdown never
+  // abandons an updater write in progress.
+  while (activeUpdateCheck || activeUpdateDownload) {
+    const pending = [...new Set(
+      [activeUpdateCheck, activeUpdateDownload].filter(
+        (operation): operation is Promise<UpdateStatus> => operation !== null,
+      ),
+    )];
+    await Promise.allSettled(pending);
+  }
+}
+
+/**
+ * Install only an update that electron-updater has fully downloaded and
+ * verified. The updater owns the platform-specific atomic replacement and
+ * rollback behavior.
+ */
+export function prepareStagedUpdateInstall(): boolean {
   const readiness = updateTargetReadiness();
   if (!readiness.ok) {
     updateUnavailable(readiness);
     emit();
     return false;
   }
-  const staged = readStaged();
-  if (!staged) return false;
-  const bundle = appBundlePath();
-  const helper = join(stagedDir(), 'apply-update.sh');
-  const reopen = process.env.IDCTL_UPDATE_NOOPEN ? 'echo "[apply] reopen skipped"' : '/usr/bin/open "$BUNDLE" || /usr/bin/open -n "$BUNDLE"';
-  // No `set -e`: the swap is guarded individually, but the relaunch must ALWAYS
-  // run (the previous version could quit, swap, then never reopen). Output goes
-  // to staged-update/apply-update.log for diagnosis.
-  const script = `#!/bin/bash
-LOG="$(dirname "$0")/apply-update.log"
-exec >>"$LOG" 2>&1
-echo "[apply] $(date) pid=$1 bundle=$2"
-APP_PID="$1"; BUNDLE="$2"; ZIP="$3"
-# wait for the running app to fully exit (the bundle is locked while running)
-for i in $(seq 1 240); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.25; done
-sleep 0.5
-TMP="$(mktemp -d)"
-APPLIED=0
-if /usr/bin/ditto -x -k "$ZIP" "$TMP"; then
-  NEW="$(/usr/bin/find "$TMP" -maxdepth 2 -name '*.app' | head -1)"
-  if [ -n "$NEW" ]; then
-    /bin/rm -rf "$BUNDLE"
-    /usr/bin/ditto "$NEW" "$BUNDLE" && APPLIED=1 && echo "[apply] bundle swapped"
-  else
-    echo "[apply] ERROR: no .app inside the update zip"
-  fi
-else
-  echo "[apply] ERROR: failed to extract $ZIP"
-fi
-/bin/rm -rf "$TMP"
-STAGED_DIR="$(dirname "$0")"
-ZIP_PRUNE_STATUS=0
-# A freshly-downloaded, unsigned .app carries com.apple.quarantine, which makes
-# 'open' silently refuse to relaunch it — strip it before reopening.
-/usr/bin/xattr -dr com.apple.quarantine "$BUNDLE" 2>/dev/null || true
-if [ "$APPLIED" = "1" ]; then
-  echo "[apply] bundle applied; pruning staged zips"
-else
-  echo "[apply] bundle was not applied; pruning staged zips because staged metadata was cleared"
-fi
-for OLDZIP in "$STAGED_DIR"/*.zip; do
-  [ -e "$OLDZIP" ] || continue
-  /bin/rm -f "$OLDZIP" || ZIP_PRUNE_STATUS=1
-done
-if [ "$ZIP_PRUNE_STATUS" = "0" ]; then
-  echo "[apply] staged zip prune complete"
-else
-  echo "[apply] ERROR: one or more staged zips could not be pruned"
-fi
-${reopen}
-echo "[apply] relaunch issued"
-`;
-  writeFileSync(helper, script, { mode: 0o755 });
-  const child = spawn('/bin/bash', [helper, String(process.pid), bundle, staged.zip], {
-    detached: true,
-    stdio: 'ignore',
-  });
-  child.unref();
-  // Clear staged marker so we don't loop; the zip is consumed by the helper.
-  try { rmSync(stagedMetaPath(), { force: true }); } catch { /* ignore */ }
-  setTimeout(() => app.quit(), 150);
+  if (!status.staged) return false;
+  stagedInstallPrepared = true;
   return true;
 }
 
-/** Start periodic checks and wire the window for push notifications. */
+/**
+ * Hand the already-verified update to electron-updater. The application
+ * shutdown coordinator is the only caller and invokes this after local
+ * services and background work have stopped.
+ */
+export function installPreparedUpdateAndQuit(): void {
+  if (!stagedInstallPrepared || !status.staged) {
+    throw new Error('No verified update is prepared for installation.');
+  }
+  stagedInstallPrepared = false;
+  // The packaged update self-test verifies the atomic replacement without
+  // reopening the full consumer application. Ordinary user-driven installs
+  // retain electron-updater's normal relaunch behavior.
+  autoUpdater.autoRunAppAfterInstall = !/^(1|true|yes|on)$/i.test(
+    String(process.env.IDCTL_UPDATE_NOOPEN || ''),
+  );
+  autoUpdater.quitAndInstall(false, true);
+}
+
 export function startUpdater(win: BrowserWindow): void {
+  stopUpdater();
   mainWindow = win;
   const readiness = updateTargetReadiness();
   if (!readiness.ok) {
     updateUnavailable(readiness);
     return;
   }
-  // If a newer build was already downloaded in a prior session, surface the
-  // "Restart & update" chip immediately on launch — don't wait for (or depend
-  // on) the next online re-check, which could fail offline and hide it.
-  const staged = cleanupStagedState();
-  status = { ...status, current: app.getVersion(), staged: !!staged, available: !!staged, latest: staged?.version ?? status.latest, notes: staged?.notes ?? status.notes };
-  // Headless screenshot runs: skip background checks.
+  bindUpdaterEvents();
   if (process.env.IDCTL_SHOT || /^(1|true|yes|on)$/i.test(String(process.env.DISABLE_AUTO_UPDATE || ''))) return;
-  if (staged) emit();
-  const hours = settings()?.checkIntervalHours ?? 4;
-  // Initial check shortly after launch (let the window settle).
-  setTimeout(() => void checkForUpdate(), 2500);
-  timer = setInterval(() => void checkForUpdate(), Math.max(1, hours) * 3600_000);
-  // Re-check whenever the user focuses the window (debounced) — so a release cut
-  // while the app is open surfaces in seconds instead of waiting for the timer.
-  win.on('focus', () => {
-    if (Date.now() - lastFocusCheck < 60_000) return; // debounce: at most once/min
+  const hours = settings().checkIntervalHours || 4;
+  initialCheckTimer = setTimeout(() => {
+    initialCheckTimer = null;
+    void checkForUpdate();
+  }, 2_500);
+  initialCheckTimer.unref?.();
+  timer = setInterval(() => void checkForUpdate(), Math.max(1, hours) * 3_600_000);
+  timer.unref?.();
+  focusWindow = win;
+  focusHandler = () => {
+    if (Date.now() - lastFocusCheck < 60_000) return;
     lastFocusCheck = Date.now();
     void checkForUpdate();
-  });
+  };
+  win.on('focus', focusHandler);
 }
-let lastFocusCheck = 0;
 
 export function stopUpdater(): void {
+  if (initialCheckTimer) clearTimeout(initialCheckTimer);
+  initialCheckTimer = null;
   if (timer) clearInterval(timer);
   timer = null;
+  if (focusWindow && focusHandler) {
+    focusWindow.removeListener('focus', focusHandler);
+  }
+  focusWindow = null;
+  focusHandler = null;
+  mainWindow = null;
 }

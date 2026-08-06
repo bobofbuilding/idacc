@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { normalizeManagerEvent, normalizeTaskRecord } from './client.ts';
+import { normalizeAgentRecord, normalizeManagerEvent, normalizeTaskRecord } from './client.ts';
 
 const event = normalizeManagerEvent({
   seq: '42',
@@ -41,5 +41,37 @@ assert.equal(millisecondTask?.updatedAt, 1780000001123);
 
 assert.equal(normalizeTaskRecord(null), null);
 assert.equal(normalizeManagerEvent(null), null);
+
+const starterAgent = normalizeAgentRecord({
+  id: 'agent_starter',
+  name: 'coder',
+  status: 'running',
+  metadata: { skills: ['brain', 'catalog'] },
+  brainTools: {
+    skillInstalled: true,
+    mcpAttached: true,
+    mcpServerCount: '5',
+    runtimeSupportsMcp: true,
+    activeToolAccess: true,
+  },
+});
+assert.deepEqual(starterAgent?.brainTools, {
+  skillInstalled: true,
+  mcpAttached: true,
+  mcpServerCount: 5,
+  runtimeSupportsMcp: true,
+  activeToolAccess: true,
+});
+
+const malformedBrainTools = normalizeAgentRecord({
+  id: 'agent_malformed',
+  name: 'malformed',
+  brainTools: {
+    skillInstalled: 'true',
+    mcpAttached: { value: true },
+    activeToolAccess: 1,
+  },
+});
+assert.equal(malformedBrainTools?.brainTools, undefined);
 
 console.log('[managerNormalization.test] OK');

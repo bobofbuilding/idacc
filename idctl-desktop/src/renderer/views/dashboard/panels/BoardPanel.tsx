@@ -2,14 +2,30 @@
 import { useEffect, useState } from 'react';
 import { call } from '../../../store.ts';
 import type { Task } from '../../../../../../idctl/src/api/types.ts';
+import type { CommandEnvironment } from '../../../dashboard/commandRuntime.ts';
+import {
+  DRAWER_COMMANDS,
+  drawerCommandStatus,
+  runDrawerCommand,
+} from '../../../dashboard/drawerCommands.ts';
+import { useDrawerGuard, type DrawerGuardReporter } from '../drawerGuard.ts';
 
 const LANES = ['', 'backlog', 'ready', 'blocked', 'under-review', 'rework', 'done'];
 function ref(task: Task): string { return task.shortId || task.name || task.uuid || task.title; }
 
-export function BoardPanel({ onOpenWork }: { onOpenWork: () => void }) {
+export function BoardPanel({
+  onOpenWork,
+  commandEnvironment,
+  onGuardChange,
+}: {
+  onOpenWork: () => void;
+  commandEnvironment: CommandEnvironment;
+  onGuardChange?: DrawerGuardReporter;
+}) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [lanes, setLanes] = useState<Record<string, string>>({});
   const [status, setStatus] = useState('');
+  const [busyCount, setBusyCount] = useState(0);
   const load = async () => {
     const [rows, overlay] = await Promise.all([
       call<Task[]>('tasks:allTeams').catch(() => []),
@@ -19,10 +35,30 @@ export function BoardPanel({ onOpenWork }: { onOpenWork: () => void }) {
     setLanes(overlay);
   };
   useEffect(() => { void load(); }, []);
+  useDrawerGuard(
+    onGuardChange,
+    false,
+    busyCount > 0,
+    busyCount > 0 ? 'A task lane update is still running.' : undefined,
+  );
   const setLane = async (taskRef: string, lane: string) => {
+    setBusyCount((count) => count + 1);
     setLanes((current) => ({ ...current, [taskRef]: lane }));
-    try { setLanes(await call<Record<string, string>>('tasks:setLane', taskRef, lane)); setStatus(`Updated ${taskRef}.`); }
-    catch (error) { setStatus(error instanceof Error ? error.message : String(error)); await load(); }
+    const result = await runDrawerCommand({
+      metadata: DRAWER_COMMANDS.boardLane,
+      environment: commandEnvironment,
+      label: 'Update task lane',
+      resourceRefs: [`task:${taskRef}`, `lane:${lane || 'automatic'}`],
+      operation: () => call<Record<string, string>>('tasks:setLane', taskRef, lane),
+    });
+    if (result.receipt.state === 'succeeded' && result.value) {
+      setLanes(result.value);
+      setStatus(`Updated ${taskRef}.`);
+    } else {
+      setStatus(drawerCommandStatus('Update task lane', result));
+      await load();
+    }
+    setBusyCount((count) => Math.max(0, count - 1));
   };
   return (
     <div className="driver-panel">
@@ -32,7 +68,7 @@ export function BoardPanel({ onOpenWork }: { onOpenWork: () => void }) {
         const taskRef = ref(task);
         return <div className="driver-task-row" key={`${task.teamName ?? ''}:${taskRef}`}>
           <span><strong>{task.title}</strong><br /><span className="muted small">{task.teamName ?? 'default'} · {task.ownerName ?? 'needs assignment'} · {task.status}</span></span>
-          <select value={lanes[taskRef] ?? ''} onChange={(event) => void setLane(taskRef, event.target.value)}>
+          <select disabled={busyCount > 0} value={lanes[taskRef] ?? ''} onChange={(event) => void setLane(taskRef, event.target.value)}>
             {LANES.map((lane) => <option value={lane} key={lane}>{lane || 'automatic lane'}</option>)}
           </select>
         </div>;

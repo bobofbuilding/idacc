@@ -1,0 +1,8 @@
+{
+  "name": "electron-builder-squirrel-windows",
+  "version": "26.15.7",
+  "description": "Intentional IDACC build-time guard: this application ships NSIS, not Squirrel.Windows.",
+  "private": true,
+  "license": "MIT",
+  "main": "index.cjs"
+}

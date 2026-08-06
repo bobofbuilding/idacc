@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { app, shell, systemPreferences } from 'electron';
+import { externalChildEnvironment } from '../externalChildEnvironment.ts';
 
 const execFileP = promisify(execFile);
 
@@ -124,7 +125,10 @@ async function readTccRows(): Promise<{ rows: TccRow[]; readable: boolean; error
     if (!existsSync(db.path)) continue;
     if (db.userScoped) userDbSeen = true;
     try {
-      const { stdout } = await execFileP('/usr/bin/sqlite3', ['-json', db.path, sql], { timeout: 1500 });
+      const { stdout } = await execFileP('/usr/bin/sqlite3', ['-json', db.path, sql], {
+        env: externalChildEnvironment(),
+        timeout: 1500,
+      });
       anyReadable = true;
       if (db.userScoped) userDbReadable = true;
       const parsed = stdout.trim() ? JSON.parse(stdout) as TccRow[] : [];
@@ -187,6 +191,9 @@ export type CuPermissionPane = 'screen' | 'accessibility' | 'input-monitoring' |
 
 /** Open the exact System Settings pane for a permission. */
 export async function openPermissionSettings(which: CuPermissionPane): Promise<void> {
+  if (process.platform !== 'darwin') {
+    throw new Error('Computer Use permission settings are available only on macOS.');
+  }
   const panes: Record<CuPermissionPane, string> = {
     screen: 'Privacy_ScreenCapture',
     accessibility: 'Privacy_Accessibility',
@@ -195,10 +202,4 @@ export async function openPermissionSettings(which: CuPermissionPane): Promise<v
   };
   const url = `x-apple.systempreferences:com.apple.preference.security?${panes[which]}`;
   await shell.openExternal(url);
-}
-
-/** Relaunch the app (Screen Recording grants only take effect after a restart). */
-export function relaunchApp(): void {
-  app.relaunch();
-  app.exit(0);
 }

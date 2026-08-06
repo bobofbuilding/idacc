@@ -30,6 +30,11 @@ export interface Dream {
   focus?: string;     // optional user-provided focus for the pass
   content: string;    // the Markdown dream report
   createdAt: number;
+  source?: {
+    kind: 'schedule';
+    scheduleId: string;
+    queryId: string;
+  };
 }
 export interface DreamSummary { id: string; title: string; agent: string; team: string; createdAt: number }
 

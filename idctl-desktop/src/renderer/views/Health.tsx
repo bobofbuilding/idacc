@@ -2,19 +2,33 @@ import { useCallback, useEffect, useState } from 'react';
 import { call, type FleetStore } from '../store.ts';
 import type { UsageAgent, UsageModel, UsageReport, UsageWindow } from '../../../../idctl/src/api/client.ts';
 import { AgentTable } from './AgentTable.tsx';
+import { classifyThroughputSample, isAgentProbeEligible } from '../../shared/healthClassification.ts';
 
-type ProbeTarget = { id?: string; name: string; team: string; status?: string };
+type ProbeTarget = {
+  id?: string;
+  name: string;
+  team: string;
+  status?: string;
+  health?: string;
+  pid?: number | null;
+  deploymentShape?: 'local-process' | 'remote-endpoint';
+  last_seen?: number | null;
+  last_probed_at?: number | null;
+  consecutive_failures?: number;
+};
 type UsageRow = UsageAgent | UsageModel;
 const FRESH_SAMPLE_MS = 15 * 60_000;
 
 /** Compact number: 1234 → "1.2k", 2_500_000 → "2.5M". */
 function fmt(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(Math.round(n));
+  const safe = Number.isFinite(n) && n >= 0 ? n : 0;
+  if (safe >= 1_000_000) return `${(safe / 1_000_000).toFixed(1)}M`;
+  if (safe >= 1_000) return `${(safe / 1_000).toFixed(1)}k`;
+  return String(Math.round(safe));
 }
 function fmtTps(n: number): string {
-  return n >= 100 ? String(Math.round(n)) : n.toFixed(1);
+  const safe = Number.isFinite(n) && n >= 0 ? n : 0;
+  return safe >= 100 ? String(Math.round(safe)) : safe.toFixed(1);
 }
 function niceMax(v: number): number {
   const m = Math.max(v, 10);
@@ -30,11 +44,9 @@ function epochMs(value: number | null | undefined): number | null {
   if (!value || !Number.isFinite(value)) return null;
   return value < 10_000_000_000 ? value * 1000 : value;
 }
-function elapsedMs(value: number | null): number | null {
-  return value ? Math.max(0, Date.now() - value) : null;
-}
 function totalTokens(row: UsageRow): number {
-  return row.total ?? row.output ?? 0;
+  const value = Number(row.total ?? row.output ?? 0);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
 }
 function rowName(row: UsageRow): string {
   return 'model' in row ? row.model : row.agent;
@@ -69,13 +81,9 @@ function WindowCard({ title, w }: { title: string; w: UsageWindow }) {
   );
 }
 
-function probeLive(status?: string): boolean {
-  const s = String(status || '').toLowerCase();
-  return !!s && !/stop|offline|dead|exit|error|crash|down|disabled|sleep/.test(s);
-}
 function probeTargetStamp(targets: ProbeTarget[]): string {
   return targets
-    .map((t) => `${t.team}:${t.id ?? ''}:${t.name}:${t.status ?? ''}`)
+    .map((t) => `${t.team}:${t.id ?? ''}:${t.name}:${t.status ?? ''}:${t.health ?? ''}:${t.pid ?? ''}:${t.last_seen ?? ''}:${t.last_probed_at ?? ''}:${t.consecutive_failures ?? ''}`)
     .sort()
     .join('|');
 }
@@ -109,10 +117,20 @@ function UsageSection({
 }) {
   const [, setTick] = useState(0);
   const recentAt = epochMs(usage?.recent?.at);
-  const recentAge = elapsedMs(recentAt);
-  const recentFresh = Boolean(usage?.recent?.tps != null && recentAge != null && recentAge <= FRESH_SAMPLE_MS);
-  const gaugeVal = usage ? (recentFresh ? usage.recent?.tps ?? 0 : usage.day.avgTps ?? 0) : 0;
-  const gaugeMax = usage ? niceMax(Math.max(gaugeVal, usage.day.avgTps, usage.week.avgTps)) : 100;
+  const throughputClass = classifyThroughputSample(
+    usage?.recent?.tps,
+    recentAt,
+    usage?.day.count ?? 0,
+    Date.now(),
+    FRESH_SAMPLE_MS,
+  );
+  const recentFresh = throughputClass === 'fresh-harness-sample';
+  const nonnegative = (value: unknown) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : 0;
+  };
+  const gaugeVal = usage ? nonnegative(recentFresh ? usage.recent?.tps : usage.day.avgTps) : 0;
+  const gaugeMax = usage ? niceMax(Math.max(gaugeVal, nonnegative(usage.day.avgTps), nonnegative(usage.week.avgTps))) : 100;
   const localAgents = usage?.day.agents ?? [];
   const localModels = usage?.day.models ?? [];
 
@@ -125,7 +143,7 @@ function UsageSection({
     <section className="card health-section">
       <div className="row-actions health-section-head">
         <h3 className="grow">Token throughput</h3>
-        {usage && usage.week.count > 0 ? <span className="muted small" title="Reported by manager harness telemetry; useful for trends, not a provider billing invoice.">reported telemetry</span> : null}
+        {usage && usage.week.count > 0 ? <span className="muted small" title="Measured by the local Manager harness; this is performance telemetry, not provider billing.">harness telemetry</span> : null}
         <span className="muted small" title="auto-refreshes every 15s and after probes">{usageAt ? `updated ${ageLabel(usageAt)}` : usage === undefined ? 'loading...' : ''}</span>
         <button className="btn small" onClick={onRefresh}>Refresh</button>
       </div>
@@ -146,9 +164,9 @@ function UsageSection({
           <div className="usage-grid">
             <div className="gauge-wrap">
               <Gauge value={gaugeVal} max={gaugeMax} />
-              <div className="gauge-cap">throughput</div>
+              <div className="gauge-cap">reported throughput</div>
               <div className="muted small" style={{ textAlign: 'center' }}>
-                {recentFresh ? 'fresh sample' : '24h average'} · 7d avg {fmtTps(usage.week.avgTps)} tok/s
+                {recentFresh ? 'fresh harness sample' : '24h harness average'} · 7d avg {fmtTps(usage.week.avgTps)} tok/s
               </div>
             </div>
             <WindowCard title="Last 24 hours" w={usage.day} />
@@ -204,18 +222,25 @@ export function Health({ store, navigate, embedded = false }: { store: FleetStor
       void loadUsage(); // refresh throughput after exercising agents
     }
   }
-  async function currentProbeTargets(): Promise<ProbeTarget[]> {
-    const groups = await call<Array<{ team: string; agents: ProbeTarget[] }>>('agents:allTeams', { force: true }).catch(() => null);
-    const targets = groups
-      ? groups.flatMap((g) => g.agents.map((a) => ({ id: a.id, name: a.name, status: a.status, team: g.team })))
-      : store.agents.map((a) => ({ id: a.id, name: a.name, status: a.status, team: store.team ?? 'default' }));
-    return targets.filter((a) => probeLive(a.status));
+  async function currentProbeTargets(): Promise<ProbeTarget[] | null> {
+    const groups = await call<Array<{ team: string; agents: ProbeTarget[] }>>(
+      'agents:allTeams',
+      { force: true, requireComplete: true },
+    ).catch(() => null);
+    if (!groups) return null;
+    return groups
+      .flatMap((group) => group.agents.map((agent) => ({ ...agent, team: group.team })))
+      .filter((agent) => isAgentProbeEligible(agent));
   }
   async function probeAllVisible() {
     if (probing) return;
     setProbing('all');
     try {
       const targets = await currentProbeTargets();
+      if (!targets) {
+        window.alert('Probe all blocked: the complete live fleet could not be verified. Refresh Health and try again.');
+        return;
+      }
       if (!targets.length) {
         window.alert('No running agents are available to probe. Use Health > show stopped to review stopped agents.');
         return;
@@ -231,6 +256,10 @@ export function Health({ store, navigate, embedded = false }: { store: FleetStor
         'This exercises each current agent probe route and refreshes usage afterward. Stopped agents are skipped.',
       ].filter(Boolean).join('\n'))) return;
       const afterConfirm = await currentProbeTargets();
+      if (!afterConfirm) {
+        window.alert('Probe all blocked: the complete live fleet could not be re-verified after confirmation.');
+        return;
+      }
       if (probeTargetStamp(afterConfirm) !== probeTargetStamp(targets)) {
         window.alert('Probe all blocked: the running-agent set changed during confirmation. Health will refresh; review the current roster and try again.');
         store.refresh();

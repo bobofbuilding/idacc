@@ -6,18 +6,19 @@ import { build } from 'esbuild';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const dir = await mkdtemp(join(tmpdir(), 'idacc-dashboard-events-'));
 try {
   const outfile = join(dir, 'dashboard-events.mjs');
   await build({
-    entryPoints: [new URL('../src/shared/dashboardEvents.ts', import.meta.url).pathname],
+    entryPoints: [fileURLToPath(new URL('../src/shared/dashboardEvents.ts', import.meta.url))],
     outfile,
     bundle: true,
     platform: 'node',
     format: 'esm',
   });
-  const { isDashboardRelevantEvent } = await import(`file://${outfile}?v=${Date.now()}`);
+  const { isDashboardRelevantEvent } = await import(`${pathToFileURL(outfile).href}?v=${Date.now()}`);
 
   assert.equal(isDashboardRelevantEvent({ topic: 'task:claimed' }), true);
   assert.equal(isDashboardRelevantEvent({ topic: 'query:failed' }), true);

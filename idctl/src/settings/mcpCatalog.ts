@@ -39,8 +39,8 @@ type McpLike = {
   args?: string[];
 };
 
-const PARKED_MCP_SERVER_NAMES = new Set(['everything']);
-const PARKED_MCP_PACKAGES = new Set(['@modelcontextprotocol/server-everything']);
+const PARKED_MCP_SERVER_NAMES = new Set(['everything', 'browsermcp']);
+const PARKED_MCP_PACKAGES = new Set(['@modelcontextprotocol/server-everything', '@browsermcp/mcp', '@browsermcp/mcp@latest', '@browsermcp/mcp@0.1.3']);
 
 export function isParkedMcpServer(server: McpLike | null | undefined): boolean {
   if (!server) return false;
@@ -58,7 +58,7 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     name: 'Filesystem',
     description: 'Read/write files in a directory you allow (read_file, write_file, list_directory, …).',
     command: 'npx',
-    baseArgs: ['-y', '@modelcontextprotocol/server-filesystem'],
+    baseArgs: ['-y', '@modelcontextprotocol/server-filesystem@2026.7.10'],
     inputs: [{ key: 'path', label: 'Directory', placeholder: '/tmp', default: '/tmp', required: true, target: 'arg' }],
   },
   {
@@ -66,14 +66,14 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     name: 'Memory (knowledge graph)',
     description: 'A persistent knowledge graph the agent can write to and recall (entities, relations, observations).',
     command: 'npx',
-    baseArgs: ['-y', '@modelcontextprotocol/server-memory'],
+    baseArgs: ['-y', '@modelcontextprotocol/server-memory@2026.7.4'],
   },
   {
     id: 'sequential-thinking',
     name: 'Sequential Thinking',
     description: 'A structured step-by-step reasoning tool for complex problems.',
     command: 'npx',
-    baseArgs: ['-y', '@modelcontextprotocol/server-sequential-thinking'],
+    baseArgs: ['-y', '@modelcontextprotocol/server-sequential-thinking@2025.12.18'],
   },
   {
     id: 'headroom',
@@ -87,7 +87,7 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     name: 'GitHub',
     description: 'Repos, issues, PRs, search. Needs a GitHub personal access token.',
     command: 'npx',
-    baseArgs: ['-y', '@modelcontextprotocol/server-github'],
+    baseArgs: ['-y', '@modelcontextprotocol/server-github@2025.4.8'],
     inputs: [{ key: 'token', label: 'GitHub token', placeholder: 'ghp_…', required: true, secret: true, target: 'env', envKey: 'GITHUB_PERSONAL_ACCESS_TOKEN' }],
   },
   {
@@ -113,21 +113,14 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     name: 'Playwright (browser)',
     description: 'Drive a real browser — navigate, click, type, screenshot, scrape — via the accessibility tree. No API key.',
     command: 'npx',
-    baseArgs: ['-y', '@playwright/mcp@latest'],
-  },
-  {
-    id: 'browsermcp',
-    name: 'Browser MCP (your Chrome)',
-    description: 'Automate YOUR real Chrome via the Browser MCP extension (uses your logged-in sessions). No key.',
-    command: 'npx',
-    baseArgs: ['-y', '@browsermcp/mcp@latest'],
+    baseArgs: ['-y', '@playwright/mcp@0.0.77'],
   },
   {
     id: 'fetch',
     name: 'Fetch (URL → markdown)',
     description: 'Fetch a web page and convert it to clean markdown. Python server — needs `uv` installed.',
     command: 'uvx',
-    baseArgs: ['mcp-server-fetch'],
+    baseArgs: ['mcp-server-fetch==2026.6.4'],
   },
 
   // ---- Search / docs ---------------------------------------------------
@@ -136,7 +129,7 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     name: 'Context7 (live docs)',
     description: 'Up-to-date, version-correct docs + code examples for any library, on demand. No key needed.',
     command: 'npx',
-    baseArgs: ['-y', '@upstash/context7-mcp@latest'],
+    baseArgs: ['-y', '@upstash/context7-mcp@3.2.5'],
   },
   {
     id: 'tavily',

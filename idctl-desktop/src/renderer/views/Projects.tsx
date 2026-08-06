@@ -620,7 +620,7 @@ export function Projects({ store }: { store: FleetStore }) {
     try {
       const fresh = await ensureProjectFresh(p, 'deleting');
       if (!fresh) return;
-      replaceProjects(await call<ProjectEntry[]>('projects:remove', fresh.id));
+      replaceProjects(await call<ProjectEntry[]>('projects:remove', fresh.id, fresh));
       setConfirmDel(null);
       setNote('deleted ✓');
     } finally {
@@ -845,7 +845,7 @@ export function Projects({ store }: { store: FleetStore }) {
           updatedAt: Date.now(),
         };
         list = await call<ProjectEntry[]>('projects:save', merged);
-        for (const d of drop) list = await call<ProjectEntry[]>('projects:remove', d.id);
+        for (const d of drop) list = await call<ProjectEntry[]>('projects:remove', d.id, d);
       }
       replaceProjects(list);
       t.update({ kind: 'success', text: `Combined ${total} duplicate${total === 1 ? '' : 's'} ✓` });

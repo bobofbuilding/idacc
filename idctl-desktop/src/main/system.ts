@@ -10,11 +10,24 @@
  */
 
 import { totalmem, cpus, platform as osPlatform, arch as osArch, homedir } from 'node:os';
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
+import { closeSync, existsSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
+import { terminalAutomationSupported } from '../shared/subscriptionPortability.ts';
+import {
+  appendPrivateAppTextFile,
+  ensurePrivateAppDirectory,
+  openPrivateAppAppendFile,
+} from './appStatePrivacy.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
+import {
+  managedPosixProcessGroupIsAlive,
+  managedProcessTreeTerminationFailed,
+  terminateManagedProcessTree,
+  waitForExactChildSpawn,
+} from './managedProcessTree.ts';
 
 const execFileP = promisify(execFile);
 const GB = 1024 ** 3;
@@ -28,14 +41,36 @@ const BACKGROUND_STACKS: Record<string, { name: string; command: string; port?: 
   },
 };
 
-const backgroundProcs = new Map<string, { child: ChildProcess; command: string; startedAt: number; logPath: string; name: string; port?: number }>();
+type BackgroundProcessRow = {
+  child: ChildProcess;
+  cleanupError?: string;
+  command: string;
+  forceWaitMs?: number;
+  graceMs?: number;
+  startedAt: number;
+  rootExitLogged?: boolean;
+  rootExitedAt?: number;
+  logPath: string;
+  monitor?: ReturnType<typeof setInterval>;
+  name: string;
+  platform: NodeJS.Platform;
+  processGroupId: number;
+  port?: number;
+};
+
+const backgroundProcs = new Map<string, BackgroundProcessRow>();
+const backgroundOperations = new Map<string, Promise<unknown>>();
+let backgroundStackAdmissionClosed = false;
+let backgroundStackShutdown: Promise<void> | null = null;
 const localStackInstallStatusCache = new Map<string, { at: number; rows: Record<string, LocalStackInstallStatus> }>();
 
 /** GUI apps inherit a minimal PATH; include common package-manager locations. */
 function cliEnv(): NodeJS.ProcessEnv {
   const home = homedir();
-  const dirs = ['/opt/homebrew/bin', `${home}/.local/bin`, '/usr/local/bin', '/usr/bin', '/bin', ...(process.env.PATH ? process.env.PATH.split(':') : [])];
-  return { ...process.env, PATH: Array.from(new Set(dirs)).join(':') };
+  const dirs = ['/opt/homebrew/bin', `${home}/.local/bin`, '/usr/local/bin', '/usr/bin', '/bin', ...(process.env.PATH ? process.env.PATH.split(delimiter) : [])];
+  return externalChildEnvironment(process.env, {
+    PATH: Array.from(new Set(dirs)).join(delimiter),
+  });
 }
 
 export interface HardwareInfo {
@@ -89,6 +124,15 @@ export interface BackgroundStackStatus {
   detail?: string;
 }
 
+export interface BackgroundStackLaunchOptions {
+  /** Test seam; production always uses the current host platform and arch. */
+  platform?: NodeJS.Platform;
+  arch?: string;
+  shellPath?: string;
+  graceMs?: number;
+  forceWaitMs?: number;
+}
+
 // The system_profiler probe is slowish (~1s) but its result is static — cache it
 // so only the first Settings open pays for it; disk free is re-read every call.
 let _gpuCache: { gpu?: string; gpuCores?: number } | null = null;
@@ -97,7 +141,10 @@ async function detectGpu(): Promise<{ gpu?: string; gpuCores?: number }> {
   let out: { gpu?: string; gpuCores?: number } = {};
   if (osPlatform() === 'darwin') {
     try {
-      const { stdout } = await execFileP('system_profiler', ['SPDisplaysDataType'], { timeout: 6000 });
+      const { stdout } = await execFileP('system_profiler', ['SPDisplaysDataType'], {
+        env: externalChildEnvironment(),
+        timeout: 6000,
+      });
       const gpu = stdout.match(/Chipset Model:\s*(.+)/)?.[1]?.trim();
       const cores = stdout.match(/Total Number of Cores:\s*(\d+)/)?.[1];
       out = { gpu, gpuCores: cores ? Number(cores) : undefined };
@@ -302,26 +349,118 @@ export async function localStackInstallStatus(ids: string[], options: { force?: 
 
 /**
  * Open the user's Terminal and run a command there. Visible + abortable in their
- * own shell — we never run installers silently. macOS only (osascript); returns
- * the command either way so the UI can fall back to clipboard if Terminal
- * automation is blocked.
+ * own shell — we never run installers silently. Automatic launch is currently
+ * macOS-only; other platforms fail closed and return the untouched command so
+ * the UI can use its existing clipboard/manual-terminal fallback.
  */
 export async function runInTerminal(command: string): Promise<{ ok: boolean; ran: boolean; command: string; error?: string }> {
   const cmd = String(command || '').trim();
   if (!cmd) return { ok: false, ran: false, command: cmd, error: 'empty command' };
+  if (!terminalAutomationSupported(process.platform)) {
+    return {
+      ok: false,
+      ran: false,
+      command: cmd,
+      error: `Automatic terminal launch is not supported on ${process.platform}; the command was not executed.`,
+    };
+  }
   try {
     const osa = `tell application "Terminal"\n  activate\n  do script "${cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"\nend tell`;
-    await execFileP('osascript', ['-e', osa], { timeout: 8000 });
+    await execFileP('osascript', ['-e', osa], {
+      env: externalChildEnvironment(),
+      timeout: 8000,
+    });
     return { ok: true, ran: true, command: cmd };
   } catch (e) {
     return { ok: false, ran: false, command: cmd, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
-function stackLogDir(userDataPath?: string): string {
-  const dir = join(userDataPath || join(homedir(), '.config', 'idctl'), 'local-stack-logs');
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return dir;
+function stackLogDir(profileLogsPath?: string): string {
+  const dir = join(
+    profileLogsPath || join(homedir(), '.config', 'idctl', 'logs'),
+    'local-stack-logs',
+  );
+  return ensurePrivateAppDirectory(dir);
+}
+
+function backgroundRowIsAlive(row: BackgroundProcessRow): boolean {
+  if (row.platform === 'win32') {
+    return !row.child.killed
+      && row.child.exitCode === null
+      && row.child.signalCode === null;
+  }
+  return managedPosixProcessGroupIsAlive(row.child, row.processGroupId);
+}
+
+function clearBackgroundRow(id: string, row: BackgroundProcessRow): void {
+  if (backgroundProcs.get(id) !== row) return;
+  if (row.monitor) clearInterval(row.monitor);
+  backgroundProcs.delete(id);
+}
+
+function monitorExitedBackgroundRoot(
+  id: string,
+  row: BackgroundProcessRow,
+): void {
+  if (row.monitor || backgroundProcs.get(id) !== row) return;
+  row.monitor = setInterval(() => {
+    if (backgroundProcs.get(id) !== row || !backgroundRowIsAlive(row)) {
+      clearBackgroundRow(id, row);
+    }
+  }, 250);
+  row.monitor.unref?.();
+}
+
+function recordBackgroundRootExit(row: BackgroundProcessRow): void {
+  row.rootExitedAt ??= Date.now();
+  if (row.rootExitLogged) return;
+  row.rootExitLogged = true;
+  try {
+    appendPrivateAppTextFile(
+      row.logPath,
+      `\n[${new Date().toISOString()}] exited code=${row.child.exitCode ?? ''} signal=${row.child.signalCode ?? ''}\n`,
+    );
+  } catch (error) {
+    console.warn('[local-stack] could not append the private process-exit log:', error);
+  }
+}
+
+function runBackgroundOperation<T>(
+  id: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const prior = backgroundOperations.get(id) ?? Promise.resolve();
+  const next = prior.catch(() => {}).then(operation);
+  backgroundOperations.set(id, next);
+  const clear = (): void => {
+    if (backgroundOperations.get(id) === next) backgroundOperations.delete(id);
+  };
+  void next.then(clear, clear);
+  return next;
+}
+
+async function drainBackgroundOperations(): Promise<void> {
+  while (backgroundOperations.size > 0) {
+    await Promise.allSettled([...backgroundOperations.values()]);
+  }
+}
+
+/**
+ * Re-open local-stack launch admission after a recoverable startup retry. It is
+ * never safe to reopen over a retained process tree or unresolved operation.
+ */
+export function openBackgroundStackAdmission(): void {
+  if (
+    backgroundStackShutdown
+    || backgroundOperations.size > 0
+    || backgroundProcs.size > 0
+  ) {
+    throw new Error(
+      'background-stack admission cannot reopen while process cleanup is unresolved',
+    );
+  }
+  backgroundStackAdmissionClosed = false;
 }
 
 function statusFromProcess(id: string, detail?: string): BackgroundStackStatus {
@@ -336,18 +475,31 @@ function statusFromProcess(id: string, detail?: string): BackgroundStackStatus {
       detail,
     };
   }
+  const running = backgroundRowIsAlive(row);
+  if (!running) {
+    clearBackgroundRow(id, row);
+  }
+  const rootExited = row.rootExitedAt !== undefined
+    || row.child.exitCode !== null
+    || row.child.signalCode !== null;
+  if (rootExited) recordBackgroundRootExit(row);
+  if (running && rootExited) monitorExitedBackgroundRoot(id, row);
+  const lifecycleDetail = running && rootExited
+    ? 'the launcher exited; its retained background process tree is still running'
+    : undefined;
   return {
     id,
     name: row.name,
-    running: !row.child.killed && row.child.exitCode == null,
+    running,
     pid: row.child.pid,
     command: row.command,
     startedAt: row.startedAt,
+    exitedAt: row.rootExitedAt,
     exitCode: row.child.exitCode,
     signal: row.child.signalCode,
     port: row.port,
     logPath: row.logPath,
-    detail,
+    detail: detail ?? row.cleanupError ?? lifecycleDetail,
   };
 }
 
@@ -357,34 +509,91 @@ export function backgroundStackStatus(ids: string[] = Object.keys(BACKGROUND_STA
   return out;
 }
 
-export async function startBackgroundStack(idValue: unknown, commandValue?: unknown, userDataPath?: string): Promise<BackgroundStackStatus> {
+export async function startBackgroundStack(
+  idValue: unknown,
+  commandValue?: unknown,
+  profileLogsPath?: string,
+  launchOptions: BackgroundStackLaunchOptions = {},
+): Promise<BackgroundStackStatus> {
   const id = String(idValue || '').trim();
+  if (backgroundStackAdmissionClosed) {
+    throw new Error('background-stack launch is unavailable while the application is shutting down');
+  }
+  return runBackgroundOperation(id, () => startBackgroundStackOnce(
+    id,
+    commandValue,
+    profileLogsPath,
+    launchOptions,
+  ));
+}
+
+async function startBackgroundStackOnce(
+  id: string,
+  commandValue?: unknown,
+  profileLogsPath?: string,
+  launchOptions: BackgroundStackLaunchOptions = {},
+): Promise<BackgroundStackStatus> {
   const known = BACKGROUND_STACKS[id];
   const command = String(commandValue || known?.command || '').trim();
   if (!id || !known) throw new Error(`unsupported background stack "${id || '(empty)'}"`);
   if (!command) throw new Error(`no background start command registered for ${known.name}`);
+  const platform = launchOptions.platform ?? process.platform;
+  const architecture = launchOptions.arch ?? osArch();
+  if (platform !== 'darwin' || architecture !== 'arm64') {
+    throw new Error(`${known.name} background launch requires Apple Silicon macOS`);
+  }
 
   const existing = backgroundProcs.get(id);
-  if (existing && !existing.child.killed && existing.child.exitCode == null) return statusFromProcess(id, 'already running');
+  if (existing) {
+    if (backgroundRowIsAlive(existing)) {
+      return statusFromProcess(id, 'already running');
+    }
+    clearBackgroundRow(id, existing);
+  }
 
-  const logPath = join(stackLogDir(userDataPath), `${id}.log`);
-  appendFileSync(logPath, `\n\n[${new Date().toISOString()}] starting ${known.name}\n$ ${command}\n`, { mode: 0o600 });
-  const outFd = openSync(logPath, 'a', 0o600);
-  const errFd = openSync(logPath, 'a', 0o600);
-  const child = spawn('/bin/zsh', ['-lc', command], {
-    cwd: homedir(),
-    env: cliEnv(),
-    detached: true,
-    stdio: ['ignore', outFd, errFd],
-  });
-  closeSync(outFd);
-  closeSync(errFd);
-  const row = { child, command, startedAt: Date.now(), logPath, name: known.name, port: known.port };
+  const logPath = join(stackLogDir(profileLogsPath), `${id}.log`);
+  appendPrivateAppTextFile(
+    logPath,
+    `\n\n[${new Date().toISOString()}] starting ${known.name}\n$ ${command}\n`,
+  );
+  const logFd = openPrivateAppAppendFile(logPath);
+  let child: ChildProcess;
+  try {
+    child = spawn(launchOptions.shellPath ?? '/bin/zsh', ['-lc', command], {
+      cwd: homedir(),
+      env: cliEnv(),
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+    });
+  } finally {
+    closeSync(logFd);
+  }
+  const processGroupId = await waitForExactChildSpawn(
+    child,
+    `${known.name} background process`,
+  );
+  const row: BackgroundProcessRow = {
+    child,
+    command,
+    startedAt: Date.now(),
+    logPath,
+    name: known.name,
+    platform,
+    processGroupId,
+    port: known.port,
+    graceMs: launchOptions.graceMs,
+    forceWaitMs: launchOptions.forceWaitMs,
+  };
   backgroundProcs.set(id, row);
-  child.on('exit', (code, signal) => {
-    appendFileSync(logPath, `\n[${new Date().toISOString()}] exited code=${code ?? ''} signal=${signal ?? ''}\n`, { mode: 0o600 });
+  child.on('exit', () => {
+    recordBackgroundRootExit(row);
     const current = backgroundProcs.get(id);
-    if (current?.child === child) backgroundProcs.delete(id);
+    if (current !== row) return;
+    if (backgroundRowIsAlive(row)) {
+      monitorExitedBackgroundRoot(id, row);
+    } else {
+      clearBackgroundRow(id, row);
+    }
   });
   child.unref();
   return statusFromProcess(id, 'started in background');
@@ -392,10 +601,50 @@ export async function startBackgroundStack(idValue: unknown, commandValue?: unkn
 
 export async function stopBackgroundStack(idValue: unknown): Promise<BackgroundStackStatus> {
   const id = String(idValue || '').trim();
+  return runBackgroundOperation(id, () => stopBackgroundStackOnce(id));
+}
+
+async function stopBackgroundStackOnce(id: string): Promise<BackgroundStackStatus> {
   const row = backgroundProcs.get(id);
   if (!row) return statusFromProcess(id, 'not running under IDACC');
-  row.child.kill('SIGTERM');
-  backgroundProcs.delete(id);
+  if (!backgroundRowIsAlive(row)) {
+    clearBackgroundRow(id, row);
+    return {
+      id,
+      name: row.name,
+      running: false,
+      pid: row.child.pid,
+      command: row.command,
+      startedAt: row.startedAt,
+      exitedAt: row.rootExitedAt,
+      exitCode: row.child.exitCode,
+      signal: row.child.signalCode,
+      port: row.port,
+      logPath: row.logPath,
+      detail: 'already stopped',
+    };
+  }
+  row.cleanupError = undefined;
+  const result = await terminateManagedProcessTree(
+    row.child,
+    () => backgroundProcs.get(id) === row,
+    {
+      platform: row.platform,
+      detachedProcessGroup: true,
+      ownedProcessGroupId: row.processGroupId,
+      graceMs: row.graceMs,
+      forceWaitMs: row.forceWaitMs,
+    },
+  );
+  if (managedProcessTreeTerminationFailed(result, true)) {
+    row.cleanupError = result.error
+      ?? 'the background process tree could not be stopped safely';
+    return statusFromProcess(
+      id,
+      row.cleanupError,
+    );
+  }
+  clearBackgroundRow(id, row);
   return {
     id,
     name: row.name,
@@ -403,8 +652,70 @@ export async function stopBackgroundStack(idValue: unknown): Promise<BackgroundS
     pid: row.child.pid,
     command: row.command,
     startedAt: row.startedAt,
+    exitedAt: row.rootExitedAt,
+    exitCode: row.child.exitCode,
+    signal: row.child.signalCode,
     port: row.port,
     logPath: row.logPath,
-    detail: 'stop requested',
+    detail: 'stopped',
   };
+}
+
+async function stopAllBackgroundStacksOnce(): Promise<void> {
+  // A launch publishes its ownership row before its serialized operation
+  // settles. Draining first therefore makes this snapshot complete even when a
+  // native child-spawn handshake was still in flight when shutdown began.
+  await drainBackgroundOperations();
+  const ids = [...backgroundProcs.keys()];
+  if (ids.length === 0) return;
+
+  const settled = await Promise.allSettled(ids.map((id) => stopBackgroundStack(id)));
+  const errors: unknown[] = [];
+  for (let index = 0; index < settled.length; index += 1) {
+    const result = settled[index];
+    if (result.status === 'rejected') {
+      errors.push(result.reason);
+      continue;
+    }
+    if (result.value.running) {
+      errors.push(new Error(
+        `${result.value.name} cleanup failed: ${
+          result.value.detail || 'the managed process tree is still running'
+        }`,
+      ));
+    }
+  }
+
+  // Status evaluation removes rows whose roots and retained descendants have
+  // already exited. Failed live rows intentionally remain registered so a
+  // guarded shutdown retry can attempt the exact same owned boundary again.
+  for (const id of [...backgroundProcs.keys()]) statusFromProcess(id);
+  if (backgroundProcs.size > 0 && errors.length === 0) {
+    errors.push(new Error(
+      `background-stack cleanup remains unconfirmed for ${backgroundProcs.size} managed process tree(s)`,
+    ));
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(
+      errors,
+      `background-stack cleanup failed for ${errors.length} managed process tree(s)`,
+    );
+  }
+}
+
+/**
+ * Close launch admission synchronously, drain any previously admitted
+ * start/stop operations, then terminate every process tree still owned by
+ * IDACC. Concurrent quit/relaunch/update requests share one cleanup flight.
+ */
+export function stopAllBackgroundStacks(): Promise<void> {
+  backgroundStackAdmissionClosed = true;
+  if (backgroundStackShutdown) return backgroundStackShutdown;
+  const shutdown = stopAllBackgroundStacksOnce();
+  backgroundStackShutdown = shutdown;
+  const clear = (): void => {
+    if (backgroundStackShutdown === shutdown) backgroundStackShutdown = null;
+  };
+  void shutdown.then(clear, clear);
+  return shutdown;
 }

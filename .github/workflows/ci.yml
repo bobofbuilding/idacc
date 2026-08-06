@@ -1,0 +1,484 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-platform-static:
+    name: Static checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Windows exercises the real first-run ACL migration in four fresh
+    # Electron profiles. Leave enough job time for those bounded security
+    # helpers and the supervisor lifecycle assertions to complete.
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15
+          - windows-2022
+          - windows-2025
+          - ubuntu-24.04
+
+    steps:
+      - name: Check out IDACC
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            idctl/package-lock.json
+            idctl-desktop/package-lock.json
+
+      - name: Install exact application dependencies
+        run: |
+          npm ci --prefix idctl
+          npm ci --prefix idctl-desktop
+
+      - name: Install Linux integration display support
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          command -v xvfb-run >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y xvfb
+          }
+
+      - name: Verify the Windows native compiler and helper sources
+        if: runner.os == 'Windows'
+        run: npm run test:windows-native-toolchain --prefix idctl-desktop
+
+      - name: Verify cross-platform source and package policy
+        run: |
+          npm run typecheck --prefix idctl-desktop
+          npm run build --prefix idctl-desktop
+          npm run test:app-shutdown --prefix idctl-desktop
+          npm run test:computer-use-shutdown --prefix idctl-desktop
+          npm run test:windows-job-host --prefix idctl-desktop
+          npm run test:windows-profile-native-build --prefix idctl-desktop
+          npm run test:dashboard-command-surface --prefix idctl-desktop
+          npm run test:dashboard-coordination --prefix idctl-desktop
+          npm run test:dashboard-activity-filter --prefix idctl-desktop
+          npm run test:org-hierarchy --prefix idctl-desktop
+          npm run test:chat-delegation --prefix idctl-desktop
+          npm run test:renderer-store --prefix idctl-desktop
+          npm run test:version-display --prefix idctl-desktop
+          npm run test:release-platform-config --prefix idctl-desktop
+          npm run test:review-build-workflow --prefix idctl-desktop
+          npm run test:runtime-source-capsule --prefix idctl-desktop
+          npm run test:release-preflight --prefix idctl-desktop
+          npm run test:release-payload --prefix idctl-desktop
+          npm run test:update-descriptor-contract --prefix idctl-desktop
+          npm run test:updater-public-provider --prefix idctl-desktop
+          npm run test:unified-updater-integrity --prefix idctl-desktop
+          npm run test:unified-updater-download --prefix idctl-desktop
+          npm run test:root-identity --prefix idctl-desktop
+          node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/identity-verification-smoke.ts
+          node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/health-classification-smoke.ts
+          node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/computer-use-policy-smoke.ts
+          node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/consumer-design-gaps-smoke.ts
+          npm run test:subscription-portability --prefix idctl-desktop
+          npm run test:credential-isolation --prefix idctl-desktop
+          npm run test:signing-guardrails --prefix idctl-desktop
+          npm run test:secure-settings-vault --prefix idctl-desktop
+          npm run test:agent-signer-vault --prefix idctl-desktop
+          npm run test:provider-transport --prefix idctl
+          node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl/src/settings/runtimeCatalog.test.ts
+          npm run test:capability-worker-scope --prefix idctl-desktop
+          npm run test:secret-redaction --prefix idctl-desktop
+          npm run test:profile-migrations --prefix idctl-desktop
+          npm run test:startup-recovery --prefix idctl-desktop
+          npm run test:provider-runtime-rehydration --prefix idctl-desktop
+          npm run test:runtime-profile-isolation --prefix idctl-desktop
+          npm run test:context-budget-retention --prefix idctl-desktop
+          npm run test:computer-use-retention --prefix idctl-desktop
+          npm run test:computer-use-session-discovery --prefix idctl-desktop
+          npm run test:chat-failure --prefix idctl-desktop
+          npm run test:brain-plans-profile --prefix idctl-desktop
+          npm run test:goals-plan-separation --prefix idctl-desktop
+          npm run test:dream-view-polish --prefix idctl-desktop
+          npm run test:consumer-onboarding --prefix idctl-desktop
+          npm run test:consumer-onboarding-integration --prefix idctl-desktop
+          npm run test:unified-stack-policy --prefix idctl-desktop
+          npm run test:unified-runtime-contract --prefix idctl-desktop
+          npm run test:selftest-result-file --prefix idctl-desktop
+          npm run test:legacy-manager-updater-retired --prefix idctl-desktop
+          npm audit --prefix idctl-desktop --audit-level=high
+          npm audit --prefix idctl-desktop --omit=dev --audit-level=high
+          npm audit --prefix idctl --omit=dev --audit-level=high
+
+      - name: Verify Linux installer artifact policy fixtures
+        if: runner.os == 'Linux'
+        run: |
+          npm run test:appimage-artifact --prefix idctl-desktop
+          npm run test:deb-artifact --prefix idctl-desktop
+
+      - name: Verify rendered command and drawer interactions
+        if: runner.os != 'Linux'
+        run: npm run test:dashboard-rendered --prefix idctl-desktop
+
+      - name: Verify rendered command and drawer interactions
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:dashboard-rendered --prefix idctl-desktop
+
+      - name: Verify real Electron manager and Brain supervision
+        if: runner.os != 'Linux'
+        run: npm run test:unified-stack-integration --prefix idctl-desktop
+
+      - name: Verify real Electron manager and Brain supervision
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:unified-stack-integration --prefix idctl-desktop
+
+  reproducible-macos-runtime:
+    name: Reproducible macOS runtime
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      CI: "true"
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Check out IDACC
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            idctl/package-lock.json
+            idctl-desktop/package-lock.json
+
+      - name: Read runtime pins
+        id: runtime-lock
+        run: node scripts/validate-runtime-lock.mjs --no-sources
+
+      - name: Restrict runtime sources to the audited repositories
+        env:
+          MANAGER_REPOSITORY: ${{ steps.runtime-lock.outputs.manager_repository }}
+          BRAIN_REPOSITORY: ${{ steps.runtime-lock.outputs.brain_repository }}
+        run: |
+          test "$MANAGER_REPOSITORY" = "bobofbuilding/id-agents"
+          test "$BRAIN_REPOSITORY" = "bobofbuilding/brain"
+
+      - name: Check out the exact manager commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.runtime-lock.outputs.manager_repository }}
+          ref: ${{ steps.runtime-lock.outputs.manager_commit }}
+          path: .runtime-sources/manager
+          fetch-depth: 1
+          token: ${{ github.token }}
+          persist-credentials: false
+
+      - name: Validate exact Manager source and vendored Brain capsule
+        run: >-
+          node scripts/validate-runtime-lock.mjs
+          --manager-source .runtime-sources/manager
+
+      - name: Verify the exact Manager source
+        run: |
+          npm ci --prefix .runtime-sources/manager
+          npm run ci:preflight --prefix .runtime-sources/manager
+          npm run test:local-agent-lifecycle --prefix .runtime-sources/manager
+
+      - name: Materialize and verify the exact Brain runtime capsule
+        run: |
+          node scripts/runtime-source-capsule.mjs materialize \
+            --lock release/runtime-lock.json \
+            --component brain \
+            --target .runtime-sources/brain
+          npm ci --omit=dev --prefix .runtime-sources/brain
+          find .runtime-sources/brain -path '*/node_modules' -prune \
+            -o -type f -name '*.mjs' -print0 \
+            | xargs -0 -n1 node --check
+
+      - name: Install IDACC dependencies exactly
+        run: |
+          npm ci --prefix idctl
+          npm ci --prefix idctl-desktop
+
+      - name: Verify release-provenance guardrails
+        run: npm run test:release-provenance --prefix idctl-desktop
+
+      - name: Typecheck
+        run: npm run typecheck --prefix idctl-desktop
+
+      - name: Select native architecture
+        run: |
+          if [ "$(uname -m)" = "arm64" ]; then
+            echo "IDACC_BUILD_ARCH=arm64" >> "$GITHUB_ENV"
+          else
+            echo "IDACC_BUILD_ARCH=x64" >> "$GITHUB_ENV"
+          fi
+
+      - name: Stage manager and Brain from their pins
+        env:
+          IDACC_MANAGER_SOURCE: ${{ github.workspace }}/.runtime-sources/manager
+          IDACC_TARGET_ARCH: ${{ env.IDACC_BUILD_ARCH }}
+        run: npm run stage:runtimes --prefix idctl-desktop
+
+      - name: Verify staged runtime hashes
+        run: npm run verify:runtimes --prefix idctl-desktop
+
+      - name: Audit production dependency trees
+        run: |
+          npm audit --prefix idctl-desktop --audit-level=high
+          npm audit --prefix idctl-desktop --omit=dev --audit-level=high
+          npm audit --prefix idctl --omit=dev --audit-level=high
+          npm audit --prefix idctl-desktop/resources/idacc-runtime/manager --omit=dev --audit-level=high
+          npm audit --prefix idctl-desktop/resources/idacc-runtime/brain --omit=dev --audit-level=high
+
+      - name: Build unpacked application
+        env:
+          IDACC_MANAGER_SOURCE: ${{ github.workspace }}/.runtime-sources/manager
+          IDACC_TARGET_ARCH: ${{ env.IDACC_BUILD_ARCH }}
+        run: npm run dist --prefix idctl-desktop -- --${IDACC_BUILD_ARCH}
+
+      - name: Locate and validate packaged application
+        id: app
+        run: |
+          APP="$(find idctl-desktop/release -maxdepth 3 -type d -name 'ID Agents Control Center.app' -print -quit)"
+          test -n "$APP"
+          echo "path=$APP" >> "$GITHUB_OUTPUT"
+          node scripts/check-release-payload.mjs "$APP"
+          node scripts/unified-stack-release-smoke.mjs "$APP"
+
+      - name: Create CI archive and release metadata
+        run: |
+          VERSION="$(node -p "require('./idctl-desktop/package.json').version")"
+          ZIP="idctl-desktop/release/ID-Agents-Control-Center-${VERSION}-${IDACC_BUILD_ARCH}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "${{ steps.app.outputs.path }}" "$ZIP"
+          node scripts/generate-release-metadata.mjs \
+            --artifact "$ZIP" \
+            --output idctl-desktop/release/metadata
+
+      - name: Upload verified CI evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: idacc-macos-${{ env.IDACC_BUILD_ARCH }}-provenance
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            idctl-desktop/release/ID-Agents-Control-Center-*.zip
+            idctl-desktop/release/metadata/*
+
+  native-consumer-packages:
+    name: Native package (${{ matrix.platform }}-${{ matrix.arch }})
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            platform: win
+            runtime_platform: win32
+            arch: x64
+            target_args: --win nsis
+            release_smoke_args: ""
+            unpacked: win-unpacked
+            artifact_globs: |
+              idctl-desktop/release/*.exe
+              idctl-desktop/release/*.exe.blockmap
+              idctl-desktop/release/latest.yml
+          - os: ubuntu-24.04
+            platform: linux
+            runtime_platform: linux
+            arch: x64
+            target_args: --linux AppImage deb
+            release_smoke_args: --linux-github-actions-suid-sandbox
+            unpacked: linux-unpacked
+            artifact_globs: |
+              idctl-desktop/release/*.AppImage
+              idctl-desktop/release/*.AppImage.blockmap
+              idctl-desktop/release/*.deb
+              idctl-desktop/release/latest-linux.yml
+    env:
+      CI: "true"
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Check out IDACC
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            idctl/package-lock.json
+            idctl-desktop/package-lock.json
+
+      - name: Read runtime pins
+        id: runtime-lock
+        shell: bash
+        run: node scripts/validate-runtime-lock.mjs --no-sources
+
+      - name: Restrict runtime sources to the audited repositories
+        shell: bash
+        env:
+          MANAGER_REPOSITORY: ${{ steps.runtime-lock.outputs.manager_repository }}
+          BRAIN_REPOSITORY: ${{ steps.runtime-lock.outputs.brain_repository }}
+        run: |
+          test "$MANAGER_REPOSITORY" = "bobofbuilding/id-agents"
+          test "$BRAIN_REPOSITORY" = "bobofbuilding/brain"
+
+      - name: Check out the exact manager commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.runtime-lock.outputs.manager_repository }}
+          ref: ${{ steps.runtime-lock.outputs.manager_commit }}
+          path: .runtime-sources/manager
+          fetch-depth: 1
+          token: ${{ github.token }}
+          persist-credentials: false
+
+      - name: Validate exact Manager source and vendored Brain capsule
+        shell: bash
+        run: >-
+          node scripts/validate-runtime-lock.mjs
+          --manager-source .runtime-sources/manager
+
+      - name: Materialize the exact Brain runtime capsule
+        shell: bash
+        run: >-
+          node scripts/runtime-source-capsule.mjs materialize
+          --lock release/runtime-lock.json
+          --component brain
+          --target .runtime-sources/brain
+
+      - name: Install exact application dependencies
+        shell: bash
+        run: |
+          npm ci --prefix idctl
+          npm ci --prefix idctl-desktop
+
+      - name: Install Linux smoke-test display support
+        if: matrix.platform == 'linux'
+        run: |
+          command -v xvfb-run >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y xvfb
+          }
+
+      - name: Validate native package policy
+        shell: bash
+        run: node idctl-desktop/scripts/release-preflight.mjs --platform ${{ matrix.platform }}
+
+      - name: Stage manager and Brain for this native ABI
+        shell: bash
+        env:
+          IDACC_MANAGER_SOURCE: ${{ github.workspace }}/.runtime-sources/manager
+          IDACC_TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          npm run stage:runtimes --prefix idctl-desktop
+          npm run verify:runtimes --prefix idctl-desktop
+
+      - name: Audit every shipped dependency tree
+        shell: bash
+        run: |
+          npm audit --prefix idctl-desktop --audit-level=high
+          npm audit --prefix idctl-desktop --omit=dev --audit-level=high
+          npm audit --prefix idctl --omit=dev --audit-level=high
+          npm audit --prefix idctl-desktop/resources/idacc-runtime/manager --omit=dev --audit-level=high
+          npm audit --prefix idctl-desktop/resources/idacc-runtime/brain --omit=dev --audit-level=high
+
+      - name: Build native consumer packages
+        shell: bash
+        working-directory: idctl-desktop
+        run: |
+          npm run build:release
+          npm run test:release-build-output
+          npx electron-builder ${{ matrix.target_args }} --${{ matrix.arch }} --publish never
+
+      - name: Verify the Linux installer sandbox policies
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          mapfile -t APPIMAGES < <(
+            find idctl-desktop/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.AppImage' \
+              -print
+          )
+          test "${#APPIMAGES[@]}" -eq 1
+          node scripts/verify-appimage-artifact.mjs \
+            --appimage "${APPIMAGES[0]}" \
+            --expected-build production
+          mapfile -t DEBS < <(
+            find idctl-desktop/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.deb' \
+              -print
+          )
+          test "${#DEBS[@]}" -eq 1
+          node scripts/verify-deb-artifact.mjs \
+            --deb "${DEBS[0]}"
+
+      - name: Verify payload and clean-profile manager/Brain startup
+        shell: bash
+        env:
+          IDACC_GITHUB_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          node scripts/check-release-payload.mjs "idctl-desktop/release/${{ matrix.unpacked }}"
+          node scripts/unified-stack-release-smoke.mjs \
+            "idctl-desktop/release/${{ matrix.unpacked }}" \
+            ${{ matrix.release_smoke_args }}
+
+      - name: Generate platform-specific provenance
+        shell: bash
+        env:
+          IDACC_ARTIFACT_GLOBS: ${{ matrix.artifact_globs }}
+        run: |
+          ARGS=()
+          while IFS= read -r GLOB; do
+            test -n "$GLOB" || continue
+            while IFS= read -r FILE; do
+              test -f "$FILE" && ARGS+=(--artifact "$FILE")
+            done < <(compgen -G "$GLOB" || true)
+          done <<< "$IDACC_ARTIFACT_GLOBS"
+          test "${#ARGS[@]}" -gt 0
+          node scripts/generate-release-metadata.mjs \
+            "${ARGS[@]}" \
+            --output "idctl-desktop/release/metadata/${{ matrix.runtime_platform }}-${{ matrix.arch }}"
+
+      - name: Upload native package evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: idacc-${{ matrix.runtime_platform }}-${{ matrix.arch }}-provenance
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ matrix.artifact_globs }}
+            idctl-desktop/release/metadata/${{ matrix.runtime_platform }}-${{ matrix.arch }}/*

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { call, useSyncVersion, type FleetStore, type TeamEvent } from '../store.ts';
 import { isAgentLive } from '../agentStatus.ts';
+import { buildFleetStructureSnapshot, type FleetAgent } from '../fleetStructure.ts';
 import {
   activityAddressExplorerUrl,
   activityAddressLabel,
@@ -12,6 +13,13 @@ import {
 } from '../activityFeed.ts';
 import { Chat } from './Chat.tsx';
 import { parseChatControlIntent, type ControlIntentProposal } from '../dashboard/chatIntents.ts';
+import {
+  createCommandIdempotencyKey,
+  evaluateCommandGate,
+  executeGatedCommand,
+  recordDeclinedCommand,
+  type CommandEnvironment,
+} from '../dashboard/commandRuntime.ts';
 import { isDashboardRelevantEvent } from '../../shared/dashboardEvents.ts';
 import type { InboxItem, NewsItem, Task } from '../../../../idctl/src/api/types.ts';
 
@@ -269,13 +277,13 @@ type OrgHier = {
   controlStateWarning?: string;
 };
 
-const DEFAULT_ORG_HIERARCHY: OrgHier = {
-  primary: { team: DASHBOARD_CHAT_TEAM, agent: DASHBOARD_CHAT_TARGET },
+const EMPTY_ORG_HIERARCHY: OrgHier = {
+  primary: null,
   secondaries: [],
-  coordinators: { [DASHBOARD_CHAT_TEAM]: DASHBOARD_CHAT_TARGET },
-  teams: [DASHBOARD_CHAT_TEAM],
+  coordinators: {},
+  teams: [],
 };
-type LiteTask = { ownerName?: string | null; status: string; title?: string; shortId?: string };
+type LiteTask = { ownerName?: string | null; teamName?: string; status: string; title?: string; shortId?: string };
 type DashboardNews = NewsItem & { teamName?: string };
 type ActivityAddress = { address: string; label: string; explorerUrl?: string };
 type ActivityFeedItem = {
@@ -311,8 +319,8 @@ function recentWorkingKeys(events: TeamEvent[]): Set<string> {
     if (at < cutoff || !WORKING_EVENT_RE.test(signal)) continue;
     const agent = eventAgent(e);
     if (!agent) continue;
-    keys.add(`${e.team ?? ''}:${agent}`);
-    keys.add(agent);
+    if (e.team) keys.add(`${e.team}:${agent}`);
+    else keys.add(agent);
   }
   return keys;
 }
@@ -324,6 +332,7 @@ function recentWorkingKeys(events: TeamEvent[]): Set<string> {
  */
 function CoordinationTree({
   store,
+  fleetAgents,
   events,
   coordinationTeams,
   hier,
@@ -332,6 +341,7 @@ function CoordinationTree({
   onOpenSettings,
 }: {
   store: FleetStore;
+  fleetAgents: FleetAgent[];
   events: TeamEvent[];
   coordinationTeams: string[];
   hier: OrgHier;
@@ -357,13 +367,26 @@ function CoordinationTree({
   }, [loadUsage]);
 
   const workingKeys = recentWorkingKeys(events);
-  const taskOf = (name?: string) => (name ? tasks.find((t) => t.ownerName === name && DOING_RE.test(t.status) && !DONE_RE.test(t.status)) : undefined);
+  const agentNameCounts = new Map<string, number>();
+  fleetAgents.forEach((agent) => agentNameCounts.set(agent.name, (agentNameCounts.get(agent.name) ?? 0) + 1));
+  const taskOf = (agent: { name: string; team?: string }) => tasks.find((task) => (
+    task.ownerName === agent.name
+    && (!task.teamName ? agentNameCounts.get(agent.name) === 1 : task.teamName === agent.team)
+    && DOING_RE.test(task.status)
+    && !DONE_RE.test(task.status)
+  ));
   const isWorking = (agent: { id?: string; name: string; team?: string; status?: string }) =>
-    !!taskOf(agent.name) || workingKeys.has(activityKey(agent)) || workingKeys.has(agent.name) || !!(agent.id && workingKeys.has(agent.id)) || WORKING_STATUS_RE.test(agent.status ?? '');
+    !!taskOf(agent)
+    || workingKeys.has(activityKey(agent))
+    || (agentNameCounts.get(agent.name) === 1 && workingKeys.has(agent.name))
+    || !!(agent.id && workingKeys.has(agent.id))
+    || WORKING_STATUS_RE.test(agent.status ?? '');
   const node = (name: string, role: string, team?: string) => {
-    const a = store.allAgents.find((x) => x.name === name && (!team || x.team === team)) ?? store.allAgents.find((x) => x.name === name);
+    const a = team
+      ? fleetAgents.find((agent) => agent.team === team && agent.name === name)
+      : fleetAgents.find((agent) => agent.name === name);
     const present = !!a;
-    const isLive = present && isAgentLive(a?.status);
+    const isLive = present && isAgentLive(a);
     const working = !!(a && isWorking(a));
     const color = !present ? '#6b6b6b' : working ? '#3ccb78' : isLive ? '#c98a3c' : '#777';
     const state = !present ? 'not deployed' : working ? 'working' : isLive ? 'idle' : 'stopped';
@@ -382,14 +405,14 @@ function CoordinationTree({
   // upstream so the lead isn't duplicated here as a team lead.
   const teamRow = (tm: string) => {
     const tl = hier.coordinators[tm];
-    const members = store.allAgents.filter((a) => a.team === tm && a.name !== tl);
+    const members = fleetAgents.filter((agent) => agent.team === tm && agent.name !== tl);
     return (
       <div key={tm} style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
         {tl ? node(tl, 'team lead', tm) : <span className="muted small">no lead</span>}
         {members.length ? (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
             {members.map((a) => {
-              const isLive = isAgentLive(a.status);
+              const isLive = isAgentLive(a);
               const working = isWorking(a);
               const color = working ? '#3ccb78' : isLive ? '#c98a3c' : '#777';
               const state = working ? 'working' : isLive ? 'idle' : 'stopped';
@@ -407,7 +430,7 @@ function CoordinationTree({
     );
   };
 
-  const primary = hier.primary?.agent ?? DASHBOARD_CHAT_TARGET;
+  const primary = hier.primary;
   const coordinationTeamSet = new Set(coordinationTeams);
   const visibleSecondaries = hier.secondaries
     .map((s) => ({ ...s, leadsTeams: s.leadsTeams.filter((tm) => coordinationTeamSet.has(tm)) }))
@@ -416,7 +439,7 @@ function CoordinationTree({
   // EXCEPT the primary lead's own (default) team: the lead already appears as
   // "primary lead" above, so rendering its team row would duplicate the same agent.
   const coveredTeams = new Set(visibleSecondaries.flatMap((s) => s.leadsTeams));
-  const orphanTeams = coordinationTeams.filter((tm) => !coveredTeams.has(tm) && hier.coordinators[tm] !== primary);
+  const orphanTeams = coordinationTeams.filter((tm) => !coveredTeams.has(tm) && hier.coordinators[tm] !== primary?.agent);
 
   return (
     <section className="card" style={{ marginBottom: 12, flexShrink: 0 }}>
@@ -437,7 +460,9 @@ function CoordinationTree({
       ) : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div>
-          {node(primary, 'primary lead')}
+          {primary
+            ? node(primary.agent, 'primary lead', primary.team)
+            : <span className="muted small">primary lead not configured</span>}
           {orphanTeams.length ? (
             <div style={{ paddingLeft: 18, marginTop: 4, display: 'flex', flexDirection: 'column', gap: 3 }}>
               {orphanTeams.map((tm) => teamRow(tm))}
@@ -445,8 +470,8 @@ function CoordinationTree({
           ) : null}
         </div>
         {visibleSecondaries.map((s) => (
-          <div key={s.agent} style={{ paddingLeft: 16, borderLeft: '1px solid var(--border, #2a2a2a)' }}>
-            <div style={{ marginBottom: 4 }}>↳ {node(s.agent, 'secondary')}</div>
+          <div key={`${s.team}:${s.agent}`} style={{ paddingLeft: 16, borderLeft: '1px solid var(--border, #2a2a2a)' }}>
+            <div style={{ marginBottom: 4 }}>↳ {node(s.agent, 'secondary', s.team)}</div>
             <div style={{ paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 3 }}>
               {s.leadsTeams.map((tm) => teamRow(tm))}
             </div>
@@ -457,42 +482,97 @@ function CoordinationTree({
   );
 }
 
-export function Dashboard({ store, navigate }: { store: FleetStore; navigate?: (target: string) => void }) {
+export function Dashboard({
+  store,
+  navigate,
+  commandEnvironment,
+}: {
+  store: FleetStore;
+  navigate?: (target: string) => void;
+  commandEnvironment: CommandEnvironment;
+}) {
   const activitySyncVersion = useSyncVersion(['dashboard', 'tasks', 'work', 'inbox', 'chats']);
   const hierarchySyncVersion = useSyncVersion(['org', 'agents', 'dashboard']);
-  const [hier, setHier] = useState<OrgHier>(DEFAULT_ORG_HIERARCHY);
+  const [hier, setHier] = useState<OrgHier>(EMPTY_ORG_HIERARCHY);
   const [hierarchyWarning, setHierarchyWarning] = useState('');
   const [controlIntent, setControlIntent] = useState<ControlIntentProposal | null>(null);
+  const [controlIntentKey, setControlIntentKey] = useState('');
   const [controlIntentBusy, setControlIntentBusy] = useState(false);
+  const controlIntentBusyRef = useRef(false);
   const [controlIntentStatus, setControlIntentStatus] = useState('');
   const proposeControlIntent = useCallback((input: string): boolean => {
     const proposal = parseChatControlIntent(input, store);
     if (!proposal) return false;
+    if (controlIntent || controlIntentBusyRef.current) {
+      setControlIntentStatus('Confirm or decline the pending command before proposing another.');
+      return true;
+    }
+    const idempotencyKey = createCommandIdempotencyKey(proposal.commandId);
+    const gate = evaluateCommandGate(proposal, commandEnvironment);
+    if (gate.state === 'blocked') {
+      void executeGatedCommand({
+        metadata: proposal,
+        environment: commandEnvironment,
+        idempotencyKey,
+        resourceRefs: proposal.resourceRefs,
+        operation: proposal.execute,
+      }).then(({ receipt }) => {
+        setControlIntentStatus(receipt.error || 'Command is unavailable.');
+      });
+      return true;
+    }
     setControlIntent(proposal);
-    setControlIntentStatus('');
+    setControlIntentKey(idempotencyKey);
+    setControlIntentStatus(`Review this ${proposal.risk}-risk command before it is sent.`);
     return true;
-  }, [store]);
+  }, [commandEnvironment, controlIntent, store]);
   const executeControlIntent = useCallback(async () => {
-    if (!controlIntent || controlIntentBusy) return;
+    if (!controlIntent || !controlIntentKey || controlIntentBusyRef.current) return;
+    controlIntentBusyRef.current = true;
     setControlIntentBusy(true);
-    setControlIntentStatus('Manager accepted the command; starting work…');
+    setControlIntentStatus('Sending the confirmed command to Manager…');
     try {
-      const result = await controlIntent.execute();
-      setControlIntentStatus(result);
-      setControlIntent(null);
-      store.refresh();
+      const result = await executeGatedCommand({
+        metadata: controlIntent,
+        environment: commandEnvironment,
+        confirmed: true,
+        idempotencyKey: controlIntentKey,
+        resourceRefs: controlIntent.resourceRefs,
+        operation: controlIntent.execute,
+        classifyOutcome: (value) => value.outcome ?? { state: 'succeeded' },
+      });
+      if (result.receipt.state === 'succeeded' || result.receipt.state === 'deferred') {
+        setControlIntentStatus(result.value?.message ?? `Command ${result.receipt.state}.`);
+        setControlIntent(null);
+        setControlIntentKey('');
+        store.refresh();
+      } else {
+        setControlIntentStatus(result.receipt.error || `Command ${result.receipt.state}.`);
+      }
     } catch (error) {
       setControlIntentStatus(error instanceof Error ? error.message : String(error));
     } finally {
+      controlIntentBusyRef.current = false;
       setControlIntentBusy(false);
     }
-  }, [controlIntent, controlIntentBusy, store]);
+  }, [commandEnvironment, controlIntent, controlIntentKey, store]);
+  const declineControlIntent = useCallback(() => {
+    if (!controlIntent || controlIntentBusyRef.current) return;
+    recordDeclinedCommand({
+      metadata: controlIntent,
+      idempotencyKey: controlIntentKey || undefined,
+      resourceRefs: controlIntent.resourceRefs,
+    });
+    setControlIntent(null);
+    setControlIntentKey('');
+    setControlIntentStatus('Command declined; nothing was changed.');
+  }, [controlIntent, controlIntentKey]);
   const hierarchyLiveRef = useRef(true);
   useEffect(() => () => { hierarchyLiveRef.current = false; }, []);
   const loadHierarchy = useCallback(() => {
     void call<OrgHier>('org:hierarchy').then((h) => {
       if (!hierarchyLiveRef.current || !h) return;
-      setHier(h.primary ? h : { ...h, primary: DEFAULT_ORG_HIERARCHY.primary });
+      setHier(h);
       setHierarchyWarning(h.controlStateWarning ?? '');
     }).catch((error) => {
       if (!hierarchyLiveRef.current) return;
@@ -500,29 +580,32 @@ export function Dashboard({ store, navigate }: { store: FleetStore; navigate?: (
     });
   }, []);
   useEffect(() => { loadHierarchy(); }, [loadHierarchy, store.lastUpdated, hierarchySyncVersion]);
+  const fleetStructure = useMemo(() => buildFleetStructureSnapshot({
+    teams: store.teams,
+    allAgents: store.allAgents,
+    activeAgents: store.agents,
+    activeTeam: store.team ?? DASHBOARD_CHAT_TEAM,
+    hierarchy: hier,
+    primaryTeam: DASHBOARD_CHAT_TEAM,
+  }), [store.teams, store.allAgents, store.agents, store.team, hier]);
   // Teams that currently have ≥1 running agent (idle teams hidden from the picker).
   const activeTeams = useMemo(
     () => uniqSorted([
       ...store.teams.map((t) => t.name),
-      ...store.allAgents.filter((a) => isAgentLive(a.status)).map((a) => a.team ?? ''),
-    ]).filter((n) => store.allAgents.some((a) => a.team === n && isAgentLive(a.status))),
-    [store.teams, store.allAgents],
+      ...fleetStructure.agents.filter((agent) => isAgentLive(agent)).map((agent) => agent.team ?? ''),
+    ]).filter((team) => fleetStructure.agents.some((agent) => agent.team === team && isAgentLive(agent))),
+    [store.teams, fleetStructure.agents],
   );
   // HR Manager's graph is based on the full cross-team roster, not only currently
   // running teams. Dashboard should mirror that org shape and show stopped teams
   // greyed out instead of silently dropping them from Live Coordination.
   const coordinationTeams = useMemo(
-    () => uniqSorted([
-      ...hier.teams,
-      ...store.teams.map((t) => t.name),
-      ...store.allAgents.map((a) => a.team ?? ''),
-      ...hier.secondaries.flatMap((s) => s.leadsTeams ?? []),
-    ]).filter((team) => team !== 'public'),
-    [hier.teams, hier.secondaries, store.teams, store.allAgents],
+    () => fleetStructure.teamNames,
+    [fleetStructure.teamNames],
   );
   const primaryLeadPresent = useMemo(
-    () => store.allAgents.some((agent) => agent.team === DASHBOARD_CHAT_TEAM && agent.name === DASHBOARD_CHAT_TARGET),
-    [store.allAgents],
+    () => fleetStructure.agents.some((agent) => agent.team === DASHBOARD_CHAT_TEAM && agent.name === DASHBOARD_CHAT_TARGET),
+    [fleetStructure.agents],
   );
   // Holistic activity feed: recent events plus durable task/comms state across
   // EVERY team (newest first). Events alone are lossy: a task/news row can exist
@@ -603,15 +686,15 @@ export function Dashboard({ store, navigate }: { store: FleetStore; navigate?: (
     const working = scoped.filter((t) => DOING_RE.test(t.status) && !taskIsDone(t)).length;
     return { open, working, total: tasks.length };
   }, [activeTeams, tasks]);
-  const agentById = useMemo(() => new Map(store.allAgents.map((a) => [a.id, a.name] as const)), [store.allAgents]);
+  const agentById = useMemo(() => new Map(fleetStructure.agents.map((agent) => [agent.id, agent.name] as const)), [fleetStructure.agents]);
   const feedItems = useMemo<ActivityFeedItem[]>(() => {
     const name = (id: string) => agentLabel(id, agentById);
     const activeTeamSet = new Set(activeTeams);
     const fleetAgentKeys = new Set<string>();
     const activeAgentKeys = new Set<string>();
-    for (const a of store.allAgents) {
+    for (const a of fleetStructure.agents) {
       fleetAgentKeys.add(a.id); fleetAgentKeys.add(a.name);
-      if (isAgentLive(a.status)) { activeAgentKeys.add(a.id); activeAgentKeys.add(a.name); }
+      if (isAgentLive(a)) { activeAgentKeys.add(a.id); activeAgentKeys.add(a.name); }
     }
     const items: ActivityFeedItem[] = [];
     const broadcasterAddressByScope = buildBroadcasterAddressHints(news.map((n) => ({
@@ -723,7 +806,7 @@ export function Dashboard({ store, navigate }: { store: FleetStore; navigate?: (
       })
       .sort((a, b) => b.at - a.at)
       .slice(0, 80);
-  }, [activeTeams, agentById, events, tasks, news, store.allAgents, store.inbox, store.team]);
+  }, [activeTeams, agentById, events, tasks, news, fleetStructure.agents, store.inbox, store.team]);
 
   return (
     <div className="view" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -739,6 +822,7 @@ export function Dashboard({ store, navigate }: { store: FleetStore; navigate?: (
 
       <CoordinationTree
         store={store}
+        fleetAgents={fleetStructure.agents}
         events={events}
         coordinationTeams={coordinationTeams}
         hier={hier}
@@ -752,13 +836,17 @@ export function Dashboard({ store, navigate }: { store: FleetStore; navigate?: (
         {/* Primary lead chat: locked to default/lead (no team or agent picker). */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           {controlIntent ? (
-            <section className="control-intent-proposal" aria-live="polite">
+            <section className="control-intent-proposal" role="alertdialog" aria-label={`Confirm ${controlIntent.title}`}>
               <div className="control-intent-copy">
                 <strong>{controlIntent.title}</strong>
                 <span>{controlIntent.summary}</span>
+                <span className="small">
+                  {controlIntent.risk} risk · owner {controlIntent.ownerView}
+                  {controlIntent.requiredFeatures.length ? ` · requires ${controlIntent.requiredFeatures.join(', ')}` : ''}
+                </span>
               </div>
               <div className="row-actions">
-                <button className="btn" disabled={controlIntentBusy} onClick={() => { setControlIntent(null); setControlIntentStatus('Command declined; nothing was changed.'); }}>Cancel</button>
+                <button className="btn" disabled={controlIntentBusy} onClick={declineControlIntent}>Decline</button>
                 <button className="btn primary" disabled={controlIntentBusy} onClick={() => void executeControlIntent()}>{controlIntentBusy ? 'Starting…' : 'Confirm'}</button>
               </div>
             </section>

@@ -17,7 +17,7 @@ assert.match(
 );
 assert.match(
   materialstore,
-  /function shouldAutoCreateLearnTask[\s\S]*activeGoalMatches[\s\S]*length > 0/,
+  /function shouldAutoCreateLearnTask[\s\S]*activeGoalMatches[\s\S]*length\) return false/,
   'Learn should only auto-create tasks after active-goal matching',
 );
 assert.match(
@@ -52,8 +52,8 @@ assert.match(
 );
 assert.match(
   materialstore,
-  /learnTeamLeadDirectivePrompt[\s\S]*Create or split tasks only when the material clearly advances a matched active goal/,
-  'Learn team-lead prompts should allow bounded task delegation from goal-relevant material',
+  /learnTeamLeadDirectivePrompt[\s\S]*Use or assign the canonical Learn task references below[\s\S]*Do not create another task/,
+  'Learn team-lead prompts should reuse canonical tasks instead of recursively creating duplicates',
 );
 assert.match(
   materialstore,
@@ -74,6 +74,51 @@ assert.match(
   materialstore,
   /LEARN_TASK_AUTOMATION_RETRY_MS/,
   'Deferred Learn task automation should be cooldown-gated before retrying',
+);
+assert.match(
+  materialstore,
+  /LEARN_MAX_TASKS_PER_MATERIAL = 2[\s\S]*LEARN_MAX_AUTOMATION_ATTEMPTS = 3/,
+  'Learn automation should use a bounded canonical task set and bounded retries',
+);
+assert.match(
+  materialstore,
+  /function learnGoalContextFingerprint[\s\S]*activeGoalMatches[\s\S]*routedTeams/,
+  'Learn progression should reopen only when active-goal or routed-team context changes',
+);
+assert.match(
+  materialstore,
+  /autoTaskStatus = 'parked'[\s\S]*Bounded fan-out/,
+  'Excess recommendations should be parked instead of retried forever',
+);
+assert.match(
+  materialstore,
+  /legacyUnboundedRetry[\s\S]*Previous unbounded retry cycle parked[\s\S]*resetLegacyRetry/,
+  'Existing unbounded retry records should be parked but reopen on explicit reprocessing',
+);
+assert.match(
+  materialstore,
+  /function retryBackoffMs[\s\S]*LEARN_RETRY_BACKOFF_CAP_MS/,
+  'Failed automation should use capped exponential backoff',
+);
+assert.match(
+  materialstore,
+  /function mergeLearnRoutingResults[\s\S]*isLearnRoutingSatisfied/,
+  'Role routing should preserve successful deliveries across retries',
+);
+assert.match(
+  materialstore,
+  /LEARN_MAX_ROUTING_ATTEMPTS = 3[\s\S]*routingAttempts >= LEARN_MAX_ROUTING_ATTEMPTS/,
+  'Learn routing should park an unchanged incomplete route after bounded attempts',
+);
+assert.match(
+  materialstore,
+  /legacyRoutingEvents[\s\S]*legacyRoutingEvents >= LEARN_MAX_ROUTING_ATTEMPTS/,
+  'Existing materials with repeated legacy routing attempts should stop without another retry storm',
+);
+assert.match(
+  materialstore,
+  /const deliveries: Array<Promise<void>>[\s\S]*await Promise\.all\(deliveries\)/,
+  'Independent primary, validator, and team-lead routing should dispatch in parallel',
 );
 assert.match(
   main,

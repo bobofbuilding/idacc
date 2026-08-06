@@ -1,5 +1,23 @@
 import assert from 'node:assert/strict';
-import { createAndDispatchPlan } from '../src/main/work.ts';
+import { createAndDispatchPlan, taskMatchesCompletionWait } from '../src/main/work.ts';
+
+assert.equal(
+  taskMatchesCompletionWait(
+    { title: 'Open task', status: 'done', shortId: '#fresh001', createdAt: 100, completedAt: 220 },
+    '#fresh001',
+    200,
+  ),
+  true,
+);
+assert.equal(
+  taskMatchesCompletionWait(
+    { title: 'Old terminal history', status: 'done', name: 'audit-reconcile-authorized-projects', createdAt: 10, completedAt: 40 },
+    'audit-reconcile-authorized-projects',
+    100,
+  ),
+  false,
+  'stale terminal history must not satisfy a newer completion wait',
+);
 
 const remoteCommands = [];
 const dispatchCommands = [];

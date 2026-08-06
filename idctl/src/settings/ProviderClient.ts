@@ -15,6 +15,7 @@
  */
 
 import type { ProviderProfile } from './schema.ts';
+import { normalizeProviderBaseUrl } from './providerTransport.ts';
 
 export interface DiscoveredModel {
   id: string;
@@ -50,7 +51,7 @@ function sanitizeModelId(s: string): string {
 }
 
 function normalizeBase(url: string): string {
-  return url.trim().replace('://localhost', '://127.0.0.1').replace(/\/+$/, '');
+  return normalizeProviderBaseUrl(url);
 }
 
 /** Append the OpenAI-style models path. If the base already ends at an API root
@@ -62,10 +63,13 @@ function openAiModelsUrl(base: string): string {
 }
 
 export class ProviderClient {
-  constructor(
-    private p: ProviderProfile,
-    private apiKey?: string,
-  ) {}
+  private p: ProviderProfile;
+  private apiKey?: string;
+
+  constructor(p: ProviderProfile, apiKey?: string) {
+    this.p = p;
+    this.apiKey = apiKey;
+  }
 
   private endpoint(): { url: string; headers: Record<string, string> } {
     const base = normalizeBase(this.p.baseUrl);
@@ -88,7 +92,20 @@ export class ProviderClient {
   }
 
   async probe(signal?: AbortSignal, timeoutMs = 6000): Promise<ProbeOutcome> {
-    const { url, headers } = this.endpoint();
+    let endpoint: { url: string; headers: Record<string, string> };
+    try {
+      // Transport validation happens before authentication headers are built or
+      // fetch can run, including for insecure hand-edited legacy profiles.
+      endpoint = this.endpoint();
+    } catch (error) {
+      return {
+        ok: false,
+        status: 'error',
+        models: [],
+        message: error instanceof Error ? error.message : 'Provider URL is not allowed.',
+      };
+    }
+    const { url, headers } = endpoint;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     const onAbort = () => ctrl.abort();

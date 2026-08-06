@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
 import { runtimeDisplayLabel } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import { isAgentLive } from '../agentStatus.ts';
 
 export interface GraphGroup { team: string; agents: Agent[] }
 export interface Hier {
@@ -57,12 +58,14 @@ type Layout = {
   edges: Edge[];
   width: number;
   height: number;
+  delegationHub?: Point;
+  validationHub?: Point;
   relayHub?: Point;
   relayHubCount: number;
 };
 
 function up(agent: Agent): boolean {
-  return /running|online|ready|healthy/i.test(`${agent.status ?? ''} ${agent.health ?? ''}`);
+  return isAgentLive(agent);
 }
 function statusColor(agent: Agent): string {
   if (up(agent)) return 'var(--ok)';
@@ -77,6 +80,12 @@ function topCenter(node: Placed): Point {
 }
 function bottomCenter(node: Placed): Point {
   return { x: node.x + NODE_W / 2, y: node.y + NODE_H };
+}
+function hubTop(hub: Point): Point {
+  return { x: hub.x, y: hub.y - 13 };
+}
+function hubBottom(hub: Point): Point {
+  return { x: hub.x, y: hub.y + 13 };
 }
 function nodeKey(team: string, agent: string): string {
   return `agent:${team}:${agent}`;
@@ -109,10 +118,10 @@ function edgePath(edge: Edge): string {
 }
 
 /**
- * Responsive top-down organization chart. The configured fleet primary is the root,
- * protected validators/secondary leads form the next layer, team coordinators own
- * their team clusters, and workers sit beneath them. Solid paths are reporting lines;
- * green dashed paths are persisted cross-team messaging policies.
+ * Responsive top-down organization chart. The configured fleet primary delegates
+ * objectives directly to team coordinators, coordinators delegate to their workers,
+ * and completed work returns through protected validators to the primary. Persisted
+ * cross-team messaging policies remain available as a separate selected-team trace.
  */
 export const TeamGraph = memo(function TeamGraph({
   groups,
@@ -228,7 +237,7 @@ export const TeamGraph = memo(function TeamGraph({
         };
         nodes.push(placed);
         nodeByKey.set(key, placed);
-        edges.push({ from: bottomCenter(root), to: topCenter(placed), kind: isSecondary ? 'validation' : 'member' });
+        if (!isSecondary) edges.push({ from: bottomCenter(root), to: topCenter(placed), kind: 'member' });
       });
       leadershipBottom = rootMembers.length
         ? membersY + rootRows * NODE_H + Math.max(0, rootRows - 1) * NODE_GAP
@@ -351,19 +360,33 @@ export const TeamGraph = memo(function TeamGraph({
     });
 
     const primaryNode = primary ? nodeByKey.get(nodeKey(primaryGroup.team, primary.name)) : undefined;
+    const delegationHub: Point = { x: width / 2 - 120, y: leadershipBottom + 68 };
+    const validationHub: Point = { x: width / 2 + 120, y: leadershipBottom + 68 };
+    const validatorsByKey = new Map<string, Placed>();
+    const routedTeamLeads: Placed[] = [];
     for (const group of teamGroups) {
       const teamLead = leadByTeam.get(group.team);
       if (!teamLead || !primaryNode) continue;
+      routedTeamLeads.push(teamLead);
       const validators = (hier.secondaries ?? [])
         .filter((secondary) => secondary.leadsTeams.includes(group.team))
         .map((secondary) => nodeByKey.get(nodeKey(secondary.team, secondary.agent)))
         .filter((node): node is Placed => Boolean(node));
-      if (validators.length) {
-        validators.forEach((validator) => edges.push({ from: bottomCenter(validator), to: topCenter(teamLead), kind: 'validation' }));
-      } else {
-        edges.push({ from: bottomCenter(primaryNode), to: topCenter(teamLead), kind: 'hierarchy' });
-      }
+      if (validators.length) edges.push({ from: topCenter(teamLead), to: hubBottom(validationHub), kind: 'validation' });
+      validators.forEach((validator) => {
+        validatorsByKey.set(validator.key, validator);
+      });
     }
+    if (primaryNode && routedTeamLeads.length) {
+      edges.push({ from: bottomCenter(primaryNode), to: hubTop(delegationHub), kind: 'hierarchy' });
+      routedTeamLeads.forEach((teamLead) => {
+        edges.push({ from: hubBottom(delegationHub), to: topCenter(teamLead), kind: 'hierarchy' });
+      });
+    }
+    validatorsByKey.forEach((validator) => {
+      edges.push({ from: hubTop(validationHub), to: bottomCenter(validator), kind: 'validation' });
+      if (primaryNode) edges.push({ from: topCenter(validator), to: bottomCenter(primaryNode), kind: 'validation' });
+    });
 
     const relayHub: Point = { x: width / 2, y: leadershipBottom + 68 };
     const relayHubCount = relays.filter((policy) => policy.delegates === null || policy.delegates.includes('*') || policy.delegates.length > 0).length;
@@ -376,7 +399,7 @@ export const TeamGraph = memo(function TeamGraph({
       const source = leadByTeam.get(policy.team);
       if (!source || Array.isArray(policy.delegates) && policy.delegates.length === 0) continue;
       if (policy.delegates === null || policy.delegates.includes('*')) {
-        edges.push({ from: topCenter(source), to: relayHub, kind: 'relay-mesh' });
+        edges.push({ from: topCenter(source), to: hubBottom(relayHub), kind: 'relay-mesh' });
         continue;
       }
       for (const targetTeam of policy.delegates) {
@@ -395,6 +418,8 @@ export const TeamGraph = memo(function TeamGraph({
       edges,
       width,
       height: teamGridBottom + PAD,
+      delegationHub: routedTeamLeads.length ? delegationHub : undefined,
+      validationHub: validatorsByKey.size ? validationHub : undefined,
       relayHub: relayHubCount ? relayHub : undefined,
       relayHubCount,
     };
@@ -421,10 +446,28 @@ export const TeamGraph = memo(function TeamGraph({
 
         {layout.boxes.map((box) => {
           const selected = selectedKey === `team:${box.team}`;
+          return <rect key={`box-bg:${box.team}`} x={box.x} y={box.y} width={box.width} height={box.height} rx={6}
+            fill={box.primary ? 'var(--bg-2)' : 'transparent'} stroke={selected ? 'var(--accent)' : 'var(--line)'} strokeWidth={selected ? 2 : 1} opacity={box.primary ? 0.72 : 1} />;
+        })}
+
+        {layout.edges.filter((edge) => edge.kind === 'hierarchy' || edge.kind === 'validation' || edge.kind === 'member').map((edge, index) => {
+          const validation = edge.kind === 'validation';
+          return <path key={`org:${index}`} d={edgePath(edge)} fill="none"
+            stroke={validation ? 'var(--ok)' : 'var(--accent)'}
+            strokeWidth={edge.kind === 'member' ? 1.2 : 1.5}
+            strokeDasharray={validation ? '4 3' : '2 5'}
+            markerEnd={validation ? 'url(#team-graph-relay-arrow)' : 'url(#team-graph-report-arrow)'}
+            opacity={edge.kind === 'member' ? 0.75 : 0.62} />;
+        })}
+
+        {layout.edges.filter((edge) => edge.kind === 'relay' || edge.kind === 'relay-mesh').map((edge, index) => (
+          <path key={`relay:${index}`} d={edgePath(edge)} fill="none" stroke="var(--ok)" strokeWidth={1.15}
+            strokeDasharray={edge.kind === 'relay-mesh' ? '2 5' : '5 4'} markerEnd="url(#team-graph-relay-arrow)" opacity={0.48} />
+        ))}
+        {layout.boxes.map((box) => {
+          const selected = selectedKey === `team:${box.team}`;
           return (
-            <g key={`box:${box.team}`}>
-              <rect x={box.x} y={box.y} width={box.width} height={box.height} rx={6}
-                fill={box.primary ? 'var(--bg-2)' : 'transparent'} stroke={selected ? 'var(--accent)' : 'var(--line)'} strokeWidth={selected ? 2 : 1} opacity={box.primary ? 0.72 : 1} />
+            <g key={`box-label:${box.team}`}>
               <text x={box.x + 12} y={box.y + 19} style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700, fill: selected ? 'var(--accent)' : 'var(--muted)' }}
                 onClick={() => onSelect({ kind: 'team', team: box.team })}>
                 {box.primary ? '★ ' : ''}{box.team} · {box.running}/{box.total}
@@ -435,26 +478,27 @@ export const TeamGraph = memo(function TeamGraph({
             </g>
           );
         })}
-
-        {layout.edges.filter((edge) => edge.kind === 'hierarchy' || edge.kind === 'validation' || edge.kind === 'member').map((edge, index) => {
-          const validation = edge.kind === 'validation';
-          return <path key={`org:${index}`} d={edgePath(edge)} fill="none"
-            stroke={edge.kind === 'member' ? 'var(--line)' : validation ? 'var(--ok)' : 'var(--accent)'}
-            strokeWidth={edge.kind === 'member' ? 1.2 : 1.5}
-            strokeDasharray={validation ? '4 3' : undefined}
-            markerEnd={edge.kind === 'member' ? undefined : 'url(#team-graph-report-arrow)'}
-            opacity={edge.kind === 'member' ? 0.75 : 0.62} />;
-        })}
-
-        {layout.edges.filter((edge) => edge.kind === 'relay' || edge.kind === 'relay-mesh').map((edge, index) => (
-          <path key={`relay:${index}`} d={edgePath(edge)} fill="none" stroke="var(--ok)" strokeWidth={1.15}
-            strokeDasharray={edge.kind === 'relay-mesh' ? '2 5' : '5 4'} markerEnd="url(#team-graph-relay-arrow)" opacity={0.48} />
-        ))}
         {layout.relayHub ? (
           <g>
             <rect x={layout.relayHub.x - 52} y={layout.relayHub.y - 13} width={104} height={26} rx={6} fill="var(--bg-2)" stroke="var(--ok)" opacity={0.94} />
             <text x={layout.relayHub.x} y={layout.relayHub.y + 4} textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: 'var(--ok)' }}>
               relay routes · {layout.relayHubCount}
+            </text>
+          </g>
+        ) : null}
+        {layout.delegationHub ? (
+          <g>
+            <rect x={layout.delegationHub.x - 48} y={layout.delegationHub.y - 13} width={96} height={26} rx={6} fill="var(--bg-2)" stroke="var(--accent)" opacity={0.96} />
+            <text x={layout.delegationHub.x} y={layout.delegationHub.y + 4} textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: 'var(--accent)' }}>
+              objectives
+            </text>
+          </g>
+        ) : null}
+        {layout.validationHub ? (
+          <g>
+            <rect x={layout.validationHub.x - 54} y={layout.validationHub.y - 13} width={108} height={26} rx={6} fill="var(--bg-2)" stroke="var(--ok)" opacity={0.96} />
+            <text x={layout.validationHub.x} y={layout.validationHub.y + 4} textAnchor="middle" style={{ fontSize: 10, fontWeight: 700, fill: 'var(--ok)' }}>
+              completed work
             </text>
           </g>
         ) : null}
@@ -477,8 +521,9 @@ export const TeamGraph = memo(function TeamGraph({
         })}
 
         <g transform={`translate(${PAD}, ${layout.height - 12})`}>
-          <text x={0} y={0} style={{ fontSize: 10, fill: 'var(--muted)' }}>solid · reporting</text>
-          <text x={92} y={0} style={{ fontSize: 10, fill: 'var(--ok)' }}>dashed · validator / messaging relay</text>
+          <text x={0} y={0} style={{ fontSize: 10, fill: 'var(--accent)' }}>blue dotted arrow · objective delegation</text>
+          <text x={180} y={0} style={{ fontSize: 10, fill: 'var(--ok)' }}>green dashed arrow · completed work / validated return</text>
+          <text x={480} y={0} style={{ fontSize: 10, fill: 'var(--ok)' }}>green dotted · selected relay policy</text>
         </g>
       </svg>
     </div>

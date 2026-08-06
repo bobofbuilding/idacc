@@ -10,6 +10,7 @@ import { Plans } from './Plans.tsx';
 import { Dream } from './Dream.tsx';
 import { Goals } from './Goals.tsx';
 import { Learn } from './Learn.tsx';
+import { WorkLearningStatus } from './WorkLearningStatus.tsx';
 
 // Auto-decompose IPC shapes (mirror main/work.ts).
 type SubTask = { title: string; description: string; agent: string; dependsOn: number[] };
@@ -21,6 +22,25 @@ type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'defer
 type TriageResult = { considered: number; assigned: { ref: string; agent: string }[]; skipped: number; dispatched: number; error?: string };
 type StalledTriageItem = { team?: string; owner?: string; blockers?: string[]; triage?: { status?: string; taskRef?: string; actor?: string; actorTeam?: string } | null };
 type StalledTriageReport = { triagedOwners?: number; items?: StalledTriageItem[] };
+type ReconcileReport = {
+  version?: string;
+  waiting?: {
+    scanned?: number;
+    considered?: number;
+    routed?: number;
+    skipped?: number;
+  };
+  validation?: {
+    recovered?: number;
+    routed?: number;
+    skipped?: number;
+    pendingReviewed?: number;
+    pendingRouted?: number;
+    pendingFailed?: number;
+  };
+  stalled?: StalledTriageReport;
+  unowned?: { assignedCount?: number; skippedCount?: number };
+};
 type JumpstartResult = { ok: boolean; status?: string; taskRef?: string; actor?: string; message: string };
 type AssignScope = 'team' | 'selected-teams' | 'team-leads' | 'all-agents';
 type TaskSnapshot = { status: string; owner?: string; team?: string; lane: Lane; delegation?: string };
@@ -153,7 +173,8 @@ const LANE_STATUS: Record<Lane, Col> = {
 const DEFAULT_LANE: Record<Col, Lane> = { todo: 'todo', doing: 'doing', done: 'done' };
 function workflowLane(t: Task): Lane | null {
   if (t.workflowState === 'triage_required' || t.workflowState === 'validation_pending') return 'under-review';
-  if (t.workflowState === 'blocked' || t.workflowState === 'stalled' || t.workflowState === 'failed') return 'holding';
+  if (t.workflowState === 'failed') return colOf(t.status) === 'done' ? 'done' : 'holding';
+  if (t.workflowState === 'blocked' || t.workflowState === 'stalled') return 'holding';
   if (t.workflowState === 'validated' || t.workflowState === 'superseded' || t.workflowState === 'retired') return 'done';
   if (t.workflowState === 'executing') return 'doing';
   if (t.workflowState === 'ready' || t.workflowState === 'queued') return 'todo';
@@ -249,6 +270,7 @@ export function Tasks({ store, initialTab }: { store: FleetStore; initialTab?: T
     } catch { return 'plans'; }
   });
   function pick(t: Tab) { setTab(t); try { localStorage.setItem('idctl.tasks.tab', t); } catch { /* ignore */ } }
+  const showsLearningStatus = tab === 'goals' || tab === 'learn' || tab === 'schedule' || tab === 'loops' || tab === 'dream';
 
   return (
     <div className="view">
@@ -258,6 +280,7 @@ export function Tasks({ store, initialTab }: { store: FleetStore; initialTab?: T
           <button key={t.id} className={`tab${tab === t.id ? ' active' : ''}`} onClick={() => pick(t.id)}>{t.label}</button>
         ))}
       </div>
+      {showsLearningStatus ? <WorkLearningStatus /> : null}
       {tab === 'tasks' ? <TasksPanel store={store} /> : null}
       {tab === 'goals' ? <Goals store={store} /> : null}
       {tab === 'plans' ? <Plans store={store} /> : null}
@@ -870,20 +893,42 @@ function TasksPanel({ store }: { store: FleetStore }) {
     } finally { setTriaging(false); }
   }
 
-  // Phase 2 of the CC refactor: the GUI no longer autonomously orchestrates. Stalled tasks are
-  // supervised by the MANAGER (auto check-ins + the stalled-task sweeper) — one supervisor, not
-  // three — so the board's old auto-pilot (which re-dispatched on every poll and was a major
-  // source of redundant token spend) is gone. Triage / jump-start / surface-blockers now run
-  // ONLY when you click "Reconcile" (you initiate); the per-card ↻ stays for one-off jump-start.
+  // The manager owns automatic recovery. Reconcile is the immediate/manual pass and remains
+  // backward-compatible with older managers that only expose the separate commands.
   async function reconcileNow() {
     if (autoRef.current) return;
-    if (!window.confirm(`Reconcile work now?\n\nThis can assign unowned tasks, jump-start ${stalledTasks.length} stalled task${stalledTasks.length === 1 ? '' : 's'}, and create blocker questions in Inbox.`)) return;
     autoRef.current = true;
+    const waitingCount = underReviewTasks.length + holdingTasks.length;
+    const progress = toast({ kind: 'progress', text: `Reconciling ${waitingCount} waiting and ${unassignedTodo} unassigned task${waitingCount + unassignedTodo === 1 ? '' : 's'}…` });
     try {
-      await triage(false);
-      if (stalledTasks.length) await jumpstartAll(false, false);
+      try {
+        const report = await call<ReconcileReport>('remote', '/task reconcile --all --limit 20 --force');
+        const recovered = report.validation?.recovered ?? 0;
+        const routed = (report.validation?.routed ?? 0) + (report.validation?.pendingRouted ?? 0);
+        const retired = report.validation?.pendingFailed ?? 0;
+        const triaged = report.stalled?.triagedOwners
+          ?? (report.stalled?.items ?? []).filter(triageDelivered).length;
+        const waitingRouted = report.waiting?.routed ?? 0;
+        const assigned = report.unowned?.assignedCount ?? 0;
+        const summary = `reconciled: ${waitingRouted} waiting task${waitingRouted === 1 ? '' : 's'} routed, ${recovered} validation recovered (${routed} routed, ${retired} expired), ${triaged} stalled owner${triaged === 1 ? '' : 's'} triaged, ${assigned} task${assigned === 1 ? '' : 's'} assigned`;
+        setNote(summary);
+        progress.update({ kind: 'success', text: summary });
+        await reload();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!/(?:unknown|unsupported).*(?:command|subcommand).*reconcile|usage:.*\/task/i.test(message)) throw err;
+        await triage(false);
+        if (stalledTasks.length) await jumpstartAll(false, false);
+        progress.update({ kind: 'info', text: 'reconciled with compatibility manager commands' });
+      }
       await surfaceBlockers(false);
-    } finally { autoRef.current = false; }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNote(`reconcile failed: ${message}`);
+      progress.update({ kind: 'error', text: `reconcile failed: ${message}` });
+    } finally {
+      autoRef.current = false;
+    }
   }
 
   function triageDelivered(item: StalledTriageItem): boolean {
@@ -1191,6 +1236,14 @@ function TasksPanel({ store }: { store: FleetStore }) {
       const up = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
       return up > 0 && nowMs - up > MANAGER_STALL_THRESHOLD_MS;
     });
+    const holdingTasks = tasks.filter((t) =>
+      !isRoutine(t)
+      && (laneByRef.get(ref(t)) ?? DEFAULT_LANE[colOf(t.status)]) === 'holding',
+    );
+    const underReviewTasks = tasks.filter((t) =>
+      !isRoutine(t)
+      && (laneByRef.get(ref(t)) ?? DEFAULT_LANE[colOf(t.status)]) === 'under-review',
+    );
     // The Done lane shows RECENT completions (the most-recent N) so the board reads as a live
     // flow instead of looking empty when everything's finished. Older done tasks auto-archive
     // (hidden) until "show archived" is toggled. updatedAt/completedAt share a scale, so raw sort.
@@ -1214,6 +1267,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
       doneCount,
       unassignedTodo,
       stalledTasks,
+      holdingTasks,
+      underReviewTasks,
       archivedCount: tasks.filter((t) => isDone(t) && !recentDoneRefs.has(ref(t)) && (!hideRoutine || !isRoutine(t))).length,
       filteredCount: filtered.length,
       visibleOpenCount,
@@ -1230,6 +1285,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
     doneCount,
     unassignedTodo,
     stalledTasks,
+    holdingTasks,
+    underReviewTasks,
     archivedCount,
     filteredCount,
     visibleOpenCount,
@@ -1247,12 +1304,12 @@ function TasksPanel({ store }: { store: FleetStore }) {
         <span className="muted small" title={`Visible board: ${visibleOpenCount} open, ${visibleDoneCount} done. Total live task pool: ${openCount} open, ${doneCount} done.`}>
           {visibleOpenCount} visible open{hiddenOpenCount ? ` · ${hiddenOpenCount} hidden open` : ''} · {visibleDoneCount} visible done{hiddenDoneCount ? ` · ${doneCount} done total` : ''}
         </span>
-        {/* The MANAGER supervises stalled work now (auto check-ins + sweeper) — the board just shows it. */}
-        <span className="muted small" title="The manager supervises stalled tasks (auto check-ins + the stalled-task sweeper). Use Reconcile to triage unassigned work, jump-start stalled tasks, and surface blocker decisions on demand.">
-          · ⛭ manager-supervised{triaging ? ' · triaging…' : unassignedTodo ? ` · ${unassignedTodo} unassigned` : ''}{stalledTasks.length ? ` · ${stalledTasks.length} stalled` : ''}
+        {/* The manager sweeper runs the same recovery automatically; Reconcile forces it now. */}
+        <span className="muted small" title="The manager automatically routes Under Review and Holding Pattern tasks through bounded team-lead triage, recovers exhausted validation, triages stalled owners, and assigns unowned work. Reconcile runs that deterministic pass immediately and surfaces only genuine user decisions.">
+          · ⛭ manager-supervised{triaging ? ' · triaging…' : unassignedTodo ? ` · ${unassignedTodo} unassigned` : ''}{underReviewTasks.length ? ` · ${underReviewTasks.length} under review` : ''}{holdingTasks.length ? ` · ${holdingTasks.length} holding` : ''}{stalledTasks.length ? ` · ${stalledTasks.length} stalled` : ''}
         </span>
         <span className="grow" />
-        <button className="btn" disabled={busy || triaging} title="Triage unassigned work, jump-start stalled tasks, and surface blocker decisions — on demand (no longer automatic)" onClick={() => void reconcileNow()}>⟳ Reconcile</button>
+        <button className="btn" disabled={busy || triaging} title="Run the manager recovery pass now; the same recovery also runs automatically in the manager sweeper" onClick={() => void reconcileNow()}>⟳ Reconcile</button>
         <button className="btn" disabled={busy || proposing} title="Create work: auto-plan, direct assignment, schedule, loop, or dream" onClick={() => { setShowAssign((v) => !v); setAssignNote(''); setProposal(null); }}>{showAssign ? '− Close' : '⚡ Create work'}</button>
         <button className="btn primary" disabled={busy} onClick={() => void newTask()}>+ New task</button>
       </div>
@@ -1516,6 +1573,12 @@ function TasksPanel({ store }: { store: FleetStore }) {
             const delegated = owned && isDelegatedLeadTask(t);
             const workflowBlocked = t.workflowState === 'blocked' || t.workflowState === 'stalled' || t.workflowState === 'failed';
             const stale = t.workflowState === 'stalled' || (owned && !blocked && !delegated && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS);
+            const retryAtRaw = Number(t.blockedDetail?.retry_at || 0);
+            const retryAtMs = retryAtRaw > 0 && retryAtRaw < 1e12 ? retryAtRaw * 1000 : retryAtRaw;
+            const recoveryRetryScheduled = stale
+              && t.blockedDetail?.reason === 'supervision_dispatch_failed'
+              && retryAtMs > nowMs;
+            const recoveryRetryIn = recoveryRetryScheduled ? Math.max(1, Math.ceil((retryAtMs - nowMs) / 60000)) : 0;
             const needsAssignment = !workflowBlocked && t.workflowState !== 'triage_required' && phase === 'todo' && !t.ownerName && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS;
             const working = owned && !delegated && !stale && !blocked; // recently moved to doing → plausibly active
             const cAbs = absTime(t.createdAt);
@@ -1541,7 +1604,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
             >
               <div className="task-card-title b" title={t.title}>{t.title}</div>
               <div className="muted small mono">{t.shortId ?? ref(t)}{isRoutine(t) ? ' · routine' : ''}{store.viewAll && t.teamName ? ` · ${t.teamName}` : ''}{(() => { const n = blocksCount(t); return n ? ` · blocks ${n}` : ''; })()}</div>
-              {t.workflowState ? <div className={`small ${workflowBlocked ? 'warn-text' : 'muted'}`} title={String(t.blockedDetail?.reason || t.validationDetail?.verdict || '')}>workflow · {t.workflowState.replace(/_/g, ' ')}</div> : null}
+              {t.workflowState ? <div className={`small ${workflowBlocked ? 'warn-text' : 'muted'}`} title={String(t.blockedDetail?.reason || t.validationDetail?.verdict || '')}>workflow · {t.workflowState.replace(/_/g, ' ')}{recoveryRetryScheduled ? ` · retry in ${recoveryRetryIn}m` : ''}</div> : null}
               {(() => {
                 const u = taskUsage[ref(t)];
                 if (!u || !u.tokens) return null;
@@ -1589,6 +1652,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     <span className="idctl-pulse" style={{ width: 7, height: 7, borderRadius: '50%', background: '#3ccb78', display: 'inline-block' }} />
                     {t.ownerName} · working
                   </span>
+                ) : recoveryRetryScheduled ? (
+                  <span className="small" title={`The manager could not open a recovery query for ${t.ownerName}. A bounded retry is scheduled for ${new Date(retryAtMs).toLocaleTimeString()}.`}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
+                    ⏳ {t.ownerName} · recovery retry in {recoveryRetryIn}m
+                  </span>
                 ) : stale ? (
                   <span className="small" title={`${t.ownerName} has held this in Doing for ${agoAt(t.updatedAt, nowMs)} with no status change — it may be stalled. Hit ↻ to ask the manager to jump-start it, or drag it back to To Do.`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
@@ -1626,7 +1694,9 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     ⇢ {activeChildren.length ? `${activeChildren.length} active / ` : ''}{childRefs.length} delegated
                   </span>
                 ) : null}
-                {stale ? <span style={{ color: '#e0a33c' }} title={uAbs ? `no status change since ${uAbs} — may be stalled` : undefined}>⏳ no update {agoAt(t.updatedAt, nowMs)}</span> : null}
+                {recoveryRetryScheduled
+                  ? <span style={{ color: '#e0a33c' }} title={`Recovery dispatch retry scheduled for ${new Date(retryAtMs).toLocaleString()}`}>⏳ retry scheduled</span>
+                  : stale ? <span style={{ color: '#e0a33c' }} title={uAbs ? `no status change since ${uAbs} — may be stalled` : undefined}>⏳ no update {agoAt(t.updatedAt, nowMs)}</span> : null}
                 {phase === 'done' && (t.completedAt || t.updatedAt) ? <span title={dAbs ? `completed ${dAbs}` : undefined}>✓ done {agoAt(t.completedAt ?? t.updatedAt, nowMs)} ago</span> : null}
                 {needsAssignment ? <span style={{ color: '#e0a33c' }} title={uAbs ? `waiting for assignment since ${uAbs}` : undefined}>◴ needs assignment {agoAt(t.updatedAt, nowMs)}</span> : null}
                 {phase === 'todo' && t.ownerName ? <span title="assigned but not started yet">◴ queued</span> : null}

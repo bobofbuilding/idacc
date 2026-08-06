@@ -1,129 +1,291 @@
 {
   "name": "idagents-control-center",
   "productName": "ID Agents Control Center",
-  "version": "0.1.672",
-  "description": "Desktop control center for id-agents — live fleet dashboard, manager chat, teams, keys.",
+  "desktopName": "idagents-control-center.desktop",
+  "version": "0.1.708",
+  "description": "Unified private AI-agent desktop application with bundled Manager and Brain.",
+  "license": "MIT",
+  "author": "IDACC Contributors",
+  "homepage": "https://github.com/bobofbuilding/idacc",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bobofbuilding/idacc.git"
+  },
   "private": true,
   "main": "out/main/main.cjs",
+  "packageManager": "npm@10.9.2",
+  "engines": {
+    "node": "22.17.x",
+    "npm": "10.9.x"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:integration": "node scripts/build.mjs",
+    "build:release": "node scripts/build.mjs --require-runtime && npm run prepare:notices",
     "start": "npm run build && electron .",
     "dev": "node scripts/build.mjs && electron .",
-    "dist": "npm run build && electron-builder --dir",
-    "dmg": "npm run build && electron-builder",
+    "stage:runtimes": "node scripts/stage-unified-runtime.mjs",
+    "verify:runtimes": "node ../scripts/verify-runtime-manifest.mjs && node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/runtime-manifest-policy-check.ts resources/idacc-runtime/manifest.json",
+    "prepare:notices": "node ../scripts/generate-release-metadata.mjs --notices-only resources/THIRD_PARTY_NOTICES.md",
+    "release:metadata": "node ../scripts/generate-release-metadata.mjs",
+    "predist": "npm run stage:runtimes",
+    "dist": "npm run build:release && electron-builder --dir",
+    "release:mac": "node scripts/release-preflight.mjs --platform mac --require-signing && npm run stage:runtimes && npm run build:release && node scripts/run-production-builder.mjs --platform mac -- --mac dmg zip --publish never",
+    "release:win": "node scripts/release-preflight.mjs --platform win --require-signing && npm run stage:runtimes && npm run build:release && node scripts/run-production-builder.mjs --platform win -- --win nsis --publish never",
+    "release:linux": "node scripts/release-preflight.mjs --platform linux && npm run stage:runtimes && npm run build:release && node scripts/run-production-builder.mjs --platform linux -- --linux AppImage deb --publish never",
+    "dmg": "npm run release:mac",
     "typecheck": "tsc --noEmit",
+    "test:app-shutdown": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/app-shutdown-coordinator-smoke.ts",
+    "test:computer-use-shutdown": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/computer-use-shutdown-smoke.ts",
+    "test:windows-native-toolchain": "node scripts/build.mjs --probe-windows-native-toolchain",
+    "test:windows-job-host": "node scripts/windows-job-host-integration-smoke.mjs",
     "test:chat-failure": "node scripts/chat-terminal-failure-smoke.mjs",
+    "test:chat-delegation": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/chat-lead-delegation-smoke.ts",
     "test:background-policy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/background-policy-smoke.mjs",
     "test:release-payload": "node ../scripts/release-payload-smoke.mjs",
+    "test:release-provenance": "node ../scripts/release-provenance-smoke.mjs",
+    "test:runtime-source-capsule": "node ../scripts/runtime-source-capsule-smoke.mjs",
+    "test:appimage-artifact": "node ../scripts/appimage-artifact-verifier-smoke.mjs",
+    "test:deb-artifact": "node ../scripts/deb-artifact-verifier-smoke.mjs",
+    "test:release-platform-config": "node scripts/release-platform-config-smoke.mjs",
+    "test:review-build-workflow": "node ../scripts/review-build-workflow-smoke.mjs",
+    "test:release-build-output": "node scripts/release-build-smoke.mjs",
+    "test:release-preflight": "node scripts/release-preflight-smoke.mjs",
+    "test:unified-stack": "node ../scripts/unified-stack-release-smoke.mjs \"release/mac-arm64/ID Agents Control Center.app\"",
+    "test:unified-stack-policy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/unified-stack-supervisor-smoke.mjs",
+    "test:unified-stack-integration": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/unified-stack-supervisor-integration.mjs",
+    "test:unified-runtime-contract": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/unified-runtime-contract-smoke.ts",
+    "test:runtime-profile-isolation": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/runtime-profile-isolation-smoke.ts",
     "test:release-cleanup": "node ../scripts/release-artifact-cleanup-smoke.mjs",
     "test:release-published": "node ../scripts/release-published-smoke.mjs",
     "test:signing-guardrails": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/signing-guardrails-smoke.mjs",
     "test:agent-wallet-lifecycle": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/agent-wallet-lifecycle-smoke.mjs",
     "test:walletconnect-bootstrap": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/walletconnect-bootstrap-smoke.mjs",
+    "test:root-identity": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/root-identity-settings-smoke.mjs",
     "test:update-target-guard": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/update-target-guard-smoke.mjs",
-    "test:manager-installer": "node ../scripts/install-id-agents-manager-smoke.mjs",
+    "test:unified-updater-integrity": "node scripts/unified-updater-integrity-smoke.mjs",
+    "test:unified-updater-download": "node scripts/unified-updater-download-smoke.mjs",
+    "test:update-metadata-merge": "node ../scripts/merge-update-metadata-smoke.mjs",
+    "test:update-descriptor-contract": "node ../scripts/update-descriptor-contract-smoke.mjs",
+    "test:updater-public-provider": "node ../scripts/electron-updater-public-provider-smoke.mjs",
     "test:update-repo": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/update-repo-migration-smoke.mjs",
-    "test:manager-updater": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/manager-updater-smoke.mjs",
+    "test:legacy-manager-updater-retired": "node scripts/legacy-manager-updater-retired-smoke.mjs",
     "test:team-provider-lanes": "node scripts/team-builder-provider-lanes-smoke.mjs",
     "test:capability-worker-scope": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/capability-worker-scope-smoke.mjs",
+    "test:health-classification": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/health-classification-smoke.ts",
+    "test:identity-verification": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/identity-verification-smoke.ts",
+    "test:computer-use-policy": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/computer-use-policy-smoke.ts",
     "test:runtime-catalog-refresh": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/runtime-catalog-refresh-smoke.mjs",
+    "test:agent-configuration-switching": "node scripts/agent-configuration-switching-smoke.mjs",
+    "test:claude-model-discovery": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/claude-model-discovery-smoke.mjs",
     "test:safe-production-readiness": "node scripts/safe-production-readiness-smoke.mjs",
     "test:agent-signer-vault": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/agent-signer-vault-smoke.mjs",
+    "test:secret-redaction": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/secret-redaction-smoke.ts",
+    "test:selftest-result-file": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/selftest-result-file-smoke.ts",
+    "test:secure-settings-vault": "node scripts/secure-settings-vault-smoke.mjs",
     "test:safe-roles-execution": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/safe-roles-execution-smoke.mjs",
     "test:safe-roles-provider": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/safe-roles-provider-smoke.mjs",
     "test:alchemy-asset-inspector": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/alchemy-asset-inspector-smoke.mjs",
     "test:context-budget": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/context-budget-smoke.mjs",
+    "test:context-budget-retention": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/context-budget-retention-smoke.ts",
+    "test:computer-use-retention": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/computer-use-profile-retention-smoke.ts",
+    "test:computer-use-session-discovery": "node scripts/computer-use-session-discovery-smoke.mjs",
     "test:context-history": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/context-budget-history.mjs",
-    "test:dashboard-coordination": "node scripts/dashboard-coordination-roster-smoke.mjs",
+    "test:dashboard-coordination": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/dashboard-coordination-roster-smoke.mjs",
     "test:dashboard-command-surface": "node scripts/dashboard-command-surface-smoke.mjs",
+    "test:dashboard-rendered": "node scripts/dashboard-rendered-smoke.mjs",
     "test:dashboard-activity-filter": "node scripts/dashboard-activity-filter-smoke.mjs",
     "test:activity-feed-actions": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/activity-feed-actions-smoke.mjs",
     "test:org-hierarchy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/org-hierarchy-coordinator-smoke.mjs",
     "test:team-ops-fleet": "node scripts/team-ops-fleet-smoke.mjs",
     "test:team-structure-chart": "node scripts/team-structure-chart-smoke.mjs",
+    "test:hr-manage-agents": "node scripts/hr-manage-agents-smoke.mjs",
     "test:learn-context": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/learn-context-smoke.mjs",
     "test:learn-failure-display": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/learn-failure-display-smoke.mjs",
     "test:learn-task-automation": "node scripts/learn-task-automation-smoke.mjs",
+    "test:dream-view-polish": "node scripts/dream-view-polish-smoke.mjs",
     "test:goal-autopilot-fallback": "node scripts/goal-autopilot-fallback-smoke.mjs",
-    "test:learn-brain-sync": "../idctl/node_modules/.bin/tsx scripts/learn-brain-sync-smoke.ts",
-    "test:learn-queue": "../idctl/node_modules/.bin/tsx scripts/learn-queue-smoke.ts",
-    "test:headroom-plugin": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/headroom-plugin-path-smoke.mjs",
+    "test:goal-hardening": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/goal-hardening-smoke.mjs",
+    "test:learn-brain-sync": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/learn-brain-sync-smoke.ts",
+    "test:learn-queue": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/learn-queue-smoke.ts",
     "test:goals-plan-separation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/goals-plan-separation-smoke.mjs",
+    "test:brain-plans-profile": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/brain-plans-profile-smoke.ts",
+    "test:profile-migrations": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/profile-migrations-smoke.ts",
+    "test:windows-profile-native-build": "node scripts/windows-profile-native-build-smoke.mjs",
+    "test:startup-recovery": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/startup-recovery-smoke.ts",
+    "test:provider-runtime-rehydration": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/provider-runtime-rehydration-smoke.ts",
+    "test:consumer-onboarding": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/consumer-onboarding-smoke.ts",
+    "test:consumer-onboarding-integration": "node scripts/consumer-onboarding-integration-smoke.mjs",
     "test:team-agent-groups": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/team-agent-groups-smoke.mjs",
     "test:plans-routing": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/plans-routing-smoke.mjs",
     "test:plans-inbox": "node scripts/plans-inbox-recovery-smoke.mjs",
+    "test:brain-approval-agent-review": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/brain-approval-agent-review-smoke.mjs",
     "test:plans-team-lead-delegation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/plans-team-lead-delegation-smoke.mjs",
     "test:plans-work": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/plans-work-smoke.mjs",
     "test:work-delegation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/work-delegation-smoke.mjs",
+    "test:work-terminal-history": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/work-terminal-history-smoke.mjs",
+    "test:work-reconcile": "node scripts/work-reconcile-smoke.mjs",
     "test:renderer-store": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/renderer-store-poll-smoke.mjs",
+    "test:version-display": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/version-display-smoke.ts",
     "test:subs-cache": "node scripts/subs-status-cache-smoke.mjs",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "node scripts/build-tauri.mjs && tauri build"
+    "test:subscription-portability": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/subscription-portability-smoke.ts",
+    "test:credential-isolation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/credential-environment-smoke.ts",
+    "dev:tauri-simulation": "node scripts/run-tauri-simulation.mjs",
+    "tauri": "node scripts/retired-tauri-production.mjs",
+    "tauri:dev": "node scripts/retired-tauri-production.mjs",
+    "tauri:build": "node scripts/retired-tauri-production.mjs"
   },
   "build": {
     "appId": "world.idchain.idagents-control",
     "productName": "ID Agents Control Center",
+    "artifactName": "ID-Agents-Control-Center-${version}-${arch}.${ext}",
+    "compression": "maximum",
+    "asar": true,
+    "electronUpdaterCompatibility": ">=6.1.0",
+    "toolsets": {
+      "appimage": "1.0.3"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "bobofbuilding",
+      "repo": "idacc",
+      "releaseType": "release"
+    },
     "directories": {
       "output": "release"
     },
     "files": [
-      "out/**/*",
-      "node_modules/@nut-tree-fork/libnut-darwin/**/*",
-      "node_modules/bindings/**/*",
-      "node_modules/file-uri-to-path/**/*"
+      "out/**/*"
     ],
     "asarUnpack": [
       "**/*.node",
-      "node_modules/@nut-tree-fork/**"
+      "out/native/idacc-job-host.exe",
+      "out/main/managed-service-bootstrap.cjs",
+      "out/main/mcp-probe-runner.cjs"
     ],
     "extraResources": [
+      {
+        "from": "../LICENSE",
+        "to": "IDACC-LICENSE.txt"
+      },
+      {
+        "from": "resources/THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      },
       {
         "from": "resources/computeruse-mcp",
         "to": "computeruse-mcp"
       },
       {
-        "from": "resources/idacc-context-retrieval",
-        "to": "idacc-context-retrieval"
-      },
-      {
-        "from": "../scripts/install-idacc-stack.mjs",
-        "to": "scripts/install-idacc-stack.mjs"
-      },
-      {
-        "from": "../scripts/install-id-agents-manager.mjs",
-        "to": "scripts/install-id-agents-manager.mjs"
+        "from": "resources/idacc-runtime",
+        "to": "idacc-runtime"
       }
     ],
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "notarize": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "files": [
+        "node_modules/@nut-tree-fork/libnut-darwin/**/*",
+        "node_modules/bindings/**/*",
+        "node_modules/file-uri-to-path/**/*"
+      ],
       "target": [
-        "dir"
+        "dmg",
+        "zip"
       ]
+    },
+    "dmg": {
+      "sign": true,
+      "writeUpdateInfo": false
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "files": [
+        "!node_modules/@nut-tree-fork/libnut-darwin{,/**/*}",
+        "!node_modules/@nut-tree-fork/node-mac-permissions{,/**/*}",
+        "!node_modules/bindings{,/**/*}",
+        "!node_modules/file-uri-to-path{,/**/*}"
+      ],
+      "target": [
+        "nsis"
+      ],
+      "signAndEditExecutable": true,
+      "verifyUpdateCodeSignature": true,
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Development",
+      "executableName": "idagents-control-center",
+      "syncDesktopName": true,
+      "maintainer": "IDACC Contributors",
+      "synopsis": "Local agent fleet, manager, and Brain desktop application",
+      "files": [
+        "!node_modules/@nut-tree-fork/libnut-darwin{,/**/*}",
+        "!node_modules/@nut-tree-fork/node-mac-permissions{,/**/*}",
+        "!node_modules/bindings{,/**/*}",
+        "!node_modules/file-uri-to-path{,/**/*}"
+      ],
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    },
+    "appImage": {
+      "artifactName": "ID-Agents-Control-Center-${version}-${arch}.AppImage",
+      "executableArgs": []
+    },
+    "deb": {
+      "artifactName": "ID-Agents-Control-Center-${version}-${arch}.deb"
     }
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.2",
-    "@types/node": "^22.19.21",
+    "@electron/rebuild": "4.2.0",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/cli": "^2.11.4",
+    "@tauri-apps/plugin-http": "^2.5.9",
+    "@types/node": "^26.1.1",
     "@types/qrcode": "^1.5.6",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "electron": "^33.2.0",
-    "electron-builder": "^25.1.8",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "electron": "41.10.3",
+    "electron-builder": "26.15.7",
+    "electron-builder-squirrel-windows": "file:tools/electron-builder-squirrel-windows-disabled",
     "esbuild": "^0.28.1",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "typescript": "^5.6.3"
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tar": "7.5.22",
+    "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@noble/curves": "^1.9.7",
-    "@noble/hashes": "^1.8.0",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
     "@nut-tree-fork/libnut-darwin": "^2.7.5",
-    "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-http": "^2.5.9",
     "@walletconnect/universal-provider": "^2.23.10",
+    "cross-spawn": "7.0.6",
+    "electron-updater": "6.8.9",
     "ethers": "6.17.0",
     "qrcode": "^1.5.4"
+  },
+  "overrides": {
+    "app-builder-lib": {
+      "@electron/asar": "4.2.1",
+      "@electron/universal": "3.0.6",
+      "ejs": "5.0.2"
+    }
   }
 }

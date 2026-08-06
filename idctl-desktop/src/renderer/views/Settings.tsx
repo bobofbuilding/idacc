@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { call, type FleetStore } from '../store.ts';
-import { defaultBaseUrl, type EvmRpcKeySource, type EvmRpcProfile, type EvmRpcRequest, type ProviderKind, type ProviderModelSelection, type ProviderProfile, type WalletConnectSettings } from '../../../../idctl/src/settings/schema.ts';
+import { defaultBaseUrl, defaultBrainAutomationSettings, defaultRootIdentitySettings, isValidEvmAddress, isValidLiveEnsRoot, type BrainAutomationSettings, type EvmRpcKeySource, type EvmRpcProfile, type EvmRpcRequest, type ProviderKind, type ProviderModelSelection, type ProviderProfile, type RootIdentityStatus, type WalletConnectSettings } from '../../../../idctl/src/settings/schema.ts';
 import { connectRootSafe, disconnectRootSafe, injectedRootSigner, subscribeWalletConnect, walletConnectSnapshot } from '../walletConnect.ts';
 import type { ProbeOutcome } from '../../../../idctl/src/settings/ProviderClient.ts';
 import type { DiscoveredServer, LocalServerCandidate } from '../../../../idctl/src/settings/localDiscovery.ts';
@@ -8,12 +8,13 @@ import { PROVIDER_CATALOG, findProvider, providerNeedsKey } from '../../../../id
 import { LOCAL_MODEL_CATALOG, TOP_LOCAL_MODEL_CATALOG, type ModelCapability, type LocalModelEntry } from '../../../../idctl/src/settings/modelCatalog.ts';
 import { TOP_LOCAL_STACKS, type LocalStackEntry } from '../../../../idctl/src/settings/localStacks.ts';
 import { primeCurrentRuntimeCatalogSnapshot, refreshCurrentRuntimeCatalogSnapshot, type ManagedRuntimeStatus } from '../runtimeCatalogCache.ts';
-import { buildRuntimeCatalog } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import { buildRuntimeCatalog, localProviderRouteIsLive } from '../../../../idctl/src/settings/runtimeCatalog.ts';
 import {
   CONTROL_CENTER_API_VERSION,
   CONTROL_CENTER_REQUIRED_FEATURES,
   CONTROL_CENTER_REQUIRED_ROUTES,
   controlCenterRouteKey,
+  evaluateControlCenterCapabilities,
 } from '../../../../idctl/src/api/controlCenterContract.ts';
 
 const MODEL_CAPS: ModelCapability[] = ['general', 'tools', 'reasoning', 'coding', 'vision', 'embedding', 'fast'];
@@ -24,6 +25,8 @@ const OLLAMA_CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
 const SETTINGS_FOCUS_REFRESH_MIN_MS = 60 * 1000;
 const SETTINGS_RUNTIME_CATALOG_WARM_MS = 5 * 60 * 1000;
 const SETTINGS_UPDATE_CHECK_STALE_MS = 15 * 60 * 1000;
+const SETTINGS_CONCURRENCY_REFRESH_MS = 3_000;
+const SETTINGS_STACK_REFRESH_MS = 5_000;
 const API_FIRST_PROVIDER = PROVIDER_CATALOG.find((e) => !e.local) ?? findProvider('openai');
 const DISCOVERY_MAX_AGE_MS = 2 * 60 * 1000;
 const STACK_BACKEND_PRESET_FILTER = 'backend-presets';
@@ -44,6 +47,39 @@ const LOCAL_PROVIDER_STACK_IDS: Record<string, string> = {
   gpt4all: 'gpt4all',
 };
 
+type SubKey = 'claude' | 'chatgpt' | 'cursor' | 'grok' | 'antigravity' | 'copilot' | 'kiro-cli' | 'kimi' | 'q';
+type ManagedSubRow = { key: SubKey; label: string; runtime: string };
+
+const MANAGED_SUB_SELECTION_KEY = 'idacc.settings.managed-subscriptions.v1';
+const MANAGED_SUB_ROWS: ManagedSubRow[] = [
+  { key: 'claude', label: 'Claude (Anthropic)', runtime: 'claude-code-cli' },
+  { key: 'chatgpt', label: 'OpenAI (ChatGPT)', runtime: 'codex' },
+  { key: 'cursor', label: 'Cursor', runtime: 'cursor-cli' },
+  { key: 'grok', label: 'xAI Grok Build', runtime: 'grok' },
+  { key: 'antigravity', label: 'Google Antigravity CLI', runtime: 'antigravity' },
+  { key: 'copilot', label: 'GitHub Copilot CLI', runtime: 'copilot' },
+  { key: 'kiro-cli', label: 'Kiro CLI', runtime: 'kiro-cli' },
+  { key: 'kimi', label: 'Kimi Code', runtime: 'kimi-cli' },
+  { key: 'q', label: 'Amazon Q CLI (legacy)', runtime: 'q' },
+];
+const MANAGED_SUB_KEYS = new Set<SubKey>(MANAGED_SUB_ROWS.map(({ key }) => key));
+
+function loadManagedSubSelection(): SubKey[] | null {
+  try {
+    const raw = window.localStorage.getItem(MANAGED_SUB_SELECTION_KEY);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((value): value is SubKey => typeof value === 'string' && MANAGED_SUB_KEYS.has(value as SubKey));
+  } catch {
+    return [];
+  }
+}
+
+function saveManagedSubSelection(selection: SubKey[]): void {
+  try { window.localStorage.setItem(MANAGED_SUB_SELECTION_KEY, JSON.stringify(selection)); } catch { /* best effort */ }
+}
+
 /** Hardware of the machine the control center commands (the manager host; localhost here). */
 type HardwareInfo = { platform: string; arch: string; appleSilicon: boolean; cpu: string; cpuCores: number; gpu?: string; gpuCores?: number; totalRamGB: number; freeDiskGB: number | null; totalDiskGB: number | null };
 
@@ -53,6 +89,58 @@ type LocalStackInstallStatus = { id: string; installed: boolean; source?: string
 type BackgroundStackStatus = { id: string; name: string; running: boolean; pid?: number; command?: string; startedAt?: number; port?: number; logPath?: string; detail?: string };
 type StackInstallDraft = { command: string; port?: number; originalPort?: number; baseUrl?: string; autoFixed?: boolean; note?: string };
 type DockerStatus = { installed: boolean; serverRunning: boolean; version?: string; serverVersion?: string; error?: string };
+type LocalConcurrencyStatus = { concurrency: number; active: number; queued: number };
+type SettingsUpdateStatus = {
+  current?: string;
+  channel?: 'production' | 'review';
+  latest?: string;
+  available?: boolean;
+  staged?: boolean;
+  checking?: boolean;
+  downloading?: boolean;
+  downloadPercent?: number;
+  error?: string;
+  lastChecked?: number;
+};
+
+function compareDisplayedVersions(left: string | undefined, right: string | undefined): number {
+  if (!left || !right) return 0;
+  const parse = (value: string): number[] => value
+    .trim()
+    .replace(/^v/, '')
+    .split('-', 1)[0]
+    .split('.')
+    .map((part) => Number.parseInt(part, 10) || 0);
+  const a = parse(left);
+  const b = parse(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) return difference > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+function isAheadOfUpdateChannel(status: SettingsUpdateStatus | null): boolean {
+  return Boolean(
+    status?.latest
+    && compareDisplayedVersions(status.current, status.latest) > 0,
+  );
+}
+
+function updateChannelSummary(status: SettingsUpdateStatus | null): string {
+  if (!status) return 'up to date';
+  if (status.checking) return 'checking…';
+  if (status.downloading) {
+    return `downloading verified v${status.latest ?? '—'} · ${Math.round(status.downloadPercent ?? 0)}%`;
+  }
+  if (status.error) return `error: ${status.error}`;
+  if (status.available && status.staged) return `verified v${status.latest} ready to install`;
+  if (status.available) return `v${status.latest} available to download`;
+  if (isAheadOfUpdateChannel(status)) {
+    return `${status.channel ?? 'production'} channel is behind this installation (channel latest v${status.latest})`;
+  }
+  return status.latest ? `up to date (latest v${status.latest})` : 'up to date';
+}
 type OllamaModel = { name: string; size?: number; parameterSize?: string; digest?: string; modifiedAt?: string };
 type OllamaCatalogModel = {
   name: string;
@@ -93,21 +181,35 @@ type ManagerCapabilities = {
   features?: string[];
   routes?: { method: string; path: string; group: string }[];
 } | null;
-type ManagerUpdateStatus = {
-  configured: boolean;
-  bootstrapAvailable?: boolean;
-  busy?: boolean;
-  installedVersion?: string;
-  latestVersion?: string;
-  status?: string;
-  available?: boolean;
-  pendingActivation?: boolean;
-  activeQueries?: number;
-  checkout?: string;
-  source?: string;
-  lastChecked?: number;
-  detail?: string;
-  error?: string;
+type UnifiedStackViewStatus = {
+  ready: boolean;
+  services: Array<{
+    name: 'manager' | 'brain';
+    bundled: boolean;
+    running: boolean;
+    healthy: boolean;
+    version?: string;
+    expectedVersion?: string;
+      error?: string;
+  }>;
+  companions?: Array<{
+    name: 'brain-listener' | 'brain-cycle';
+    enabled: boolean;
+    running: boolean;
+    healthy?: boolean;
+    phase: string;
+    nextStartAt?: string;
+    lastCompletedAt?: string;
+    lastSuccessfulPollAt?: string;
+    error?: string;
+  }>;
+  brainCatalog?: {
+    healthy: boolean;
+    profileOwned: boolean;
+    skillCount: number;
+    error?: string;
+  };
+  brainAutomation?: BrainAutomationSettings;
 };
 type CachedLoad<T> = { value: T; at: number; cached: boolean };
 
@@ -270,6 +372,15 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [rpcEditing, setRpcEditing] = useState<string | null>(null);
   const [rpcBusy, setRpcBusy] = useState<string | null>(null);
   const [rpcMsg, setRpcMsg] = useState('');
+  const [rootIdentityStatus, setRootIdentityStatus] = useState<RootIdentityStatus>({
+    settings: defaultRootIdentitySettings(),
+    activeProvider: 'local',
+  });
+  const [rootIdentityEnabled, setRootIdentityEnabled] = useState(false);
+  const [rootIdentityEnsRoot, setRootIdentityEnsRoot] = useState(defaultRootIdentitySettings().ensRoot);
+  const [rootIdentitySafeAddress, setRootIdentitySafeAddress] = useState('');
+  const [rootIdentityBusy, setRootIdentityBusy] = useState(false);
+  const [rootIdentityMsg, setRootIdentityMsg] = useState('');
   const [walletConnect, setWalletConnect] = useState<WalletConnectSettings>({ enabled: false, projectId: '' });
   const [walletConnectEnabled, setWalletConnectEnabled] = useState(false);
   const [walletConnectProjectId, setWalletConnectProjectId] = useState('');
@@ -281,6 +392,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const effectiveWalletConnectProjectId = walletConnectProjectIdEditing
     ? walletConnectProjectId.trim()
     : walletConnect.projectId;
+  const rootIdentityDraftValid = isValidLiveEnsRoot(rootIdentityEnsRoot)
+    && isValidEvmAddress(rootIdentitySafeAddress);
   const [probe, setProbe] = useState<Record<string, ProbeOutcome>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -346,11 +459,19 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   // self-update
   const [version, setVersion] = useState('');
   const [upd, setUpd] = useState<{ autoUpgrade?: boolean; updateManifestUrl?: string; updateRepo?: string } | null>(null);
-  const [updStatus, setUpdStatus] = useState<{ latest?: string; available?: boolean; staged?: boolean; checking?: boolean; error?: string; lastChecked?: number } | null>(null);
-  const [managerUpdStatus, setManagerUpdStatus] = useState<ManagerUpdateStatus | null>(null);
-  const [managerUpdBusy, setManagerUpdBusy] = useState<'check' | 'apply' | null>(null);
+  const [updStatus, setUpdStatus] = useState<SettingsUpdateStatus | null>(null);
+  const [updateApplying, setUpdateApplying] = useState(false);
+  const [updateApplyError, setUpdateApplyError] = useState('');
+  const updateApplyRef = useRef(false);
+  const [unifiedStack, setUnifiedStack] = useState<UnifiedStackViewStatus | null>(null);
+  const [brainAutomation, setBrainAutomation] = useState<BrainAutomationSettings>(
+    defaultBrainAutomationSettings,
+  );
+  const [brainAutomationBusy, setBrainAutomationBusy] = useState(false);
+  const [brainAutomationMsg, setBrainAutomationMsg] = useState('');
   const [managerCaps, setManagerCaps] = useState<ManagerCapabilities | undefined>(undefined);
   const [managerReportCopied, setManagerReportCopied] = useState(false);
+  const [manualCopy, setManualCopy] = useState<{ label: string; text: string } | null>(null);
   // managed subscription OAuth runtimes
   type Sub = {
     provider: string;
@@ -373,23 +494,42 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     postInstall?: string;
     installOpensApp?: boolean;
   };
-  type SubKey = 'claude' | 'chatgpt' | 'cursor' | 'grok' | 'antigravity' | 'copilot' | 'kiro-cli' | 'q';
-  const managedSubRows: { key: SubKey; label: string; runtime: string }[] = [
-    { key: 'claude', label: 'Claude (Anthropic)', runtime: 'claude-code-cli' },
-    { key: 'chatgpt', label: 'OpenAI (ChatGPT)', runtime: 'codex' },
-    { key: 'cursor', label: 'Cursor', runtime: 'cursor-cli' },
-    { key: 'grok', label: 'xAI Grok Build', runtime: 'grok' },
-    { key: 'antigravity', label: 'Google Antigravity CLI', runtime: 'antigravity' },
-    { key: 'copilot', label: 'GitHub Copilot CLI', runtime: 'copilot' },
-    { key: 'kiro-cli', label: 'Kiro CLI', runtime: 'kiro-cli' },
-    { key: 'q', label: 'Amazon Q CLI (legacy)', runtime: 'q' },
-  ];
   const [subs, setSubs] = useState<Record<SubKey, Sub> | null>(null);
   const [subsBusy, setSubsBusy] = useState(false);
   const [subBusy, setSubBusy] = useState<string | null>(null);
+  const subActionRef = useRef<SubKey | null>(null);
   const [subNotice, setSubNotice] = useState('');
+  const [pendingSignin, setPendingSignin] = useState<SubKey | null>(null);
   const [subsCheckedAt, setSubsCheckedAt] = useState<number | null>(null);
-  const visibleManagedSubRows = managedSubRows.filter(({ key }) => key !== 'q' || subs?.q?.installed === true);
+  const [managedSubSelection, setManagedSubSelection] = useState<SubKey[] | null>(() => loadManagedSubSelection());
+  const [managedSubChoice, setManagedSubChoice] = useState<SubKey | ''>('');
+  const visibleManagedSubRows = MANAGED_SUB_ROWS.filter(({ key }) => managedSubSelection?.includes(key));
+  const availableManagedSubRows = MANAGED_SUB_ROWS.filter(({ key }) =>
+    !managedSubSelection?.includes(key) && (key !== 'q' || subs?.q?.installed === true));
+
+  function updateManagedSubSelection(next: SubKey[]): void {
+    setManagedSubSelection(next);
+    saveManagedSubSelection(next);
+  }
+
+  function addManagedSubscription(): void {
+    if (!managedSubChoice) return;
+    updateManagedSubSelection(Array.from(new Set([...(managedSubSelection ?? []), managedSubChoice])));
+    setManagedSubChoice('');
+  }
+
+  function removeManagedSubscription(provider: SubKey): void {
+    updateManagedSubSelection((managedSubSelection ?? []).filter((key) => key !== provider));
+    if (pendingSignin === provider) setPendingSignin(null);
+  }
+
+  useEffect(() => {
+    if (!subs || managedSubSelection !== null) return;
+    const detected = MANAGED_SUB_ROWS
+      .filter(({ key }) => key !== 'q' && (subs[key]?.installed || subs[key]?.loggedIn || subs[key]?.linked))
+      .map(({ key }) => key);
+    updateManagedSubSelection(detected);
+  }, [subs, managedSubSelection]);
 
   async function refreshManagedSubscriptions(options: { busy?: boolean; notice?: boolean; force?: boolean } = {}) {
     if (options.busy) setSubsBusy(true);
@@ -406,6 +546,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         warmRuntimeCatalog(providers, next ?? undefined);
       }
       if (options.notice) setSubNotice('Managed runtimes refreshed. Account status and model freshness were checked.');
+      return next;
     } finally {
       if (options.busy) setSubsBusy(false);
     }
@@ -414,6 +555,15 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   async function reload() {
     setProviders(await call<ProviderRow[]>('providers:list').catch(() => []));
     setEvmRpcs(await call<EvmRpcRow[]>('evmRpc:list').catch(() => []));
+    const identityStatus = await call<RootIdentityStatus>('rootIdentity:get').catch(() => ({
+      settings: defaultRootIdentitySettings(),
+      activeProvider: 'local' as const,
+      error: 'Root identity status is unavailable.',
+    }));
+    setRootIdentityStatus(identityStatus);
+    setRootIdentityEnabled(identityStatus.settings.enabled);
+    setRootIdentityEnsRoot(identityStatus.settings.ensRoot);
+    setRootIdentitySafeAddress(identityStatus.settings.safeAddress);
     const rootConnector = await call<WalletConnectSettings>('walletConnect:get').catch(() => ({ enabled: false, projectId: '' }));
     setWalletConnect(rootConnector);
     setWalletConnectEnabled(rootConnector.enabled);
@@ -425,66 +575,104 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     setUpd(u);
     const currentUpdateStatus = await call<typeof updStatus>('update:status').catch(() => null);
     setUpdStatus(currentUpdateStatus);
-    setManagerUpdStatus(await call<ManagerUpdateStatus>('managerUpdate:status').catch((error) => ({ configured: false, error: String(error) })));
+    setUnifiedStack(await call<UnifiedStackViewStatus>('unifiedStack:status').catch(() => null));
+    setBrainAutomation(
+      await call<BrainAutomationSettings>('brainAutomation:getSettings')
+        .catch(() => defaultBrainAutomationSettings()),
+    );
     // The main updater already checks at launch, on focus, and on its interval.
     // Settings mount happens on every page switch, so only refresh here when the
     // cached status is stale enough to avoid making Settings feel like a network
     // gate for unrelated local/runtime controls.
     if (shouldCheckUpdateOnSettingsOpen(currentUpdateStatus)) {
-      void call<typeof updStatus>('update:check').then((s) => { if (s) setUpdStatus(s); }).catch(() => {});
+      void call<typeof updStatus>('update:check').then((next) => {
+        // Completion can be pushed before this short acknowledgement returns.
+        // Ignore the older in-progress snapshot in that ordering.
+        if (next && !next.checking) setUpdStatus(next);
+      }).catch(() => {});
     }
     await refreshManagedSubscriptions();
-  }
-  async function reloadManagerCapabilities() {
-    setManagerCaps(undefined);
-    setManagerCaps(await call<ManagerCapabilities>('manager:capabilities').catch(() => null));
   }
   async function recheckSubs() {
     await refreshManagedSubscriptions({ busy: true, notice: true, force: true });
   }
   async function signinSub(provider: SubKey) {
+    if (subActionRef.current) return;
+    subActionRef.current = provider;
     setSubBusy(provider);
     try {
       const r = await call<{ started: boolean; url?: string; command?: string; error?: string }>('subs:signin', provider);
       if (r.error) {
         if (r.command) {
-          try { await navigator.clipboard.writeText(r.command); } catch { /* clipboard best-effort */ }
-          window.alert(`Couldn't open Terminal automatically — the command is copied to your clipboard. Paste it into a terminal:\n\n${r.command}`);
+          const copied = await copyForHandoff(r.command, 'Sign-in command');
+          window.alert(copied
+            ? `Couldn't open Terminal automatically — command copied ✓\n\nPaste it into a terminal:\n\n${r.command}`
+            : `Couldn't open Terminal automatically, and clipboard access is unavailable.\n\nDismiss this dialog, then select the full command in the “Copy manually” panel at the top of Settings.`);
         } else {
           window.alert(`sign-in failed: ${r.error}`);
         }
         return;
       }
-      const label = managedSubRows.find((row) => row.key === provider)?.label ?? provider;
+      const label = MANAGED_SUB_ROWS.find((row) => row.key === provider)?.label ?? provider;
       const note = provider === 'antigravity'
-          ? `${label} opened from IDACC. Finish the Antigravity login flow, then Re-check if the row does not update automatically. Assignment is available once the CLI model probe is live.`
-          : `${label} account flow started from IDACC. Finish the vendor prompt/browser flow, then Re-check if the row does not update automatically.`;
+          ? `${label} opened from IDACC. Finish the Antigravity login flow, then confirm here. Assignment is available once the CLI model probe is live.`
+          : `${label} account flow started from IDACC. Finish the vendor prompt/browser flow, then confirm here.`;
       setSubNotice(note);
-      setTimeout(() => void refreshManagedSubscriptions({ force: true }), 4000);
+      setPendingSignin(provider);
     } finally {
       setSubBusy(null);
+      subActionRef.current = null;
+    }
+  }
+  async function confirmSignin(provider: SubKey) {
+    if (subActionRef.current) return;
+    subActionRef.current = provider;
+    const label = MANAGED_SUB_ROWS.find((row) => row.key === provider)?.label ?? provider;
+    setSubBusy(provider);
+    try {
+      const next = await refreshManagedSubscriptions({ force: true });
+      const status = next?.[provider];
+      if (status?.loggedIn || status?.linked) {
+        setPendingSignin(null);
+        setSubNotice(`${label} sign-in confirmed ✓`);
+      } else if (status?.statusSupported === false && status?.installed) {
+        setPendingSignin(null);
+        setSubNotice(`${label} is installed, but its CLI does not expose live account status. Manage the account in the vendor flow.`);
+      } else {
+        setSubNotice(`${label} sign-in is not visible yet. Finish the vendor flow, then confirm again.`);
+      }
+    } finally {
+      setSubBusy(null);
+      subActionRef.current = null;
     }
   }
   async function installSub(provider: SubKey) {
+    if (subActionRef.current) return;
+    subActionRef.current = provider;
     setSubBusy(provider);
     try {
       const r = await call<{ ok: boolean; ran: boolean; command?: string; error?: string; postInstall?: string; installOpensApp?: boolean }>('subs:install', provider);
       if (r.ran) {
-        const label = managedSubRows.find((row) => row.key === provider)?.label ?? provider;
+        const label = MANAGED_SUB_ROWS.find((row) => row.key === provider)?.label ?? provider;
         const note = r.installOpensApp
           ? `${label} installer opened in Terminal. Its vendor installer may open the app once; IDACC will re-check for the CLI automatically.`
           : `${label} installer opened in Terminal. IDACC will re-check for the CLI automatically.`;
         setSubNotice(r.postInstall ? `${note} ${r.postInstall}` : note);
         scheduleSubInstallChecks(provider, label);
       } else if (r.command) {
-        try { await navigator.clipboard.writeText(r.command); } catch { /* clipboard best-effort */ }
-        setSubNotice(`Terminal automation was blocked; copied the install command. Paste it into a terminal, then use Re-check.`);
-        window.alert(`Couldn't open Terminal automatically — the install command is copied to your clipboard. Paste it into a terminal:\n\n${r.command}`);
+        const copied = await copyForHandoff(r.command, 'Install command');
+        setSubNotice(copied
+          ? `Terminal automation was blocked; install command copied ✓. Paste it into a terminal, then use Re-check.`
+          : `Terminal automation and clipboard access are unavailable. Copy the full install command from the “Copy manually” panel at the top of Settings, then use Re-check.`);
+        window.alert(copied
+          ? `Couldn't open Terminal automatically — install command copied ✓\n\nPaste it into a terminal:\n\n${r.command}`
+          : `Couldn't open Terminal automatically, and clipboard access is unavailable.\n\nDismiss this dialog, then select the full install command in the “Copy manually” panel at the top of Settings.`);
       } else {
         window.alert(`install unavailable: ${r.error ?? 'unknown'}`);
       }
     } finally {
       setSubBusy(null);
+      subActionRef.current = null;
     }
   }
   function scheduleSubInstallChecks(provider: SubKey, label: string) {
@@ -505,50 +693,141 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     });
   }
   async function signoutSub(provider: SubKey) {
-    const label = managedSubRows.find((row) => row.key === provider)?.label ?? provider;
+    if (subActionRef.current) return;
+    const label = MANAGED_SUB_ROWS.find((row) => row.key === provider)?.label ?? provider;
     if (!window.confirm(`Sign out of ${label}? Agents on that runtime will lose subscription access until you sign back in.`)) return;
+    subActionRef.current = provider;
     setSubBusy(provider);
     try {
+      if (pendingSignin === provider) setPendingSignin(null);
       const r = await call<{ ok: boolean; error?: string }>('subs:signout', provider);
       if (!r.ok) window.alert(`sign-out failed: ${r.error ?? 'unknown error'}`);
       await recheckSubs();
     } finally {
       setSubBusy(null);
+      subActionRef.current = null;
     }
   }
   async function saveUpdate(partial: Record<string, unknown>) {
     const u = await call<typeof upd>('update:setSettings', partial);
     setUpd(u);
   }
-  async function checkUpdate() {
-    setUpdStatus({ checking: true });
-    setUpdStatus(await call<typeof updStatus>('update:check').catch((e) => ({ error: String(e) })));
-  }
-  async function checkManagerRelease() {
-    setManagerUpdBusy('check');
+  async function saveBrainAutomation(partial: Partial<BrainAutomationSettings>) {
+    setBrainAutomationBusy(true);
+    setBrainAutomationMsg('');
     try {
-      setManagerUpdStatus(await call<ManagerUpdateStatus>('managerUpdate:check'));
+      const next = await call<BrainAutomationSettings>('brainAutomation:setSettings', partial);
+      setBrainAutomation(next);
+      setUnifiedStack(await call<UnifiedStackViewStatus>('unifiedStack:status').catch(() => null));
+      setBrainAutomationMsg(next.cycleEnabled
+        ? `Brain maintenance scheduled every ${next.cycleCadenceHours} hours.`
+        : 'Scheduled Brain maintenance is off. Event learning remains on.');
     } catch (error) {
-      setManagerUpdStatus((current) => ({ ...(current ?? { configured: false }), error: String(error) }));
+      setBrainAutomationMsg(`Could not save Brain maintenance: ${String(error)}`);
     } finally {
-      setManagerUpdBusy(null);
+      setBrainAutomationBusy(false);
     }
   }
-  async function updateManagerRelease() {
-    setManagerUpdBusy('apply');
+  async function checkUpdate() {
+    setUpdateApplyError('');
+    setUpdStatus((current) => ({ ...current, checking: true, error: undefined }));
+    const next = await call<typeof updStatus>('update:check').catch((e) => ({ error: String(e) }));
+    // The status event can complete before the short IPC acknowledgement
+    // returns. Do not let that older "checking" snapshot overwrite the newer
+    // terminal event.
+    if (next === null || !('checking' in next) || !next.checking) setUpdStatus(next);
+    setUnifiedStack(await call<UnifiedStackViewStatus>('unifiedStack:status').catch(() => null));
+  }
+  async function downloadVerifiedUpdate() {
+    if (updStatus?.checking || updStatus?.downloading || updStatus?.staged) return;
+    setUpdateApplyError('');
+    setUpdStatus((current) => ({
+      ...current,
+      downloading: true,
+      downloadPercent: 0,
+      error: undefined,
+    }));
     try {
-      const next = await call<ManagerUpdateStatus>(managerUpdStatus?.configured ? 'managerUpdate:apply' : 'managerUpdate:bootstrap');
-      setManagerUpdStatus(next);
-      if (next.status === 'updated' || next.status === 'current') await reloadManagerCapabilities();
+      const next = await call<SettingsUpdateStatus>('update:download');
+      // As above, progress or completion can arrive before the acknowledgement.
+      if (!next.downloading) setUpdStatus(next);
     } catch (error) {
-      setManagerUpdStatus((current) => ({ ...(current ?? { configured: false }), error: String(error) }));
+      setUpdStatus((current) => ({
+        ...current,
+        downloading: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+  async function applyVerifiedUpdate() {
+    if (updateApplying || updateApplyRef.current) return;
+    updateApplyRef.current = true;
+    let restarting = false;
+    setUpdateApplyError('');
+    try {
+      const stagedStatus = await call<SettingsUpdateStatus>('update:status');
+      setUpdStatus(stagedStatus);
+      if (!stagedStatus.available || !stagedStatus.staged || !stagedStatus.latest) {
+        throw new Error('No verified update is staged. Check for an update and wait for its download to finish.');
+      }
+      const stagedVersion = stagedStatus.latest;
+      const confirmed = window.confirm(
+        `Restart IDACC and install verified v${stagedVersion}?`,
+      );
+      if (!confirmed) return;
+
+      // Re-read after the confirmation dialog so a stale or replaced download
+      // can never be applied under the version the person just approved.
+      const freshStatus = await call<SettingsUpdateStatus>('update:status');
+      setUpdStatus(freshStatus);
+      if (!freshStatus.available || !freshStatus.staged || freshStatus.latest !== stagedVersion) {
+        throw new Error('The staged update changed while confirmation was open. Check again before restarting.');
+      }
+
+      setUpdateApplying(true);
+      const result = await call<{ applying?: boolean }>('update:applyNow');
+      if (!result?.applying) {
+        throw new Error('The verified update could not be started. Check again or restart IDACC normally.');
+      }
+      restarting = true;
+    } catch (error) {
+      setUpdateApplying(false);
+      setUpdateApplyError(error instanceof Error ? error.message : String(error));
     } finally {
-      setManagerUpdBusy(null);
+      // Keep the synchronous latch held after success while the app exits. On
+      // cancel/failure, release it so the corrected action can be retried.
+      if (!restarting) updateApplyRef.current = false;
     }
   }
   useEffect(() => {
     reload();
   }, [store.team, store.coordinator]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshStack = async () => {
+      const next = await call<UnifiedStackViewStatus>('unifiedStack:status').catch(() => null);
+      if (!cancelled) setUnifiedStack(next);
+    };
+    const interval = window.setInterval(() => void refreshStack(), SETTINGS_STACK_REFRESH_MS);
+    const onFocus = () => { void refreshStack(); };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
+
+  useEffect(() => {
+    const idagents = (window as {
+      idagents?: { onUpdateStatus?: (cb: (status: unknown) => void) => () => void };
+    }).idagents;
+    return idagents?.onUpdateStatus?.((status) => {
+      setUpdStatus(status as SettingsUpdateStatus);
+      setUpdateApplyError('');
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -865,6 +1144,34 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setRpcBusy(null);
     }
   }
+  async function saveRootIdentity() {
+    setRootIdentityBusy(true);
+    setRootIdentityMsg(rootIdentityEnabled ? 'Validating and binding this profile root identity...' : 'Switching this profile to local/mock identity...');
+    try {
+      const status = await call<RootIdentityStatus>('rootIdentity:set', {
+        enabled: rootIdentityEnabled,
+        ensRoot: rootIdentityEnsRoot,
+        safeAddress: rootIdentitySafeAddress,
+        chainId: 1,
+      });
+      setRootIdentityStatus(status);
+      setRootIdentityEnabled(status.settings.enabled);
+      setRootIdentityEnsRoot(status.settings.ensRoot);
+      setRootIdentitySafeAddress(status.settings.safeAddress);
+      if (status.activeProvider === 'safe-roles') {
+        setRootIdentityMsg(`Live identity enabled for ${status.settings.ensRoot}. Production readiness must still pass before signing.`);
+      } else {
+        await disconnectRootSafe().catch(() => {});
+        setRootIdentityMsg(status.error
+          ? `Live signing remains disabled: ${status.error}`
+          : 'Local/mock identity active. No live wallet or ENS identity is selected.');
+      }
+    } catch (err) {
+      setRootIdentityMsg(`identity save failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setRootIdentityBusy(false);
+    }
+  }
   async function saveRootSafeConnector(connect: boolean) {
     setWalletConnectBusy(true);
     setWalletConnectMsg(connect ? 'Saving and opening root Safe pairing...' : 'Saving root Safe connector...');
@@ -881,6 +1188,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         await disconnectRootSafe().catch(() => {});
         setWalletConnectMsg('Root Safe connector disabled. Agent session-key execution is unchanged.');
       } else if (connect) {
+        if (rootIdentityStatus.activeProvider !== 'safe-roles') {
+          throw new Error('Enable and successfully bind this profile root identity before connecting its Safe.');
+        }
         await connectRootSafe(saved);
         setWalletConnectMsg('Root Safe connected for agent Safe provisioning and revocation proposals.');
       } else {
@@ -1187,33 +1497,82 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   // How many local-model (ollama) queries the manager runs at once. Cloud runtimes
   // (codex/claude) parallelize freely; local agents share one server, so this caps
   // concurrent local inference (raise it only if your machine can handle it).
-  const [localConc, setLocalConc] = useState<{ concurrency: number; active: number; queued: number } | null>(null);
+  const [localConc, setLocalConc] = useState<LocalConcurrencyStatus | null>(null);
   const [concInput, setConcInput] = useState('');
   const [concBusy, setConcBusy] = useState(false);
   const [concMsg, setConcMsg] = useState('');
-  async function loadConc() {
-    const r = await call<{ concurrency: number; active: number; queued: number }>('manager:localConcurrency').catch(() => null);
+  const [concCheckedAt, setConcCheckedAt] = useState(0);
+  const [concAvailability, setConcAvailability] = useState<'checking' | 'live' | 'unavailable'>('checking');
+  const concRefreshPromiseRef = useRef<Promise<LocalConcurrencyStatus | null> | null>(null);
+  const concServerValueRef = useRef<number | null>(null);
+  const concSaveRef = useRef(false);
+  async function loadConc(options: { announce?: boolean; force?: boolean } = {}) {
+    if (concRefreshPromiseRef.current) {
+      const joined = await concRefreshPromiseRef.current;
+      if (!options.force) {
+        if (options.announce) {
+          setConcMsg(joined ? 'live counts refreshed ✓' : 'refresh unavailable: manager could not be reached');
+        }
+        return joined;
+      }
+    }
+    const request = call<LocalConcurrencyStatus>('manager:localConcurrency').catch(() => null);
+    concRefreshPromiseRef.current = request;
+    const r = await request;
+    if (concRefreshPromiseRef.current === request) concRefreshPromiseRef.current = null;
+    setConcCheckedAt(Date.now());
+    setConcAvailability(r ? 'live' : 'unavailable');
+    if (!r) {
+      if (options.announce) setConcMsg('refresh unavailable: manager could not be reached');
+      return null;
+    }
+    const previousServerValue = concServerValueRef.current;
+    setConcInput((draft) => (
+      previousServerValue == null || draft === String(previousServerValue)
+        ? String(r.concurrency)
+        : draft
+    ));
+    concServerValueRef.current = r.concurrency;
     setLocalConc(r);
-    if (r) setConcInput(String(r.concurrency));
+    if (options.announce) setConcMsg(`live counts refreshed ✓`);
+    return r;
   }
   async function saveConc() {
     const n = Number(concInput);
-    if (!Number.isFinite(n) || n < 1 || n > 16) { setConcMsg('enter a number 1–16'); return; }
+    if (!Number.isInteger(n) || n < 1 || n > 16) { setConcMsg('enter a whole number 1–16'); return; }
+    if (concSaveRef.current) return;
+    concSaveRef.current = true;
     setConcBusy(true); setConcMsg('');
     try {
-      const current = await call<{ concurrency: number; active: number; queued: number }>('manager:localConcurrency').catch(() => null);
+      // Let an in-progress auto-refresh settle before taking the compare-and-set
+      // baseline, then read once more directly to authorize this write.
+      if (concRefreshPromiseRef.current) await concRefreshPromiseRef.current;
+      const current = await call<LocalConcurrencyStatus>('manager:localConcurrency').catch(() => null);
       if (!current) { setConcMsg('failed: manager unreachable'); return; }
-      if (localConc && current.concurrency !== localConc.concurrency) {
+      const expected = concServerValueRef.current;
+      if (expected == null || current.concurrency !== expected) {
+        concServerValueRef.current = current.concurrency;
         setLocalConc(current);
         setConcInput(String(current.concurrency));
         setConcMsg('blocked: concurrency changed since this page rendered; refreshed');
         return;
       }
       const r = await call<{ concurrency: number }>('manager:setLocalConcurrency', n);
-      setConcMsg(`now ${r.concurrency} concurrent ✓`);
-      await loadConc();
+      const applied: LocalConcurrencyStatus = { ...current, concurrency: r.concurrency };
+      concServerValueRef.current = r.concurrency;
+      setLocalConc(applied);
+      setConcInput(String(r.concurrency));
+      setConcCheckedAt(Date.now());
+      setConcAvailability('live');
+      const refreshed = await loadConc({ force: true });
+      setConcMsg(refreshed
+        ? `now ${r.concurrency} concurrent ✓`
+        : `saved ${r.concurrency} concurrent; live running/queued refresh is unavailable`);
     } catch (e) { setConcMsg(`failed: ${e instanceof Error ? e.message : String(e)}`); }
-    finally { setConcBusy(false); }
+    finally {
+      setConcBusy(false);
+      concSaveRef.current = false;
+    }
   }
 
   // Local image generator (preferred over API fallback for image creation).
@@ -1397,8 +1756,33 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     return [...byId.values()];
   })();
   const discoveredCatalogCount = localCatalogModels.filter((m) => !bundledModelIds.has(m.id)).length;
-  async function copyText(text: string) {
-    try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked */ }
+  async function copyText(text: string): Promise<boolean> {
+    try {
+      if (window.idagents?.copyText) return await window.idagents.copyText(text);
+    } catch { /* use browser compatibility fallbacks */ }
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch { /* continue */ }
+    try {
+      const field = document.createElement('textarea');
+      field.value = text;
+      field.setAttribute('readonly', '');
+      field.style.position = 'fixed';
+      field.style.left = '-9999px';
+      document.body.appendChild(field);
+      field.select();
+      const copied = document.execCommand('copy');
+      field.remove();
+      return copied;
+    } catch {
+      return false;
+    }
+  }
+  async function copyForHandoff(text: string, label: string): Promise<boolean> {
+    const copied = await copyText(text);
+    setManualCopy(copied ? null : { label, text });
+    return copied;
   }
   const filteredModels = browsableModelCatalog.filter((m) => {
     if (modelCap !== 'all' && !m.capabilities.includes(modelCap)) return false;
@@ -1486,16 +1870,15 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       : 'starter catalog';
   const providersNeedingKeys = enabledProviders.filter((p) => providerNeedsKey(p) && !providerKeyReady(p)).length;
   const textRuntimeReady = store.connection === 'online' && (defaultRouteReady || routeReadyProviders.length > 0);
-  const managerFeatureSet = new Set(managerCaps?.features ?? []);
-  const managerRouteSet = new Set((managerCaps?.routes ?? []).map(controlCenterRouteKey));
-  const missingManagerFeatures = CONTROL_CENTER_REQUIRED_FEATURES.filter((feature) => !managerFeatureSet.has(feature));
-  const missingManagerRoutes = CONTROL_CENTER_REQUIRED_ROUTES.filter((route) => !managerRouteSet.has(controlCenterRouteKey(route)));
-  const managerExtensionIssues = [
-    ...missingManagerFeatures.map((feature) => `feature:${feature}`),
-    ...missingManagerRoutes.map(controlCenterRouteKey),
-  ];
-  const managerApiVersion = managerCaps?.cc_api_version ?? 0;
-  const managerExtensionReady = store.connection === 'online' && !!managerCaps && managerApiVersion >= CONTROL_CENTER_API_VERSION && managerExtensionIssues.length === 0;
+  const managerCompatibility = evaluateControlCenterCapabilities(managerCaps);
+  const missingManagerFeatures = managerCompatibility.missingFeatures;
+  const missingManagerRouteKeys = managerCompatibility.missingRoutes;
+  const missingManagerRoutes = CONTROL_CENTER_REQUIRED_ROUTES.filter((route) => (
+    missingManagerRouteKeys.includes(controlCenterRouteKey(route))
+  ));
+  const managerExtensionIssues = managerCompatibility.issues;
+  const managerApiVersion = managerCompatibility.apiVersion;
+  const managerExtensionReady = store.connection === 'online' && managerCompatibility.ready;
   const managerExtensionTone = store.connection !== 'online'
     ? 'err'
     : managerCaps === undefined
@@ -1523,7 +1906,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     : managerCaps === undefined
       ? 'reading /capabilities'
       : !managerCaps
-        ? 'missing /capabilities; update id-agents manager'
+        ? 'missing /capabilities; repair or update IDACC'
         : missingManagerFeatures.length
           ? `missing ${missingManagerFeatures.slice(0, 3).join(', ')}${missingManagerFeatures.length > 3 ? '...' : ''}`
           : missingManagerRoutes.length
@@ -1534,7 +1917,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     : managerCaps === undefined
       ? 'checking manager'
     : !managerExtensionReady
-      ? 'manager update'
+      ? 'repair IDACC'
       : textRuntimeReady
         ? 'ready'
         : 'needs backend';
@@ -1573,9 +1956,13 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     `missing routes: ${missingManagerRoutes.map(controlCenterRouteKey).join(', ') || 'none'}`,
   ].join('\n');
   async function copyManagerCompatibilityReport() {
-    await copyText(managerCompatibilityReport);
-    setManagerReportCopied(true);
-    window.setTimeout(() => setManagerReportCopied(false), 1600);
+    const copied = await copyForHandoff(managerCompatibilityReport, 'Manager compatibility report');
+    setManagerReportCopied(copied);
+    if (copied) {
+      window.setTimeout(() => setManagerReportCopied(false), 1600);
+    } else {
+      window.alert('Clipboard access is unavailable. Dismiss this dialog, then select the full report in the “Copy manually” panel at the top of Settings.');
+    }
   }
 
   function providerPort(p: ProviderRow): number | null {
@@ -1612,11 +1999,15 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     return (p.lastSync?.modelCount ?? 0) > 0 || p.lastSync?.status === 'preset';
   }
   function providerRouteReady(p: ProviderRow): boolean {
+    if (isLocalProvider(p)) return providerKeyReady(p) && localProviderRouteIsLive(p);
     return p.enabled !== false && providerKeyReady(p) && providerModelReady(p);
   }
   function providerDefaultBlockReason(p: ProviderRow): string {
     if (p.enabled === false) return 'The backend is disabled.';
     if (!providerKeyReady(p)) return 'The backend is missing a required API key.';
+    if (isLocalProvider(p) && p.lastSync?.status === 'live' && !localProviderRouteIsLive(p)) {
+      return 'The last local health check is stale. Re-check the backend before assigning it.';
+    }
     if (providerStatus(p) === 'live' && !providerModelReady(p)) return 'The backend answered but returned no models.';
     if (!providerModelReady(p)) return 'The backend has no synced/preset model list yet.';
     return `Current status is ${providerStatus(p) ?? 'not synced'}.`;
@@ -2238,8 +2629,13 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         scheduleStackInstallChecks(s, action);
       }
     } else {
-      await copyText(cmd);
-      setStackMsg(`Terminal automation was blocked — ${action} command copied to clipboard${draft?.port ? ` with port ${draft.port}` : ''}`);
+      const copied = await copyForHandoff(cmd, `${s.name} ${action} command`);
+      setStackMsg(copied
+        ? `Terminal automation was blocked — ${action} command copied ✓${draft?.port ? ` with port ${draft.port}` : ''}`
+        : `Terminal automation and clipboard access are unavailable — copy the ${action} command from the “Copy manually” panel at the top of Settings`);
+      if (!copied) {
+        window.alert(`Clipboard access is unavailable. Dismiss this dialog, then select the full ${action} command in the “Copy manually” panel at the top of Settings.`);
+      }
     }
   }
   /** Port conflict display shows only current-state evidence: live scanned ports or configured backends. */
@@ -2259,7 +2655,6 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     );
     void checkStackInstalls();
     void checkBackgroundStacks();
-    void loadConc();
     void loadImgServer();
     void call<HardwareInfo>('app:hardware').then(setHardware).catch(() => {});
     const idagents = (window as { idagents?: { onOllamaPull?: (cb: (p: unknown) => void) => () => void } }).idagents;
@@ -2269,6 +2664,23 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       else setPullMsg(`${o.model}: ${o.status ?? 'pulling'}${o.pct != null ? ` · ${o.pct}%` : ''}`);
     });
     return () => off?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (!document.hidden) void loadConc();
+    };
+    const onVisible = () => refresh();
+    refresh();
+    const timer = window.setInterval(refresh, SETTINGS_CONCURRENCY_REFRESH_MS);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -2383,12 +2795,43 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     if (s?.installed === false) return !s.installSupported;
     return !s?.loginSupported;
   }
+  const managerService = unifiedStack?.services.find((service) => service.name === 'manager');
+  const brainService = unifiedStack?.services.find((service) => service.name === 'brain');
+  const brainListener = unifiedStack?.companions?.find((companion) => companion.name === 'brain-listener');
+  const brainCycle = unifiedStack?.companions?.find((companion) => companion.name === 'brain-cycle');
+  const componentStatus = (service: UnifiedStackViewStatus['services'][number] | undefined): string => {
+    if (!service) return 'checking…';
+    if (!service.bundled) return service.error || 'not included in this build';
+    if (service.healthy) return 'ready';
+    if (service.running) return service.error || 'starting…';
+    return service.error || 'needs attention';
+  };
 
   return (
     <div className="view">
       <header className="view-head">
         <h1>Settings</h1>
       </header>
+
+      {manualCopy ? (
+        <section className="card" aria-live="polite">
+          <div className="row-actions">
+            <h3 className="grow">Copy manually · {manualCopy.label}</h3>
+            <button type="button" className="btn small" onClick={() => setManualCopy(null)}>Dismiss</button>
+          </div>
+          <p className="muted small">
+            Clipboard access is unavailable. Select the text below and copy it manually.
+          </p>
+          <textarea
+            readOnly
+            aria-label={`${manualCopy.label} for manual copy`}
+            rows={Math.min(12, Math.max(3, manualCopy.text.split('\n').length + 1))}
+            value={manualCopy.text}
+            onFocus={(event) => event.currentTarget.select()}
+            style={{ width: '100%', resize: 'vertical', fontFamily: 'var(--mono)' }}
+          />
+        </section>
+      ) : null}
 
       <section className="card">
         <h3>Hardware — compute on the commanded machine</h3>
@@ -2433,6 +2876,53 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
               Open HR Manage
             </button>
           </div>
+        </div>
+      </section>
+
+      <section className="card">
+        <h3>Profile root identity</h3>
+        <p className="muted small" style={{ marginTop: -4 }}>
+          New profiles use a local/mock identity and cannot sign live Safe changes. To use your own deployment, manually enter the ENS root reserved for your agents and the EVM Safe that owns recovery authority, then enable it. Existing users may re-enter their own identity here; IDACC never imports or enables a bundled identity or legacy live-signing state automatically.
+        </p>
+        <div className="walletconnect-settings">
+          <label className="walletconnect-enable">
+            <input
+              type="checkbox"
+              checked={rootIdentityEnabled}
+              disabled={rootIdentityBusy}
+              onChange={(event) => setRootIdentityEnabled(event.target.checked)}
+            />
+            <span>Enable live Safe identity</span>
+          </label>
+          <input
+            className="mono grow"
+            aria-label="Agent ENS root"
+            placeholder="agents.example.eth"
+            value={rootIdentityEnsRoot}
+            disabled={rootIdentityBusy}
+            onChange={(event) => setRootIdentityEnsRoot(event.target.value)}
+          />
+          <input
+            className="mono grow"
+            aria-label="Root Safe address"
+            placeholder="0x… root Safe address"
+            value={rootIdentitySafeAddress}
+            disabled={rootIdentityBusy}
+            onChange={(event) => setRootIdentitySafeAddress(event.target.value)}
+          />
+          <button
+            className="btn primary"
+            type="button"
+            disabled={rootIdentityBusy || (rootIdentityEnabled && !rootIdentityDraftValid)}
+            onClick={() => void saveRootIdentity()}
+          >
+            {rootIdentityBusy ? 'Saving…' : 'Save identity'}
+          </button>
+        </div>
+        <div className={`small ${rootIdentityStatus.error || /failed|disabled:/i.test(rootIdentityMsg) ? 'status-error' : rootIdentityStatus.activeProvider === 'safe-roles' ? 'ok-text' : 'muted'}`} style={{ marginTop: 8 }}>
+          {rootIdentityMsg || (rootIdentityStatus.activeProvider === 'safe-roles'
+            ? `${rootIdentityStatus.settings.ensRoot} · ${rootIdentityStatus.settings.safeAddress} · Ethereum mainnet`
+            : 'Local/mock mode. Live signing is off.')}
         </div>
       </section>
 
@@ -2495,7 +2985,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             </>
           )}
           <button className="btn" type="button" disabled={walletConnectBusy || (walletConnectEnabled && !/^[a-f0-9]{32}$/i.test(effectiveWalletConnectProjectId))} onClick={() => void saveRootSafeConnector(false)}>Save</button>
-          <button className="btn primary" type="button" disabled={walletConnectBusy || !walletConnectEnabled || !/^[a-f0-9]{32}$/i.test(effectiveWalletConnectProjectId)} onClick={() => void saveRootSafeConnector(true)}>
+          <button className="btn primary" type="button" disabled={walletConnectBusy || rootIdentityStatus.activeProvider !== 'safe-roles' || !walletConnectEnabled || !/^[a-f0-9]{32}$/i.test(effectiveWalletConnectProjectId)} onClick={() => void saveRootSafeConnector(true)}>
             {walletConnectState.phase === 'pairing' || walletConnectState.phase === 'initializing' ? 'Connecting...' : 'Connect root Safe'}
           </button>
           {walletConnectState.phase === 'connected' ? <button className="btn" type="button" disabled={walletConnectBusy} onClick={() => void disconnectRootSafeConnector()}>Disconnect</button> : null}
@@ -2543,78 +3033,170 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       </section>
 
       <section className="card">
+        <h3>Brain learning automation</h3>
+        <p className="muted small" style={{ marginTop: -4 }}>
+          Event learning runs with the unified app and resumes from a private profile cursor. The mutation-capable maintenance cycle stays off until you explicitly enable its non-overlapping schedule.
+          {' '}
+          <a
+            className="ext-link"
+            href="#"
+            onClick={(event) => {
+              event.preventDefault();
+              void call('brain:openDashboard', 'skills');
+            }}
+          >
+            Open Brain dashboard ↗
+          </a>
+        </p>
+        <div className="kv">
+          <span>event learning</span>
+          <b className={brainListener?.healthy ? 'ok-text' : 'warn-text'}>
+            {brainListener?.healthy
+              ? `running${brainListener.lastSuccessfulPollAt ? ` · last poll ${timeAgo(Date.parse(brainListener.lastSuccessfulPollAt))}` : ''}`
+              : brainListener?.error || brainListener?.phase || 'checking…'}
+          </b>
+          <span>profile skill catalog</span>
+          <b className={unifiedStack?.brainCatalog?.healthy ? 'ok-text' : 'warn-text'}>
+            {unifiedStack?.brainCatalog?.healthy
+              ? `${unifiedStack.brainCatalog.skillCount} core skills indexed`
+              : unifiedStack?.brainCatalog?.error || 'checking…'}
+          </b>
+          <span>scheduled maintenance</span>
+          <b>
+            <input
+              type="checkbox"
+              checked={brainAutomation.cycleEnabled}
+              disabled={brainAutomationBusy}
+              onChange={(event) => void saveBrainAutomation({ cycleEnabled: event.target.checked })}
+            />{' '}
+            <span className="muted small">opt in to the deterministic Brain maintenance cycle</span>
+          </b>
+          <span>cadence</span>
+          <b>
+            <select
+              aria-label="Brain maintenance cadence"
+              value={brainAutomation.cycleCadenceHours}
+              disabled={brainAutomationBusy || !brainAutomation.cycleEnabled}
+              onChange={(event) => void saveBrainAutomation({
+                cycleCadenceHours: Number(event.target.value),
+              })}
+            >
+              <option value={6}>every 6 hours</option>
+              <option value={12}>every 12 hours</option>
+              <option value={24}>daily</option>
+              <option value={72}>every 3 days</option>
+              <option value={168}>weekly</option>
+            </select>
+          </b>
+          <span>next cycle</span>
+          <b className="small">
+            {!brainAutomation.cycleEnabled
+              ? 'off'
+              : brainCycle?.running
+                ? 'running now'
+                : brainCycle?.nextStartAt
+                  ? new Date(brainCycle.nextStartAt).toLocaleString()
+                  : brainCycle?.phase || 'scheduling…'}
+          </b>
+        </div>
+        {brainAutomationMsg ? (
+          <div className={`small ${brainAutomationMsg.startsWith('Could not') ? 'status-error' : 'muted'}`} style={{ marginTop: 8 }}>
+            {brainAutomationMsg}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="card">
         <h3>Self-update</h3>
         <div className="kv">
           <span>IDACC version</span>
           <b className="mono">v{version || '—'}</b>
           <span>IDACC status</span>
-          <b className={updStatus?.available ? 'warn-text' : updStatus?.error ? 'status-error' : 'ok-text'}>
-            {updStatus?.checking
-              ? 'checking…'
-              : updStatus?.error
-                ? `error: ${updStatus.error}`
-                : updStatus?.available
-                  ? `update ready: v${updStatus.latest}${updStatus.staged ? ' (downloaded — restart to apply)' : ''}`
-                  : updStatus?.latest
-                    ? `up to date (latest v${updStatus.latest})`
-                    : 'up to date'}
+          <b className={updStatus?.error ? 'status-error' : updStatus?.available || isAheadOfUpdateChannel(updStatus) ? 'warn-text' : 'ok-text'}>
+            {updateChannelSummary(updStatus)}
           </b>
-          <span>manager version</span>
-          <b className="mono">{managerUpdStatus?.installedVersion ? `v${managerUpdStatus.installedVersion}` : '—'}</b>
-          <span>manager status</span>
-          <b className={managerUpdStatus?.error ? 'status-error' : managerUpdStatus?.available || managerUpdStatus?.pendingActivation ? 'warn-text' : 'ok-text'}>
-            {managerUpdBusy === 'check'
-              ? 'checking…'
-                : managerUpdBusy === 'apply'
-                ? managerUpdStatus?.configured ? 'updating and validating…' : 'installing and validating…'
-                : managerUpdStatus?.busy
-                  ? 'manager update already running…'
-                : managerUpdStatus?.error
-                  ? `error: ${managerUpdStatus.error}`
-                  : managerUpdStatus?.pendingActivation
-                    ? `built v${managerUpdStatus.latestVersion || managerUpdStatus.installedVersion || '—'}; activation waiting${managerUpdStatus.activeQueries != null ? ` for ${managerUpdStatus.activeQueries} active quer${managerUpdStatus.activeQueries === 1 ? 'y' : 'ies'} to drain` : ''}`
-                    : managerUpdStatus?.available
-                      ? `update available: v${managerUpdStatus.latestVersion || '—'}`
-                      : managerUpdStatus?.status === 'updated'
-                        ? `updated and active: v${managerUpdStatus.latestVersion || managerUpdStatus.installedVersion || '—'}`
-                        : managerUpdStatus?.configured
-                          ? `up to date${managerUpdStatus.latestVersion ? ` (latest v${managerUpdStatus.latestVersion})` : ''}`
-                          : managerUpdStatus?.bootstrapAvailable
-                            ? 'compatible manager installation required'
-                            : 'managed updater not configured'}
+          <span>Legal</span>
+          <b>
+            MIT licensed ·{' '}
+            <a
+              href="https://github.com/bobofbuilding/idacc/blob/main/LICENSE"
+              target="_blank"
+              rel="noreferrer"
+            >
+              view IDACC license
+            </a>
+            <span className="muted small"> · notice included with every installed app</span>
           </b>
-          <span>auto-download</span>
+          <span>Auto-download</span>
           <b>
             <input
               type="checkbox"
-              checked={upd?.autoUpgrade ?? true}
+              checked={upd?.autoUpgrade ?? false}
               onChange={(e) => void saveUpdate({ autoUpgrade: e.target.checked })}
             />{' '}
-            <span className="muted small">download updates automatically; restart still requires Restart & update</span>
+            <span className="muted small">when off, Check IDACC then choose Download update; every install still requires Restart & update</span>
           </b>
         </div>
+        {isAheadOfUpdateChannel(updStatus) ? (
+          <div className="muted small" style={{ marginTop: 8 }}>
+            This is not an up-to-date confirmation. This app only checks the isolated {updStatus?.channel ?? 'production'} channel, and that channel currently has no release matching this installation. Automatic checks will resume downloads when a newer release is published there.
+          </div>
+        ) : null}
         <div className="row-actions" style={{ marginTop: 10 }}>
-          <span className="muted small grow">{upd?.updateRepo ? `updates from GitHub releases · ${upd.updateRepo}` : ''}</span>
-          <button className="btn" onClick={() => void checkUpdate()}>Check IDACC</button>
-        </div>
-        <div className="row-actions" style={{ marginTop: 8 }}>
-          <span className="muted small grow" title={managerUpdStatus?.checkout}>
-            {managerUpdStatus?.source ? 'fast-forward tagged bobofbuilding/id-agents releases, validate, build, then activate when work drains' : 'install the compatible bobofbuilding/id-agents manager without replacing dirty or foreign checkouts'}
+          <span className="muted small grow">
+            IDACC updates through the {updStatus?.channel ?? 'production'} channel.
           </span>
-          <button className="btn" disabled={!!managerUpdBusy || !!managerUpdStatus?.busy || !managerUpdStatus?.configured} onClick={() => void checkManagerRelease()}>
-            {managerUpdBusy === 'check' ? 'Checking…' : 'Check manager'}
+          <button
+            className="btn"
+            disabled={updateApplying || updStatus?.checking || updStatus?.downloading || updStatus?.staged}
+            onClick={() => void checkUpdate()}
+          >
+            {updStatus?.checking ? 'Checking…' : 'Check IDACC'}
           </button>
-          <button className="btn primary" disabled={!!managerUpdBusy || !!managerUpdStatus?.busy || (!managerUpdStatus?.configured && !managerUpdStatus?.bootstrapAvailable)} onClick={() => void updateManagerRelease()}>
-            {managerUpdBusy === 'apply' ? managerUpdStatus?.configured ? 'Updating…' : 'Installing…' : !managerUpdStatus?.configured ? 'Install current manager' : managerUpdStatus?.pendingActivation ? 'Retry activation' : 'Update & sync manager'}
-          </button>
+          {updStatus?.available && !updStatus.staged && !(upd?.autoUpgrade ?? false) ? (
+            <button
+              className="btn primary"
+              disabled={updateApplying || updStatus.checking || updStatus.downloading}
+              onClick={() => void downloadVerifiedUpdate()}
+            >
+              {updStatus.downloading
+                ? `Downloading ${Math.round(updStatus.downloadPercent ?? 0)}%…`
+                : 'Download update'}
+            </button>
+          ) : null}
+          {updStatus?.available && updStatus.staged ? (
+            <button
+              className="btn primary"
+              disabled={updateApplying}
+              onClick={() => void applyVerifiedUpdate()}
+            >
+              {updateApplying ? 'Updating…' : 'Restart & update'}
+            </button>
+          ) : null}
         </div>
+        {updateApplyError ? <div className="small status-error" style={{ marginTop: 8 }}>{updateApplyError}</div> : null}
       </section>
 
       <section className="card">
-        <h3>Managed subscription sign-ins</h3>
+        <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>
+          <h3 style={{ margin: 0 }}>Managed subscription sign-ins</h3>
+          <span className="grow" />
+          <select
+            value={managedSubChoice}
+            onChange={(event) => setManagedSubChoice(event.target.value as SubKey | '')}
+            aria-label="Choose a subscription provider"
+          >
+            <option value="">Add subscription…</option>
+            {availableManagedSubRows.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+          </select>
+          <button className="btn" disabled={!managedSubChoice} onClick={addManagedSubscription}>Add</button>
+        </div>
         <p className="muted small" style={{ marginTop: -4 }}>
           Provider CLIs are separate vendor tools and are not bundled with IDACC. Install only the subscription runtimes you intend to use, then manage their sign-in here. Signed in means live CLI status; account linked means safe local account evidence. API-key providers are configured under <b>Inference backends</b>. Account status auto-checks on open, focus, and every 5 minutes; model freshness updates on explicit refresh.
         </p>
+        {!visibleManagedSubRows.length ? (
+          <p className="muted small">No subscription providers added. Choose one above to install, connect, or inspect it.</p>
+        ) : null}
         {visibleManagedSubRows.map(({ key, label, runtime }) => {
           const s = subs?.[key];
           const canInstall = s?.installed === false && s.installSupported;
@@ -2651,8 +3233,28 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
                         Sign out
                       </button>
                     ) : null}
+                    {key === 'kimi' ? (
+                      <a
+                        className="btn"
+                        href="https://www.kimi.com/membership/pricing"
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ textDecoration: 'none' }}
+                      >
+                        Plans
+                      </a>
+                    ) : null}
                   </span>
                 ) : null}
+                <button
+                  className="btn"
+                  style={{ marginLeft: 8 }}
+                  onClick={() => removeManagedSubscription(key)}
+                  title={`Remove ${label} from this list without uninstalling it or signing out`}
+                  aria-label={`Remove ${label} from managed subscriptions`}
+                >
+                  ×
+                </button>
               </b>
             </div>
           );
@@ -2663,6 +3265,20 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           </span>
           <button className="btn" disabled={subsBusy} onClick={() => void recheckSubs()}>{subsBusy ? 'Checking…' : 'Re-check now'}</button>
         </div>
+        {pendingSignin ? (
+          <div className="row-actions" style={{ marginTop: 8 }}>
+            <span className="muted small grow">
+              Finish the {MANAGED_SUB_ROWS.find((row) => row.key === pendingSignin)?.label ?? pendingSignin} sign-in flow, then confirm it here.
+            </span>
+            <button
+              className="btn primary"
+              disabled={subBusy === pendingSignin}
+              onClick={() => void confirmSignin(pendingSignin)}
+            >
+              {subBusy === pendingSignin ? 'Checking…' : 'I’ve finished — re-check'}
+            </button>
+          </div>
+        ) : null}
         {subNotice ? <p className="muted small" style={{ marginTop: 8 }}>{subNotice}</p> : null}
       </section>
 
@@ -2781,27 +3397,34 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             {ollamaCatalogMsg}
           </p>
         ) : null}
-        {localConc || concMsg ? (
-          <div className="row-actions local-concurrency-row" style={{ marginTop: 10 }}>
-            <span className="muted small">Local concurrency</span>
-            <select
-              className="cell-select"
-              value={concInput}
-              disabled={concBusy || !localConc}
-              onChange={(e) => setConcInput(e.target.value)}
-              title="How many local model requests the manager may run at the same time. Cloud and API runtimes are not capped here."
-            >
-              {LOCAL_CONCURRENCY_OPTIONS.map((n) => (
-                <option key={n} value={n}>{n} local model{n === 1 ? '' : 's'}</option>
-              ))}
-            </select>
-            <button className="btn primary" disabled={concBusy || !localConc || concInput === String(localConc?.concurrency)} onClick={() => void saveConc()}>
-              {concBusy ? 'Applying…' : 'Set concurrency'}
-            </button>
-            {localConc ? <span className="muted small">running {localConc.active}{localConc.queued ? ` · ${localConc.queued} queued` : ''}</span> : null}
-            {concMsg ? <span className={`small grow ${/fail|1–16/.test(concMsg) ? 'status-error' : 'ok-text'}`}>{concMsg}</span> : null}
-          </div>
-        ) : pullMsg ? (
+        <div className="row-actions local-concurrency-row" style={{ marginTop: 10 }}>
+          <span className="muted small">Local concurrency</span>
+          <select
+            className="cell-select"
+            value={concInput}
+            disabled={concBusy || !localConc}
+            onChange={(e) => setConcInput(e.target.value)}
+            title="How many local model requests the manager may run at the same time. Cloud and API runtimes are not capped here."
+          >
+            {LOCAL_CONCURRENCY_OPTIONS.map((n) => (
+              <option key={n} value={n}>{n} local model{n === 1 ? '' : 's'}</option>
+            ))}
+          </select>
+          <button className="btn primary" disabled={concBusy || !localConc || concInput === String(localConc?.concurrency)} onClick={() => void saveConc()}>
+            {concBusy ? 'Applying…' : 'Set concurrency'}
+          </button>
+          <button className="btn small" disabled={concBusy} onClick={() => void loadConc({ announce: true })}>Refresh</button>
+          {localConc ? <span className="muted small">live · running {localConc.active}{localConc.queued ? ` · ${localConc.queued} queued` : ''}</span> : null}
+          <span className={`small ${concAvailability === 'unavailable' ? 'status-error' : 'muted'}`}>
+            {concAvailability === 'checking'
+              ? 'checking…'
+              : concAvailability === 'unavailable'
+                ? 'manager unavailable'
+                : `updated ${Math.max(0, Math.round((Date.now() - concCheckedAt) / 1000))}s ago`}
+          </span>
+          {concMsg ? <span className={`small grow ${/fail|blocked|unavailable|1–16/.test(concMsg) ? 'status-error' : 'ok-text'}`}>{concMsg}</span> : null}
+        </div>
+        {pullMsg ? (
           <div className={`small ${/failed/.test(pullMsg) ? 'status-error' : pulling ? 'warn-text' : 'ok-text'}`}>{pullMsg}</div>
         ) : null}
 

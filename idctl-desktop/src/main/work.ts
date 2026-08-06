@@ -53,9 +53,9 @@ function enqueueBudgeted(client: ManagerClient, command: string, source: string)
 /** A task is complete once the manager reports a done/complete status. */
 function isTaskDone(status?: string): boolean { return /done|complete/i.test(status ?? ''); }
 
-/** Every identifier a created task might be keyed by, so a dependent's stored ref
- *  matches the prerequisite regardless of which field the create call returned. */
-function taskKeys(t: Task): string[] {
+/** Every identifier a completed task might be keyed by, so a dependent's stored ref
+ *  can match the prerequisite regardless of which field the create call returned. */
+function taskCompletionKeys(t: Task): string[] {
   return [t.shortId, t.name, t.uuid, t.title].filter(Boolean) as string[];
 }
 function taskRef(t: Task): string { return t.shortId ?? t.name ?? t.uuid ?? t.title; }
@@ -107,7 +107,7 @@ function taskBriefFlags(objective: string, st: Pick<SubTask, 'title' | 'descript
   const validation = 'Owning lead reviews the completion; default coder and researcher validate substantial cross-team work.';
   const outOfScope = 'Unrelated refactors, destructive operations, credential changes, and optional follow-up recommendations beyond this task.';
   const backlog = 'Non-required recommendations or low-relevance follow-ups become backlog candidates instead of live delegated work.';
-  const relevance = 'medium: improves managed-agent throughput and contributor readiness for Bittrees-related work.';
+  const relevance = 'medium: directly improves the requested workspace outcome and managed-agent throughput.';
   return [
     ['--goal', goalId],
     ['--expected-output', expected],
@@ -115,7 +115,7 @@ function taskBriefFlags(objective: string, st: Pick<SubTask, 'title' | 'descript
     ['--validation-path', validation],
     ['--out-of-scope', outOfScope],
     ['--backlog-policy', backlog],
-    ['--bittrees-relevance', relevance],
+    ['--work-relevance', relevance],
   ].map(([flag, value]) => `${flag} ${qArg(value)}`).join(' ');
 }
 
@@ -171,6 +171,18 @@ async function recentDoneTasks(client: ManagerClient): Promise<Task[]> {
   return client.tasksByStatus('done', { limit: WORK_COMPLETION_DONE_TASK_LIMIT }).catch(() => [] as Task[]);
 }
 
+function taskCompletionOrderValue(task: Task): number {
+  return Number(task.completedAt ?? task.updatedAt ?? task.createdAt ?? 0) || 0;
+}
+
+function taskCompletedAfter(task: Task, sinceMs: number): boolean {
+  return taskCompletionOrderValue(task) >= sinceMs;
+}
+
+export function taskMatchesCompletionWait(task: Task, ref: string, sinceMs: number): boolean {
+  return taskCompletedAfter(task, sinceMs) && taskCompletionKeys(task).includes(ref);
+}
+
 /** An agent is routable only when it's actually running. Anything clearly
  *  stopped/offline/errored is skipped so work never dispatches into the void. */
 export function isActiveStatus(status?: string): boolean {
@@ -217,6 +229,14 @@ function pickActiveLead(agents: { name: string; status?: string; metadata?: unkn
   return active
     .slice()
     .sort((a, b) => leadRank(a) - leadRank(b) || a.name.localeCompare(b.name))[0].name;
+}
+
+function pickConfiguredLead(agents: { name: string; status?: string; metadata?: unknown }[]): string | null {
+  const ranked = agents
+    .slice()
+    .sort((a, b) => leadRank(a) - leadRank(b) || a.name.localeCompare(b.name));
+  const lead = ranked[0];
+  return lead && leadRank(lead) < 5 ? lead.name : null;
 }
 
 function agentNameKey(name?: string): string {
@@ -310,9 +330,31 @@ async function resolveActiveTeamLeadTargets(baseClient: ManagerClient, currentTe
     .filter((team) => team !== currentTeam && team !== 'default');
   const targets = await Promise.all(
     names.map(async (team): Promise<TeamLeadDelegationTarget | null> => {
-      const agents = await baseClient.withTeam(team).agents().catch(() => [] as Agent[]);
+      const scoped = baseClient.withTeam(team);
+      let agents = await scoped.agents().catch(() => [] as Agent[]);
+      const configuredLead = pickConfiguredLead(agents);
+      if (configuredLead) {
+        const row = agents.find((agent) => agent.name === configuredLead);
+        if (row && !isActiveStatus(row.status)) {
+          try {
+            await scoped.remote(`/agent ${qArg(configuredLead)} start`);
+            for (let attempt = 0; attempt < 30; attempt += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              agents = await scoped.agents().catch(() => agents);
+              if (isActiveStatus(agents.find((agent) => agent.name === configuredLead)?.status)) break;
+            }
+          } catch {
+            // Do not route lead-owned work to an arbitrary active specialist.
+          }
+        }
+      }
       const activeCount = agents.filter((agent) => isActiveStatus(agent.status)).length;
-      const lead = pickActiveLead(agents);
+      const lead = configuredLead
+        && isActiveStatus(agents.find((agent) => agent.name === configuredLead)?.status)
+        ? configuredLead
+        : configuredLead
+          ? null
+          : pickActiveLead(agents);
       if (!lead || isDefaultValidatorName(lead)) return null;
       const row = agents.find((agent) => agent.name === lead);
       return {
@@ -892,21 +934,20 @@ export async function createAndDispatchPlan(
   // the chain forever (the auto-pilot re-dispatches stalled prereqs in the meantime).
   const COMPLETION_POLL_MS = 5000;
   const COMPLETION_TIMEOUT_MS = 20 * 60 * 1000;
-  const waiters: { ref: string; resolve: () => void; deadline: number }[] = [];
+  const waiters: { ref: string; sinceMs: number; resolve: () => void; deadline: number }[] = [];
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   const tickPoll = async (): Promise<void> => {
     if (!waiters.length) { if (pollTimer) { clearInterval(pollTimer); pollTimer = undefined; } return; }
     const snap = await recentDoneTasks(client);
-    const doneKeys = new Set<string>();
-    for (const t of snap) if (isTaskDone(t.status)) for (const k of taskKeys(t)) doneKeys.add(k);
     const now = Date.now();
     for (let k = waiters.length - 1; k >= 0; k--) {
       const w = waiters[k];
-      if (doneKeys.has(w.ref) || now >= w.deadline) { waiters.splice(k, 1); w.resolve(); }
+      const matched = snap.some((task) => isTaskDone(task.status) && taskMatchesCompletionWait(task, w.ref, w.sinceMs));
+      if (matched || now >= w.deadline) { waiters.splice(k, 1); w.resolve(); }
     }
   };
-  const waitForTaskDone = (ref: string): Promise<void> => new Promise((resolve) => {
-    waiters.push({ ref, resolve, deadline: Date.now() + COMPLETION_TIMEOUT_MS });
+  const waitForTaskDone = (ref: string, sinceMs: number): Promise<void> => new Promise((resolve) => {
+    waiters.push({ ref, sinceMs, resolve, deadline: Date.now() + COMPLETION_TIMEOUT_MS });
     if (!pollTimer) { pollTimer = setInterval(() => void tickPoll(), COMPLETION_POLL_MS); (pollTimer as { unref?: () => void }).unref?.(); }
   });
 
@@ -924,11 +965,12 @@ export async function createAndDispatchPlan(
     const deps = backDeps.map((d) => done[d]).filter(Boolean); // each resolves on prereq COMPLETION
     const prevForOwner = ownerChain[c.agent];
     const waits = prevForOwner ? [...deps, prevForOwner] : deps;
+    const completionSinceMs = Date.now();
     if (c.managerKickoff) {
       // Assigned lead parents are woken and prompted by the manager during
       // /task create. A second /ask duplicates the kickoff and consumes a
       // second query lane for the same task.
-      const p = Promise.allSettled(waits).then(() => waitForTaskDone(c.ref));
+      const p = Promise.allSettled(waits).then(() => waitForTaskDone(c.ref, completionSinceMs));
       ownerChain[c.agent] = p;
       return p;
     }
@@ -957,7 +999,7 @@ export async function createAndDispatchPlan(
       }
       // Hold this task's done-promise open until the task itself finishes — that's what gates
       // its dependents (and its owner's next task).
-      await waitForTaskDone(c.ref);
+      await waitForTaskDone(c.ref, completionSinceMs);
     });
     ownerChain[c.agent] = p; // the owner's next task waits for THIS one to complete
     return p;
@@ -1082,6 +1124,28 @@ export async function delegateObjectiveToTeamLeads(
 export interface TeamLead { team: string; lead: string | null; activeCount: number; totalCount: number }
 export interface FanoutResult { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string }
 
+const EXPLICIT_GENERAL_COUNSEL_REQUEST = /\b(?:idacc\s+)?general[-\s]+coun(?:cil|sel)\b|\bgeneral-counsel\b/i;
+const REPOSITORY_ACTION = /\b(?:audit|review|reconcile|merge|push|release|update|upgrade|validate|verify)\b/i;
+const REPOSITORY_OBJECT = /\b(?:git|repos?(?:itories)?|branches?|commits?|pull[-\s]+requests?)\b/i;
+const PROJECT_PORTFOLIO = /\b(?:all|each|every)\b[^.?!\n]{0,60}\bprojects?\b|\bprojects?\b[^.?!\n]{0,60}\b(?:one by one|1 by 1|across the board)\b/i;
+const REPOSITORY_AUTHORITY_TASK_NAME = 'audit-reconcile-authorized-projects';
+const REPOSITORY_AUTHORITY_TASK_TITLE = 'Audit reconcile authorized projects';
+
+function repositoryAuthorityRunId(now = new Date()): string {
+  return now.toISOString().replace(/\.\d{3}Z$/, 'Z').replace(/[^0-9TZ]/g, '').toLowerCase();
+}
+
+/**
+ * Keep the privileged repository path narrow. Ordinary policy or product text
+ * often contains both "update" and "projects"; that must not turn a legal or
+ * governance request into the hard-coded operations repository audit.
+ */
+export function isRepositoryAuthorityObjective(objective: string): boolean {
+  const value = String(objective || '');
+  return REPOSITORY_ACTION.test(value)
+    && (REPOSITORY_OBJECT.test(value) || PROJECT_PORTFOLIO.test(value));
+}
+
 /** For each team, report its active lead + how many agents are running. Drives the
  *  fan-out picker so the UI can show which teams can actually take work right now. */
 export async function teamLeads(client: ManagerClient, teams: string[]): Promise<TeamLead[]> {
@@ -1102,7 +1166,7 @@ ${objective}
 
 How to run it:
 1. Break it into concrete, independently-actionable tasks for your ACTIVE teammates (skip anyone stopped).
-2. Create each as a real task with dispatch-ready metadata: /task create "<short title>" --owner <teammate> --description "<what to do + expected output>" --goal "<goal id from objective, or goal_manual_dispatch>" --expected-output "<artifact or result>" --acceptance "<how to verify done>" --validation-path "coder and researcher review substantial work" --out-of-scope "<what not to do>" --backlog-policy "Non-required recommendations become backlog candidates." --bittrees-relevance "medium: improves managed-agent throughput and contributor readiness for Bittrees-related work."
+2. Create each as a real task with dispatch-ready metadata: /task create "<short title>" --owner <teammate> --description "<what to do + expected output>" --goal "<goal id from objective, or goal_manual_dispatch>" --expected-output "<artifact or result>" --acceptance "<how to verify done>" --validation-path "coder and researcher review substantial work" --out-of-scope "<what not to do>" --backlog-policy "Non-required recommendations become backlog candidates." --work-relevance "medium: directly improves the requested workspace outcome and managed-agent throughput."
 3. Dispatch the work, coordinate, and keep task status updated as things progress.
 4. Other teams are handling their own slices in parallel — own yours end to end.
 
@@ -1137,6 +1201,110 @@ export async function fanOutObjective(client: ManagerClient, objective: string, 
       }
     }),
   );
+}
+
+/**
+ * Chat's primary lead is a coordinator, not a single execution lane. Resolve the
+ * live non-default team leads at dispatch time and fan the objective out to them
+ * immediately. Keeping discovery in the main process prevents a stale renderer
+ * roster from silently omitting a team.
+ */
+export async function fanOutObjectiveToActiveTeamLeads(
+  client: ManagerClient,
+  objective: string,
+  currentTeam = 'default',
+): Promise<FanoutResult[]> {
+  const targets = await resolveActiveTeamLeadTargets(client, currentTeam);
+  if (!targets.length) {
+    return [{
+      team: currentTeam,
+      status: 'no-active-agent',
+      detail: 'no active non-default team leads are available',
+    }];
+  }
+  // An operator's explicit named destination outranks broad content routing.
+  // "General Council" is the user-facing name for legal/general-counsel.
+  if (EXPLICIT_GENERAL_COUNSEL_REQUEST.test(objective)) {
+    const legal = targets.find((target) => (
+      /^(?:legal|legal-team)$/i.test(target.team)
+      || /^general[-\s]+counsel$/i.test(target.lead)
+    ));
+    if (!legal) {
+      return [{
+        team: 'legal',
+        lead: 'general-counsel',
+        status: 'no-active-agent',
+        detail: 'the General Council was explicitly requested, but legal/general-counsel is not active',
+      }];
+    }
+    return fanOutObjective(client, objective, [legal.team]);
+  }
+
+  const repositoryAuthorityRequest = isRepositoryAuthorityObjective(objective);
+  if (!repositoryAuthorityRequest) {
+    return fanOutObjective(client, objective, targets.map((target) => target.team));
+  }
+
+  const operations = targets.find((target) => /^(?:operations-team|operations|ops-team|ops)$/i.test(target.team));
+  if (!operations) {
+    return [{
+      team: 'operations-team',
+      status: 'no-active-agent',
+      detail: 'the configured operations lead could not be started; repository work was not routed to another team',
+    }];
+  }
+
+  const scoped = client.withTeam(operations.team);
+  const existing = [
+    ...(await scoped.tasksByStatus('todo').catch(() => [] as Task[])),
+    ...(await scoped.tasksByStatus('doing').catch(() => [] as Task[])),
+  ].find((task) => task.name === REPOSITORY_AUTHORITY_TASK_NAME);
+  if (existing) {
+    const ref = existing.shortId || existing.name || REPOSITORY_AUTHORITY_TASK_NAME;
+    await scoped.remote(`/task jumpstart-stalled --task ${qArg(ref)}`).catch(() => {});
+    return [{
+      team: operations.team,
+      lead: operations.lead,
+      status: 'dispatched',
+      detail: `reused open task ${ref}; jumpstart requested`,
+    }];
+  }
+
+  const terminalHistory = (await scoped.tasksByStatus('done', { limit: WORK_COMPLETION_DONE_TASK_LIMIT }).catch(() => [] as Task[]))
+    .find((task) => task.name === REPOSITORY_AUTHORITY_TASK_NAME);
+  const runId = terminalHistory ? repositoryAuthorityRunId() : undefined;
+  const packet = FANOUT_PROMPT(objective, operations.team);
+  const created = await createAndDispatchPlan(scoped, objective, [{
+    title: runId ? `${REPOSITORY_AUTHORITY_TASK_TITLE} ${runId}` : REPOSITORY_AUTHORITY_TASK_TITLE,
+    agent: operations.lead,
+    description: packet,
+    dependsOn: [],
+  }], {
+    dispatch: true,
+    respectOwners: true,
+    allowCoordinatorOwners: true,
+    ownerOpenTaskCap: Math.max(WORK_OWNER_OPEN_TASK_CAP, WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP),
+    coordinator: operations.lead,
+    leadCoordination: true,
+    planId: runId ? `${REPOSITORY_AUTHORITY_TASK_NAME}-${runId}` : undefined,
+  });
+  const task = created.created[0];
+  if (!task?.ok) {
+    return [{
+      team: operations.team,
+      lead: operations.lead,
+      status: task?.deferred ? 'deferred' : 'failed',
+      detail: task?.error || task?.warning || 'the operations parent task was not accepted',
+    }];
+  }
+  return [{
+    team: operations.team,
+    lead: operations.lead,
+    status: 'dispatched',
+    detail: terminalHistory
+      ? `created fresh task ${task.ref}; previous ${REPOSITORY_AUTHORITY_TASK_NAME} is terminal`
+      : `created task ${task.ref}`,
+  }];
 }
 
 // ---- Lead triage of unassigned To-Do tasks --------------------------------

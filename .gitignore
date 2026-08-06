@@ -7,7 +7,18 @@ node_modules/
 dist/
 out/
 release/
+!release/
+release/*
+!release/runtime-lock.json
+!release/legacy-release-cutover.json
+!release/REVIEW-NOTICE.md
+!release/runtime-sources/
+!release/runtime-sources/**
+/idctl-desktop/release/
 dist-tauri/
+idctl-desktop/resources/idacc-runtime/
+/idctl-desktop/resources/THIRD_PARTY_NOTICES.md
+.runtime-sources/
 
 # Rust / Tauri build output (the src-tauri scaffold source IS tracked)
 src-tauri/target/
@@ -37,3 +48,6 @@ Thumbs.db
 
 # Runtime uploads (transient screenshots / attachments from the chat composer)
 uploads/
+
+# Local audit/release reports are operator artifacts, not application source.
+/output/

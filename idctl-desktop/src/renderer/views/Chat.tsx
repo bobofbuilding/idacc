@@ -1,7 +1,18 @@
 import { useMemo, useRef, useState, useEffect } from 'react';
 import { call, resolveCoordinator, agentsLeadFirst, type FleetStore } from '../store.ts';
+import {
+  CHAT_CONTROL_INTENT_USAGE,
+  isChatControlIntentCandidate,
+} from '../dashboard/chatIntents.ts';
 import type { ProjectEntry } from '../../../../idctl/src/settings/schema.ts';
-import type { ManagerEvent, ActivityStep } from '../../../../idctl/src/api/types.ts';
+import type { ActivityStep } from '../../../../idctl/src/api/types.ts';
+import { mergeExactQueryActivity } from '../../shared/chatActivity.ts';
+import {
+  buildAuthorizedProjectInventory,
+  isPrimaryLeadChatTarget,
+  shouldDelegatePrimaryLeadRequest,
+  stripDirectLeadOverride,
+} from '../../shared/chatDelegation.ts';
 
 type PickedFile = { path: string; name: string; size: number; isImage: boolean };
 type SavedFile = { name: string; path: string; size: number; isImage: boolean };
@@ -36,6 +47,10 @@ interface Session {
 type ChatSummary = { id: string; title: string; team: string; messageCount: number; updatedAt: number; unread?: boolean };
 type ImageResult = { ok: boolean; path?: string; dataUrl?: string; model?: string; costUsd?: number; error?: string };
 type QueryPoll = { status?: string; text?: string; error?: string };
+type FanoutResult = { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string };
+type LivePlan = { num?: string; title: string; file: string; status?: string; mtime?: number };
+type LivePlansResponse = { dir: string | null; plans: LivePlan[] };
+type PlanConsolidationResult = { ok: boolean; file?: string; num?: string; title?: string; status?: string; archived?: string[]; error?: string; stale?: boolean };
 
 /** Quote a free-text message as ONE token for the manager's tokenizer (matches client.ts qArg). */
 function qArg(s: string): string {
@@ -89,6 +104,17 @@ function isPlanRequest(text: string): boolean {
 function stripPlanCmd(text: string): string { return text.replace(PLAN_CMD, '').trim(); }
 function newPlanId(): string { return `plan_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
 
+function requestedPlanConsolidation(text: string): string[] | null {
+  if (!/\b(consolidat(?:e|ed|ing|ion)|merge|combine)\b/i.test(text)) return null;
+  const planAt = text.search(/\bplans?\b/i);
+  if (planAt < 0) return null;
+  const numbers = [...text.slice(planAt).matchAll(/#?(\d{1,3})\b/g)]
+    .map((match) => String(Number(match[1])))
+    .filter((value) => value !== '0');
+  const unique = [...new Set(numbers)];
+  return unique.length >= 2 && unique.length <= 12 ? unique : null;
+}
+
 const CHAT_CONTEXT_CHAR_BUDGET = 60_000;
 const CHAT_CONTEXT_MESSAGE_LIMIT = 80;
 const CHAT_MESSAGE_CHAR_BUDGET = 12_000;
@@ -138,6 +164,7 @@ function buildChatScopedPrompt(session: Session, target: string, currentMessage:
     session.projectId ? `Project focus id: ${session.projectId}` : '',
     '',
     'Context rule: answer this request using only the transcript below, the explicitly attached files/paths named in it, and any project focus stated in the transcript. Do not continue or rely on other Dashboard chats, other agent conversations, old runtime memory, or unrelated manager/task context unless it is quoted in this transcript.',
+    'Work-plan integrity rule: Work > Plans records are owned by IDACC core actions, not by Brain or an agent reply. Never claim a plan was created, consolidated, archived, or had its status changed unless this transcript includes an explicit IDACC core mutation receipt.',
     '',
     'Transcript:',
     transcript,
@@ -147,51 +174,10 @@ function buildChatScopedPrompt(session: Session, target: string, currentMessage:
 }
 
 // ---- Live "behind the scenes" feed -----------------------------------------
-// Turn raw manager events (seq > sinceSeq) into short, plain-English lines so a
-// running dispatch shows what the fleet is doing — including work farmed out to
-// other agents in parallel. Mirrors the Dashboard activity formatter, trimmed.
-const QUERY_VERB: Record<string, string> = {
-  dispatched: 'was asked', received: 'received the query', processing: 'is thinking',
-  delivered: 'replied', done: 'finished', complete: 'finished', completed: 'finished',
-  failed: 'failed', timeout: 'timed out', cancelled: 'was cancelled', queued: 'queued the query',
-};
-function sstr(x: unknown): string { return typeof x === 'string' ? x : ''; }
-function previewOf(d: Record<string, unknown>): string {
-  return sstr(d.message_preview) || sstr(d.preview) || sstr(d.message) || sstr(d.text) || sstr(d.title) || sstr(d.note);
-}
-export interface TraceLine { seq: number; line: string; cls: 'accent' | 'ok' | 'err'; at: number }
-// `sinceTs` is a wall-clock floor (the dispatch start). The store stamps LIVE
-// events with arrival time but leaves the historical replay batch unstamped, so
-// requiring a timestamp >= sinceTs keeps an empty/low-seq buffer from flooding
-// the feed with history (and prevents that history from being persisted).
-function traceLines(events: ManagerEvent[], sinceSeq: number, sinceTs: number, byId: Map<string, string>): TraceLine[] {
-  const name = (id: string) => (id ? byId.get(id) ?? (/^agent_\d+_/.test(id) ? '@' + id.replace(/^agent_\d+_/, '') : id) : '');
-  const out: TraceLine[] = [];
-  for (const e of events) {
-    if (!e || e.seq <= sinceSeq || (e.timestamp ?? 0) < sinceTs) continue;
-    const t = e.topic || '';
-    const d = e.data ?? {};
-    const who = name(sstr(d.agent) || sstr(e.actor) || sstr(d.from) || sstr(d.name));
-    let line = '';
-    let cls: TraceLine['cls'] = 'accent';
-    if (t.startsWith('query:')) {
-      const st = sstr(d.status) || t.split(':')[1] || '';
-      const verb = QUERY_VERB[st] || (st ? `query ${st}` : 'query');
-      const pv = previewOf(d);
-      line = `${who ? who + ' ' : ''}${verb}${pv ? ` · “${clip(pv, 80)}”` : ''}`;
-      cls = /fail|expired|error|timeout|cancel/.test(st) ? 'err' : /deliver|done|complete/.test(st) ? 'ok' : 'accent';
-    } else if (t.startsWith('task:')) {
-      line = [who, clip(previewOf(d) || sstr(d.status) || t.split(':')[1], 90)].filter(Boolean).join(' — ');
-    } else if (/relay|delegat|deleg|\bask\b/.test(t)) {
-      const to = name(sstr(d.to) || sstr(d.target) || sstr(d.delegate));
-      line = [who, to].filter(Boolean).join(' → ');
-    } else if (t.startsWith('agent:')) {
-      line = [who, t.split(':')[1]].filter(Boolean).join(' ');
-    } else continue; // skip noise (snapshots, heartbeat housekeeping, etc.)
-    if (line.trim()) out.push({ seq: e.seq, line: line.trim(), cls, at: e.timestamp ?? 0 });
-  }
-  return out.slice(-8);
-}
+// Only the Manager's query-ID-tagged activity stream is eligible for a Chat
+// reply. The broader event log is intentionally excluded: it is useful on the
+// Dashboard, but cannot safely attribute concurrent delegation events to one
+// exact reply.
 // Icon per activity kind for the inline "what the agent is doing" stream.
 const KIND_ICON: Record<string, string> = {
   file: '📝', read: '📖', run: '▶', search: '🔍', web: '🌐', delegate: '🤝', plan: '🧩', error: '⚠', tool: '🔧',
@@ -253,12 +239,11 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
   const [attachments, setAttachments] = useState<PickedFile[]>([]);
   const [canImage, setCanImage] = useState(false); // an image-capable provider is configured
   // Live "behind the scenes" feed for the in-flight dispatch (elapsed + fleet activity).
-  const [running, setRunning] = useState<{ sid: string; replyId: number; startedAt: number; sinceSeq: number; target: string; queryId: string } | null>(null);
+  const [running, setRunning] = useState<{ sid: string; replyId: number; startedAt: number; target: string; queryId: string } | null>(null);
   const [activitySteps, setActivitySteps] = useState<ActivityStep[]>([]); // the agent's live tool/file steps
   const activitySinceRef = useRef(0); // activity ring cursor for this dispatch
   const [, setTick] = useState(0); // 1 Hz re-render so the elapsed timer ticks
   const idRef = useRef(1);
-  const endRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null); // the scrollable messages container
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const stickRef = useRef(true);                // user is following the bottom (auto-scroll on) vs scrolled up to read
@@ -267,9 +252,9 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
   const sessionIdRef = useRef(''); // the currently-active session id (for late-arriving replies)
   const sessionRef = useRef<Session | null>(null); // mirror of the active session (to persist a gated empty chat)
   const deletedRef = useRef<Set<string>>(new Set()); // sessions deleted this run — drop their late writes
-  const storeEventsRef = useRef(store.events); // fresh manager events for a background dispatch's trace
   const aliveRef = useRef(true); // false once unmounted (Chat view not on screen) → late replies count as unread
   const sendingRef = useRef(false); // synchronous single-flight latch: true from send() entry until inflight is committed
+  const chatDeleteRef = useRef(false); // destructive single-flight latch (state updates render asynchronously)
   const activePollsRef = useRef<Set<string>>(new Set()); // queryIds currently being polled (dedup resume)
   const recoveryPollsRef = useRef<Set<string>>(new Set()); // stale failed bubbles already being checked
   useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
@@ -280,19 +265,6 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     void call('chats:markRead', sid).then(() => { void store.refreshChatUnread(); void refreshList(); }).catch(() => {});
   }
 
-  // Resolve agent ids → readable names for the live activity feed.
-  const agentNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const a of store.agents) { if (a.id) m.set(a.id, a.name); m.set(a.name, a.name); }
-    return m;
-  }, [store.agents]);
-  // Behind-the-scenes activity for the running dispatch (events after it started).
-  // Floor timestamps a hair before startedAt to tolerate stamp/poll ordering.
-  const liveTrace = useMemo(
-    () => (running ? traceLines(store.events, running.sinceSeq, running.startedAt - 1500, agentNameById) : []),
-    [running, store.events, agentNameById],
-  );
-  useEffect(() => { storeEventsRef.current = store.events; }, [store.events]);
   // The live-feed UI is DERIVED from the viewed session's persisted inflight, so
   // it's correct after navigation/switch/restart regardless of which poll loop
   // is delivering. Re-floors the activity feed + re-spins the reply bubble — but
@@ -303,9 +275,10 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     const reply = inf ? session?.messages.find((x) => x.id === inf.replyId) : undefined;
     const alreadyDelivered = !!(reply && hasReplyContent(reply) && !isRecoverableFailureText(reply.text));
     if (inf?.queryId && session && !alreadyDelivered) {
-      const sinceSeq = store.events.reduce((mx, e) => Math.max(mx, e?.seq ?? 0), 0);
-      setRunning({ sid: session.id, replyId: inf.replyId, startedAt: inf.startedAt, target: inf.target, queryId: inf.queryId, sinceSeq });
-      activitySinceRef.current = -1;
+      setRunning({ sid: session.id, replyId: inf.replyId, startedAt: inf.startedAt, target: inf.target, queryId: inf.queryId });
+      // Exact query attribution makes it safe to replay this dispatch from the
+      // current activity ring, including fast steps emitted before the first poll.
+      activitySinceRef.current = 0;
       setActivitySteps([]);
       setSession((cur) => (cur && cur.id === session.id && cur.inflight?.queryId === inf.queryId
         ? { ...cur, messages: cur.messages.map((x) => (x.id === inf.replyId && !x.pending ? { ...x, pending: true } : x)) }
@@ -322,24 +295,24 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     return () => clearInterval(t);
   }, [running]);
   // While a dispatch runs, poll the target agent's live tool/file activity and
-  // stream it inline (Claude-app style). Cursor was floored at dispatch start.
+  // stream it inline (Claude-app style).
   useEffect(() => {
     if (!running) return;
     let alive = true;
+    let polling = false;
     const poll = async () => {
+      if (polling) return;
+      polling = true;
       const since = activitySinceRef.current;
-      const r = await call<{ items: ActivityStep[]; next_seq: number }>('activity:get', running.target, Math.max(0, since), team, running.queryId).catch(() => null);
-      if (!alive || !r) return;
-      if (since < 0) { activitySinceRef.current = r.next_seq ?? 0; return; } // first poll floors the cursor — skip any pre-dispatch backlog
-      if (Array.isArray(r.items) && r.items.length) {
-        activitySinceRef.current = r.items[r.items.length - 1].seq;
-        setActivitySteps((prev) => [...prev, ...r.items].slice(-60));
-      } else if (typeof r.next_seq === 'number' && r.next_seq < activitySinceRef.current) {
-        // The activity ring is BEHIND our cursor — the manager restarted and reset
-        // its in-memory ring below where we were polling, so since=N returns nothing
-        // forever and the live "what the agent is doing" feed freezes. Resync to the
-        // new tail so the agent's ongoing steps stream again.
-        activitySinceRef.current = r.next_seq;
+      try {
+        const r = await call<{ items: ActivityStep[]; next_seq: number }>('activity:get', running.target, Math.max(0, since), team, running.queryId).catch(() => null);
+        if (!alive || !r) return;
+        activitySinceRef.current = typeof r.next_seq === 'number' ? r.next_seq : since;
+        if (Array.isArray(r.items) && r.items.length) {
+          setActivitySteps((prev) => mergeExactQueryActivity(prev, r.items, running.queryId, 60));
+        }
+      } finally {
+        polling = false;
       }
     };
     void poll();
@@ -389,7 +362,9 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     sessionIdRef.current = s.id;
     // Viewing it clears unread — in memory (so a later save doesn't re-flag it)
     // and on disk (the badge reads the file).
-    setSession(s.unread ? { ...s, unread: false } : s);
+    const visible = s.unread ? { ...s, unread: false } : s;
+    sessionRef.current = visible;
+    setSession(visible);
     setInput(readDraft(s.id));
     setAttachments(readDraftAttachments(s.id));
     if (s.unread) markRead(s.id);
@@ -513,7 +488,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
   // Stay pinned to the latest as new content arrives — including the live
   // activity feed + trace that stream in while an agent works — UNLESS the user
   // has scrolled up to read (then we don't yank them back down).
-  useEffect(() => { if (stickRef.current) scrollToBottom(!running); }, [session?.messages, activitySteps, liveTrace, running, attachments]);
+  useEffect(() => { if (stickRef.current) scrollToBottom(!running); }, [session?.messages, activitySteps, running, attachments]);
   // Jump straight to the bottom (no animation) when the open chat changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { stickRef.current = true; scrollToBottom(false); }, [session?.id]);
@@ -558,14 +533,50 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
 
   /** Persist the active session + refresh the list. */
   function persist(next: Session) {
-    next.updatedAt = Date.now();
+    const saved = { ...next, updatedAt: Date.now() };
+    sessionRef.current = saved;
+    setSession(saved);
+    void call('chats:save', saved).then(refreshList).catch(() => {});
+  }
+
+  /** Apply a targeted main-process patch, falling back to the latest active
+   * snapshot only when this is a brand-new chat whose file does not exist yet. */
+  async function patchSessionOnDisk(sid: string, patchFields: Record<string, unknown>, fallback?: Session): Promise<boolean> {
+    if (deletedRef.current.has(sid)) return false;
+    let result: { ok: boolean };
+    try {
+      result = await call<{ ok: boolean }>('chats:patch', sid, patchFields);
+    } catch {
+      // A rejected IPC is not evidence that the file is missing. Do not turn a
+      // transient bridge failure into a full-snapshot overwrite.
+      return false;
+    }
+    if (result.ok) return true;
+    const latest = sessionRef.current?.id === sid ? sessionRef.current : fallback;
+    if (!latest || deletedRef.current.has(sid)) return false;
+    const saved = await call<{ ok?: boolean }>('chats:save', latest).catch(() => ({ ok: false }));
+    return saved?.ok !== false;
+  }
+
+  /** Update the active renderer snapshot and persist only the fields that
+   * changed. This prevents a title/focus/message append from overwriting a
+   * reply that lands concurrently in the same chat file. */
+  async function patchActiveSession(fn: (s: Session) => Session, patchFields: Record<string, unknown>): Promise<boolean> {
+    const current = sessionRef.current;
+    if (!current) return false;
+    const next = { ...fn({ ...current }), updatedAt: Date.now() };
+    sessionRef.current = next;
     setSession(next);
-    void call('chats:save', next).then(refreshList).catch(() => {});
+    const ok = await patchSessionOnDisk(current.id, patchFields, next);
+    void refreshList();
+    return ok;
   }
-  function patch(fn: (s: Session) => Session) {
-    setSession((cur) => { if (!cur) return cur; const next = fn({ ...cur }); next.updatedAt = Date.now(); void call('chats:save', next).then(refreshList).catch(() => {}); return next; });
+  function pushMsgs(...m: Msg[]) {
+    void patchActiveSession(
+      (s) => ({ ...s, messages: [...s.messages, ...m] }),
+      { appendMessages: m },
+    );
   }
-  function pushMsgs(...m: Msg[]) { patch((s) => ({ ...s, messages: [...s.messages, ...m] })); }
   /** Apply a late update (agent reply / generated image) to the message in
    *  session `sid` — even if the user has since switched to another chat. Drops
    *  it if that chat was deleted; the file is authoritative so nothing is lost. */
@@ -575,19 +586,27 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     // session; otherwise it lands as unread so the nav badge surfaces it.
     const seen = aliveRef.current && sessionIdRef.current === sid;
     // Reflect immediately if that session is the one on screen.
-    setSession((cur) => (cur && cur.id === sid
-      ? { ...cur, messages: cur.messages.map((x) => (x.id === id ? { ...x, ...patchMsg } : x)), unread: false, updatedAt: Date.now() }
-      : cur));
+    const active = sessionRef.current;
+    let activePatched: Session | undefined;
+    if (active?.id === sid) {
+      activePatched = {
+        ...active,
+        messages: active.messages.map((x) => (x.id === id ? { ...x, ...patchMsg } : x)),
+        unread: false,
+        updatedAt: Date.now(),
+      };
+      sessionRef.current = activePatched;
+      setSession(activePatched);
+    }
     // Authoritative + atomic: patch only this message + unread on the file
     // (main-side read-merge-write) so a concurrent title-gen / system-notice
     // write can't clobber the reply. If the file doesn't exist yet (an empty
     // chat wasn't cached) but it's the active one, persist the in-memory session.
-    const r = await call<{ ok: boolean }>('chats:patch', sid, { patchMessage: { id, patch: patchMsg }, unread: !seen }).catch(() => ({ ok: false }));
-    if (!r.ok && !deletedRef.current.has(sid) && sessionRef.current && sessionRef.current.id === sid) {
-      const cur = sessionRef.current;
-      const patched = { ...cur, messages: cur.messages.map((x) => (x.id === id ? { ...x, ...patchMsg } : x)), unread: !seen, updatedAt: Date.now() };
-      await call('chats:save', patched).catch(() => {});
-    }
+    await patchSessionOnDisk(
+      sid,
+      { patchMessage: { id, patch: patchMsg }, unread: !seen },
+      activePatched ? { ...activePatched, unread: !seen } : undefined,
+    );
     if (!seen) void store.refreshChatUnread(); // surface the new unread on the badge (no poll-loop restart)
     void refreshList();
   }
@@ -596,9 +615,12 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
    *  main-side append so it can't clobber a concurrent reply/title write. */
   async function appendSystem(sid: string, text: string) {
     const m: Msg = { id: idRef.current++, role: 'system', who: '', text };
-    if (sessionRef.current?.id === sid) { pushMsgs(m); return; }
     if (deletedRef.current.has(sid)) return;
-    await call('chats:patch', sid, { appendMessage: m }).catch(() => {});
+    if (sessionRef.current?.id === sid) {
+      await patchActiveSession((s) => ({ ...s, messages: [...s.messages, m] }), { appendMessage: m });
+      return;
+    }
+    await patchSessionOnDisk(sid, { appendMessage: m });
     void refreshList();
   }
   /** Save a chat reply as a Plan (Work › Plans). Returns the plan title, or '' on failure. */
@@ -640,25 +662,16 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     throw new Error(lastErr);
   }
 
-  /** Compact "what the agent did" trace: THIS dispatch's own polled activity steps
-   *  (per-dispatch buffer, floored at start — not the viewed session's shared feed)
-   *  plus delegations seen on the manager event log since it started. The activity
-   *  steps are now queryId-filtered (`activity:get` passes inf.queryId), so even two
-   *  concurrent dispatches to the same agent get exact per-dispatch attribution.
-   *  The manager EVENT log (delegation lines) still carries agent+time but no
-   *  queryId, so those remain a best-effort, time-windowed annotation — never
-   *  load-bearing (the reply itself is queryId-keyed). */
-  function buildTrace(steps: ActivityStep[], startedAt: number): { steps: string[]; delegations: string[] } {
+  /** Compact "what the agent did" trace from this dispatch's exact query-ID
+   * activity buffer. Delegate-kind steps get their own visible strand; broad
+   * Manager events are never mixed into a reply. */
+  function buildTrace(steps: ActivityStep[]): { steps: string[]; delegations: string[] } {
     // The agent's OWN behind-the-scenes work (background tasks). Delegate-kind
     // steps are pulled out into their own strand below, not mixed in here.
     const own = steps.filter((s) => s.kind !== 'delegate').map(actLine).slice(-14);
-    // Work farmed out to others: delegate-kind activity + delegation/relay lines
-    // seen on the manager event log since this dispatch started (best-effort,
-    // time-windowed — the reply itself stays queryId-keyed).
+    // Work farmed out to others, still attributed by this exact query id.
     const delegSteps = steps.filter((s) => s.kind === 'delegate').map(actLine);
-    const delegEvents = traceLines(storeEventsRef.current, 0, startedAt - 1500, agentNameById)
-      .filter((t) => / → |delegated|replied/.test(t.line)).slice(-4).map((t) => `${whenTime(t.at)} ${t.line}`.trim());
-    return { steps: own, delegations: [...delegSteps, ...delegEvents].slice(-8) };
+    return { steps: own, delegations: delegSteps.slice(-8) };
   }
   /** Always-available one-line summary of what produced a reply, rolled up from
    *  its own steps + delegations — the deterministic fallback shown in the
@@ -675,8 +688,12 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
    *  inflight, and run the plan-save on a successful reply. */
   async function deliverInflight(sid: string, inf: Inflight, patch: Partial<Msg>, isReply = false) {
     await resolveMsg(sid, inf.replyId, { queryId: inf.queryId, ...patch, pending: false });
-    await call('chats:patch', sid, { inflight: null }).catch(() => {});
-    setSession((cur) => (cur && cur.id === sid ? { ...cur, inflight: null } : cur));
+    await patchSessionOnDisk(sid, { inflight: null });
+    if (sessionRef.current?.id === sid) {
+      const next = { ...sessionRef.current, inflight: null };
+      sessionRef.current = next;
+      setSession(next);
+    }
     // Plan context rides on the inflight record (not a closure arg), so the
     // auto-save still runs when the reply lands via a resume/restart poll.
     if (isReply && inf.plan?.request) {
@@ -722,20 +739,19 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     let warnedUnreachable = false;
     // This dispatch's OWN activity buffer (NOT the shared viewed-session refs), so
     // the trace we persist is this agent's steps even when another chat is on screen.
-    let actCursor = -1; // -1 → floor on first poll (skip pre-dispatch backlog)
+    let actCursor = 0;
     const actSteps: ActivityStep[] = [];
     const pollActivity = async () => {
       const r = await call<{ items: ActivityStep[]; next_seq: number }>('activity:get', inf.target, Math.max(0, actCursor), team, inf.queryId).catch(() => null);
       if (!r) return;
-      if (actCursor < 0) { actCursor = r.next_seq ?? 0; return; }
+      actCursor = typeof r.next_seq === 'number' ? r.next_seq : actCursor;
       if (Array.isArray(r.items) && r.items.length) {
-        actCursor = r.items[r.items.length - 1].seq;
-        actSteps.push(...r.items);
-        if (actSteps.length > 80) actSteps.splice(0, actSteps.length - 80);
+        const merged = mergeExactQueryActivity(actSteps, r.items, inf.queryId, 80);
+        actSteps.splice(0, actSteps.length, ...merged);
       }
     };
     try {
-      await pollActivity(); // floor this dispatch's activity cursor at start
+      await pollActivity();
       while (aliveRef.current && !deletedRef.current.has(sid)) {
         let q: QueryPoll | null = null;
         try {
@@ -760,21 +776,17 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
         if (deletedRef.current.has(sid)) return;
         await pollActivity(); // keep this dispatch's own trace fresh
         if (q?.status === 'delivered') {
-          const { steps: own, delegations } = buildTrace(actSteps, inf.startedAt);
+          const { steps: own, delegations } = buildTrace(actSteps);
           const text = q.text || '(empty reply)';
-          // Deliver immediately with a deterministic reasoning rollup (never empty),
-          // then best-effort UPGRADE the summary to a free local-Ollama paraphrase
-          // of the reply — same path the title gen uses; leaves the rollup if Ollama
-          // is unavailable. Fired async so the reply isn't delayed by inference.
+          // Deliver with only the exact query activity trace. Model-generated
+          // paraphrases are intentionally excluded because they can invent an
+          // action that did not occur.
           await deliverInflight(sid, inf, {
             text,
             trace: own.length ? own : undefined,
             delegations: delegations.length ? delegations : undefined,
             reasoning: deterministicReason(own, delegations) || undefined,
           }, true);
-          void call<string>('chat:genReason', text)
-            .then((r) => { if (r && r.trim()) void resolveMsg(sid, inf.replyId, { reasoning: clip(r.trim(), 100) }); })
-            .catch(() => {});
           return;
         }
         if (q?.status === 'failed' || q?.status === 'expired') {
@@ -782,7 +794,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
           const confirmed = await confirmRecoverableTerminal(inf, q);
           if (!confirmed) { await new Promise((r) => setTimeout(r, 1500)); continue; }
           if (confirmed.status === 'delivered') {
-            const { steps: own, delegations } = buildTrace(actSteps, inf.startedAt);
+            const { steps: own, delegations } = buildTrace(actSteps);
             const text = confirmed.text || '(empty reply)';
             await deliverInflight(sid, inf, {
               text,
@@ -790,9 +802,6 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
               delegations: delegations.length ? delegations : undefined,
               reasoning: deterministicReason(own, delegations) || undefined,
             }, true);
-            void call<string>('chat:genReason', text)
-              .then((r) => { if (r && r.trim()) void resolveMsg(sid, inf.replyId, { reasoning: clip(r.trim(), 100) }); })
-              .catch(() => {});
             return;
           }
           if (confirmed.status === 'pending' || confirmed.status === 'processing') {
@@ -842,12 +851,59 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     // Commit the inflight to STATE first so the derived composer lock (`inflight`)
     // is continuously held — only THEN release `busy`, leaving no window where both
     // are false and a second send could slip through. Persist + poll after.
-    setSession((cur) => (cur && cur.id === sid
-      ? { ...cur, inflight: inf, messages: cur.messages.map((x) => (x.id === replyId ? { ...x, queryId: inf.queryId } : x)) }
-      : cur));
+    let inflightSnapshot: Session | undefined;
+    if (sessionRef.current?.id === sid) {
+      inflightSnapshot = {
+        ...sessionRef.current,
+        inflight: inf,
+        messages: sessionRef.current.messages.map((x) => (x.id === replyId ? { ...x, queryId: inf.queryId } : x)),
+      };
+      sessionRef.current = inflightSnapshot;
+      setSession(inflightSnapshot);
+    }
     setBusy(false);
-    await call('chats:patch', sid, { inflight: inf, patchMessage: { id: replyId, patch: { queryId: inf.queryId } } }).catch(() => {});
+    await patchSessionOnDisk(
+      sid,
+      { inflight: inf, patchMessage: { id: replyId, patch: { queryId: inf.queryId } } },
+      inflightSnapshot,
+    );
     void pollInflight(sid, inf);
+  }
+
+  /** Deterministic primary-lead routing. This returns as soon as the Manager has
+   * accepted the parallel team-lead queries; the resulting task rows and agent
+   * activity continue in Work and Dashboard without locking this chat for the
+   * duration of the entire objective. */
+  async function beginLeadDelegation(sid: string, replyId: number, scopedMessage: string): Promise<boolean> {
+    let results: FanoutResult[];
+    try {
+      results = await call<FanoutResult[]>('work:fanoutToTeamLeads', scopedMessage, team);
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      await resolveMsg(sid, replyId, { role: 'system', text: `✗ Lead delegation could not start: ${raw}`, pending: false });
+      setBusy(false);
+      return true;
+    }
+    const dispatched = results.filter((row) => row.status === 'dispatched');
+    const deferred = results.filter((row) => row.status === 'deferred');
+    const failed = results.filter((row) => row.status !== 'dispatched' && row.status !== 'deferred');
+    const destinations = dispatched.map((row) => `${row.team}/${row.lead || 'lead'}`);
+    const issues = [...deferred, ...failed].map((row) => `${row.team}: ${row.detail || row.status}`);
+    const text = dispatched.length
+      ? [
+          `Delegated immediately to ${dispatched.length} team lead${dispatched.length === 1 ? '' : 's'}: ${destinations.join(', ')}.`,
+          'Their teams are running in parallel. Progress and child tasks remain visible in Work and Dashboard; this chat is available now instead of waiting on one lead lane.',
+          issues.length ? `Not started: ${issues.join(' · ')}` : '',
+        ].filter(Boolean).join('\n\n')
+      : `✗ Lead delegation did not start. ${issues.join(' · ') || 'No active team leads are available.'}`;
+    await resolveMsg(sid, replyId, {
+      text,
+      pending: false,
+      delegations: destinations.map((destination) => `Manager dispatched to ${destination}`),
+      reasoning: dispatched.length ? `delegated to ${dispatched.length} team lead${dispatched.length === 1 ? '' : 's'}` : 'delegation blocked',
+    });
+    setBusy(false);
+    return true;
   }
 
   function newChat() { const s = blankSession(); adoptSession(s); persist(s); }
@@ -857,34 +913,87 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     if (s) adoptSession(s);
   }
   async function deleteChat(id: string) {
-    const which = sessions.find((s) => s.id === id)?.title || session?.title || 'this chat';
-    if (!window.confirm(`Delete “${which}”? This can't be undone.`)) return;
-    deletedRef.current.add(id); // drop any in-flight reply destined for this chat
-    try { localStorage.removeItem(draftKey(id)); localStorage.removeItem(attachKey(id)); } catch { /* ignore */ }
-    await call('chats:remove', id).catch(() => {});
-    void store.refreshChatUnread(); // removing an unread chat must drop the badge now
-    const list = await call<ChatSummary[]>('chats:list', team).catch(() => []);
-    setSessions(list);
-    if (id === session?.id) {
-      if (list[0]) await openChat(list[0].id);
-      else { const s = blankSession(); adoptSession(s); persist(s); }
+    if (chatDeleteRef.current) return;
+    chatDeleteRef.current = true;
+    try {
+      const fresh = await call<Session | null>('chats:get', id).catch(() => null);
+      const active = sessionRef.current?.id === id ? sessionRef.current : null;
+      const rendered = fresh ?? active;
+      const which = rendered?.title || sessions.find((s) => s.id === id)?.title || 'this chat';
+      const waiting = !!rendered?.inflight?.queryId;
+      if (!window.confirm(
+        `Delete “${which}”? This can't be undone.`
+        + (waiting ? '\n\nAn agent reply is still in progress. Deleting now permanently discards that pending reply.' : ''),
+      )) return;
+
+      // A reply can land while the confirmation dialog is open. Never delete a
+      // newly changed conversation without letting the user review it first.
+      const confirmed = await call<Session | null>('chats:get', id).catch(() => null);
+      if (fresh && (!confirmed
+        || confirmed.updatedAt !== fresh.updatedAt
+        || confirmed.messages.length !== fresh.messages.length
+        || confirmed.inflight?.queryId !== fresh.inflight?.queryId)) {
+        window.alert('Delete blocked: this chat changed while confirmation was open. Review the latest reply before deleting it.');
+        if (confirmed) adoptSession(confirmed);
+        void refreshList();
+        return;
+      }
+      if (!fresh && confirmed) {
+        window.alert('Delete blocked: this chat was saved while confirmation was open. Review it before deleting.');
+        adoptSession(confirmed);
+        void refreshList();
+        return;
+      }
+
+      deletedRef.current.add(id); // drop any in-flight reply destined for this chat
+      const removed = await call<{ ok?: boolean }>('chats:remove', id).catch(() => ({ ok: false }));
+      if (!removed?.ok) {
+        deletedRef.current.delete(id);
+        window.alert('Delete failed: IDACC could not confirm that the chat was removed.');
+        return;
+      }
+      try { localStorage.removeItem(draftKey(id)); localStorage.removeItem(attachKey(id)); } catch { /* ignore */ }
+      void store.refreshChatUnread(); // removing an unread chat must drop the badge now
+      const list = await call<ChatSummary[]>('chats:list', team).catch(() => []);
+      setSessions(list);
+      if (id === sessionRef.current?.id) {
+        if (list[0]) {
+          const next = await call<Session | null>('chats:get', list[0].id).catch(() => null);
+          if (next) adoptSession(next);
+          else { const blank = blankSession(); adoptSession(blank); persist(blank); }
+        } else {
+          const blank = blankSession();
+          adoptSession(blank);
+          persist(blank);
+        }
+      }
+    } finally {
+      chatDeleteRef.current = false;
     }
   }
-  function setTarget(name: string) { patch((s) => ({ ...s, target: name })); }
-  function setFocus(pid: string) { patch((s) => ({ ...s, projectId: pid })); }
-  function rename(title: string) { patch((s) => ({ ...s, title, named: true })); }
+  function setTarget(name: string) { void patchActiveSession((s) => ({ ...s, target: name }), { target: name }); }
+  function setFocus(pid: string) { void patchActiveSession((s) => ({ ...s, projectId: pid }), { projectId: pid }); }
+  function rename(title: string) { void patchActiveSession((s) => ({ ...s, title, named: true }), { title, named: true }); }
   function autoTitle(text: string) {
     // Immediate fallback name from the first message — unless the user has renamed it.
-    patch((s) => (s.named ? s : { ...s, title: clip(text.replace(/\s+/g, ' '), 48) }));
+    const current = sessionRef.current;
+    if (!current || current.named) return;
+    const title = clip(text.replace(/\s+/g, ' '), 48);
+    void patchActiveSession((s) => (s.named ? s : { ...s, title }), { autoTitle: title });
   }
   /** Apply a generated title to session `sid` even after a chat switch; never
    *  overrides a user rename, and persists to the file (or in-memory if not yet cached). */
   async function applyAutoTitle(sid: string, title: string) {
     if (!title || deletedRef.current.has(sid)) return;
-    setSession((cur) => (cur && cur.id === sid && !cur.named ? { ...cur, title } : cur));
+    let activeTitled: Session | undefined;
+    if (sessionRef.current?.id === sid && !sessionRef.current.named) {
+      activeTitled = { ...sessionRef.current, title };
+      sessionRef.current = activeTitled;
+      setSession(activeTitled);
+    }
     // Atomic main-side: sets the title only if not user-named, without bumping
     // updatedAt (no reorder) and without clobbering a concurrent reply write.
-    await call('chats:patch', sid, { autoTitle: title, touch: false }).catch(() => {});
+    await patchSessionOnDisk(sid, { autoTitle: title, touch: false }, activeTitled);
     void refreshList();
   }
   /** Generate a concise title from the opening message (local Ollama; best-effort). */
@@ -932,6 +1041,10 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
       const repo = (focused.links ?? []).find((l) => /github\.com/i.test(l));
       parts.push(`[Focus: project "${focused.name}"${focused.path ? ` at ${focused.path}` : ''}${repo ? ` — repo ${repo}` : ''}]`);
     }
+    if (!focused) {
+      const inventory = buildAuthorizedProjectInventory(text, projects);
+      if (inventory) parts.push(inventory);
+    }
     if (text) parts.push(text);
     if (saved.length) parts.push(`[I attached ${saved.length} file(s); read them at these paths:\n${saved.map((f) => `- ${f.path}${f.isImage ? ' (image)' : ''}`).join('\n')}]`);
     return parts.join('\n\n');
@@ -943,8 +1056,92 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     // and the inflight being committed, where state-based guards could both read
     // false within one render and let a fast second Enter/Send double-dispatch.
     if ((!text && attachments.length === 0) || busy || sendingRef.current || !session || !!session.inflight) return;
-    if (text && attachments.length === 0 && onControlIntent?.(text)) {
+    if (text && onControlIntent) {
+      const reservedControlIntent = isChatControlIntentCandidate(text);
+      if (reservedControlIntent && attachments.length > 0) {
+        pushMsgs({
+          id: idRef.current++,
+          role: 'system',
+          who: '',
+          text: `Control commands cannot include attachments; no command was sent. Remove the attachment and use ${CHAT_CONTROL_INTENT_USAGE}.`,
+        });
+        return;
+      }
+      if (onControlIntent(text)) {
+        setInput('');
+        return;
+      }
+      if (reservedControlIntent) {
+        pushMsgs({
+          id: idRef.current++,
+          role: 'system',
+          who: '',
+          text: `Control command syntax was not recognized; no command was sent. Use ${CHAT_CONTROL_INTENT_USAGE}.`,
+        });
+        return;
+      }
+    }
+    const consolidationNumbers = text && attachments.length === 0
+      ? requestedPlanConsolidation(text)
+      : null;
+    if (consolidationNumbers) {
+      const sid = session.id;
+      const actionId = idRef.current++;
+      sendingRef.current = true;
+      stickRef.current = true;
+      setBusy(true);
+      pushMsgs(
+        { id: idRef.current++, role: 'you', who: 'you', text },
+        { id: actionId, role: 'system', who: '', text: 'Checking the selected Work plans…', pending: true },
+      );
       setInput('');
+      autoTitle(text);
+      void genTitle(sid, text);
+      try {
+        const live = await call<LivePlansResponse>('brain:plans').catch(() => ({ dir: null, plans: [] }));
+        const selected = consolidationNumbers.map((number) => (
+          live.plans.find((plan) => String(Number(plan.num ?? /^(\d+)/.exec(plan.file)?.[1] ?? '0')) === number)
+        ));
+        const missing = consolidationNumbers.filter((_number, index) => !selected[index]);
+        if (missing.length) {
+          await resolveMsg(sid, actionId, {
+            text: `✗ No plans were changed. Plan${missing.length === 1 ? '' : 's'} ${missing.join(', ')} could not be found in the current Work plan list.`,
+            pending: false,
+          });
+          return;
+        }
+        const plans = selected as LivePlan[];
+        const label = plans.map((plan) => `${plan.num ?? plan.file} “${plan.title}”`).join(' and ');
+        if (!window.confirm(`Consolidate ${label}?\n\nThe original files will be retained in the private plan archive.`)) {
+          await resolveMsg(sid, actionId, { text: 'Plan consolidation cancelled; no records were changed.', pending: false });
+          return;
+        }
+        const expected = Object.fromEntries(plans.map((plan) => [
+          plan.file,
+          { status: plan.status, mtime: plan.mtime },
+        ]));
+        const result: PlanConsolidationResult = await call<PlanConsolidationResult>('brain:consolidatePlans', {
+          files: plans.map((plan) => plan.file),
+          expected,
+        }).catch((error): PlanConsolidationResult => ({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        if (!result.ok) {
+          await resolveMsg(sid, actionId, {
+            text: `✗ No plans were consolidated. ${result.error ?? 'The core plan action failed.'}${result.stale ? ' Refresh Work > Plans and try again.' : ''}`,
+            pending: false,
+          });
+          return;
+        }
+        await resolveMsg(sid, actionId, {
+          text: `✓ IDACC core consolidated plans ${consolidationNumbers.join(' + ')} into plan ${result.num} “${result.title}” (${result.status}). The ${result.archived?.length ?? plans.length} source files are retained in the private archive.`,
+          pending: false,
+        });
+      } finally {
+        setBusy(false);
+        sendingRef.current = false;
+      }
       return;
     }
     // Unified composer: a clear image request (with no file attachments) generates
@@ -969,7 +1166,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
         if (res.skipped?.length) pushMsgs({ id: idRef.current++, role: 'system', who: '', text: `⚠ Couldn't attach ${res.skipped.length} file(s): ${res.skipped.join(', ')}` });
         if (saved.length === 0 && !text) { setBusy(false); return; }
       }
-      const message = compose(text, saved);
+      const message = compose(stripDirectLeadOverride(text), saved);
       const scopedMessage = buildChatScopedPrompt(session, target, message);
       const planRequest = !!text && isPlanRequest(text);
       const myId = idRef.current++;
@@ -983,7 +1180,12 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
       setAttachments([]);
       // 2. Hand off to the resumable dispatch — it kicks the query, commits it to
       // session.inflight (which drives the UI), and polls until a reply lands.
-      await beginDispatch(sid, replyId, target, scopedMessage, { planRequest, planText: text });
+      const primaryLead = isPrimaryLeadChatTarget(team, target, store.coordinator);
+      if (primaryLead && shouldDelegatePrimaryLeadRequest(text)) {
+        await beginLeadDelegation(sid, replyId, scopedMessage);
+      } else {
+        await beginDispatch(sid, replyId, target, scopedMessage, { planRequest, planText: text });
+      }
     } finally {
       sendingRef.current = false; // inflight is now committed (or the send errored out)
     }
@@ -1094,17 +1296,15 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
                 {/* Live "what the agent is doing" feed while this reply is running:
                     the agent's OWN steps (background tasks) and, as a distinct
                     strand, any work farmed out to other agents (delegations). */}
-                {live && (activitySteps.length || liveTrace.length) ? (() => {
+                {live && activitySteps.length ? (() => {
                   const own = activitySteps.filter((a) => a.kind !== 'delegate');
                   const delegSteps = activitySteps.filter((a) => a.kind === 'delegate');
-                  const hasDeleg = delegSteps.length || liveTrace.length;
                   return (
                   <div className="chat-trace">
-                    {hasDeleg ? <div className="chat-trace-head muted small">🤝 delegated · live</div> : null}
-                    {delegSteps.map((a) => <div key={`d${a.seq}`} className="chat-trace-row act-accent"><span className="chat-trace-when">{whenTime(a.at)}</span>{actIcon(a.kind)} {a.summary}</div>)}
-                    {liveTrace.map((t) => <div key={`e${t.seq}`} className={`chat-trace-row trace-${t.cls}`}><span className="chat-trace-when">{whenTime(t.at)}</span>{t.line}</div>)}
+                    {delegSteps.length ? <div className="chat-trace-head muted small">🤝 delegated · live</div> : null}
+                    {delegSteps.map((a) => <div key={`d${a.seq}:${a.at}`} className="chat-trace-row act-accent"><span className="chat-trace-when">{whenTime(a.at)}</span>{actIcon(a.kind)} {a.summary}</div>)}
                     {own.length ? <div className="chat-trace-head muted small">working · live</div> : null}
-                    {own.map((a) => <div key={`a${a.seq}`} className={`chat-trace-row act-${a.kind === 'error' ? 'err' : 'accent'}`}><span className="chat-trace-when">{whenTime(a.at)}</span>{actIcon(a.kind)} {a.summary}</div>)}
+                    {own.map((a) => <div key={`a${a.seq}:${a.at}`} className={`chat-trace-row act-${a.kind === 'error' ? 'err' : 'accent'}`}><span className="chat-trace-when">{whenTime(a.at)}</span>{actIcon(a.kind)} {a.summary}</div>)}
                   </div>
                   );
                 })() : null}
@@ -1136,7 +1336,6 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
               </div>
               );
             })}
-            <div ref={endRef} />
           </div>
 
           {attachments.length ? (

@@ -1,0 +1,1425 @@
+name: Production release
+run-name: Production release v${{ inputs.version }} publish=${{ inputs.publish }} request=${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing signed tag version without the v prefix
+        required: true
+        type: string
+      publish:
+        description: Publish after every native build and verification gate passes
+        required: true
+        default: false
+        type: boolean
+      request_id:
+        description: Unique release-command dispatch identity
+        required: true
+        type: string
+      signing_mode:
+        description: Platform package signing policy
+        required: true
+        default: signed
+        type: choice
+        options:
+          - signed
+          - unsigned
+      unsigned_acknowledgement:
+        description: For unsigned mode, enter publish-vX.Y.Z-unsigned
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_REQUEST_ID: ${{ inputs.request_id }}
+  RELEASE_SIGNING_MODE: ${{ inputs.signing_mode }}
+  UNSIGNED_RELEASE_ACKNOWLEDGEMENT: ${{ inputs.unsigned_acknowledgement }}
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate immutable release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      release_tag: ${{ steps.release-request.outputs.tag }}
+      release_commit: ${{ steps.signed-tag.outputs.commit }}
+      promote_draft: ${{ steps.release-resume.outputs.promote_draft }}
+      previous_success: ${{ steps.release-resume.outputs.previous_success }}
+      previous_success_run_id: ${{ steps.release-resume.outputs.run_id }}
+      previous_success_artifact_id: ${{ steps.release-resume.outputs.artifact_id }}
+
+    steps:
+      - name: Validate requested release before checkout
+        id: release-request
+        shell: bash
+        run: |
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release version must be plain semver X.Y.Z."
+            exit 1
+          fi
+          if [[ ! "$RELEASE_REQUEST_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$ ]]; then
+            echo "::error::request_id must be a unique 8-128 character release-command identity."
+            exit 1
+          fi
+          if [ "$RELEASE_SIGNING_MODE" != signed ] && [ "$RELEASE_SIGNING_MODE" != unsigned ]; then
+            echo "::error::signing_mode must be signed or unsigned."
+            exit 1
+          fi
+          if [ "$RELEASE_SIGNING_MODE" = unsigned ] \
+            && [ "$UNSIGNED_RELEASE_ACKNOWLEDGEMENT" != "publish-v$RELEASE_VERSION-unsigned" ]; then
+            echo "::error::Unsigned stable publication requires the exact acknowledgement publish-v$RELEASE_VERSION-unsigned."
+            exit 1
+          fi
+          printf 'tag=v%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Require a GitHub-verified signed annotated tag
+        id: signed-tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release-request.outputs.tag }}
+        run: |
+          TAG_TYPE="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type')"
+          TAG_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
+          test "$TAG_TYPE" = "tag"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA" --jq '.tag')" = "$RELEASE_TAG"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA" --jq '.verification.verified')" = "true"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA" --jq '.verification.reason')" = "valid"
+          TAG_TARGET_TYPE="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA" --jq '.object.type')"
+          TAG_COMMIT="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA" --jq '.object.sha')"
+          test "$TAG_TARGET_TYPE" = "commit"
+          [[ "$TAG_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          if [ "$GITHUB_REF" != "refs/tags/$RELEASE_TAG" ] || [ "$GITHUB_SHA" != "$TAG_COMMIT" ]; then
+            echo "::error::Dispatch this workflow from the exact signed tag $RELEASE_TAG, not a branch or another ref." >&2
+            exit 1
+          fi
+          printf 'commit=%s\n' "$TAG_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Require GitHub-enforced immutable releases
+        shell: bash
+        env:
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_ADMIN_TOKEN" ]; then
+            echo "::error::The repository-level RELEASE_ADMIN_TOKEN secret is required with Administration:read access to this repository." >&2
+            exit 1
+          fi
+          IMMUTABLE_RELEASES="$(
+            GH_TOKEN="$RELEASE_ADMIN_TOKEN" gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/$GITHUB_REPOSITORY/immutable-releases" \
+              --jq '.enabled' 2>/dev/null || true
+          )"
+          if [ "$IMMUTABLE_RELEASES" != "true" ]; then
+            echo "::error::Enable GitHub release immutability for $GITHUB_REPOSITORY before shipping." >&2
+            exit 1
+          fi
+
+      - name: Detect a draft backed by an immutable successful-run artifact
+        id: release-resume
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release-request.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.signed-tag.outputs.commit }}
+          REQUESTED_PUBLISH: ${{ inputs.publish }}
+        run: |
+          PROMOTE_DRAFT=false
+          PREVIOUS_SUCCESS=false
+          SUCCESSFUL_RUN_ID=""
+          ASSEMBLED_ARTIFACT_ID=""
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1 \
+            && [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = "true" ]; then
+            mapfile -t CANDIDATE_RUN_IDS < <(
+              gh api \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?event=workflow_dispatch&branch=$RELEASE_TAG&status=success&per_page=100" \
+                --jq ".workflow_runs[] | select(.head_sha == \"$RELEASE_COMMIT\" and .status == \"completed\" and .conclusion == \"success\") | .id"
+            )
+            for RUN_ID in "${CANDIDATE_RUN_IDS[@]}"; do
+              [[ "$RUN_ID" =~ ^[0-9]+$ ]] || continue
+              ARTIFACT_COUNT="$(gh api \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+                --jq '[.artifacts[] | select(.name == "idacc-assembled-release" and .expired == false)] | length')"
+              if [ "$ARTIFACT_COUNT" = "1" ]; then
+                SUCCESSFUL_RUN_ID="$RUN_ID"
+                ASSEMBLED_ARTIFACT_ID="$(gh api \
+                  "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+                  --jq '.artifacts[] | select(.name == "idacc-assembled-release" and .expired == false) | .id')"
+                break
+              fi
+            done
+          fi
+          if [[ "$SUCCESSFUL_RUN_ID" =~ ^[0-9]+$ ]] \
+            && [[ "$ASSEMBLED_ARTIFACT_ID" =~ ^[0-9]+$ ]]; then
+            PREVIOUS_SUCCESS=true
+            if [ "$REQUESTED_PUBLISH" = "true" ]; then
+              PROMOTE_DRAFT=true
+            fi
+          fi
+          printf 'promote_draft=%s\n' "$PROMOTE_DRAFT" >> "$GITHUB_OUTPUT"
+          printf 'previous_success=%s\n' "$PREVIOUS_SUCCESS" >> "$GITHUB_OUTPUT"
+          printf 'run_id=%s\n' "$SUCCESSFUL_RUN_ID" >> "$GITHUB_OUTPUT"
+          printf 'artifact_id=%s\n' "$ASSEMBLED_ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the immutable release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release-request.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            idctl/package-lock.json
+            idctl-desktop/package-lock.json
+
+      - name: Validate tag and release records
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release-request.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.signed-tag.outputs.commit }}
+          IDACC_GITHUB_VERIFIED_TAG: ${{ steps.release-request.outputs.tag }}
+          IDACC_GITHUB_VERIFIED_COMMIT: ${{ steps.signed-tag.outputs.commit }}
+        run: |
+          test "$RELEASE_VERSION" = "$(node -p "require('./idctl-desktop/package.json').version")"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)"
+          test "$RELEASE_COMMIT" = "$(git rev-parse HEAD)"
+          MAIN_RELATION="$(gh api "repos/$GITHUB_REPOSITORY/compare/$RELEASE_COMMIT...main" --jq '.status')"
+          test "$MAIN_RELATION" = "ahead" || test "$MAIN_RELATION" = "identical"
+          node scripts/validate-release-schema.mjs --publish "$RELEASE_VERSION"
+          node scripts/check-release-publication.mjs --allow-tag "$RELEASE_TAG"
+          RELEASES_FILE="$RUNNER_TEMP/idacc-release-frontier.json"
+          gh api \
+            --paginate \
+            --slurp \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RELEASES_FILE"
+          RELEASE_FRONTIER="$(node -e '
+            const fs = require("node:fs");
+            const [path, requestedTag] = process.argv.slice(1);
+            const releases = JSON.parse(fs.readFileSync(path, "utf8")).flat();
+            const requested = releases.find((release) => release.tag_name === requestedTag);
+            const tags = releases
+              .filter((release) => (
+                release.draft === false
+                && release.prerelease === false
+                && /^v\d+\.\d+\.\d+$/.test(String(release.tag_name || ""))
+              ))
+              .map((release) => release.tag_name)
+              .sort((left, right) => {
+                const a = left.slice(1).split(".").map(BigInt);
+                const b = right.slice(1).split(".").map(BigInt);
+                for (let index = 0; index < 3; index += 1) {
+                  if (a[index] < b[index]) return -1;
+                  if (a[index] > b[index]) return 1;
+                }
+                return 0;
+              });
+            const requestState = !requested
+              ? "missing"
+              : requested.draft === true
+                ? "draft"
+                : requested.prerelease === true
+                  ? "prerelease"
+                  : requested.draft === false && requested.prerelease === false
+                    ? "published"
+                    : "invalid";
+            process.stdout.write(JSON.stringify({
+              requestState,
+              highestPublishedTag: tags.at(-1) || "",
+            }));
+          ' "$RELEASES_FILE" "$RELEASE_TAG")"
+          REQUEST_RELEASE_STATE="$(node -p 'JSON.parse(process.argv[1]).requestState' "$RELEASE_FRONTIER")"
+          HIGHEST_PUBLISHED_TAG="$(node -p 'JSON.parse(process.argv[1]).highestPublishedTag' "$RELEASE_FRONTIER")"
+          if [ "$REQUEST_RELEASE_STATE" = "prerelease" ] || [ "$REQUEST_RELEASE_STATE" = "invalid" ]; then
+            echo "::error::$RELEASE_TAG is not a stable production release record (state=$REQUEST_RELEASE_STATE)." >&2
+            exit 1
+          fi
+          if [ "$REQUEST_RELEASE_STATE" != "published" ] && [ -n "$HIGHEST_PUBLISHED_TAG" ]; then
+            node -e '
+              const value = (tag) => tag.slice(1).split(".").map(BigInt);
+              const candidate = value(process.argv[1]);
+              const latest = value(process.argv[2]);
+              for (let index = 0; index < 3; index += 1) {
+                if (candidate[index] > latest[index]) process.exit(0);
+                if (candidate[index] < latest[index]) process.exit(1);
+              }
+              process.exit(1);
+            ' "$RELEASE_TAG" "$HIGHEST_PUBLISHED_TAG" || {
+              echo "::error::A new or draft release $RELEASE_TAG must be newer than published $HIGHEST_PUBLISHED_TAG." >&2
+              exit 1
+            }
+          fi
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Install exact application dependencies
+        run: |
+          npm ci --prefix idctl
+          npm ci --prefix idctl-desktop
+
+      - name: Install clean integration display support
+        run: |
+          command -v xvfb-run >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y xvfb
+          }
+
+      - name: Run platform-independent production gates
+        run: |
+          npm run typecheck --prefix idctl-desktop
+          npm run build:integration --prefix idctl-desktop
+          npm run test:app-shutdown --prefix idctl-desktop
+          npm run test:computer-use-shutdown --prefix idctl-desktop
+          npm run test:dashboard-command-surface --prefix idctl-desktop
+          npm run test:dashboard-coordination --prefix idctl-desktop
+          npm run test:dashboard-activity-filter --prefix idctl-desktop
+          npm run test:version-display --prefix idctl-desktop
+          npm run test:org-hierarchy --prefix idctl-desktop
+          xvfb-run -a npm run test:dashboard-rendered --prefix idctl-desktop
+          node scripts/release-command-smoke.mjs
+          npm run test:release-provenance --prefix idctl-desktop
+          npm run test:runtime-source-capsule --prefix idctl-desktop
+          npm run test:release-platform-config --prefix idctl-desktop
+          npm run test:appimage-artifact --prefix idctl-desktop
+          npm run test:deb-artifact --prefix idctl-desktop
+          npm run test:release-preflight --prefix idctl-desktop
+          npm run test:root-identity --prefix idctl-desktop
+          node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/identity-verification-smoke.ts
+          node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/health-classification-smoke.ts
+          node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/computer-use-policy-smoke.ts
+          node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl-desktop/scripts/consumer-design-gaps-smoke.ts
+          npm run test:subscription-portability --prefix idctl-desktop
+          npm run test:credential-isolation --prefix idctl-desktop
+          npm run test:signing-guardrails --prefix idctl-desktop
+          npm run test:secure-settings-vault --prefix idctl-desktop
+          npm run test:agent-signer-vault --prefix idctl-desktop
+          npm run test:provider-transport --prefix idctl
+          node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types idctl/src/settings/runtimeCatalog.test.ts
+          npm run test:capability-worker-scope --prefix idctl-desktop
+          npm run test:secret-redaction --prefix idctl-desktop
+          npm run test:profile-migrations --prefix idctl-desktop
+          npm run test:startup-recovery --prefix idctl-desktop
+          npm run test:runtime-profile-isolation --prefix idctl-desktop
+          npm run test:context-budget-retention --prefix idctl-desktop
+          npm run test:chat-delegation --prefix idctl-desktop
+          npm run test:computer-use-retention --prefix idctl-desktop
+          npm run test:computer-use-session-discovery --prefix idctl-desktop
+          npm run test:chat-failure --prefix idctl-desktop
+          npm run test:brain-plans-profile --prefix idctl-desktop
+          npm run test:goals-plan-separation --prefix idctl-desktop
+          npm run test:dream-view-polish --prefix idctl-desktop
+          npm run test:consumer-onboarding --prefix idctl-desktop
+          npm run test:consumer-onboarding-integration --prefix idctl-desktop
+          npm run test:unified-stack-policy --prefix idctl-desktop
+          npm run test:unified-runtime-contract --prefix idctl-desktop
+          xvfb-run -a npm run test:unified-stack-integration --prefix idctl-desktop
+          npm run test:update-metadata-merge --prefix idctl-desktop
+          npm run test:update-descriptor-contract --prefix idctl-desktop
+          npm run test:updater-public-provider --prefix idctl-desktop
+          npm run test:unified-updater-integrity --prefix idctl-desktop
+          npm run test:unified-updater-download --prefix idctl-desktop
+          npm run test:release-payload --prefix idctl-desktop
+          npm run test:selftest-result-file --prefix idctl-desktop
+          npm run test:legacy-manager-updater-retired --prefix idctl-desktop
+          npm audit --prefix idctl-desktop --audit-level=high
+          npm audit --prefix idctl-desktop --omit=dev --audit-level=high
+          npm audit --prefix idctl --omit=dev --audit-level=high
+
+  runtime-source-tests:
+    name: Verify exact Manager and Brain sources
+    needs: validate
+    if: needs.validate.outputs.promote_draft != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      CI: "true"
+
+    steps:
+      - name: Check out the immutable release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Reconfirm the immutable release commit
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+
+      - name: Read runtime pins
+        id: runtime-lock
+        run: node scripts/validate-runtime-lock.mjs --no-sources
+
+      - name: Restrict runtime sources to the audited repositories
+        env:
+          MANAGER_REPOSITORY: ${{ steps.runtime-lock.outputs.manager_repository }}
+          BRAIN_REPOSITORY: ${{ steps.runtime-lock.outputs.brain_repository }}
+        run: |
+          test "$MANAGER_REPOSITORY" = "bobofbuilding/id-agents"
+          test "$BRAIN_REPOSITORY" = "bobofbuilding/brain"
+
+      - name: Check out the exact Manager commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.runtime-lock.outputs.manager_repository }}
+          ref: ${{ steps.runtime-lock.outputs.manager_commit }}
+          path: .runtime-sources/manager
+          fetch-depth: 1
+          token: ${{ github.token }}
+          persist-credentials: false
+
+      - name: Validate exact Manager source and vendored Brain capsule
+        run: >-
+          node scripts/validate-runtime-lock.mjs
+          --manager-source .runtime-sources/manager
+
+      - name: Run the full Manager production preflight and lifecycle smoke
+        run: |
+          npm ci --prefix .runtime-sources/manager
+          npm run ci:preflight --prefix .runtime-sources/manager
+          npm run test:local-agent-lifecycle --prefix .runtime-sources/manager
+
+      - name: Materialize and verify the exact Brain runtime capsule
+        run: |
+          node scripts/runtime-source-capsule.mjs materialize \
+            --lock release/runtime-lock.json \
+            --component brain \
+            --target .runtime-sources/brain
+          npm ci --omit=dev --prefix .runtime-sources/brain
+          find .runtime-sources/brain -path '*/node_modules' -prune \
+            -o -type f -name '*.mjs' -print0 \
+            | xargs -0 -n1 node --check
+
+  native-build:
+    name: ${{ matrix.label }}
+    needs:
+      - validate
+      - runtime-source-tests
+    if: needs.validate.outputs.promote_draft != 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
+    environment: production
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS arm64 consumer bundle
+            os: macos-15
+            platform: mac
+            runtime_platform: darwin
+            arch: arm64
+            target_args: --mac dmg zip
+            release_smoke_args: ""
+            unpacked: mac-arm64/ID Agents Control Center.app
+            artifact_globs: |
+              idctl-desktop/release/*.dmg
+              idctl-desktop/release/*.zip
+              idctl-desktop/release/*.blockmap
+              idctl-desktop/release/latest-mac.yml
+            provenance_artifact_globs: |
+              idctl-desktop/release/*.dmg
+              idctl-desktop/release/*.zip
+              idctl-desktop/release/*.blockmap
+          - label: macOS Intel consumer bundle
+            os: macos-15-intel
+            platform: mac
+            runtime_platform: darwin
+            arch: x64
+            target_args: --mac dmg zip
+            release_smoke_args: ""
+            unpacked: mac/ID Agents Control Center.app
+            artifact_globs: |
+              idctl-desktop/release/*.dmg
+              idctl-desktop/release/*.zip
+              idctl-desktop/release/*.blockmap
+              idctl-desktop/release/latest-mac.yml
+            provenance_artifact_globs: |
+              idctl-desktop/release/*.dmg
+              idctl-desktop/release/*.zip
+              idctl-desktop/release/*.blockmap
+          - label: Windows x64 consumer bundle
+            os: windows-2025
+            platform: win
+            runtime_platform: win32
+            arch: x64
+            target_args: --win nsis
+            release_smoke_args: ""
+            unpacked: win-unpacked
+            artifact_globs: |
+              idctl-desktop/release/*.exe
+              idctl-desktop/release/*.exe.blockmap
+              idctl-desktop/release/latest.yml
+            provenance_artifact_globs: |
+              idctl-desktop/release/*.exe
+              idctl-desktop/release/*.exe.blockmap
+              idctl-desktop/release/latest.yml
+          - label: Linux x64 AppImage and Debian package
+            os: ubuntu-24.04
+            platform: linux
+            runtime_platform: linux
+            arch: x64
+            target_args: --linux AppImage deb
+            release_smoke_args: --linux-github-actions-suid-sandbox
+            unpacked: linux-unpacked
+            artifact_globs: |
+              idctl-desktop/release/*.AppImage
+              idctl-desktop/release/*.AppImage.blockmap
+              idctl-desktop/release/*.deb
+              idctl-desktop/release/latest-linux.yml
+            provenance_artifact_globs: |
+              idctl-desktop/release/*.AppImage
+              idctl-desktop/release/*.AppImage.blockmap
+              idctl-desktop/release/*.deb
+              idctl-desktop/release/latest-linux.yml
+    env:
+      CI: "true"
+
+    steps:
+      - name: Check out the immutable release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.release_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            idctl/package-lock.json
+            idctl-desktop/package-lock.json
+
+      - name: Reconfirm the immutable release commit
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+
+      - name: Read runtime pins
+        id: runtime-lock
+        shell: bash
+        run: node scripts/validate-runtime-lock.mjs --no-sources
+
+      - name: Restrict runtime sources to the audited repositories
+        shell: bash
+        env:
+          MANAGER_REPOSITORY: ${{ steps.runtime-lock.outputs.manager_repository }}
+          BRAIN_REPOSITORY: ${{ steps.runtime-lock.outputs.brain_repository }}
+        run: |
+          test "$MANAGER_REPOSITORY" = "bobofbuilding/id-agents"
+          test "$BRAIN_REPOSITORY" = "bobofbuilding/brain"
+
+      - name: Check out the exact manager commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.runtime-lock.outputs.manager_repository }}
+          ref: ${{ steps.runtime-lock.outputs.manager_commit }}
+          path: .runtime-sources/manager
+          fetch-depth: 1
+          token: ${{ github.token }}
+          persist-credentials: false
+
+      - name: Validate exact Manager source and vendored Brain capsule
+        shell: bash
+        run: >-
+          node scripts/validate-runtime-lock.mjs
+          --manager-source .runtime-sources/manager
+
+      - name: Materialize the exact Brain runtime capsule
+        shell: bash
+        run: >-
+          node scripts/runtime-source-capsule.mjs materialize
+          --lock release/runtime-lock.json
+          --component brain
+          --target .runtime-sources/brain
+
+      - name: Install exact application dependencies
+        shell: bash
+        run: |
+          npm ci --prefix idctl
+          npm ci --prefix idctl-desktop
+
+      - name: Verify real Windows profile ACL hardening
+        if: matrix.platform == 'win'
+        shell: bash
+        run: npm run test:profile-migrations --prefix idctl-desktop
+
+      - name: Install Linux clean-profile display support
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          command -v xvfb-run >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y xvfb
+          }
+
+      - name: Validate native packaging policy
+        shell: bash
+        run: node idctl-desktop/scripts/release-preflight.mjs --platform ${{ matrix.platform }}
+
+      - name: Stage manager and Brain for this native ABI
+        shell: bash
+        env:
+          IDACC_MANAGER_SOURCE: ${{ github.workspace }}/.runtime-sources/manager
+          IDACC_TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          npm run stage:runtimes --prefix idctl-desktop
+          npm run verify:runtimes --prefix idctl-desktop
+
+      - name: Audit every shipped dependency tree
+        shell: bash
+        run: |
+          npm audit --prefix idctl-desktop --audit-level=high
+          npm audit --prefix idctl-desktop --omit=dev --audit-level=high
+          npm audit --prefix idctl --omit=dev --audit-level=high
+          npm audit --prefix idctl-desktop/resources/idacc-runtime/manager --omit=dev --audit-level=high
+          npm audit --prefix idctl-desktop/resources/idacc-runtime/brain --omit=dev --audit-level=high
+
+      - name: Build and exercise unsigned Windows native helpers
+        if: matrix.platform == 'win'
+        shell: bash
+        working-directory: idctl-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_LINK: ""
+          CSC_KEY_PASSWORD: ""
+          WIN_CSC_LINK: ""
+          WIN_CSC_KEY_PASSWORD: ""
+          WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ""
+        run: |
+          npm run test:windows-native-toolchain
+          npm run build
+          npm run test:windows-job-host
+          npm run test:windows-profile-native-build
+
+      - name: Prepare Apple notarization key
+        id: apple-key
+        if: matrix.platform == 'mac' && inputs.signing_mode == 'signed'
+        shell: bash
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          test -n "$APPLE_API_KEY_P8"
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey.p8"
+          echo "path=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_OUTPUT"
+
+      - name: Enforce production signing policy
+        if: inputs.signing_mode == 'signed'
+        shell: bash
+        env:
+          CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_DEVELOPER_ID_P12 || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_DEVELOPER_ID_PASSWORD || '' }}
+          CSC_NAME: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_SIGNING_IDENTITY || '' }}
+          MACOS_EXPECTED_SIGNING_IDENTITY: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_SIGNING_IDENTITY || '' }}
+          MACOS_EXPECTED_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_TEAM_ID || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_TEAM_ID || '' }}
+          APPLE_API_KEY: ${{ steps.apple-key.outputs.path }}
+          APPLE_API_KEY_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ matrix.platform == 'mac' && secrets.APPLE_API_ISSUER || '' }}
+          WIN_CSC_LINK: ${{ matrix.platform == 'win' && secrets.WINDOWS_CODESIGN_P12 || '' }}
+          WIN_CSC_KEY_PASSWORD: ${{ matrix.platform == 'win' && secrets.WINDOWS_CODESIGN_PASSWORD || '' }}
+          WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ${{ matrix.platform == 'win' && secrets.WINDOWS_EXPECTED_PUBLISHER_SUBJECT || '' }}
+        run: >-
+          node idctl-desktop/scripts/release-preflight.mjs
+          --platform ${{ matrix.platform }}
+          ${{ matrix.platform == 'linux' && '' || '--require-signing' }}
+
+      - name: Build signed native consumer artifacts
+        if: inputs.signing_mode == 'signed'
+        shell: bash
+        working-directory: idctl-desktop
+        env:
+          CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_DEVELOPER_ID_P12 || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_DEVELOPER_ID_PASSWORD || '' }}
+          CSC_NAME: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_SIGNING_IDENTITY || '' }}
+          MACOS_EXPECTED_SIGNING_IDENTITY: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_SIGNING_IDENTITY || '' }}
+          MACOS_EXPECTED_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_TEAM_ID || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.MACOS_EXPECTED_TEAM_ID || '' }}
+          APPLE_API_KEY: ${{ steps.apple-key.outputs.path }}
+          APPLE_API_KEY_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ matrix.platform == 'mac' && secrets.APPLE_API_ISSUER || '' }}
+          WIN_CSC_LINK: ${{ matrix.platform == 'win' && secrets.WINDOWS_CODESIGN_P12 || '' }}
+          WIN_CSC_KEY_PASSWORD: ${{ matrix.platform == 'win' && secrets.WINDOWS_CODESIGN_PASSWORD || '' }}
+          WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ${{ matrix.platform == 'win' && secrets.WINDOWS_EXPECTED_PUBLISHER_SUBJECT || '' }}
+        run: |
+          npm run build:release
+          npm run test:release-build-output
+          node scripts/run-production-builder.mjs \
+            --platform ${{ matrix.platform }} \
+            -- ${{ matrix.target_args }} --${{ matrix.arch }} --publish never
+
+      - name: Build owner-authorized unsigned stable artifacts
+        if: inputs.signing_mode == 'unsigned'
+        shell: bash
+        working-directory: idctl-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          IDACC_UNSIGNED_STABLE_BUILD: "1"
+          IDACC_UNSIGNED_STABLE_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "${{ matrix.platform }}" = mac ]; then
+            sudo sysctl -w kern.maxfiles=524288
+            sudo sysctl -w kern.maxfilesperproc=524288
+            ulimit -n 524288
+            test "$(ulimit -n)" = 524288
+          fi
+          npm run build:release
+          npm run test:release-build-output
+          EXTRA_ARGS=()
+          if [ "${{ matrix.platform }}" = mac ]; then
+            EXTRA_ARGS+=(
+              --config.mac.identity=-
+              --config.mac.notarize=false
+              --config.mac.hardenedRuntime=false
+              --config.mac.requirements=build/review-requirements.txt
+              --config.mac.signIgnore=/Contents/Resources/idacc-runtime/
+              --config.afterSign=scripts/unsigned-stable-after-sign.mjs
+              --config.dmg.sign=false
+            )
+          elif [ "${{ matrix.platform }}" = win ]; then
+            EXTRA_ARGS+=(--config.win.signExecutable=false)
+          fi
+          node scripts/run-unsigned-stable-builder.mjs \
+            --platform "${{ matrix.platform }}" \
+            --application-version "$RELEASE_VERSION" \
+            -- \
+            ${{ matrix.target_args }} \
+            --${{ matrix.arch }} \
+            "${EXTRA_ARGS[@]}" \
+            --config.publish.provider=github \
+            --config.publish.owner=bobofbuilding \
+            --config.publish.repo=idacc \
+            --config.publish.releaseType=release \
+            --config.publish.channel=latest \
+            --config.extraMetadata.version="$RELEASE_VERSION" \
+            --publish never
+
+      - name: Verify the Linux installer sandbox policies
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          mapfile -t APPIMAGES < <(
+            find idctl-desktop/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.AppImage' \
+              -print
+          )
+          test "${#APPIMAGES[@]}" -eq 1
+          node scripts/verify-appimage-artifact.mjs \
+            --appimage "${APPIMAGES[0]}" \
+            --expected-build production
+          mapfile -t DEBS < <(
+            find idctl-desktop/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.deb' \
+              -print
+          )
+          test "${#DEBS[@]}" -eq 1
+          node scripts/verify-deb-artifact.mjs \
+            --deb "${DEBS[0]}"
+
+      - name: Notarize and staple the signed macOS disk image
+        if: matrix.platform == 'mac' && inputs.signing_mode == 'signed'
+        shell: bash
+        env:
+          APPLE_API_KEY: ${{ steps.apple-key.outputs.path }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          test -f "$APPLE_API_KEY"
+          test -n "$APPLE_API_KEY_ID"
+          test -n "$APPLE_API_ISSUER"
+          DMG_COUNT=0
+          while IFS= read -r -d '' DMG; do
+            DMG_COUNT=$((DMG_COUNT + 1))
+            codesign --verify --verbose=2 "$DMG"
+            xcrun notarytool submit "$DMG" \
+              --key "$APPLE_API_KEY" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER" \
+              --wait
+            xcrun stapler staple "$DMG"
+          done < <(find idctl-desktop/release -maxdepth 1 -type f -name '*.dmg' -print0)
+          test "$DMG_COUNT" -gt 0
+
+      - name: Verify macOS signature, notarization, and Gatekeeper acceptance
+        if: matrix.platform == 'mac' && inputs.signing_mode == 'signed'
+        shell: bash
+        env:
+          MACOS_EXPECTED_SIGNING_IDENTITY: ${{ secrets.MACOS_EXPECTED_SIGNING_IDENTITY }}
+          MACOS_EXPECTED_TEAM_ID: ${{ secrets.MACOS_EXPECTED_TEAM_ID }}
+        run: |
+          APP="idctl-desktop/release/${{ matrix.unpacked }}"
+          test -d "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          APP_SIGNING_INFO="$(codesign -dv --verbose=4 "$APP" 2>&1)"
+          test "$(printf '%s\n' "$APP_SIGNING_INFO" | sed -n 's/^Identifier=//p' | head -1)" = "world.idchain.idagents-control"
+          test "$(printf '%s\n' "$APP_SIGNING_INFO" | sed -n 's/^TeamIdentifier=//p' | head -1)" = "$MACOS_EXPECTED_TEAM_ID"
+          test "$(printf '%s\n' "$APP_SIGNING_INFO" | sed -n 's/^Authority=//p' | head -1)" = "Developer ID Application: $MACOS_EXPECTED_SIGNING_IDENTITY"
+          APP_REQUIREMENT="=designated => anchor apple generic and identifier \"world.idchain.idagents-control\" and certificate leaf[subject.OU] = \"$MACOS_EXPECTED_TEAM_ID\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+          codesign --verify --deep --strict --verbose=2 -R="$APP_REQUIREMENT" "$APP"
+          spctl --assess --type execute --verbose=4 "$APP"
+          xcrun stapler validate "$APP"
+          DMG_COUNT=0
+          while IFS= read -r -d '' DMG; do
+            DMG_COUNT=$((DMG_COUNT + 1))
+            codesign --verify --verbose=2 "$DMG"
+            DMG_SIGNING_INFO="$(codesign -dv --verbose=4 "$DMG" 2>&1)"
+            test "$(printf '%s\n' "$DMG_SIGNING_INFO" | sed -n 's/^TeamIdentifier=//p' | head -1)" = "$MACOS_EXPECTED_TEAM_ID"
+            test "$(printf '%s\n' "$DMG_SIGNING_INFO" | sed -n 's/^Authority=//p' | head -1)" = "Developer ID Application: $MACOS_EXPECTED_SIGNING_IDENTITY"
+            xcrun stapler validate "$DMG"
+            spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+          done < <(find idctl-desktop/release -maxdepth 1 -type f -name '*.dmg' -print0)
+          test "$DMG_COUNT" -gt 0
+
+      - name: Verify Windows Authenticode signatures
+        if: matrix.platform == 'win' && inputs.signing_mode == 'signed'
+        shell: pwsh
+        env:
+          WINDOWS_EXPECTED_PUBLISHER_SUBJECT: ${{ secrets.WINDOWS_EXPECTED_PUBLISHER_SUBJECT }}
+        run: |
+          $app = "idctl-desktop/release/${{ matrix.unpacked }}/ID Agents Control Center.exe"
+          $jobHost = "idctl-desktop/release/${{ matrix.unpacked }}/resources/app.asar.unpacked/out/native/idacc-job-host.exe"
+          $bootstrap = "idctl-desktop/release/${{ matrix.unpacked }}/resources/app.asar.unpacked/out/main/managed-service-bootstrap.cjs"
+          $installer = Get-ChildItem "idctl-desktop/release/*.exe" | Where-Object { $_.FullName -ne (Resolve-Path $app) } | Select-Object -First 1
+          if (-not (Test-Path $app)) { throw "Packaged application executable is missing" }
+          if (-not (Test-Path $jobHost)) { throw "Packaged Windows Job Host is missing" }
+          if (-not (Test-Path $bootstrap)) { throw "Packaged managed-service bootstrap is missing" }
+          if (-not $installer) { throw "NSIS installer is missing" }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_EXPECTED_PUBLISHER_SUBJECT)) { throw "WINDOWS_EXPECTED_PUBLISHER_SUBJECT is required" }
+          foreach ($file in @($app, $installer.FullName, $jobHost)) {
+            $signature = Get-AuthenticodeSignature $file
+            if ($signature.Status -ne "Valid") {
+              throw "Invalid Authenticode signature for $file`: $($signature.StatusMessage)"
+            }
+            if ($signature.SignerCertificate.Subject -cne $env:WINDOWS_EXPECTED_PUBLISHER_SUBJECT) {
+              throw "Authenticode publisher subject for $file does not exactly match the production signing contract"
+            }
+          }
+          node idctl-desktop/scripts/verify-packaged-publisher.mjs "idctl-desktop/release/${{ matrix.unpacked }}/resources/app-update.yml"
+
+      - name: Verify owner-authorized unsigned macOS identity
+        if: matrix.platform == 'mac' && inputs.signing_mode == 'unsigned'
+        shell: bash
+        run: |
+          APP="idctl-desktop/release/${{ matrix.unpacked }}"
+          test -d "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          SIGNING_INFO="$(codesign -dv --verbose=4 "$APP" 2>&1)"
+          test "$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^Identifier=//p' | head -1)" = "world.idchain.idagents-control"
+          TEAM_ID="$(printf '%s\n' "$SIGNING_INFO" | sed -n 's/^TeamIdentifier=//p' | head -1)"
+          test -z "$TEAM_ID" || test "$TEAM_ID" = "not set"
+          REQUIREMENT="$(codesign --display --requirements - "$APP" 2>&1)"
+          printf '%s\n' "$REQUIREMENT" | grep -F 'designated => identifier "world.idchain.idagents-control"'
+          DMG_COUNT=0
+          while IFS= read -r -d '' DMG; do
+            DMG_COUNT=$((DMG_COUNT + 1))
+            if codesign --verify "$DMG" >/dev/null 2>&1; then
+              echo "::error::Unsigned stable DMG unexpectedly has a platform signature: $DMG" >&2
+              exit 1
+            fi
+          done < <(find idctl-desktop/release -maxdepth 1 -type f -name '*.dmg' -print0)
+          test "$DMG_COUNT" -gt 0
+
+      - name: Verify owner-authorized unsigned Windows identity
+        if: matrix.platform == 'win' && inputs.signing_mode == 'unsigned'
+        shell: pwsh
+        run: |
+          $app = "idctl-desktop/release/${{ matrix.unpacked }}/ID Agents Control Center.exe"
+          $jobHost = "idctl-desktop/release/${{ matrix.unpacked }}/resources/app.asar.unpacked/out/native/idacc-job-host.exe"
+          $installer = Get-ChildItem "idctl-desktop/release/*.exe" | Where-Object { $_.FullName -ne (Resolve-Path $app) } | Select-Object -First 1
+          if (-not (Test-Path $app)) { throw "Packaged application executable is missing" }
+          if (-not (Test-Path $jobHost)) { throw "Packaged Windows Job Host is missing" }
+          if (-not $installer) { throw "NSIS installer is missing" }
+          foreach ($file in @($app, $installer.FullName, $jobHost)) {
+            $signature = Get-AuthenticodeSignature $file
+            if ($signature.Status -ne "NotSigned") {
+              throw "Owner-authorized unsigned build unexpectedly has Authenticode state $($signature.Status): $file"
+            }
+          }
+
+      - name: Verify exact unsigned stable package identity
+        if: inputs.signing_mode == 'unsigned'
+        shell: bash
+        run: >-
+          node scripts/verify-unsigned-stable-package.mjs
+          --unpacked "idctl-desktop/release/${{ matrix.unpacked }}"
+          --version "$RELEASE_VERSION"
+          --platform "${{ matrix.runtime_platform }}"
+          --arch "${{ matrix.arch }}"
+
+      - name: Verify payload and clean-profile manager/Brain startup
+        shell: bash
+        env:
+          IDACC_GITHUB_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          node scripts/check-release-payload.mjs "idctl-desktop/release/${{ matrix.unpacked }}"
+          node scripts/unified-stack-release-smoke.mjs \
+            "idctl-desktop/release/${{ matrix.unpacked }}" \
+            ${{ matrix.release_smoke_args }}
+
+      - name: Generate native release provenance
+        shell: bash
+        env:
+          IDACC_ARTIFACT_GLOBS: ${{ matrix.provenance_artifact_globs }}
+        run: |
+          ARGS=()
+          while IFS= read -r GLOB; do
+            test -n "$GLOB" || continue
+            while IFS= read -r FILE; do
+              test -f "$FILE" && ARGS+=(--artifact "$FILE")
+            done < <(compgen -G "$GLOB" || true)
+          done <<< "$IDACC_ARTIFACT_GLOBS"
+          test "${#ARGS[@]}" -gt 0
+          node scripts/generate-release-metadata.mjs \
+            "${ARGS[@]}" \
+            --output "idctl-desktop/release/metadata/${{ matrix.runtime_platform }}-${{ matrix.arch }}"
+
+      - name: Upload verified native release inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: idacc-${{ matrix.runtime_platform }}-${{ matrix.arch }}-release
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ matrix.artifact_globs }}
+            idctl-desktop/release/metadata/${{ matrix.runtime_platform }}-${{ matrix.arch }}/*
+
+  attest-native:
+    name: Attest ${{ matrix.target }}
+    needs:
+      - validate
+      - native-build
+    if: needs.validate.outputs.promote_draft != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            artifact: idacc-darwin-arm64-release
+            subject_globs: |
+              attest-inputs/*.dmg
+              attest-inputs/*.zip
+              attest-inputs/*.blockmap
+          - target: darwin-x64
+            artifact: idacc-darwin-x64-release
+            subject_globs: |
+              attest-inputs/*.dmg
+              attest-inputs/*.zip
+              attest-inputs/*.blockmap
+          - target: win32-x64
+            artifact: idacc-win32-x64-release
+            subject_globs: |
+              attest-inputs/*.exe
+              attest-inputs/*.blockmap
+              attest-inputs/latest.yml
+          - target: linux-x64
+            artifact: idacc-linux-x64-release
+            subject_globs: |
+              attest-inputs/*.AppImage
+              attest-inputs/*.blockmap
+              attest-inputs/*.deb
+              attest-inputs/latest-linux.yml
+
+    steps:
+      - name: Download the verified native build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: attest-inputs
+
+      - name: Attest native build artifacts
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: ${{ matrix.subject_globs }}
+
+      - name: Attest native CycloneDX SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: ${{ matrix.subject_globs }}
+          sbom-path: attest-inputs/metadata/${{ matrix.target }}/SBOM.cdx.json
+
+  assemble-release:
+    name: Assemble verified release
+    needs:
+      - validate
+      - attest-native
+    if: needs.validate.outputs.promote_draft != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the immutable release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.release_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: idctl-desktop/package-lock.json
+
+      - name: Reconfirm the immutable release commit
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+
+      - name: Install release metadata dependencies
+        run: npm ci --prefix idctl-desktop --omit=dev --ignore-scripts
+
+      - name: Download every verified native build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: idacc-*-release
+          path: release-inputs
+
+      - name: Merge architecture-aware update and provenance metadata
+        run: |
+          node scripts/merge-update-metadata.mjs \
+            --input release-inputs/idacc-darwin-arm64-release/latest-mac.yml \
+            --input release-inputs/idacc-darwin-x64-release/latest-mac.yml \
+            --output release-inputs/latest-mac.yml \
+            --require-mac-arches
+          node scripts/merge-release-metadata.mjs \
+            --metadata release-inputs/idacc-darwin-arm64-release/metadata/darwin-arm64 \
+            --metadata release-inputs/idacc-darwin-x64-release/metadata/darwin-x64 \
+            --metadata release-inputs/idacc-win32-x64-release/metadata/win32-x64 \
+            --metadata release-inputs/idacc-linux-x64-release/metadata/linux-x64 \
+            --output release-inputs/release-index
+
+      - name: Assemble unique public release assets
+        run: |
+          mkdir publish
+          while IFS= read -r FILE; do
+            NAME="$(basename "$FILE")"
+            case "$NAME" in
+              *.dmg|*.zip|*.blockmap|*.exe|*.AppImage|*.deb|latest.yml|latest-linux.yml)
+                test ! -e "publish/$NAME"
+                cp "$FILE" "publish/$NAME"
+                ;;
+            esac
+          done < <(find release-inputs -type f -print)
+          cp release-inputs/latest-mac.yml publish/latest-mac.yml
+          cp release-inputs/release-index/release-index.json publish/release-index.json
+          cp release-inputs/release-index/release-index.sha256 publish/release-index.sha256
+          if [ "$RELEASE_SIGNING_MODE" = unsigned ]; then
+            cp docs/UNSIGNED_STABLE_RELEASE.md publish/UNSIGNED-STABLE-NOTICE.md
+          fi
+          for TARGET in darwin-arm64 darwin-x64 win32-x64 linux-x64; do
+            SOURCE="$(find release-inputs -type d -path "*/metadata/$TARGET" -print -quit)"
+            test -n "$SOURCE"
+            tar -czf "publish/IDACC-provenance-$TARGET.tar.gz" -C "$(dirname "$SOURCE")" "$(basename "$SOURCE")"
+          done
+          find publish -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sed 's#  publish/#  #' > publish/SHA256SUMS
+          test -n "$(find publish -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -n "$(find publish -maxdepth 1 -type f -name '*.exe' -print -quit)"
+          test -n "$(find publish -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$(find publish -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          test -f publish/latest-mac.yml
+          test -f publish/latest.yml
+          test -f publish/latest-linux.yml
+          node scripts/verify-update-descriptors.mjs \
+            --directory publish \
+            --version "$RELEASE_VERSION"
+
+      - name: Upload the assembled release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: idacc-assembled-release
+          if-no-files-found: error
+          retention-days: 7
+          path: publish/*
+
+  attest-release:
+    name: Attest assembled release
+    needs:
+      - validate
+      - assemble-release
+    if: needs.validate.outputs.promote_draft != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    steps:
+      - name: Download the assembled release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: idacc-assembled-release
+          path: publish
+
+      - name: Attest the cross-platform release index and provenance bundles
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: |
+            publish/release-index.json
+            publish/release-index.sha256
+            publish/latest-mac.yml
+            publish/IDACC-provenance-*.tar.gz
+            publish/SHA256SUMS
+
+  publish:
+    name: Publish verified release
+    needs:
+      - validate
+      - assemble-release
+      - attest-release
+    if: needs.validate.outputs.promote_draft != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Download the assembled release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: idacc-assembled-release
+          path: publish
+
+      - name: Create or reconcile immutable release assets
+        id: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+          PREVIOUS_SUCCESS: ${{ needs.validate.outputs.previous_success }}
+        run: |
+          TAG_OBJECT="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT" --jq '.object.sha')" = "$RELEASE_COMMIT"
+          STATE="missing"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            STATE="$(
+              gh release view "$RELEASE_TAG" \
+                --json isDraft,isPrerelease \
+                --jq 'if .isDraft == true then "draft" elif .isPrerelease == true then "prerelease" elif .isDraft == false and .isPrerelease == false then "published" else "invalid" end'
+            )"
+            if [ "$STATE" = "prerelease" ] || [ "$STATE" = "invalid" ]; then
+              echo "::error::$RELEASE_TAG is not a stable production release record (state=$STATE)." >&2
+              exit 1
+            fi
+          else
+            if [ "$RELEASE_SIGNING_MODE" = unsigned ]; then
+              gh release create "$RELEASE_TAG" \
+                --verify-tag \
+                --draft \
+                --title "$RELEASE_TAG" \
+                --notes-file publish/UNSIGNED-STABLE-NOTICE.md
+            else
+              gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
+            fi
+            STATE="draft"
+          fi
+          test "$STATE" != "missing"
+          printf 'already_published=%s\n' "$([ "$STATE" = "published" ] && printf true || printf false)" >> "$GITHUB_OUTPUT"
+
+          EXISTING_DIR="$(mktemp -d)"
+          trap 'rm -rf "$EXISTING_DIR"' EXIT
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$EXISTING_DIR/names"
+          if [ "$STATE" = "draft" ] && [ "$PREVIOUS_SUCCESS" != "true" ] && [ -s "$EXISTING_DIR/names" ]; then
+            gh release view "$RELEASE_TAG" --json assets --jq '.assets[].apiUrl' \
+              | while IFS= read -r ASSET_URL; do
+                  test -n "$ASSET_URL" || continue
+                  ASSET_ENDPOINT="${ASSET_URL#*://}"
+                  ASSET_ENDPOINT="${ASSET_ENDPOINT#*/}"
+                  gh api --method DELETE "$ASSET_ENDPOINT"
+                done
+            : > "$EXISTING_DIR/names"
+          fi
+          for FILE in publish/*; do
+            NAME="$(basename "$FILE")"
+            if grep -Fxq "$NAME" "$EXISTING_DIR/names"; then
+              mkdir -p "$EXISTING_DIR/download"
+              gh release download "$RELEASE_TAG" --pattern "$NAME" --dir "$EXISTING_DIR/download"
+              cmp "$FILE" "$EXISTING_DIR/download/$NAME"
+              rm -f "$EXISTING_DIR/download/$NAME"
+            else
+              if [ "$STATE" = "published" ]; then
+                echo "::error::Published release $RELEASE_TAG is missing immutable asset $NAME." >&2
+                exit 1
+              fi
+              gh release upload "$RELEASE_TAG" "$FILE"
+            fi
+          done
+
+          find publish -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort > "$EXISTING_DIR/expected"
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$EXISTING_DIR/actual"
+          diff -u "$EXISTING_DIR/expected" "$EXISTING_DIR/actual"
+
+      - name: Re-download and verify every published byte
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          mkdir release-verify
+          gh release download "$RELEASE_TAG" --dir release-verify
+          cd release-verify
+          sha256sum -c SHA256SUMS
+          sha256sum -c release-index.sha256
+
+      - name: Publish fully verified release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+          ALREADY_PUBLISHED: ${{ steps.release-assets.outputs.already_published }}
+        run: |
+          if [ "$ALREADY_PUBLISHED" = "true" ]; then
+            echo "$RELEASE_TAG is already published; verified assets were left unchanged."
+          else
+            if [ -z "$RELEASE_ADMIN_TOKEN" ]; then
+              echo "::error::The repository-level RELEASE_ADMIN_TOKEN secret is required with Administration:read access to this repository." >&2
+              exit 1
+            fi
+            test "$(
+              GH_TOKEN="$RELEASE_ADMIN_TOKEN" gh api \
+                -H "X-GitHub-Api-Version: 2026-03-10" \
+                "repos/$GITHUB_REPOSITORY/immutable-releases" \
+                --jq '.enabled'
+            )" = "true"
+            TAG_OBJECT="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
+            test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT" --jq '.object.sha')" = "$RELEASE_COMMIT"
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          fi
+
+      - name: Verify GitHub locked the published release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+        run: |
+          test "$(
+            gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+              --jq '.immutable'
+          )" = "true"
+          TAG_OBJECT="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT" --jq '.object.sha')" = "$RELEASE_COMMIT"
+
+      - name: Record package signing mode
+        if: ${{ inputs.publish }}
+        run: |
+          {
+            echo "## v$RELEASE_VERSION"
+            echo
+            if [ "$RELEASE_SIGNING_MODE" = unsigned ]; then
+              echo "Published seven owner-authorized unsigned stable installers from the exact GitHub-verified source tag."
+              echo
+              echo "Apple Developer ID, Apple notarization, and Windows Authenticode credentials were not used."
+            else
+              echo "Published seven signed, verified, and attested stable installers."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  promote-draft:
+    name: Promote draft matching an immutable successful-run artifact
+    needs: validate
+    if: needs.validate.outputs.promote_draft == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Check out the exact signed-tag commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Install release metadata dependencies
+        run: npm ci --prefix idctl-desktop --omit=dev --ignore-scripts
+
+      - name: Reconfirm the exact successful run and immutable artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+          VERIFIED_RUN_ID: ${{ needs.validate.outputs.previous_success_run_id }}
+          VERIFIED_ARTIFACT_ID: ${{ needs.validate.outputs.previous_success_artifact_id }}
+        run: |
+          [[ "$VERIFIED_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$VERIFIED_ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$VERIFIED_RUN_ID" --jq '.status')" = "completed"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$VERIFIED_RUN_ID" --jq '.conclusion')" = "success"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$VERIFIED_RUN_ID" --jq '.head_sha')" = "$RELEASE_COMMIT"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$VERIFIED_ARTIFACT_ID" --jq '.name')" = "idacc-assembled-release"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$VERIFIED_ARTIFACT_ID" --jq '.expired')" = "false"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$VERIFIED_ARTIFACT_ID" --jq '.workflow_run.id')" = "$VERIFIED_RUN_ID"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$VERIFIED_ARTIFACT_ID" --jq '.workflow_run.head_sha')" = "$RELEASE_COMMIT"
+
+      - name: Download the exact immutable successful-run artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.validate.outputs.previous_success_artifact_id }}
+          path: immutable-run-assets
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.validate.outputs.previous_success_run_id }}
+
+      - name: Download the current draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          mkdir draft-assets
+          gh release download "$RELEASE_TAG" --dir draft-assets
+
+      - name: Bind every draft byte to the immutable successful-run artifact
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+          VERIFIED_RUN_ID: ${{ needs.validate.outputs.previous_success_run_id }}
+        run: >-
+          node scripts/verify-release-promotion.mjs
+          --reference immutable-run-assets
+          --candidate draft-assets
+          --expected-commit "$RELEASE_COMMIT"
+          --run-id "$VERIFIED_RUN_ID"
+
+      - name: Revalidate updater semantics before immutable promotion
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: >-
+          node scripts/verify-update-descriptors.mjs
+          --directory draft-assets
+          --version "$RELEASE_VERSION"
+
+      - name: Publish the artifact-bound draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ADMIN_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+        run: |
+          if [ -z "$RELEASE_ADMIN_TOKEN" ]; then
+            echo "::error::The repository-level RELEASE_ADMIN_TOKEN secret is required with Administration:read access to this repository." >&2
+            exit 1
+          fi
+          test "$(
+            GH_TOKEN="$RELEASE_ADMIN_TOKEN" gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/$GITHUB_REPOSITORY/immutable-releases" \
+              --jq '.enabled'
+          )" = "true"
+          TAG_OBJECT="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT" --jq '.object.sha')" = "$RELEASE_COMMIT"
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+
+      - name: Verify GitHub locked the promoted release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+        run: |
+          test "$(
+            gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+              --jq '.immutable'
+          )" = "true"
+          TAG_OBJECT="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT" --jq '.object.sha')" = "$RELEASE_COMMIT"
+
+  verify-public-release:
+    name: Verify public immutable release and updater
+    needs:
+      - validate
+      - publish
+      - promote-draft
+    if: >-
+      ${{
+        always()
+        && inputs.publish
+        && needs.validate.result == 'success'
+        && (needs.publish.result == 'success' || needs.promote-draft.result == 'success')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the exact published source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Use the pinned Node toolchain
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Verify the unauthenticated public release and updater downloads
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+        run: >-
+          node scripts/verify-public-release.mjs
+          --repo "$GITHUB_REPOSITORY"
+          --tag "$RELEASE_TAG"
+          --commit "$RELEASE_COMMIT"

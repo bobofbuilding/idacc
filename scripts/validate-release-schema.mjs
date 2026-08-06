@@ -9,6 +9,7 @@ const args = process.argv.slice(2);
 const mode = args.find((arg) => arg.startsWith('--')) || '--files';
 const explicitVersion = args.find((arg) => !arg.startsWith('--')) || '';
 const errors = [];
+const modes = new Set(['--files', '--precommit', '--postcommit', '--publish']);
 
 function readJson(relativePath) {
   const file = join(root, relativePath);
@@ -32,6 +33,18 @@ function runGit(args) {
   });
   if (result.status !== 0) return '';
   return result.stdout.trim();
+}
+
+function readGitObject(args) {
+  const result = spawnSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return {
+    ok: result.status === 0,
+    stdout: result.stdout.trim(),
+  };
 }
 
 function expect(condition, message) {
@@ -84,6 +97,7 @@ function lockVersion(relativePath, expected) {
 const desktop = readJson('idctl-desktop/package.json');
 const version = explicitVersion || desktop?.version || '';
 
+expect(modes.has(mode), `unknown validation mode ${mode}`);
 expect(Boolean(version), 'idctl-desktop/package.json must define the canonical version');
 expect(/^\d+\.\d+\.\d+$/.test(version), `canonical version must be plain semver X.Y.Z; got ${version || '(missing)'}`);
 expect(!explicitVersion || explicitVersion === desktop?.version, `requested version ${explicitVersion} does not match idctl-desktop/package.json ${desktop?.version || '(missing)'}`);
@@ -92,6 +106,24 @@ packageVersion('idctl-desktop/package.json', version);
 lockVersion('idctl-desktop/package-lock.json', version);
 packageVersion('idctl/package.json', version);
 lockVersion('idctl/package-lock.json', version);
+
+const idctlVersionPath = join(root, 'idctl', 'src', 'version.ts');
+if (!existsSync(idctlVersionPath)) {
+  errors.push('idctl/src/version.ts is missing');
+} else {
+  const source = readFileSync(idctlVersionPath, 'utf8');
+  const match = /^export const IDCTL_VERSION = ("(?:[^"\\]|\\.)*");$/m.exec(source);
+  let generatedVersion = '';
+  try {
+    generatedVersion = match ? JSON.parse(match[1]) : '';
+  } catch {
+    generatedVersion = '';
+  }
+  expect(
+    generatedVersion === version,
+    `idctl/src/version.ts version ${generatedVersion || '(missing)'} does not match ${version}; run idctl/build/gen-version.mjs`,
+  );
+}
 
 const changelogPath = join(root, 'CHANGELOG.md');
 if (!existsSync(changelogPath)) {
@@ -120,8 +152,40 @@ if (mode === '--postcommit' || mode === '--publish') {
 
 if (mode === '--publish') {
   const tag = `v${version}`;
-  const tagsAtHead = runGit(['tag', '--points-at', 'HEAD']).split('\n').filter(Boolean);
-  expect(tagsAtHead.includes(tag), `${tag} must point at HEAD before publishing`);
+  const tagRef = `refs/tags/${tag}`;
+  const head = runGit(['rev-parse', 'HEAD']);
+  const tagType = readGitObject(['cat-file', '-t', tagRef]);
+  expect(
+    tagType.ok && tagType.stdout === 'tag',
+    `${tag} must be a signed annotated tag object; lightweight tags are not releasable`,
+  );
+  if (tagType.ok && tagType.stdout === 'tag') {
+    const tagBody = readGitObject(['cat-file', '-p', tagRef]).stdout;
+    const hasSignatureArmor = (
+      /-----BEGIN (?:PGP|SSH) SIGNATURE-----|-----BEGIN SIGNED MESSAGE-----/.test(tagBody)
+    );
+    expect(
+      hasSignatureArmor,
+      `${tag} is annotated but unsigned; create it with git tag -s -a`,
+    );
+    if (hasSignatureArmor) {
+      const tagVerification = readGitObject(['verify-tag', tagRef]);
+      const githubWorkflowVerified = (
+        process.env.GITHUB_ACTIONS === 'true'
+        && process.env.IDACC_GITHUB_VERIFIED_TAG === tag
+        && process.env.IDACC_GITHUB_VERIFIED_COMMIT === head
+      );
+      expect(
+        tagVerification.ok || githubWorkflowVerified,
+        `${tag} signature failed cryptographic verification with git verify-tag and has no exact GitHub workflow attestation`,
+      );
+    }
+    const tagCommit = runGit(['rev-list', '-n', '1', tag]);
+    expect(
+      Boolean(head) && tagCommit === head,
+      `${tag} resolves to ${tagCommit || '(missing)'}, not HEAD ${head || '(missing)'}`,
+    );
+  }
 }
 
 if (errors.length) {

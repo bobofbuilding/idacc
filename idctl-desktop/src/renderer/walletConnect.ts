@@ -1,6 +1,6 @@
 import type UniversalProviderType from '@walletconnect/universal-provider';
 import type { WalletConnectSettings } from '../../../idctl/src/settings/schema.ts';
-import { AGENT_BITTREES_SAFE_ADDRESS, EXECUTION_CHAINS, normalizeChainHex, sameAddress } from '../shared/signingGuardrails.ts';
+import { EXECUTION_CHAINS, isEthAddress, normalizeChainHex, sameAddress } from '../shared/signingGuardrails.ts';
 import { call } from './store.ts';
 
 export interface Eip1193Provider {
@@ -213,11 +213,14 @@ export async function cancelRootSafePairing(): Promise<void> {
   emit({ phase: provider?.session ? 'connected' : 'idle', pairingUri: '', qrDataUrl: '', error: '' });
 }
 
-export async function resolveRootSafeProvider(connect: boolean): Promise<RootSignerConnection | null> {
+export async function resolveRootSafeProvider(connect: boolean, requiredSafeAddress: string): Promise<RootSignerConnection | null> {
+  if (!isEthAddress(requiredSafeAddress)) {
+    throw new Error('Configure and explicitly enable a valid root Safe address in Settings first.');
+  }
   const injected = injectedRootSigner();
   if (injected) {
     const accounts = await injected.request<string[]>({ method: 'eth_accounts' }).catch(() => []);
-    if (accounts.some((account) => sameAddress(account, AGENT_BITTREES_SAFE_ADDRESS))) {
+    if (accounts.some((account) => sameAddress(account, requiredSafeAddress))) {
       return { provider: injected, source: 'injected' };
     }
   }

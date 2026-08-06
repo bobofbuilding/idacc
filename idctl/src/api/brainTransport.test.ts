@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { BrainClient, type BrainTransportRequest } from './brain.ts';
+import { BrainClient, inferBrainMemoryTier, type BrainTransportRequest } from './brain.ts';
 import { ManagerClient } from './client.ts';
 
 const attempts: BrainTransportRequest[] = [];
@@ -15,6 +15,26 @@ assert.equal(await brain.timeline({ type: 'control:test', subject: 'test' }), tr
 assert.equal(attempts.length, 2);
 assert.equal(attempts[0].idempotency_key, attempts[1].idempotency_key);
 assert.match(attempts[0].idempotency_key ?? '', /^idacc:/);
+
+assert.equal(inferBrainMemoryTier({ agentId: 'team-instructions', tags: ['team-instruction'] }), 'core');
+assert.equal(inferBrainMemoryTier({ agentId: 'control-center', tags: ['validated-reusable'] }), 'long_term');
+assert.equal(inferBrainMemoryTier({ agentId: 'control-center', project: 'brain' }), 'medium_term');
+assert.equal(inferBrainMemoryTier({ agentId: 'control-center', taskId: 'task:1' }), 'short_term');
+
+let memoryRequest: BrainTransportRequest | undefined;
+const memoryBrain = new BrainClient({
+  transport: async (request) => {
+    memoryRequest = request;
+    return { body: { ok: true }, cacheControl: 'no-store', noStore: true };
+  },
+});
+assert.equal(await memoryBrain.memory('control-center', {
+  key: 'active-plan',
+  content: 'Active plan context',
+  tags: ['plan'],
+  project: 'brain',
+}), true);
+assert.equal((memoryRequest?.body as Record<string, unknown>)?.tier, 'medium_term');
 
 const originalFetch = globalThis.fetch;
 let captured: { url: string; init?: RequestInit } | undefined;

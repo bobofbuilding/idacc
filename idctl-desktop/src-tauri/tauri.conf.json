@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ID Agents Control Center",
-  "version": "0.1.0",
-  "identifier": "world.idchain.idagents-control",
+  "productName": "IDACC Interface Simulation (Developer Only)",
+  "version": "0.0.0",
+  "identifier": "world.idchain.idacc-interface-simulation",
   "build": {
     "frontendDist": "../dist-tauri",
     "beforeBuildCommand": "node scripts/build-tauri.mjs",
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "ID Agents Control Center",
+        "title": "IDACC Interface Simulation (Developer Only)",
         "width": 1180,
         "height": 780,
         "minWidth": 900,
@@ -23,8 +23,7 @@
     }
   },
   "bundle": {
-    "active": true,
-    "targets": ["app", "dmg"],
+    "active": false,
     "category": "DeveloperTool",
     "icon": ["icons/icon.icns", "icons/icon.png"]
   }

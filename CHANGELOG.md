@@ -8,6 +8,338 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.708] — 2026-08-06
+### What changed
+- Fix terminal task completion collision handling and guard task-name reuse across fresh repository runs.
+- test(work): align open task reuse assertion
+- test(work): cover terminal task name reuse
+- fix(work): avoid terminal task name collisions
+- Fix terminal task completion collision
+
+## [0.1.707] — 2026-08-05
+### What changed
+- Recover missing-material task blocks through a bounded persistent ownership ladder, requeue them when sources change, and surface genuine decisions in Inbox; bundle Manager v0.1.168.
+
+## [0.1.706] — 2026-08-05
+### What changed
+- Unify Work automation with Brain Active Learning and bounded goal-cycle status.
+- Fix oversized Brain skill-catalog health reads and link Settings to the Brain dashboard.
+- Make runtime/model changes conflict-safe with a durable cache, and report updater channel mismatches accurately.
+- Pin Manager v0.1.167 to deduplicate legacy goal rows and enforce per-cycle task limits.
+
+## [0.1.705] — 2026-08-05
+### What changed
+- Route explicit General Council requests directly to legal counsel, preserve bounded parallel lead intake, and include the corrected Manager verification pin.
+- Fix General Council lead routing
+
+## [0.1.704] — 2026-08-05
+### What changed
+- Pin Manager 0.1.166 so a profile-scoped IDACC launch creates only its active
+  database parent and no longer recreates the retired `~/.id-agents` path.
+- Preserve the 0.1.703 managed-worker authentication, skill refresh, and
+  immutable agent-ID delegation repairs while completing legacy-data
+  retirement cleanly.
+- Align the final public-release verifier with electron-builder's native Linux
+  `x86_64.AppImage` and `amd64.deb` filenames so a fully published release ends
+  with a successful consumer-path check.
+
+## [0.1.703] — 2026-08-05
+### What changed
+- Pin Manager 0.1.165 so every managed worker refreshes its authenticated
+  Manager and profile-scoped Brain guidance before startup.
+- Reconcile configured skills across supported runtime roots without losing
+  unavailable optional capabilities, with byte-for-byte recovery archives for
+  migrated stale copies.
+- Accept immutable managed-agent IDs in task ownership routes so authenticated
+  `/news-to` delegation can create auditable child-task receipts.
+
+## [0.1.702] — 2026-08-05
+### What changed
+- Unify the v0.1.701 clean release branches and advance the active IDACC app line
+- pin clean-runner Manager fix
+- pin compatible Manager runtime
+- align MCP capability safeguard test
+- clean IDACC release presentation
+- prevent repeated macOS permission prompts
+- separate setup completion from live agent health
+- show base version in app label
+- restore Brain access and plan integrity
+- clear unified runtime audit gate
+- enforce leadership-first release policy
+- restore lead delegation startup guarantees
+- stop restart setup and credential regressions
+- restore authorized operations-lead routing
+
+## [0.1.701] — 2026-08-04
+### What changed
+- Make HR runtime/model changes atomic, preflighted, verified, and durable across Manager restarts.
+- Unify local-provider readiness, reduce model refresh latency, and separate backend health from parked agents.
+- Add bounded worker recovery and secure MCP connections as encrypted Settings-owned, process-local bindings.
+- Pin Manager 0.1.164 so atomic configuration and safe MCP-reference contracts match the packaged IDACC client.
+- Park the unstable BrowserMCP adapter and pin supported built-in MCP package versions.
+- Present Self-update as a single IDACC release, without separate Agent manager, Brain, or unified-stack product rows.
+- Use the clean version tag as the stable GitHub release title, including owner-authorized unsigned releases.
+
+## [0.1.700] — 2026-08-04
+### What changed
+- Stop automatic Manager restart restoration from opening macOS Keychain for local/no-key providers that retain an obsolete encrypted credential field.
+- Load Identity readiness passively after launch and reserve Keychain/RPC verification for the user-clicked production preflight.
+- Keep Dashboard and Computer Use status checks passive so they do not initialize the native input controller or ask macOS to open Accessibility settings.
+- Preserve explicit secure behavior: credential-backed provider agents still unlock when genuinely required, and only a user-clicked permission action opens System Settings.
+
+## [0.1.699] — 2026-08-04
+### What changed
+- Keep completed private-workspace setup durable when the lead, coder, researcher, Manager, or Brain is temporarily offline; live readiness remains available as operational health instead of reopening first-run setup.
+- Suppress stale legacy “Setup needs attention” sidebar alerts for profiles whose setup record is already complete, while preserving genuine incomplete and Limited-mode recovery actions.
+- Align the Windows ACL release smoke with the shipped helper's bounded two-minute allowance so transient hosted-runner security scanning does not reject an otherwise healthy Windows package.
+
+## [0.1.698] — 2026-08-04
+### What changed
+- Show the clean source version in the application title bar by hiding the CI-only `-review.N` sequence from the user-facing label.
+- Preserve the complete review version inside update metadata so prerelease ordering, download selection, and update safety remain unchanged.
+
+## [0.1.697] — 2026-08-04
+### What changed
+- Restore authenticated agent access to the bundled Brain by pinning Brain 0.1.8, whose MCP proxy now forwards the profile bearer, and Manager 0.1.163, whose goal-driver writes now use the same authenticated Brain headers.
+- Add a guarded IDACC-core plan consolidation action in Chat and Work: explicit numbered-plan requests require confirmation, reject stale records, create one conservative-status plan, and retain the original files in the private profile archive with rollback on failure.
+- Keep Work plans correctly identified as profile-owned application records rather than Brain-owned context, and require a core mutation receipt before an agent may claim that a plan lifecycle changed.
+- Replace model-generated “behind the scenes” action summaries with the exact query activity trace so the UI cannot invent work that did not occur.
+- Include Brain's previously undeclared blockchain client dependency so clean installations can run every shipped Brain tool.
+
+## [0.1.696] — 2026-08-03
+### What changed
+- Refresh desktop production locks to `brace-expansion` 5.0.9 and `fast-uri` 3.1.5, clearing newly published high-severity registry advisories across clean Linux release runners.
+- Pin Manager 0.1.162 with its corresponding `fast-uri` and Hono security updates while retaining the leadership-first restore and start-on-dispatch guarantees introduced in Manager 0.1.161.
+- Pin Brain 0.1.7 and regenerate its consumer capsule with patched URL, CORS, and IP-address parsers, keeping all three unified components clear of the new production audit findings.
+
+## [0.1.695] — 2026-08-03
+### What changed
+- Update the clean-runner unified-stack contract to enforce the new leadership-first startup sequence: restore the primary lead and external team leads, publish readiness, then restore the remaining workers before enabling automatic schedules.
+
+## [0.1.694] — 2026-08-03
+### What changed
+- Recognize the pinned default-team Dashboard chat as the primary lead surface, so actionable objectives use deterministic Manager fan-out instead of waiting on a direct lead reply.
+- Pin Manager 0.1.161 and withhold managed readiness until the primary lead, external team leads, and default validators complete their verified restoration pass.
+- Start stopped local agents on explicit `/ask` dispatch under the Manager lifecycle lock, allowing team leads to bring their selected workers online without racing restart recovery or dispatching to dead endpoints.
+
+## [0.1.693] — 2026-08-03
+### What changed
+- Keep completed profiles out of the private-workspace setup modal during ordinary service restarts while preserving setup for new or incomplete profiles.
+- Pin Manager 0.1.160 so its initialized control plane becomes available before large persistent fleets finish their bounded worker-restoration pass, expose that recovery phase without enabling automated dispatch early, and make explicit local-worker stops deterministic across operating systems.
+- Keep encrypted cloud-provider refresh lazy in unsigned review builds so background catalog checks do not open macOS Keychain merely because IDACC restarted; explicit provider use and active encrypted-provider agents still unlock securely when required.
+- Retry transient provider-agent restoration before warning, and restore no-key local Ollama agents without treating them as missing API credentials.
+
+## [0.1.692] — 2026-08-02
+### What changed
+- Restore the managed lead credential lifecycle by pinning the unified app to Manager 0.1.158 and keeping live Manager updates on the signed release frontier.
+- Route repository-wide delegation through the trusted desktop Manager boundary, start the configured operations lead when needed, and never substitute an unrelated active specialist for a stopped team lead.
+- Attach an explicit active-project inventory to broad audit requests, create or resume `audit-reconcile-authorized-projects` under the operations lead, and require per-project refs, tests, conflict handling, push, and merge evidence before validation.
+- Fail closed when no authorized project roots or operations lead are available, without granting cross-team administrative authority to individual managed workers.
+
+## [0.1.691] — 2026-08-02
+### What changed
+- Route actionable primary-lead Chat requests through deterministic, immediate cross-team delegation so broad work no longer stalls in one lead query.
+- Resolve active team leads from current Manager state, skip stopped teams, show the accepted delegation destinations, and return Chat control to the user while work continues in Work and Dashboard.
+- Keep agents running unless the user explicitly stops them, align HR structure with Dashboard fleet views, and complete the Computer Use full-control workflow.
+- Retire the dormant context-retrieval adapter and preserve review updater integrity across macOS, Windows, and Linux unsigned review packages.
+- Align both application toolchains on TypeScript 7.0.2 and pin production provenance to the reviewed `actions/attest` 4.2.1 commit while retaining the Electron 41 ABI boundary required by the bundled Manager.
+- Restore an explicit owner-authorized unsigned stable release mode that retains signed source tags, all seven OS installers, immutable provenance, exact updater descriptors, and anonymous public verification while clearly disclosing the absence of Apple notarization and Windows Authenticode.
+
+## [0.1.690] — 2026-08-01
+### What changed
+- Restore self-updating unsigned review builds through an isolated GitHub prerelease channel without requiring Apple notarization credentials.
+- Keep review downloads on the compiled `bobofbuilding/idacc` repository, verify electron-builder SHA-512 metadata, reject downgrades and production-channel crossover, and require explicit restart approval.
+- Give macOS review builds a stable ad-hoc designated requirement so the standard atomic Squirrel updater can verify successive review builds without reintroducing the legacy bundle-deletion or quarantine-removal helper.
+- Publish durable multi-OS review updater descriptors as prerelease assets while leaving the stable consumer Latest route unchanged.
+
+## [0.1.689] — 2026-08-01
+### What changed
+- Preserve Manager-reported Brain and MCP readiness through the IDACC API boundary so a healthy starter team can complete private workspace setup.
+- Reconcile unavailable legacy starter capabilities atomically, avoiding partial rebuild loops that strand one agent in a failed state.
+- Bundle Manager 0.1.157 with one-time, recovery-backed migration for pre-receipt managed overlays, strict protection for later user edits, and a production dependency tree free of known advisories.
+- Keep unsupported-but-available provider routes informational instead of treating them as blockers for an otherwise complete starter workspace.
+
+## [0.1.687] — 2026-07-31
+### What changed
+- Restore existing Manager and Brain state when a legacy installation opens its first unified app profile, using consistent SQLite snapshots and rollback-safe retained copies.
+- Keep the unified application updater on `bobofbuilding/idacc` while clearly identifying locally installed builds that are ahead of the production release channel.
+
+## [0.1.686] — 2026-07-29
+### What changed
+- Unify IDACC, Manager, Brain, consumer profiles, and dependency updates
+- Unify IDACC, Manager, Brain, and consumer delivery
+- Harden Windows publisher verification
+- Complete updater and Windows stream handoff
+- Exercise retained Windows host cleanup
+- Complete Windows native build provenance
+- Use Roslyn for deterministic Windows helpers
+- Harden unified consumer runtime and onboarding
+- Allow Windows ACL integration to finish
+- Snapshot persisted Windows workspace ACL
+- Enforce Windows profile writer exclusion
+- Accept WinPS JSON numeric schema values
+- Refine bounded Windows compatibility diagnostics
+- Expose bounded Windows migration test phase
+- Use parsed stdin for Windows ACL test helpers
+- Execute Windows privacy helper through parsed stdin
+- Harden Windows privacy transport diagnostics
+- Add bounded Windows privacy diagnostics
+- Mirror Windows user data privacy in migration smoke
+- Stabilize hosted privacy and supervision checks
+- Harden cross-platform hosted verification
+- Complete production privacy and release guardrails
+- Complete unified consumer profile and release hardening
+- Use Windows ACL semantics in supervisor integration
+- Use the platform Electron executable in integration tests
+- Fix Windows rendered smoke file paths
+- Repin Manager after packaged worker fix
+- Ship the unified profile-isolated consumer runtime
+- Verify packaged runtime manifests with the production policy
+- Keep generated release notices outside application source state
+- Complete the consumer-ready unified IDACC application and release pipeline
+- Bundle and supervise the ID Agents manager and Brain inside IDACC, isolate and migrate user state into app-owned profiles, add guided first-run readiness, and enforce clean-profile release verification.
+- Automate evidence-based Brain proposal review through manager agents while preserving human review for unresolved or high-risk changes.\nHarden Learn processing and recursive goal comparison with idempotent task creation, source-level perspective tracking, and bounded retries.\nUnify goal cadence state between IDACC and the manager, deduplicate active-goal instructions, and expose clear cadence and fan-out controls.\nDiscover Claude CLI models from live local configuration and caches, preserve exact canonical model choices, and improve subscription and runtime catalog refresh behavior.
+- Outstanding changes in idctl-desktop/scripts/work-reconcile-smoke.mjs and idctl-desktop/src/renderer/views/Tasks.tsx.
+- Work: keep completed failures out of Holding and report all reconciled validation routes
+- Bound manual reconciliation batches
+- Reconcile holding tasks through manager
+- Fix manager updates from packaged macOS app
+- Work: show bounded stalled-recovery retries and their scheduled retry time
+- Recover fresh manager installation and preserve configured fleet state.
+- Rework HR Manage into Overview, Agents, Team ops, and Hierarchy surfaces; move instruction and goal editing into guarded team and agent administration.
+- HR Manager: clarify Structure path direction and layering
+- HR Manager: align Structure routing with the fleet delegation contract
+- HR Manager: make Structure a hierarchy-driven org chart
+- Team ops: add guarded fleet-wide lifecycle controls
+- HR Manager: recover missing manager before assigning team leads
+- Add guarded manager installer regression coverage for fresh clones, fast-forward updates, and dirty-worktree refusal
+- Keep manager update status monotonic when an installed manager is newer than published release metadata.
+- Add an authoritative all-workers capability scope that excludes the default team and every team lead.
+- Automatically refresh model lanes with bounded local and remote provider checks, cache expiry, and renderer invalidation.
+- Treat operations-team and ops-team as one manager-authoritative team across HR coverage, Build targeting, lead routing, and planner lookup
+- Assign explicit role-fit models during team creation and stage guarded recommendations for existing agents with unset models
+- Fix fresh installs by bundling a guarded current-manager bootstrap in Settings and adding direct Dashboard recovery actions
+- HR Manager: allow stopped roster agents to be assigned as team coordinators while preserving execution readiness guards
+- HR Manager: require manager-authoritative runtime preflight before team creation
+- HR Manager: require live Grok readiness before spawn
+- HR Manager: bound Claude and Codex readiness checks
+- Outstanding changes across docs/PRODUCT_SPEC.md, idctl-desktop/scripts/subs-status-cache-smoke.mjs, idctl-desktop/src/main/bridge.ts, and 5 more files.
+- Settings: add guarded ID Agents manager check, update, build, drain-aware activation, and post-activation state sync.
+- Make fresh provider setup actionable with Claude Code and Codex installers, broader packaged-app CLI discovery, and accurate loading states.
+- Govern workflow recovery and harden desktop setup
+- Filter low-value dashboard activity without hiding failures
+- Add SECURITY.md vulnerability reporting policy
+- Keep manager installations current with guarded tagged release updates and drain-aware activation.
+- Treat one failed fleet snapshot as a transient reconnect instead of declaring the manager offline, while preserving last-known fleet state and requiring consecutive failures before the offline transition.
+- Refresh the Settings hardware tile every 30 seconds and whenever the app regains focus so disk cleanup and model-capacity checks use current free-space data.
+- Keep successful control and Brain audit telemetry out of Dashboard activity while preserving failures and meaningful work events.
+- Bound release scratch storage and remove verified local build artifacts after publishing.
+- Release: authenticate the final publication check and cover token forwarding
+- Dashboard: replace the stale command-surface draft with the released operating contract and harden drawer keyboard focus
+- Keep Live Coordination visible across manager version drift and surface legacy hierarchy fallback instead of silently hiding the fleet.
+- Dashboard: add a Manager-routed command palette and control panels while retaining Work drill-downs.
+- Dashboard: surface public wallet addresses and add expandable, copyable communications
+- feat: expose and copy activity communications
+- Add guarded stack installer and persistent manager service
+- Identity & Keys: replace the desktop mock lifecycle with receipt-verified Safe 1.4.1 and Zodiac Roles proposals, atomic WalletConnect submission, and bounded zero-value contract/function authority.
+- Identity & Keys: repair persisted WalletConnect chain detection, keep Safe simulation off the signing session, and route guarded reads through the configured chain RPC.
+- Repair automatic updates by migrating the retired id-agent-control-center release channel to bobofbuilding/idacc while preserving custom repositories.
+- Fix WalletConnect root Safe pairing by loading the packaged QR module through its default export and surface retryable QR errors with pairing-URI fallback.
+- Settings and Identity & Keys: add WalletConnect/Reown setup, encrypted agent signer custody, Safe Roles execution and asset guards, align coordination hierarchy, and remove the in-app Wiki runtime.
+- Identity & Keys: standardize root-controlled per-agent Safes and portable release publishing
+- Goal Autopilot: delegate work creation to the manager and verify release publication
+- Release: prevent orphaned version tags
+- Identity & Keys: clarify readiness, authority boundaries, and capability path
+- idctl-desktop: extract signing guardrails smoke checks
+- docs: add identity keys verification note
+- feat(identity): add wallet binding and chain status
+- idctl: gate GPT-5.6 Codex model ids on installed CLI version
+- release.sh: synthesize notes for placeholder auto-release commits
+- Add GPT-5.6 Codex fallback models to curated runtime catalog
+- Learn: use native pdftotext for PDF extraction, quarantine raw PDF internals
+- Avoid HR subscription probe churn and make plan recovery actions resolve locally
+- Outstanding changes across idctl-desktop/src/renderer/views/Chat.tsx, idctl-desktop/src/renderer/views/Dashboard.tsx, and idctl-desktop/src/renderer/views/Modules.tsx.
+- Modules: MCP server attach/detach now defaults to the active team scope instead of requiring an explicit selection, so single-team attach/detach works without an extra arming step (cross-team/all-team MCP changes still require an explicit choice). Added a recommended-agents quick-attach action for skill recommendations. Skill install/uninstall now skip agents that already have or lack the skill and only reload the list when something changed. Row-level and bulk staleness checks moved from full capability-stamp comparison to agent id/name identity checks, with skill state re-verified at confirmation time. release.sh and validate-release-schema.mjs now reject placeholder release notes/changelog entries (e.g. Automated release of outstanding..., Maintenance release., Update.) and require a populated What changed section in CHANGELOG.md.
+- Outstanding changes across idctl-desktop/src/renderer/views/Modules.tsx, scripts/release.sh, and scripts/validate-release-schema.mjs.
+- Outstanding changes in docs/CONTROL_CENTER_WIKI.json.
+- Outstanding changes across idctl-desktop/src/renderer/styles.css, idctl-desktop/src/renderer/views/Modules.tsx, and idctl-desktop/src/renderer/views/Tasks.tsx.
+- Outstanding changes in idctl-desktop/src/main/mcpTest.ts and idctl-desktop/src/renderer/views/Modules.tsx.
+- Outstanding changes across idctl-desktop/src/main/bridge.ts, idctl-desktop/src/renderer/styles.css, idctl-desktop/src/renderer/views/Modules.tsx, and 2 more files.
+- Outstanding changes in idctl-desktop/src/main/goaldriver.ts and idctl-desktop/src/renderer/views/Tasks.tsx.
+- Keep transient plan preflight failures out of Inbox
+- Allow concurrent Work actions for separate Plans rows
+- Add guarded ID Agents manager source installer
+- Add guarded Identity contract console
+- Outstanding changes across idctl-desktop/src/main/bridge.ts, idctl-desktop/src/main/chatstore.ts, idctl-desktop/src/main/subscriptions.ts, and 3 more files.
+- Outstanding changes in scripts/release.sh and scripts/validate-release-schema.mjs.
+
+## [0.1.685] — 2026-07-28
+### What changed
+- Ship one unified IDACC application with exact bundled Manager and Brain provenance, profile-owned state and migrations, consumer onboarding, and one updater authority.
+- Add isolated unsigned native review artifacts for macOS, Windows, and Linux, and close review-only runtime-version and background-process containment gaps.
+- Bundle Manager 0.1.155 so a Windows graceful process-tree rejection continues
+  through an ownership-rechecked forced stop, and require the packaged review
+  gate to prove stopped state, PID exit, and exclusive loopback-port release.
+- Make Linux DEB review inspection consume member streams to archive EOF and
+  reap the complete bounded verifier process group on failure or timeout.
+- Keep the Linux SUID smoke copy root-owned and non-writable while exposing
+  read-only traversal in the required order for helper identity verification.
+
+## [0.1.684] — 2026-07-25
+### What changed
+- Bundle and supervise the ID Agents manager and Brain inside IDACC, isolate and migrate user state into app-owned profiles, add guided first-run readiness, and enforce clean-profile release verification.
+
+## [0.1.683] — 2026-07-24
+### What changed
+- Automate evidence-based Brain proposal review through manager agents while preserving human review for unresolved or high-risk changes.
+- Harden Learn processing and recursive goal comparison with idempotent task creation, source-level perspective tracking, and bounded retries.
+- Unify goal cadence state between IDACC and the manager, deduplicate active-goal instructions, and expose clear cadence and fan-out controls.
+- Discover Claude CLI models from live local configuration and caches, preserve exact canonical model choices, and improve subscription and runtime catalog refresh behavior.
+
+## [0.1.682] — 2026-07-24
+### What changed
+- Outstanding changes in idctl-desktop/scripts/work-reconcile-smoke.mjs and idctl-desktop/src/renderer/views/Tasks.tsx.
+
+## [0.1.681] — 2026-07-24
+### What changed
+- Work: keep completed failures out of Holding and report all reconciled validation routes
+
+## [0.1.680] — 2026-07-24
+### What changed
+- Bound each manual all-team reconciliation to 20 tasks so immediate recovery cannot create a validator surge.
+
+## [0.1.679] — 2026-07-24
+### What changed
+- Make Work > Reconcile run the manager's deterministic Holding recovery across exhausted validation, stalled owners, and unassigned tasks.
+- Count and report the full Holding Pattern rather than treating only stale Doing tasks as recoverable.
+- Keep compatibility with older managers while making clear that current managers run the same bounded recovery automatically.
+
+## [0.1.678] — 2026-07-24
+### What changed
+- Fix manager updates from packaged macOS app
+
+## [0.1.677] — 2026-07-22
+### What changed
+- Work: show bounded stalled-recovery retries and their scheduled retry time
+
+## [0.1.676] — 2026-07-22
+### What changed
+- Recover fresh manager installation and preserve configured fleet state.
+- Pin manager services and the updater to one database path, surface recovery backups and missing-team diagnostics, and invoke the updater through Node on restrictive fresh installs.
+- Make HR team administration safer with confirmed deletion, opt-in source-team cleanup, a larger instruction editor, and simpler default-team relay controls.
+
+## [0.1.675] — 2026-07-22
+### What changed
+- Rework HR Manage into Overview, Agents, Team ops, and Hierarchy surfaces; move instruction and goal editing into guarded team and agent administration.
+
+## [0.1.674] — 2026-07-22
+### What changed
+- HR Manager: clarify Structure path direction and layering
+
+## [0.1.673] — 2026-07-22
+### What changed
+- HR Manager: align Structure routing with the fleet delegation contract
+
 ## [0.1.672] — 2026-07-22
 ### What changed
 - HR Manager: make Structure a hierarchy-driven org chart
@@ -1646,8 +1978,9 @@ subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 - **New loop = agent chains, merged.** The old single-agent **New loop** and the separate **Agent chains**
   builder are now one **New loop**: describe a goal → AI-draft an ordered multi-agent sequence → edit the
   steps → **Run now** (in-app, precise per-step routing, passing each step's output to the next) **or**
-  **Schedule loop** to run it on a cadence 24/7 (a multi-step chain is handed to the first agent as a
-  checklist). Single-step loops behave exactly as before.
+  **Schedule loop** to run it on a recurring Manager cadence (a multi-step chain
+  is handed to the first agent as a checklist). Single-step loops behave
+  exactly as before.
 - **Dream: AI drafting assist.** A **✦ Suggest focus** button asks the agent to propose the highest-value
   thing to reflect on (grounded in its recent work + the brain) and fills the focus field — edit it, then Dream.
 - **Per-runtime model freshness + auto-refresh.** HR Manager → Fleet has a **Models** panel showing each
@@ -2843,8 +3176,8 @@ subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 - **Tasks page is now tabbed: Tasks · Schedule · Loops.** The Schedule page is
   folded in as a tab (no more separate nav item; heartbeats + supervision live
   there). **New Loops tab** — build a recurring *objective* for an agent
-  (objective + cadence) that the manager runs on a schedule (24/7, even when the
-  app is closed), with a tracker (status, last run, Run-now, pause/resume).
+  (objective + cadence) that the Manager runs on a recurring schedule, with a
+  tracker (status, last run, Run-now, pause/resume).
 - **Health page now lists the whole fleet, grouped by team**, with running
   agents at the top of each group and the active team first (e.g. "41 agents ·
   41 running"). Probe stays scoped to the active team.

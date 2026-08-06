@@ -28,6 +28,8 @@ try {
   const connector = readFileSync(join(root, 'src/renderer/walletConnect.ts'), 'utf8');
   const html = readFileSync(join(root, 'src/renderer/index.html'), 'utf8');
   assert.ok(settings.indexOf('Root Safe connection') < settings.indexOf('Agent chain RPCs'));
+  assert.ok(settings.indexOf('Profile root identity') < settings.indexOf('Root Safe connection'));
+  assert.match(settings, /never imports or enables a bundled identity/);
   assert.match(settings, /routine agent transactions:[\s\S]*session keys/);
   assert.match(settings, /type="password"/);
   assert.match(settings, /Project ID configured/);
@@ -42,7 +44,7 @@ try {
   assert.doesNotMatch(connector, /'eth_call'/);
   assert.match(connector, /const \{ default: qr \} = await import\('qrcode'\)/);
   assert.match(connector, /retryRootSafeQr/);
-  assert.match(connector, /accounts\.some\(\(account\) => sameAddress\(account, AGENT_BITTREES_SAFE_ADDRESS\)\)/);
+  assert.match(connector, /accounts\.some\(\(account\) => sameAddress\(account, requiredSafeAddress\)\)/);
   assert.match(connector, /abortPairingAttempt/);
   assert.doesNotMatch(connector, /setInterval|setTimeout/);
   assert.match(html, /connect-src 'self' https:\/\/\*\.walletconnect\.org/);

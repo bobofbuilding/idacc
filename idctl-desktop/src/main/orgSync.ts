@@ -21,6 +21,8 @@ import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { slugName } from '../../../idctl/src/api/teamSpec.ts';
 import { loadSettings, type SecondaryLead } from '../../../idctl/src/settings/store.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
+import { createSingleFlightBackgroundGate } from './backgroundActivity.ts';
+import { dedupeGoalInstructionMemories } from './goaldriver.ts';
 import { isActiveStatus } from './work.ts';
 
 const ORG_BEGIN = '<!-- BEGIN id-agents org -->';
@@ -244,8 +246,8 @@ function composeOrgBlock(
 /** Pull the brain's current team-instruction memories for a team (best-effort, short timeout). */
 async function brainInstructions(team: string): Promise<string[]> {
   const memories = await brain.sharedMemory({ tag: 'team-instruction', project: team, limit: 8 });
-  return memories
-    .filter((m) => m.agent_id === 'team-instructions' && m.content && m.mem_key !== 'org:hierarchy')
+  return dedupeGoalInstructionMemories(memories
+    .filter((m) => m.agent_id === 'team-instructions' && m.content && m.mem_key !== 'org:hierarchy'))
     .map((m) => `${String(m.content).trim()}${m.id ? ` [memory:${m.id}]` : ''}`);
 }
 
@@ -446,14 +448,11 @@ export async function syncOrg(client: ManagerClient, opts: { autoRebuild?: boole
  * Returns a stop function. Honors the `orgSync.enabled` config flag (default on). Takes a getter
  * so it always uses the live client even if it's reassigned (manager/team switch).
  */
-export function startOrgSyncLoop(getClient: () => ManagerClient, intervalMs = 5 * 60_000): () => void {
-  let running = false;
-  let stopped = false;
-  const tick = async (): Promise<void> => {
-    if (running || stopped) return;
+export function startOrgSyncLoop(getClient: () => ManagerClient, intervalMs = 5 * 60_000): () => Promise<void> {
+  const gate = createSingleFlightBackgroundGate();
+  const tick = (): Promise<void> => gate.run(async () => {
     const cfg = loadSettings();
     if (cfg.orgSync?.enabled === false) return; // explicitly disabled
-    running = true;
     try {
       const r = await syncOrg(getClient(), { autoRebuild: cfg.orgSync?.autoRebuild !== false });
       if (r.written || r.rebuilt.length) {
@@ -461,13 +460,15 @@ export function startOrgSyncLoop(getClient: () => ManagerClient, intervalMs = 5 
       }
     } catch (e) {
       console.error('[org-sync] pass failed:', e instanceof Error ? e.message : e);
-    } finally {
-      running = false;
     }
-  };
+  });
   const startTimer = setTimeout(() => void tick(), 15_000); // let the app settle first
   (startTimer as { unref?: () => void }).unref?.();
   const h = setInterval(() => void tick(), intervalMs);
   (h as { unref?: () => void }).unref?.();
-  return () => { stopped = true; clearTimeout(startTimer); clearInterval(h); };
+  return () => {
+    clearTimeout(startTimer);
+    clearInterval(h);
+    return gate.stop();
+  };
 }

@@ -9,17 +9,25 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, chmodSync, renameSync, unlinkSync } from 'node:fs';
 import { resolveConfigPath, configDir } from './paths.ts';
-import { emptyConfig, defaultHeadroomPilotSettings, normalizeUpdateSettings, DEFAULT_TEAM, type DraftDispatcherSettings, type EvmRpcProfile, type EvmRpcRequest, type GoalDriverSettings, type HeadroomPilotSettings, type IdctlConfig, type ImageServerConfig, type LocalModelCatalogEntry, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderModelSelection, type ProviderProfile, type ProviderSync, type UpdateSettings, type WalletConnectSettings } from './schema.ts';
+import { emptyConfig, defaultGoalDriverSettings, defaultHeadroomPilotSettings, defaultRootIdentitySettings, isValidEvmAddress, isValidLiveEnsRoot, normalizeBrainAutomationSettings, normalizeEnsRoot, normalizeRootIdentitySettings, normalizeUpdateSettings, ROOT_IDENTITY_CHAIN_ID, DEFAULT_TEAM, type BrainAutomationSettings, type DraftDispatcherSettings, type EvmRpcProfile, type EvmRpcRequest, type GoalDriverSettings, type HeadroomPilotSettings, type IdctlConfig, type ImageServerConfig, type LocalModelCatalogEntry, type ManagerProfile, type McpServerProfile, type ProjectEntry, type ProviderModelSelection, type ProviderProfile, type ProviderSync, type RootIdentitySettings, type UpdateSettings, type WalletConnectSettings } from './schema.ts';
 import { filterParkedMcpServers, isParkedMcpServer } from './mcpCatalog.ts';
+import { normalizeProviderBaseUrl, providerTransportDecision } from './providerTransport.ts';
 
-function normalizeGoalDriver(input: unknown): GoalDriverSettings | undefined {
-  if (!input || typeof input !== 'object') return undefined;
+function normalizeGoalDriver(input: unknown): GoalDriverSettings {
+  const defaults = defaultGoalDriverSettings();
+  if (!input || typeof input !== 'object') return defaults;
   const raw = input as Record<string, unknown>;
-  const out: GoalDriverSettings = {};
-  if (typeof raw.enabled === 'boolean') out.enabled = raw.enabled;
-  if (typeof raw.cadenceMs === 'number' && Number.isFinite(raw.cadenceMs) && raw.cadenceMs > 0) out.cadenceMs = Math.floor(raw.cadenceMs);
-  if (typeof raw.maxOpenTasksPerGoal === 'number' && Number.isFinite(raw.maxOpenTasksPerGoal) && raw.maxOpenTasksPerGoal > 0) out.maxOpenTasksPerGoal = Math.floor(raw.maxOpenTasksPerGoal);
-  return out;
+  return {
+    enabled: typeof raw.enabled === 'boolean' ? raw.enabled : defaults.enabled,
+    cadenceMs: typeof raw.cadenceMs === 'number' && Number.isFinite(raw.cadenceMs) && raw.cadenceMs > 0
+      ? Math.floor(raw.cadenceMs)
+      : defaults.cadenceMs,
+    maxOpenTasksPerGoal: typeof raw.maxOpenTasksPerGoal === 'number'
+      && Number.isFinite(raw.maxOpenTasksPerGoal)
+      && raw.maxOpenTasksPerGoal > 0
+      ? Math.floor(raw.maxOpenTasksPerGoal)
+      : defaults.maxOpenTasksPerGoal,
+  };
 }
 
 function normalizeDraftDispatcher(input: unknown): DraftDispatcherSettings | undefined {
@@ -123,6 +131,16 @@ function normalizeLocalModelCatalog(input: unknown): LocalModelCatalogEntry[] | 
   return rows.length ? rows.slice(0, 500) : undefined;
 }
 
+function normalizeLoadedProvider(input: ProviderProfile): ProviderProfile {
+  const decision = providerTransportDecision(String(input?.baseUrl ?? ''));
+  if (!decision.ok || !decision.normalizedUrl) {
+    // Keep an invalid hand-edited/legacy row visible for removal or correction,
+    // but it must not remain enabled or become the default route.
+    return { ...input, enabled: false, default: false };
+  }
+  return { ...input, baseUrl: decision.normalizedUrl };
+}
+
 export function normalizeHeadroomPilot(input: unknown): HeadroomPilotSettings {
   const d = defaultHeadroomPilotSettings();
   if (!input || typeof input !== 'object') return d;
@@ -172,13 +190,15 @@ export function loadSettings(file = resolveConfigPath()): IdctlConfig {
       ...(raw as IdctlConfig),
       version: 1,
       managers: Array.isArray(raw.managers) ? raw.managers : [],
-      providers: Array.isArray(raw.providers) ? raw.providers : [],
+      providers: Array.isArray(raw.providers) ? raw.providers.map((provider) => normalizeLoadedProvider(provider)) : [],
       evmRpcs: Array.isArray(raw.evmRpcs) ? raw.evmRpcs : [],
       walletConnect: normalizeWalletConnect(raw.walletConnect),
+      rootIdentity: normalizeRootIdentitySettings(raw.rootIdentity),
       mcpServers: Array.isArray(raw.mcpServers) ? filterParkedMcpServers(raw.mcpServers) : [],
       defaultManager: raw.defaultManager,
-      // Merge so an absent block → defaults (autoUpgrade true), per-field overridable.
+      // Merge so an absent block uses the secure default (manual verified download).
       update: normalizeUpdateSettings(raw.update),
+      brainAutomation: normalizeBrainAutomationSettings(raw.brainAutomation),
       coordinators: raw.coordinators ?? {},
       primaryCoordinator: raw.primaryCoordinator,
       goalDriver: normalizeGoalDriver(raw.goalDriver),
@@ -262,6 +282,7 @@ function envKeyName(name: string): string {
 }
 
 export function resolveProviderKey(p: ProviderProfile): string | undefined {
+  if (!providerTransportDecision(p.baseUrl).ok) return undefined;
   if (p.apiKey) return p.apiKey;
   const named = process.env[envKeyName(p.name)];
   if (named) return named;
@@ -323,10 +344,11 @@ export function setLocalConcurrencyPref(n: number | undefined, file = resolveCon
 }
 
 export function upsertProvider(p: ProviderProfile, file = resolveConfigPath()): IdctlConfig {
+  const normalized = { ...p, baseUrl: normalizeProviderBaseUrl(p.baseUrl) };
   const cfg = loadSettings(file);
-  const i = cfg.providers.findIndex((x) => x.name === p.name);
-  if (i >= 0) cfg.providers[i] = p;
-  else cfg.providers.push(p);
+  const i = cfg.providers.findIndex((x) => x.name === normalized.name);
+  if (i >= 0) cfg.providers[i] = normalized;
+  else cfg.providers.push(normalized);
   saveSettings(cfg, file);
   return cfg;
 }
@@ -340,6 +362,9 @@ export function removeProvider(name: string, file = resolveConfigPath()): IdctlC
 
 export function setDefaultProvider(name: string, file = resolveConfigPath()): IdctlConfig {
   const cfg = loadSettings(file);
+  const selected = cfg.providers.find((p) => p.name === name);
+  if (!selected) throw new Error('provider not found');
+  normalizeProviderBaseUrl(selected.baseUrl);
   for (const p of cfg.providers) p.default = p.name === name;
   saveSettings(cfg, file);
   return cfg;
@@ -348,7 +373,10 @@ export function setDefaultProvider(name: string, file = resolveConfigPath()): Id
 export function toggleProviderEnabled(name: string, file = resolveConfigPath()): IdctlConfig {
   const cfg = loadSettings(file);
   const p = cfg.providers.find((x) => x.name === name);
-  if (p) p.enabled = !p.enabled;
+  if (p) {
+    if (p.enabled === false) p.baseUrl = normalizeProviderBaseUrl(p.baseUrl);
+    p.enabled = !p.enabled;
+  }
   saveSettings(cfg, file);
   return cfg;
 }
@@ -441,11 +469,64 @@ export function setWalletConnectSettings(
   return cfg;
 }
 
+// ---- Profile-owned root Safe identity ------------------------------------
+
+export function setRootIdentitySettings(
+  input: Partial<RootIdentitySettings>,
+  file = resolveConfigPath(),
+): IdctlConfig {
+  const cfg = loadSettings(file);
+  const previous = cfg.rootIdentity ?? defaultRootIdentitySettings();
+  const ensRoot = input.ensRoot === undefined ? previous.ensRoot : normalizeEnsRoot(input.ensRoot);
+  const safeAddress = input.safeAddress === undefined
+    ? previous.safeAddress
+    : typeof input.safeAddress === 'string'
+      ? input.safeAddress.trim().toLowerCase()
+      : '';
+  const enabled = input.enabled === undefined ? previous.enabled : input.enabled === true;
+  const chainId = Number(input.chainId ?? previous.chainId ?? ROOT_IDENTITY_CHAIN_ID);
+
+  if (enabled) {
+    if (!isValidLiveEnsRoot(ensRoot)) {
+      throw new Error('Live root identity requires a valid ASCII ENS root ending in .eth, for example agents.example.eth');
+    }
+    if (!isValidEvmAddress(safeAddress)) {
+      throw new Error('Live root identity requires a 20-byte 0x EVM Safe address');
+    }
+    if (chainId !== ROOT_IDENTITY_CHAIN_ID) {
+      throw new Error('Live Safe/Zodiac authority is currently attested only for Ethereum mainnet (chain 1)');
+    }
+  }
+
+  cfg.rootIdentity = {
+    enabled,
+    ensRoot: ensRoot || defaultRootIdentitySettings().ensRoot,
+    safeAddress,
+    chainId: ROOT_IDENTITY_CHAIN_ID,
+    updatedAt: Date.now(),
+  };
+  saveSettings(cfg, file);
+  return cfg;
+}
+
 // ---- Self-update settings -------------------------------------------------
 
 export function setUpdateSettings(partial: Partial<UpdateSettings>, file = resolveConfigPath()): IdctlConfig {
   const cfg = loadSettings(file);
   cfg.update = normalizeUpdateSettings({ ...(cfg.update ?? {}), ...partial });
+  saveSettings(cfg, file);
+  return cfg;
+}
+
+export function setBrainAutomationSettings(
+  partial: Partial<BrainAutomationSettings>,
+  file = resolveConfigPath(),
+): IdctlConfig {
+  const cfg = loadSettings(file);
+  cfg.brainAutomation = normalizeBrainAutomationSettings({
+    ...(cfg.brainAutomation ?? {}),
+    ...partial,
+  });
   saveSettings(cfg, file);
   return cfg;
 }

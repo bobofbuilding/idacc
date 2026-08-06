@@ -43,7 +43,13 @@ function nut(): Libnut | null {
   return _nut;
 }
 
-export function driverCapability(): { ok: boolean; error?: string } {
+export type DriverCapabilityProbe = 'passive' | 'load';
+
+export function driverCapability(probe: DriverCapabilityProbe = 'load'): { ok: boolean; error?: string } {
+  // Dashboard/status polling must not initialize a native CGEvent module.
+  // Packaging validation proves the module is present; the explicit enable or
+  // first-input path performs the real load and reports any runtime failure.
+  if (probe === 'passive' && !_tried) return { ok: true };
   const n = nut();
   return n ? { ok: true } : { ok: false, error: _loadErr || 'native input module unavailable' };
 }

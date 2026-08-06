@@ -12,28 +12,61 @@
  * bless-list + Accessibility), an append-only audit, and a live JPEG frame pump.
  */
 import http from 'node:http';
+import type { Socket } from 'node:net';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync, chmodSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { app } from 'electron';
-import { capturePrimary, primaryDisplayInfo, type Frame } from './capture.ts';
+import { captureDisplay, displayInfos, selectedDisplayInfo, type Frame } from './capture.ts';
 import { accessibilityGranted } from './permissions.ts';
 import * as driver from './driver.mac.ts';
-import { audit, recentAudit, type AuditEntry } from './audit.ts';
+import {
+  audit,
+  recentAudit,
+  resetComputerUseAuditProfileState,
+  type AuditEntry,
+} from './audit.ts';
+import { copyFilePrivateSync } from '../privateFileCopy.ts';
+import {
+  classifyComputerUseRisk,
+  computerUseActionNeedsApproval,
+  mapComputerUsePoint,
+  validateComputerUseFrame,
+  type ComputerUseControlMode,
+  type ComputerUseFrame,
+} from '../../shared/computerUsePolicy.ts';
+import {
+  closeComputerUseServer,
+  createComputerUseRequestLifecycle,
+  trackComputerUseServerSockets,
+  type ComputerUseWorkLease,
+} from './requestLifecycle.ts';
 
 const PORT_RANGE = [4180, 4181, 4182, 4183, 4184, 4185];
 const PUMP_MS = 450;          // ~2.2 fps live pane (cheap, smooth enough to supervise)
 const PUMP_MAX_WIDTH = 1280;  // downscale the pane stream; agent screenshots stay full-res
 const PUMP_QUALITY = 55;
+const ACTION_FRAME_MAX_AGE_MS = 60_000;
+const BROKER_STOP_TIMEOUT_MS = 3_000;
+const COMPUTER_USE_UNAVAILABLE_REASON =
+  'Computer Use is currently available only on macOS. This Windows/Linux review build does not include the macOS screen-control driver.';
+
+function computerUseAvailable(): boolean {
+  return process.platform === 'darwin';
+}
 
 function cuDir(): string {
-  const d = join(homedir(), '.config', 'idctl', 'computeruse');
+  const d = process.env.IDACC_DATA_DIR?.trim()
+    ? join(process.env.IDACC_DATA_DIR.trim(), 'computeruse')
+    : join(homedir(), '.config', 'idctl', 'computeruse');
   mkdirSync(d, { recursive: true, mode: 0o700 }); // 0700: the dir holds the broker token
   try { chmodSync(d, 0o700); } catch { /* tighten even if it pre-existed at a looser mode */ }
   return d;
 }
 function sessionFile(): string { return join(cuDir(), 'session.json'); }
+/** Exact profile-owned discovery file injected into every attached MCP process. */
+export function brokerSessionPath(): string { return sessionFile(); }
 /** Stable absolute path the attached MCP server is run from (copied from the bundle on launch). */
 export function brokerServerPath(): string { return join(cuDir(), 'server.mjs'); }
 
@@ -49,13 +82,15 @@ interface BrokerState {
   lastAgent: string;          // most recent caller (for the pane label)
   actions: number;            // lifetime action count
   captureFailing: boolean;    // last pump capture returned null while armed (permission/relaunch hint)
+  displayId: number | null;   // operator-selected capture/control display; null follows primary
   blessed: Set<string>;       // scoped agent authorities allowed to act this armed session (synced at arm)
   team: string;               // most recent caller's team (for the audit→Chat mirror)
-  lastShot: { w: number; h: number; bounds: { x: number; y: number; width: number; height: number } } | null; // for click coord mapping
-  supervised: boolean;        // HOLD every input action for the user's approval (default on)
+  lastShot: ComputerUseFrame | null; // agent/display-bound coordinate evidence
+  controlMode: ComputerUseControlMode; // supervised by default; full control is explicit and session-scoped
   paused: boolean;            // block input without disarming (user is taking over)
   pending: Map<string, { resolve: (allow: boolean) => void; timer: ReturnType<typeof setTimeout>; entry: PendingAction }>;
   onPending: ((evt: { kind: 'add' | 'remove'; pending: PendingAction[] }) => void) | null;
+  stopping: boolean;
 }
 export interface PendingAction { id: string; agent: string; action: string; preview: string; ts: number; expiresAt: number }
 export interface ComputerUseAuthorityTarget { name: string; team?: string }
@@ -66,7 +101,10 @@ export interface LegacyComputerUseAuthority {
   source: 'computer-use-agent-tokens';
   note: string;
 }
-const S: BrokerState = { server: null, port: 0, token: '', armed: false, watching: false, onFrame: null, pump: null, lastSig: 0, lastAgent: '', actions: 0, captureFailing: false, blessed: new Set(), team: '', lastShot: null, supervised: true, paused: false, pending: new Map(), onPending: null };
+const S: BrokerState = { server: null, port: 0, token: '', armed: false, watching: false, onFrame: null, pump: null, lastSig: 0, lastAgent: '', actions: 0, captureFailing: false, displayId: null, blessed: new Set(), team: '', lastShot: null, controlMode: 'supervised', paused: false, pending: new Map(), onPending: null, stopping: false };
+const requestLifecycle = createComputerUseRequestLifecycle();
+const brokerSockets = new Set<Socket>();
+let brokerStopPromise: Promise<void> | null = null;
 
 const CONFIRM_TIMEOUT_MS = 60 * 1000; // auto-decline a held action if the user doesn't answer
 
@@ -88,30 +126,6 @@ function previewAction(type: string, body: Record<string, unknown>): string {
     case 'scroll': return `scroll ${String(body.direction ?? 'down')} ${Math.max(1, Math.min(20, Number(body.amount) || 3))}`;
     default: return type;
   }
-}
-
-// Risk classifier: in AUTONOMOUS mode we auto-allow ordinary actions but still HOLD
-// these for approval. Mouse targets can't be classified without the accessibility
-// tree, so this focuses on the reliably-detectable destructive keyboard + typed
-// commands; supervised mode (the default) still holds everything regardless.
-// Recursive/forced rm, sudo, fs/disk wipes, mass deletes, fork-bombs, DB drops,
-// hard resets/force-pushes, shutdowns, kills, pipe-to-shell, etc. Linear [^\n]*
-// only (no nested quantifiers → no catastrophic backtracking on agent text).
-const SHELL_DANGER = /\brm\s+(-[a-z]*[rf]|--(recursive|force))|\bsudo\b|\bmkfs\b|\bdd\s+if=|:\(\)\s*\{|\bdrop\s+(table|database)\b|\bdelete\s+from\b|\btruncate\s+table\b|\bgit\s+(reset\s+--hard|push\b[^\n]*--force|clean\s+-[a-z]*f)|--force\b|\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b|\binit\s+0\b|\bkillall\b|\bpkill\b|\bdiskutil\s+(erase|reformat|partitiondisk|apfs\s+delete)|\bfind\b[^\n]*-delete\b|\b(curl|wget)\b[^\n]*\|\s*(sudo\s+)?(ba|z)?sh\b|>\s*\/dev\/(sda|disk|hd)|\bchmod\s+-R\b|\bchown\s+-R\b|\bformat\s+[a-z]:/i;
-function classifyRisk(type: string, body: Record<string, unknown>): { risky: boolean; reason?: string } {
-  if (type === 'key') {
-    // Match the driver's modifier + key normalization so aliases (super→cmd, del→delete) can't slip past.
-    const k = String(body.keys ?? body.key ?? '').toLowerCase().replace(/\s+/g, '');
-    const cmd = /(cmd|command|meta|super|⌘)/.test(k);
-    if (cmd && /(delete|backspace|\bdel\b|bksp)/.test(k)) return { risky: true, reason: 'move to Trash / delete' };
-    if (cmd && /\+q$/.test(k)) return { risky: true, reason: 'quit the app' };
-    return { risky: false };
-  }
-  if (type === 'type') {
-    if (SHELL_DANGER.test(String(body.text ?? ''))) return { risky: true, reason: 'looks like a destructive command' };
-    return { risky: false };
-  }
-  return { risky: false };
 }
 
 function pendingList(): PendingAction[] { return [...S.pending.values()].map((p) => p.entry); }
@@ -145,18 +159,40 @@ function flushPending(allow: boolean): void {
   notifyPending('remove');
 }
 export function pendingActions(): PendingAction[] { return pendingList(); }
-export function setSupervised(on: boolean): { ok: boolean; supervised: boolean } { S.supervised = !!on; return { ok: true, supervised: S.supervised }; }
+export function setSupervised(on: boolean): { ok: boolean; supervised: boolean; fullControl: boolean; controlMode: ComputerUseControlMode } {
+  flushPending(false);
+  S.controlMode = on ? 'supervised' : 'guarded';
+  return { ok: true, supervised: S.controlMode === 'supervised', fullControl: false, controlMode: S.controlMode };
+}
+export function setFullControl(on: boolean): { ok: boolean; supervised: boolean; fullControl: boolean; controlMode: ComputerUseControlMode } {
+  if (on) {
+    if (!computerUseAvailable()) throw new Error(COMPUTER_USE_UNAVAILABLE_REASON);
+    if (!S.armed || !S.blessed.size) throw new Error('Arm Computer Use with at least one blessed agent before granting Full control.');
+    if (!driver.driverCapability().ok) throw new Error('The native input controller is unavailable in this build.');
+    if (!accessibilityGranted()) throw new Error('Accessibility permission is required before Full control can be enabled.');
+  }
+  flushPending(false);
+  S.controlMode = on ? 'full-control' : 'guarded';
+  return { ok: true, supervised: false, fullControl: S.controlMode === 'full-control', controlMode: S.controlMode };
+}
 export function setPaused(on: boolean): { ok: boolean; paused: boolean } { S.paused = !!on; if (S.paused) flushPending(false); return { ok: true, paused: S.paused }; }
 
 const INPUT_VERBS = new Set(['mouse_move', 'left_click', 'right_click', 'middle_click', 'double_click', 'left_click_drag', 'type', 'key', 'scroll']);
 
-/** Map a point in the agent's screenshot-PIXEL space to GLOBAL desktop POINTS for libnut. */
-function mapPoint(x: number, y: number): { gx: number; gy: number; ok: boolean } {
-  let w: number, h: number, bounds: { x: number; y: number; width: number; height: number };
-  if (S.lastShot) { w = S.lastShot.w; h = S.lastShot.h; bounds = S.lastShot.bounds; }
-  else { const d = primaryDisplayInfo(); bounds = d.bounds; w = bounds.width * d.scaleFactor; h = bounds.height * d.scaleFactor; }
-  if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > w || y > h) return { gx: 0, gy: 0, ok: false };
-  return { gx: bounds.x + (x / w) * bounds.width, gy: bounds.y + (y / h) * bounds.height, ok: true };
+/** Map screenshot pixels only through the exact frame reviewed by the caller. */
+function mapPoint(frame: ComputerUseFrame, x: number, y: number): { gx: number; gy: number; ok: boolean } {
+  const point = mapComputerUsePoint(frame, x, y);
+  return point.ok ? { ...point, ok: true } : { gx: 0, gy: 0, ok: false };
+}
+
+function currentFrameState(frame: ComputerUseFrame | null, agent: string) {
+  return validateComputerUseFrame(
+    frame,
+    agent,
+    selectedDisplayInfo(S.displayId),
+    Date.now(),
+    ACTION_FRAME_MAX_AGE_MS,
+  );
 }
 
 const TOKEN_RE = /^[0-9a-f]{48}$/; // randomBytes(24).toString('hex')
@@ -187,7 +223,9 @@ function stageServerFile(): void {
     const src = app.isPackaged
       ? join(process.resourcesPath, 'computeruse-mcp', 'server.mjs')
       : join(__dirname, '../../resources/computeruse-mcp/server.mjs');
-    if (existsSync(src)) copyFileSync(src, brokerServerPath());
+    if (existsSync(src)) {
+      copyFilePrivateSync(src, brokerServerPath(), { overwrite: true });
+    }
   } catch { /* the view surfaces 'server unavailable' if attach later fails */ }
 }
 
@@ -203,6 +241,9 @@ function writeSession(): void {
 const agentTokens = new Map<string, string>(); // token → scoped agent authority
 function agentTokensFile(): string { return join(cuDir(), 'agent-tokens.json'); }
 function loadAgentTokens(): void {
+  // The active profile is authoritative. Startup recovery can retry in this
+  // process, so never merge another profile's persisted bearer map.
+  agentTokens.clear();
   try {
     const j = JSON.parse(readFileSync(agentTokensFile(), 'utf8'));
     if (j && typeof j === 'object') for (const [tok, a] of Object.entries(j)) {
@@ -262,36 +303,71 @@ export function brokerUrl(): string { return `http://127.0.0.1:${S.port || 4180}
 
 declare const __dirname: string;
 
-async function listen(server: http.Server): Promise<number> {
+async function listen(server: http.Server, isCurrent: () => boolean): Promise<number> {
   for (const p of PORT_RANGE) {
+    if (!isCurrent()) throw new Error('Computer Use broker stopped during startup.');
     const ok = await new Promise<boolean>((resolve) => {
       const onErr = () => { server.removeListener('error', onErr); resolve(false); };
       server.once('error', onErr);
-      server.listen(p, '127.0.0.1', () => { server.removeListener('error', onErr); resolve(true); });
+      try {
+        server.listen(p, '127.0.0.1', () => {
+          server.removeListener('error', onErr);
+          resolve(true);
+        });
+      } catch {
+        server.removeListener('error', onErr);
+        resolve(false);
+      }
     });
-    if (ok) return p;
+    if (ok && isCurrent()) return p;
+    if (ok) throw new Error('Computer Use broker stopped during startup.');
   }
   throw new Error('no free loopback port for the computer-use broker');
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve) => {
-    let b = ''; let n = 0;
-    req.on('data', (c) => { n += c.length; if (n > 1_000_000) { req.destroy(); resolve(''); return; } b += c; });
-    req.on('end', () => resolve(b));
-    req.on('error', () => resolve(''));
+    let b = ''; let n = 0; let settled = false;
+    const finish = (value: string): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    req.on('data', (c) => {
+      n += c.length;
+      if (n > 1_000_000) {
+        req.destroy();
+        finish('');
+        return;
+      }
+      b += c;
+    });
+    req.on('end', () => finish(b));
+    req.on('aborted', () => finish(''));
+    req.on('close', () => {
+      if (!req.complete) finish('');
+    });
+    req.on('error', () => finish(''));
   });
 }
 
 function blk(reason: string, message: string): { status: number; json: Record<string, unknown> } {
   return { status: 200, json: { ok: false, blocked: true, reason, message } };
 }
+function stoppedAction(): { status: number; json: Record<string, unknown> } {
+  return blk('stopped', 'Computer Use stopped before this request completed.');
+}
 function rec(agent: string, action: string, detail: string, decision: 'executed' | 'blocked', reason?: string): void {
+  if (S.stopping) return;
   audit({ ts: Date.now(), agent: agent || '(unknown)', action, detail, decision, reason }, S.team);
 }
 
 /** Phase 1 action handler: screenshot + gated mouse/keyboard input, all audited. */
-async function handleAction(body: Record<string, unknown>): Promise<{ status: number; json: Record<string, unknown> }> {
+async function handleAction(
+  body: Record<string, unknown>,
+  lease: ComputerUseWorkLease,
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  if (!lease.isCurrent()) return stoppedAction();
   const type = String(body?.type || '');
   const agent = body?.agent ? normalizeAuthority(String(body.agent)) : '';
   if (agent) S.lastAgent = agent;
@@ -302,14 +378,33 @@ async function handleAction(body: Record<string, unknown>): Promise<{ status: nu
   }
 
   // Every screenshot + input requires: armed, AND the caller is blessed for this session.
-  if (!S.armed) return blk('disarmed', 'Computer Use is off — open ID Agents Control Center → Computer Use and press Arm.');
-  if (!S.blessed.has(agent)) return blk('agent_not_blessed', `"${agent || 'this agent'}" isn't blessed for Computer Use. Bless it in the app, then it must be re-armed.`);
+  if (!S.armed) {
+    rec(agent, type, previewAction(type, body), 'blocked', 'disarmed');
+    return blk('disarmed', 'Computer Use is off — open ID Agents Control Center → Computer Use and press Arm.');
+  }
+  if (!S.blessed.has(agent)) {
+    rec(agent, type, previewAction(type, body), 'blocked', 'agent_not_blessed');
+    return blk('agent_not_blessed', `"${agent || 'this agent'}" isn't blessed for Computer Use. Bless it in the app, then it must be re-armed.`);
+  }
 
   if (type === 'screenshot') {
-    const f = await capturePrimary({ format: 'png' });
-    if (!f) return blk('screen_recording_permission', 'Screen Recording permission is not granted to ID Agents Control Center.');
-    S.lastShot = { w: f.width, h: f.height, bounds: f.display.bounds };
+    const f = await captureDisplay(S.displayId, { format: 'png' });
+    if (!lease.isCurrent()) return stoppedAction();
+    if (!f) {
+      rec(agent, type, 'capture selected display', 'blocked', 'screen_recording_permission');
+      return blk('screen_recording_permission', 'Screen Recording permission is not granted to ID Agents Control Center.');
+    }
+    S.lastShot = {
+      agent,
+      displayId: f.display.id,
+      width: f.width,
+      height: f.height,
+      bounds: { ...f.display.bounds },
+      scaleFactor: f.display.scaleFactor,
+      capturedAt: f.ts,
+    };
     S.actions++;
+    rec(agent, type, `${f.display.label} ${f.width}×${f.height}`, 'executed');
     return { status: 200, json: { ok: true, image: f.buf.toString('base64'), mimeType: 'image/png', width: f.width, height: f.height, display: f.display } };
   }
 
@@ -319,32 +414,59 @@ async function handleAction(body: Record<string, unknown>): Promise<{ status: nu
     if (!accessibilityGranted()) { rec(agent, type, '', 'blocked', 'accessibility_permission'); return blk('accessibility_permission', 'Accessibility permission is not granted to ID Agents Control Center — input is blocked. Grant it in System Settings → Privacy & Security → Accessibility, then relaunch.'); }
     // Require a screenshot first: it anchors the coordinate frame AND keeps input
     // tied to something the agent (and the watching user) actually saw.
-    if (!S.lastShot) { rec(agent, type, '', 'blocked', 'no_screenshot'); return blk('no_screenshot', 'Call computer_screenshot first — coordinates are relative to the latest screenshot.'); }
+    const actionShot = S.lastShot;
+    if (!actionShot) {
+      rec(agent, type, '', 'blocked', 'no_screenshot');
+      return blk('no_screenshot', 'Call computer_screenshot first — actions are tied to the latest selected-display frame.');
+    }
+    const initialFrame = currentFrameState(actionShot, agent);
+    if (!initialFrame.ok) {
+      rec(agent, type, '', 'blocked', initialFrame.reason);
+      const message = initialFrame.reason === 'wrong_agent'
+        ? 'This screenshot belongs to another Agent. Call computer_screenshot before acting.'
+        : initialFrame.reason === 'display_changed'
+          ? 'The selected display or its geometry changed. Call computer_screenshot again before acting.'
+          : initialFrame.reason === 'stale_screenshot'
+            ? 'The screenshot is stale. Call computer_screenshot again before acting.'
+            : 'Call computer_screenshot first — actions are tied to the latest selected-display frame.';
+      return blk(initialFrame.reason, message);
+    }
     // You can pause the agent (block input) without disarming.
     if (S.paused) { rec(agent, type, previewAction(type, body), 'blocked', 'paused'); return blk('paused', 'You paused Computer Use — resume it in the app to continue.'); }
-    // Decide whether to HOLD this action for approval: supervised holds EVERY action;
-    // autonomous holds only the ones the risk classifier flags (delete/quit/dangerous
-    // commands). Either way the user is the only one who can release a held action.
-    const risk = classifyRisk(type, body);
-    if (S.supervised || risk.risky) {
+    // Decide whether to HOLD this action for approval: supervised holds every
+    // action; guarded autonomy holds only classified risky actions; an explicit
+    // session-scoped Full control grant holds none. Scope, frame, permission,
+    // pause, disarm, and audit enforcement remain active in every mode.
+    const risk = classifyComputerUseRisk(type, body);
+    if (computerUseActionNeedsApproval(S.controlMode, type, body)) {
       const label = previewAction(type, body) + (risk.risky ? ` — ⚠ ${risk.reason}` : '');
       const approved = await requestApproval(agent, type, label);
+      if (!lease.isCurrent()) return stoppedAction();
       if (!approved) { rec(agent, type, label, 'blocked', 'declined'); return blk('declined', 'You declined this action in the app.'); }
       // Re-validate AFTER approval: disarm/panic/pause could have fired between the
       // user clicking Allow and now — a just-approved action must NOT run post-stop.
       if (!S.armed || S.paused || !S.blessed.has(agent)) { rec(agent, type, label, 'blocked', 'stopped'); return blk('stopped', 'Computer Use was stopped before this action ran.'); }
     }
+    const finalFrame = currentFrameState(actionShot, agent);
+    if (S.lastShot !== actionShot) {
+      rec(agent, type, previewAction(type, body), 'blocked', 'screenshot_changed');
+      return blk('screenshot_changed', 'The screenshot changed while this action was pending. Review the fresh screenshot and try again.');
+    }
+    if (!finalFrame.ok) {
+      rec(agent, type, previewAction(type, body), 'blocked', finalFrame.reason);
+      return blk(finalFrame.reason, 'The selected display changed while this action was pending. Review a fresh screenshot and try again.');
+    }
     const n = (k: string): number => { const v = Number((body as Record<string, unknown>)[k]); return Number.isFinite(v) ? v : NaN; };
     let ok = false; let detail = '';
     if (type === 'mouse_move') {
-      const p = mapPoint(n('x'), n('y')); if (!p.ok) { rec(agent, type, `${n('x')},${n('y')}`, 'blocked', 'out_of_bounds'); return blk('out_of_bounds', 'Coordinates are outside the captured screen.'); }
+      const p = mapPoint(actionShot, n('x'), n('y')); if (!p.ok) { rec(agent, type, `${n('x')},${n('y')}`, 'blocked', 'out_of_bounds'); return blk('out_of_bounds', 'Coordinates are outside the captured screen.'); }
       ok = driver.moveMouse(p.gx, p.gy); detail = `→ ${Math.round(n('x'))},${Math.round(n('y'))}`;
     } else if (type === 'left_click' || type === 'right_click' || type === 'middle_click' || type === 'double_click') {
-      const p = mapPoint(n('x'), n('y')); if (!p.ok) { rec(agent, type, `${n('x')},${n('y')}`, 'blocked', 'out_of_bounds'); return blk('out_of_bounds', 'Coordinates are outside the captured screen.'); }
+      const p = mapPoint(actionShot, n('x'), n('y')); if (!p.ok) { rec(agent, type, `${n('x')},${n('y')}`, 'blocked', 'out_of_bounds'); return blk('out_of_bounds', 'Coordinates are outside the captured screen.'); }
       const button = type === 'right_click' ? 'right' : type === 'middle_click' ? 'middle' : 'left';
       ok = driver.click(p.gx, p.gy, button, type === 'double_click'); detail = `${button}${type === 'double_click' ? '×2' : ''} @ ${Math.round(n('x'))},${Math.round(n('y'))}`;
     } else if (type === 'left_click_drag') {
-      const a = mapPoint(n('fromX'), n('fromY')); const b = mapPoint(n('toX'), n('toY'));
+      const a = mapPoint(actionShot, n('fromX'), n('fromY')); const b = mapPoint(actionShot, n('toX'), n('toY'));
       if (!a.ok || !b.ok) { rec(agent, type, 'drag', 'blocked', 'out_of_bounds'); return blk('out_of_bounds', 'Drag coordinates are outside the captured screen.'); }
       ok = driver.drag(a.gx, a.gy, b.gx, b.gy); detail = `drag ${Math.round(n('fromX'))},${Math.round(n('fromY'))} → ${Math.round(n('toX'))},${Math.round(n('toY'))}`;
     } else if (type === 'type') {
@@ -359,7 +481,23 @@ async function handleAction(body: Record<string, unknown>): Promise<{ status: nu
       const amt = Math.max(1, Math.min(20, Number((body as Record<string, unknown>).amount) || 3));
       const dx = dir === 'left' ? -amt : dir === 'right' ? amt : 0;
       const dy = dir === 'up' ? amt : dir === 'down' ? -amt : 0;
-      if (Number.isFinite(n('x')) && Number.isFinite(n('y'))) { const p = mapPoint(n('x'), n('y')); if (p.ok) driver.moveMouse(p.gx, p.gy); }
+      const hasX = body.x !== undefined;
+      const hasY = body.y !== undefined;
+      if (hasX !== hasY) {
+        rec(agent, type, 'scroll', 'blocked', 'invalid_coordinates');
+        return blk('invalid_coordinates', 'Scroll coordinates must include both x and y, or neither.');
+      }
+      const p = hasX
+        ? mapPoint(actionShot, n('x'), n('y'))
+        : mapPoint(actionShot, actionShot.width / 2, actionShot.height / 2);
+      if (!p.ok) {
+        rec(agent, type, 'scroll', 'blocked', 'out_of_bounds');
+        return blk('out_of_bounds', 'Scroll coordinates are outside the captured screen.');
+      }
+      if (!driver.moveMouse(p.gx, p.gy)) {
+        rec(agent, type, 'scroll', 'blocked', 'driver_failed');
+        return blk('driver_failed', 'The pointer could not be moved onto the selected captured display.');
+      }
       ok = driver.scroll(dx, dy); detail = `scroll ${dir} ${amt}`;
     }
     S.actions++;
@@ -368,46 +506,120 @@ async function handleAction(body: Record<string, unknown>): Promise<{ status: nu
     return { status: 200, json: { ok: true, action: type, detail } };
   }
 
+  rec(agent, type || '(empty)', '', 'blocked', 'unknown_action');
   return blk('unknown_action', `unknown action "${type}"`);
 }
 
 export function auditTail(n?: number): AuditEntry[] { return recentAudit(n); }
 
 export async function startBroker(onFrame: BrokerState['onFrame'], onPending?: BrokerState['onPending']): Promise<void> {
+  if (!computerUseAvailable()) {
+    S.armed = false;
+    S.watching = false;
+    S.paused = false;
+    S.blessed.clear();
+    S.onFrame = onFrame;
+    if (onPending) S.onPending = onPending;
+    return;
+  }
+  if (brokerStopPromise) await brokerStopPromise;
+  if (S.stopping) await stopBroker();
   if (S.server) { S.onFrame = onFrame; if (onPending) S.onPending = onPending; return; }
+  S.stopping = false;
+  requestLifecycle.openAdmission();
+  const startupLease = requestLifecycle.begin();
+  if (!startupLease) throw new Error('Computer Use broker is not accepting startup work.');
   S.onFrame = onFrame;
   if (onPending) S.onPending = onPending;
   S.token = loadOrMakeToken().token;
   loadAgentTokens();
   stageServerFile();
   const server = http.createServer(async (req, res) => {
-    const send = (status: number, json: unknown) => { const s = JSON.stringify(json); res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(s) }); res.end(s); };
-    // DNS-rebinding / cross-origin defense: the legitimate caller is the MCP server
-    // (Node fetch — no Origin header, Host = 127.0.0.1). A browser page POSTing here
-    // would carry an Origin and/or a non-loopback Host. Reject those even though they
-    // lack the token, so a hostile page can't even probe.
-    if (req.headers['origin']) return send(403, { ok: false, blocked: true, reason: 'forbidden_origin' });
-    const host = String(req.headers['host'] || '').split(':')[0];
-    if (host && host !== '127.0.0.1' && host !== 'localhost') return send(403, { ok: false, blocked: true, reason: 'forbidden_host' });
-    // Loopback-only is already enforced by binding 127.0.0.1; double-check the auth.
-    const auth = req.headers['authorization'] || '';
-    const tok = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    if (req.method === 'POST' && req.url === '/action') {
-      // Identity is the TOKEN, not a self-reported name: derive the agent from the
-      // per-agent token (minted at bless). An unknown token → re-bless required.
-      const agent = agentTokens.get(tok);
-      if (!agent) return send(401, { ok: false, blocked: true, reason: 'stale_token', message: 'This agent isn’t authorized for Computer Use (or its access was upgraded) — re-bless it in the app’s Computer Use tab.' });
-      let parsed: Record<string, unknown> = {};
-      try { parsed = JSON.parse(await readBody(req)); } catch { /* */ }
-      parsed.agent = agent; // authoritative — overrides any self-reported name in the body
-      const r = await handleAction(parsed);
-      return send(r.status, r.json);
+    const lease = requestLifecycle.begin();
+    if (!lease) {
+      req.destroy();
+      if (!res.destroyed) res.destroy();
+      return;
     }
-    send(404, { ok: false, error: 'not found' });
+    const send = (status: number, json: unknown): void => {
+      if (
+        S.stopping
+        || !requestLifecycle.isAccepting()
+        || res.destroyed
+        || res.writableEnded
+      ) {
+        return;
+      }
+      const serialized = JSON.stringify(json);
+      res.writeHead(status, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(serialized),
+      });
+      res.end(serialized);
+    };
+    try {
+      // DNS-rebinding / cross-origin defense: the legitimate caller is the MCP
+      // server (Node fetch — no Origin header, Host = 127.0.0.1).
+      if (req.headers['origin']) {
+        send(403, { ok: false, blocked: true, reason: 'forbidden_origin' });
+        return;
+      }
+      const host = String(req.headers['host'] || '').split(':')[0];
+      if (host && host !== '127.0.0.1' && host !== 'localhost') {
+        send(403, { ok: false, blocked: true, reason: 'forbidden_host' });
+        return;
+      }
+      const auth = req.headers['authorization'] || '';
+      const tok = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : '';
+      if (req.method === 'POST' && req.url === '/action') {
+        const agent = agentTokens.get(tok);
+        if (!agent) {
+          send(401, { ok: false, blocked: true, reason: 'stale_token', message: 'This agent isn’t authorized for Computer Use (or its access was upgraded) — re-bless it in the app’s Computer Use tab.' });
+          return;
+        }
+        let parsed: Record<string, unknown> = {};
+        try { parsed = JSON.parse(await readBody(req)); } catch { /* */ }
+        if (!lease.isCurrent()) {
+          const stopped = stoppedAction();
+          send(stopped.status, stopped.json);
+          return;
+        }
+        parsed.agent = agent;
+        const result = await handleAction(parsed, lease);
+        if (!lease.isCurrent()) {
+          const stopped = stoppedAction();
+          send(stopped.status, stopped.json);
+          return;
+        }
+        send(result.status, result.json);
+        return;
+      }
+      send(404, { ok: false, error: 'not found' });
+    } catch {
+      send(500, { ok: false, blocked: true, reason: 'broker_error' });
+    } finally {
+      lease.finish();
+    }
   });
-  S.port = await listen(server);
   S.server = server;
-  writeSession();
+  trackComputerUseServerSockets(server, brokerSockets);
+  server.on('connection', (socket) => {
+    if (S.stopping || !requestLifecycle.isAccepting()) socket.destroy();
+  });
+  try {
+    const port = await listen(server, () => startupLease.isCurrent());
+    if (!startupLease.isCurrent()) throw new Error('Computer Use broker stopped during startup.');
+    S.port = port;
+    writeSession();
+  } catch (error) {
+    if (!S.stopping && S.server === server) {
+      try { server.close(); } catch { /* listener did not start */ }
+      S.server = null;
+    }
+    throw error;
+  } finally {
+    startupLease.finish();
+  }
 }
 
 function hashBuf(b: Buffer): number {
@@ -419,15 +631,22 @@ function hashBuf(b: Buffer): number {
 }
 
 async function pumpOnce(): Promise<void> {
-  if (!S.armed || !S.watching || !S.onFrame) return;
-  const f = await capturePrimary({ maxWidth: PUMP_MAX_WIDTH, format: 'jpeg', quality: PUMP_QUALITY });
-  if (!f) { S.captureFailing = true; return; } // permission/relaunch — the view surfaces a hint
-  S.captureFailing = false;
-  if (!S.armed || !S.watching) return;
-  const sig = hashBuf(f.buf);
-  if (sig === S.lastSig) return; // unchanged screen → don't flood the renderer
-  S.lastSig = sig;
-  S.onFrame({ jpegBase64: f.buf.toString('base64'), width: f.width, height: f.height, display: f.display, ts: f.ts, driver: 'agent' });
+  const lease = requestLifecycle.begin();
+  if (!lease) return;
+  try {
+    if (!S.armed || !S.watching || !S.onFrame) return;
+    const f = await captureDisplay(S.displayId, { maxWidth: PUMP_MAX_WIDTH, format: 'jpeg', quality: PUMP_QUALITY });
+    if (!lease.isCurrent()) return;
+    if (!f) { S.captureFailing = true; return; } // permission/relaunch — the view surfaces a hint
+    S.captureFailing = false;
+    if (!S.armed || !S.watching) return;
+    const sig = hashBuf(f.buf);
+    if (sig === S.lastSig) return; // unchanged screen → don't flood the renderer
+    S.lastSig = sig;
+    S.onFrame?.({ jpegBase64: f.buf.toString('base64'), width: f.width, height: f.height, display: f.display, ts: f.ts, driver: 'agent' });
+  } finally {
+    lease.finish();
+  }
 }
 
 /** The pump (full-screen capture) runs ONLY while armed AND someone is watching the
@@ -439,7 +658,21 @@ function reconcilePump(): void {
   else if (!want && S.pump) { clearInterval(S.pump); S.pump = null; }
 }
 
-export function armBroker(blessed?: string[]): { ok: boolean; port: number; blessed: string[] } {
+export function armBroker(blessed?: string[]): { ok: boolean; port: number; blessed: string[]; error?: string } {
+  if (!computerUseAvailable()) {
+    return {
+      ok: false,
+      port: 0,
+      blessed: [],
+      error: COMPUTER_USE_UNAVAILABLE_REASON,
+    };
+  }
+  if (S.stopping || !requestLifecycle.isAccepting()) {
+    return { ok: false, port: 0, blessed: [] };
+  }
+  if (!S.server || !S.port || !existsSync(brokerServerPath())) {
+    return { ok: false, port: S.port, blessed: [], error: 'The bundled Computer Use controller is not staged. Restart or repair IDACC before arming.' };
+  }
   // The blessed set is captured AT ARM from the agents that currently have the
   // computer-use tool attached — so disarming + re-arming is the way to refresh it.
   if (Array.isArray(blessed)) S.blessed = new Set(blessed.map((s) => normalizeAuthority(String(s))).filter(Boolean)); // match handleAction's truncation of the caller id
@@ -449,11 +682,13 @@ export function armBroker(blessed?: string[]): { ok: boolean; port: number; bles
 }
 
 export function disarmBroker(): { ok: boolean } {
+  requestLifecycle.invalidateActiveWork();
   S.armed = false;
   S.captureFailing = false;
   S.blessed = new Set();
   S.lastShot = null;
   S.paused = false;
+  S.controlMode = 'supervised'; // every new armed session requires a fresh explicit autonomy/full-control grant
   flushPending(false);                              // decline anything held for approval
   try { driver.releaseAll(); } catch { /* */ }      // backstop: never leave a button held after disarm
   reconcilePump();
@@ -468,20 +703,122 @@ export function panicBroker(): { ok: boolean } {
 
 /** The renderer calls this when the Computer Use view mounts (true) / unmounts (false). */
 export function setWatching(on: boolean): { ok: boolean } {
-  S.watching = !!on;
+  S.watching = computerUseAvailable() && !S.stopping && !!on;
   reconcilePump();
-  return { ok: true };
+  return { ok: computerUseAvailable() };
+}
+
+export function setBrokerDisplay(displayId: number): { ok: boolean; display: Frame['display'] } {
+  if (!computerUseAvailable()) {
+    throw new Error(COMPUTER_USE_UNAVAILABLE_REASON);
+  }
+  const displays = displayInfos();
+  const selected = displays.find((display) => display.id === Number(displayId));
+  if (!selected) throw new Error('The selected display is no longer connected.');
+  requestLifecycle.invalidateActiveWork();
+  flushPending(false);
+  S.displayId = selected.id;
+  S.lastShot = null;
+  S.lastSig = 0;
+  S.captureFailing = false;
+  if (S.armed && S.watching) void pumpOnce();
+  return { ok: true, display: selected };
 }
 
 export function brokerStatus() {
-  return { armed: S.armed, watching: S.watching, port: S.port, url: S.port ? `http://127.0.0.1:${S.port}` : '', lastAgent: S.lastAgent, actions: S.actions, serverStaged: existsSync(brokerServerPath()), captureFailing: S.captureFailing, blessed: [...S.blessed], driverOk: driver.driverCapability().ok, accessibility: accessibilityGranted(), supervised: S.supervised, paused: S.paused, pending: pendingList(), panicHotkey: panicHotkeyOk };
+  if (!computerUseAvailable()) {
+    return {
+      available: false,
+      unavailableReason: COMPUTER_USE_UNAVAILABLE_REASON,
+      armed: false,
+      watching: false,
+      port: 0,
+      url: '',
+      lastAgent: '',
+      actions: S.actions,
+      serverStaged: false,
+      captureFailing: false,
+      display: undefined,
+      displays: [],
+      blessed: [],
+      driverOk: false,
+      accessibility: false,
+      supervised: S.controlMode === 'supervised',
+      fullControl: S.controlMode === 'full-control',
+      controlMode: S.controlMode,
+      paused: false,
+      pending: [],
+      panicHotkey: false,
+    };
+  }
+  const displays = displayInfos();
+  const display = selectedDisplayInfo(S.displayId);
+  if (!displays.some((row) => row.id === S.displayId)) {
+    flushPending(false);
+    S.displayId = display.id;
+    S.lastShot = null;
+    S.lastSig = 0;
+  }
+  return { available: true, armed: S.armed, watching: S.watching, port: S.port, url: S.port ? `http://127.0.0.1:${S.port}` : '', lastAgent: S.lastAgent, actions: S.actions, serverStaged: existsSync(brokerServerPath()), captureFailing: S.captureFailing, display, displays, blessed: [...S.blessed], driverOk: driver.driverCapability('passive').ok, accessibility: accessibilityGranted(), supervised: S.controlMode === 'supervised', fullControl: S.controlMode === 'full-control', controlMode: S.controlMode, paused: S.paused, pending: pendingList(), panicHotkey: panicHotkeyOk };
 }
 
-export function stopBroker(): void {
+export function stopBroker(): Promise<void> {
+  if (brokerStopPromise) return brokerStopPromise;
+
+  // Revoke admission and every pre-stop generation before yielding. A capture,
+  // approval, body read, or pump pass already across an await can no longer
+  // expose data, execute input, append audit state, or write a response.
+  S.stopping = true;
+  requestLifecycle.closeAdmission();
+  S.onFrame = null;
+  S.onPending = null;
+  S.watching = false;
   disarmBroker();
-  try { S.server?.close(); } catch { /* */ }
-  S.server = null;
+
+  const server = S.server;
+  const listenerClose = closeComputerUseServer(
+    server,
+    brokerSockets,
+    BROKER_STOP_TIMEOUT_MS,
+  );
+
+  const attempt = (async () => {
+    const [activitiesDrained, listenerClosed] = await Promise.all([
+      requestLifecycle.drain(BROKER_STOP_TIMEOUT_MS),
+      listenerClose,
+    ]);
+    if (!listenerClosed) {
+      throw new Error('Computer Use listener did not close before its guarded deadline.');
+    }
+    if (!activitiesDrained) {
+      throw new Error(
+        `Computer Use could not drain ${requestLifecycle.activeCount()} active request(s) before its guarded deadline.`,
+      );
+    }
+
+    // Profile-scoped state is reset only after no old-generation handler can
+    // mutate it. A failed attempt remains stopped and can be retried safely.
+    S.server = null;
+    S.port = 0;
+    S.token = '';
+    S.lastAgent = '';
+    S.team = '';
+    S.actions = 0;
+    S.displayId = null;
+    S.lastSig = 0;
+    S.lastShot = null;
+    S.captureFailing = false;
+    brokerSockets.clear();
+    agentTokens.clear();
+    resetComputerUseAuditProfileState();
+  })();
+  let tracked: Promise<void>;
+  tracked = attempt.finally(() => {
+    if (brokerStopPromise === tracked) brokerStopPromise = null;
+  });
+  brokerStopPromise = tracked;
+  return tracked;
 }
 
-/** Display geometry for the pane's coordinate overlay (Phase 0: informational). */
-export function brokerDisplay() { return primaryDisplayInfo(); }
+/** Current display geometry for the pane's coordinate overlay. */
+export function brokerDisplay() { return selectedDisplayInfo(S.displayId); }

@@ -3,40 +3,137 @@
  * id-agents manager, and loads the React renderer.
  */
 
-import { app, BrowserWindow, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage, clipboard } from 'electron';
-import { join } from 'node:path';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { call as bridgeCall, configureKeyProvider, startDraftDispatcher, startGoalDriver, startOrgSync, startModelRefreshLoop } from './bridge.ts';
-import { recordControlAction } from './controlLog.ts';
-import { startUpdater, stopUpdater, checkForUpdate, getStatus, applyStagedAndRelaunch } from './updater.ts';
-import { applyManagerUpdate, bootstrapManagerInstall, checkManagerUpdate, getManagerUpdateStatus } from './managerUpdater.ts';
+import { app, BrowserWindow, dialog, ipcMain, shell, Menu, MenuItem, globalShortcut, screen, safeStorage, clipboard, session, type Session } from 'electron';
+import { randomUUID } from 'node:crypto';
+import { dirname, isAbsolute, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
+import {
+  call as bridgeCall,
+  configureKeyProvider,
+  configureManagedManager,
+  configureSettingsSecretCodec,
+  migrateSettingsSecrets,
+  managedMcpConnectionEnvironment,
+  resumeManagedProviderAgentsAfterRestart,
+  resetDraftDispatcherWork,
+  startDraftDispatcher,
+  startGoalDriver,
+  startOrgSync,
+  stopDraftDispatcherWork,
+} from './bridge.ts';
+import {
+  providerRehydrationActionMessage,
+  type ProviderRehydrationReport,
+} from './providerRuntimeRehydration.ts';
+import {
+  configureControlWriteScheduler,
+  recordControlAction,
+} from './controlLog.ts';
+import {
+  startUpdater,
+  stopUpdater,
+  beginUpdateCheck,
+  checkForUpdate,
+  beginUpdateDownload,
+  getStatus,
+  drainUpdater,
+  prepareStagedUpdateInstall,
+  installPreparedUpdateAndQuit,
+} from './updater.ts';
 import { assignmentSubsStatus, cachedSubsStatus, invalidateSubsStatusCache, subsStatus, subsSignin, subsSignout, subsInstall, type SubsStatusOptions, type SubProvider } from './subscriptions.ts';
 import { ollamaTags, ollamaPull, ollamaRemove, ollamaCatalogCheck, catalogModelToLocalEntry, type InstalledModelInput } from './ollama.ts';
-import { backgroundStackStatus, dockerStatus, getHardware, localStackInstallStatus, runInTerminal, startBackgroundStack, stopBackgroundStack } from './system.ts';
+import {
+  backgroundStackStatus,
+  dockerStatus,
+  getHardware,
+  localStackInstallStatus,
+  openBackgroundStackAdmission,
+  runInTerminal,
+  startBackgroundStack,
+  stopAllBackgroundStacks,
+  stopBackgroundStack,
+} from './system.ts';
 import { pickProjectFolder, openProjectFolder, projectReadme, projectGit, projectGitRun, githubMeta, cloneGithub, projectDiff, createGithubRepo, linkGithubRepo, forkGithub, commitProject, detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { pickChatFiles, saveChatFiles, savePastedFile } from './chatfiles.ts';
-import { listChats, listInflightChats, getChat, saveChat, renameChat, removeChat, genTitle, genReason, unreadChatCount, markChatRead, patchChat, type ChatSession, type ChatPatch } from './chatstore.ts';
+import { listChats, listInflightChats, getChat, saveChat, renameChat, removeChat, genTitle, unreadChatCount, markChatRead, patchChat, type ChatSession, type ChatPatch } from './chatstore.ts';
 import { listPlans, getPlan, savePlan, removePlan, type Plan } from './planstore.ts';
-import { listBrainPlans, getBrainPlan, setBrainPlanStatus, createBrainPlan } from './brainplans.ts';
+import { listBrainPlans, getBrainPlan, setBrainPlanStatus, createBrainPlan, consolidateBrainPlans, type BrainPlanConsolidationRequest } from './brainplans.ts';
 import { listLoops, getLoop, saveLoop, removeLoop, type Loop } from './loopstore.ts';
 import { listGoals, getGoal, saveGoal, removeGoal, type Goal } from './goalstore.ts';
 import { listDreams, getDream, saveDream, removeDream, type Dream } from './dreamstore.ts';
 import { listQuestions, addQuestion, removeQuestion, type BlockerQuestion } from './questionstore.ts';
 import { resolveBrainApprovalFromInbox, syncBrainApprovalInbox } from './brainApprovalInbox.ts';
+import {
+  configureBrainApprovalAutomation,
+  runBrainApprovalAutomationOnce,
+  startBrainApprovalAutomationLoop,
+  type BrainApprovalReviewer,
+} from './brainApprovalAutomation.ts';
 import { autoCreatePendingLearnTasks, getMaterial, importMaterialFiles, listMaterials, markRecommendation, pickMaterialFiles, pickMaterialFolder, processMaterial, processNextMaterial, recoverStaleMaterials, removeMaterial, routePendingLearnMaterials, saveMaterial, subscribeMaterialChanges, syncUnsyncedMaterialsToBrain, updateMaterialPriority, type CreateMaterialInput, type LearnMaterial, type LearnPriority, type LearnReviewState, type ProcessMaterialContext } from './materialstore.ts';
 import { generateImage, readImage, imageModels, getImageServer, detectImageServer, probeImageServer } from './images.ts';
-import { listLocalModelCatalog, loadSettings, mergeLocalModelCatalog, removeEvmRpc, saveSettings, setUpdateSettings, setImageServer, setWalletConnectSettings, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
-import type { EvmRpcKeySource, EvmRpcProfile, EvmRpcRequest, ImageServerConfig } from '../../../idctl/src/settings/schema.ts';
+import { listLocalModelCatalog, loadSettings, mergeLocalModelCatalog, removeEvmRpc, saveSettings, setBrainAutomationSettings, setRootIdentitySettings, setUpdateSettings, setImageServer, setWalletConnectSettings, upsertEvmRpc, recordEvmRpcRequest } from '../../../idctl/src/settings/store.ts';
+import { configuredRootIdentity, defaultRootIdentitySettings, type BrainAutomationSettings, type EvmRpcKeySource, type EvmRpcProfile, type EvmRpcRequest, type ImageServerConfig, type RootIdentitySettings, type RootIdentityStatus } from '../../../idctl/src/settings/schema.ts';
+import { configDir, resolveConfigPath } from '../../../idctl/src/settings/paths.ts';
 import {
-  ROOT_AGENT_SAFE_ADDRESS,
   type KeyCapabilities,
   type KeyProductionReadiness,
   type KeyReadinessCheck,
 } from '../../../idctl/src/keys/types.ts';
-import { startBroker, armBroker, disarmBroker, setWatching, brokerStatus, auditTail, panicBroker, setSupervised, setPaused, confirmAction, pendingActions, setPanicHotkey, mintAgentToken, brokerUrl, stopBroker, legacyAgentTokenReport } from './computeruse/broker.ts';
-import { getPermissions, openPermissionSettings, relaunchApp, type CuPermissionPane } from './computeruse/permissions.ts';
+import { startBroker, armBroker, disarmBroker, setWatching, setBrokerDisplay, brokerStatus, auditTail, panicBroker, setSupervised, setFullControl, setPaused, confirmAction, pendingActions, setPanicHotkey, mintAgentToken, brokerUrl, stopBroker, legacyAgentTokenReport } from './computeruse/broker.ts';
+import { configureComputerUseAuditManager } from './computeruse/audit.ts';
+import { getPermissions, openPermissionSettings, type CuPermissionPane } from './computeruse/permissions.ts';
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
+import { appProfilePaths, initializeAppProfile, updateManagedManagerProfileUrl } from './appProfile.ts';
+import { normalizeAppProfileName } from './appProfileSelection.ts';
+import {
+  readAppProfilePreference,
+  validateRecoveryProfileFolder,
+  writeAppProfilePreference,
+  type AppProfilePreference,
+} from './appProfilePreference.ts';
+import {
+  freshRecoveryProfileName,
+  runStartupRecoveryLoop,
+  startupFailureReport,
+  type StartupFailureReport,
+  type StartupRecoveryDecision,
+} from './startupRecovery.ts';
+import {
+  appendPrivateAppTextFile,
+  ensurePrivateAppDirectory,
+  readPrivateAppTextFile,
+  writePrivateAppTextFileAtomic,
+  writePrivateAppTextFileInPlace,
+} from './appStatePrivacy.ts';
+import {
+  configureUnifiedBrainAutomation,
+  configureUnifiedStackMcpConnections,
+  startUnifiedStack,
+  stopUnifiedStack,
+  subscribeUnifiedStackServiceReady,
+  unifiedStackAdminToken,
+  unifiedStackBrainRequestAccess,
+  unifiedStackManagerServiceRequestAccess,
+  unifiedStackCredentialGuardSelftest,
+  unifiedStackPayloadContainsCredential,
+  unifiedStackStatus,
+} from './unifiedStack.ts';
+import {
+  BrainDashboardChildWindowRegistry,
+  authorizeBrainDashboardRequest,
+  brainDashboardNavigationAllowed,
+  canonicalBrainDashboardOrigin,
+  denyBrainDashboardRequest,
+} from './brainDashboardSession.ts';
+import {
+  configureOnboardingProvider,
+  consumerOnboardingStatus,
+  deferConsumerOnboarding,
+  resumeConsumerOnboarding,
+  runStarterFleetOnboarding,
+} from './consumerOnboarding.ts';
 import { buildLearnProcessContext } from '../shared/learnContext.ts';
 import { LEARN_BRAIN_BACKFILL_RUNNER_DELAYS, LEARN_QUEUE_RUNNER_DELAYS } from '../shared/backgroundPolicy.ts';
 import { buildPrimaryLeadPlanWork } from '../shared/planWork.ts';
@@ -45,28 +142,153 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { SAFE_MODULE_MANIFEST } from '../../../idctl/src/keys/safeManifest.ts';
 import { readSafeRehearsalRecord, SAFE_REHEARSAL_STEPS } from '../../../idctl/src/keys/safeRehearsal.ts';
 import { agentSignerVaultStatus, ensureAgentSigner, rotateAgentSigner } from './agentSignerVault.ts';
+import { secureStorageStatus } from './secureStoragePolicy.ts';
 import { inspectAlchemyAssets } from './alchemyAssetInspector.ts';
 import { SafeRolesKeyProvider } from './safeRolesProvider.ts';
+import { MockKeyProvider } from '../../../idctl/src/keys/mockProvider.ts';
+import { sanitizeSecretPayload } from './secretRedaction.ts';
+import { writeStackSelftestResultFile } from './selftestResult.ts';
+import {
+  ENS_ADDR_SELECTOR,
+  ENS_REGISTRY_ADDRESS,
+  ENS_RESOLVER_SELECTOR,
+  classifyEnsBinding,
+  decodeAbiAddress,
+  encodeEnsCall,
+  hasRuntimeCode,
+} from '../shared/identityVerification.ts';
+import {
+  scheduledDreamArchives,
+  type ScheduledDreamNewsItem,
+} from '../shared/dreamSchedule.ts';
+import type { ScheduleEntry } from '../../../idctl/src/api/client.ts';
+import {
+  runUnifiedRuntimeContractSelftest,
+  type UnifiedRuntimeContractSelftestResult,
+} from './unifiedRuntimeContractSelftest.ts';
+import {
+  cleanupOwnedPrimaryInstance,
+  createAppShutdownCoordinator,
+  createBoundedWorkDrain,
+  shutdownReentryDisposition,
+  workSettledWithin,
+} from './appShutdown.ts';
+import {
+  createDelayedBackgroundWork,
+  createSingleFlightBackgroundGate,
+  createTrackedBackgroundWork,
+} from './backgroundActivity.ts';
+import {
+  focusExistingPrimaryWindow,
+  guardActivationWindowCreation,
+} from './singleInstance.ts';
+import {
+  configureMcpProbeRuntime,
+  openMcpProbeAdmission,
+  stopActiveMcpProbes,
+} from './mcpTest.ts';
 
 // Bundled as CommonJS → __dirname is the output dir (out/main/).
 declare const __dirname: string;
 
+const unpackedMainRuntimeDirectory = app.isPackaged
+  ? join(process.resourcesPath, 'app.asar.unpacked', 'out', 'main')
+  : __dirname;
+configureMcpProbeRuntime({
+  runnerPath: join(unpackedMainRuntimeDirectory, 'mcp-probe-runner.cjs'),
+  ...(process.platform === 'win32'
+    ? {
+        jobHostPath: app.isPackaged
+          ? join(
+              process.resourcesPath,
+              'app.asar.unpacked',
+              'out',
+              'native',
+              'idacc-job-host.exe',
+            )
+          : join(__dirname, '..', 'native', 'idacc-job-host.exe'),
+        bootstrapPath: join(
+          unpackedMainRuntimeDirectory,
+          'managed-service-bootstrap.cjs',
+        ),
+      }
+    : {}),
+});
+
 let win: BrowserWindow | null = null;
 let brainDashboardWin: BrowserWindow | null = null;
-let stopGoalDriver: (() => void) | null = null;
-let stopLearnQueueRunner: (() => void) | null = null;
-let stopLearnBrainBackfillRunner: (() => void) | null = null;
-let stopMaterialChangeBridge: (() => void) | null = null;
+let brainDashboardSession: Session | null = null;
+let brainDashboardSessionBinding = '';
+const brainDashboardChildWindows = new BrainDashboardChildWindowRegistry();
+type BackgroundStop = () => void | Promise<void>;
+let stopGoalDriver: BackgroundStop | null = null;
+let stopLearnQueueRunner: BackgroundStop | null = null;
+let stopLearnBrainBackfillRunner: BackgroundStop | null = null;
+let stopMaterialChangeBridge: BackgroundStop | null = null;
 let kickLearnQueueRunner: ((delayMs?: number) => void) | null = null;
 let kickLearnBrainBackfillRunner: ((delayMs?: number) => void) | null = null;
-let stopDraftDispatcher: (() => void) | null = null;
+let stopDraftDispatcher: BackgroundStop | null = null;
+let stopBrainApprovalAutomation: BackgroundStop | null = null;
+let stopScheduledDreamArchive: BackgroundStop | null = null;
+let stopOrgSyncRunner: BackgroundStop | null = null;
+let stopProviderRuntimeRehydrationListener: BackgroundStop | null = null;
+let providerRuntimeRehydrationWork: Promise<void> | null = null;
+let providerRuntimeRehydrationPending = false;
+let providerRuntimeRehydrationAbort: AbortController | null = null;
 let rendererSafeMode = false;
 let rendererRecoveryFirstAt = 0;
 let rendererRecoveryAttempts = 0;
 let rendererStableTimer: ReturnType<typeof setTimeout> | null = null;
 let storeChangeTimer: ReturnType<typeof setTimeout> | null = null;
+let keyProviderConfigurationError = '';
+let consumerStartupPromise: Promise<void> | null = null;
+let shutdownFailureDialog: Promise<void> | null = null;
+let shutdownCleanupFailureReport: StartupFailureReport | null = null;
+let pendingSecondInstanceFocus = false;
+let pendingConsumerActivation = false;
+let consumerActivationReady = false;
 const pendingStoreChangeDomains = new Set<string>();
 const pendingStoreChangeMethods = new Set<string>();
+const pendingRendererRecoveryTimers = new Set<ReturnType<typeof setTimeout>>();
+const activeBrainApprovalInboxSyncs = new Set<Promise<void>>();
+const pendingBackgroundStops: Array<{ promise: Promise<void>; error?: unknown }> = [];
+const CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS = 45_000;
+// Settings, onboarding, and runtime catalog requests can legitimately outlive
+// a three-second UI interaction window. Give already-admitted IPC the same
+// bounded drain budget as the rest of guarded shutdown so Restart & update
+// does not require a second quit attempt while a read-only probe is settling.
+const activeIpcWork = createBoundedWorkDrain(CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS);
+let delayedGoalDriverWork = createDelayedBackgroundWork();
+let activationWindowWork = createSingleFlightBackgroundGate();
+let controlLogBackgroundWork = createTrackedBackgroundWork();
+let ownsSingleInstanceLock = false;
+
+configureControlWriteScheduler((work) => {
+  void controlLogBackgroundWork.run(work);
+});
+
+const appShutdown = createAppShutdownCoordinator({
+  app,
+  cleanup: cleanupForThisInstance,
+  installPreparedUpdate: installPreparedUpdateAndQuit,
+  onError: (error) => {
+    const report = startupFailureReport(error);
+    logStartupRecoveryFailure('shutdown', report);
+    if (appShutdown.status().phase === 'cleanup-failed') {
+      showShutdownCleanupFailure(report);
+    }
+  },
+});
+
+// Acquire the process-wide consumer lock before profile selection, migration,
+// crash-state persistence, or any startup branch can mutate local state.
+ownsSingleInstanceLock = app.requestSingleInstanceLock();
+if (!ownsSingleInstanceLock) {
+  void appShutdown.request({ kind: 'quit' });
+} else {
+  app.on('second-instance', handleSecondInstanceRequest);
+  if (process.platform === 'darwin') app.on('activate', handleConsumerAppActivation);
+}
 
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
 type BrainDashboardTab = 'fleet' | 'health' | 'skills' | 'learning' | 'agents' | 'graph';
@@ -84,6 +306,12 @@ type TeamLeadDelegationResult = {
   dispatched: number;
   deferred: number;
   errors?: string[];
+};
+
+type FleetAgentGroup = {
+  team?: string;
+  name?: string;
+  agents?: Array<{ name?: string; status?: string; role?: string; metadata?: Record<string, unknown> }>;
 };
 
 type RendererCrashState = {
@@ -113,26 +341,85 @@ const RENDERER_RECOVERY_MAX_RELOADS = 3;
 const RENDERER_STABLE_RESET_MS = 2 * 60 * 1000;
 const STORE_CHANGE_FLUSH_MS = 150;
 
+class ConsumerStartupCancelledError extends Error {
+  constructor() {
+    super('Application shutdown was requested during consumer startup.');
+    this.name = 'ConsumerStartupCancelledError';
+  }
+}
+
+function requireConsumerStartupActive(): void {
+  if (appShutdown.isQuiescing()) throw new ConsumerStartupCancelledError();
+}
+
+function prepareConsumerBackgroundActivitiesForStartup(): void {
+  openMcpProbeAdmission();
+  openBackgroundStackAdmission();
+  if (delayedGoalDriverWork.isStopped()) {
+    if (delayedGoalDriverWork.activeCount() !== 0) {
+      throw new Error('Delayed goal-driver work is still draining and cannot be restarted.');
+    }
+    delayedGoalDriverWork = createDelayedBackgroundWork();
+  }
+  if (activationWindowWork.isStopped()) {
+    activationWindowWork = createSingleFlightBackgroundGate();
+  }
+  if (controlLogBackgroundWork.isStopped()) {
+    if (controlLogBackgroundWork.activeCount() !== 0) {
+      throw new Error('Control-log work is still draining and cannot be restarted.');
+    }
+    controlLogBackgroundWork = createTrackedBackgroundWork();
+  }
+  resetDraftDispatcherWork();
+}
+
+function remainingShutdownDrainMs(deadlineAt: number): number {
+  return Math.max(0, deadlineAt - Date.now());
+}
+
+async function drainConsumerStartup(deadlineAt: number): Promise<void> {
+  const activeStartup = consumerStartupPromise;
+  if (!activeStartup) return;
+  const settled = await workSettledWithin(
+    activeStartup,
+    remainingShutdownDrainMs(deadlineAt),
+  );
+  if (!settled) {
+    throw new Error('Application startup did not stop before the guarded shutdown deadline.');
+  }
+  try {
+    await activeStartup;
+  } catch {
+    // The startup chain reports genuine failures itself. Shutdown-triggered
+    // cancellation is intentionally quiet and still proceeds to cleanup.
+  }
+}
+
 function envFlagEnabled(value: string | undefined): boolean {
   return /^(1|true|yes|on)$/i.test(String(value || '').trim());
 }
 
+function privateUserDataDirectory(): string {
+  return ensurePrivateAppDirectory(app.getPath('userData'));
+}
+
 function rendererCrashStatePath(): string {
-  return join(app.getPath('userData'), 'renderer-crash-state.json');
+  return join(privateUserDataDirectory(), 'renderer-crash-state.json');
 }
 
 function readRendererCrashState(): RendererCrashState | null {
   try {
-    return JSON.parse(readFileSync(rendererCrashStatePath(), 'utf8')) as RendererCrashState;
+    return JSON.parse(
+      readPrivateAppTextFile(rendererCrashStatePath()),
+    ) as RendererCrashState;
   } catch {
     return null;
   }
 }
 
 function writeRendererCrashState(state: RendererCrashState): void {
-  const dir = app.getPath('userData');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(rendererCrashStatePath(), JSON.stringify(state, null, 2), 'utf8');
+  const path = rendererCrashStatePath();
+  writePrivateAppTextFileAtomic(path, JSON.stringify(state, null, 2));
 }
 
 function recentRendererCrash(state: RendererCrashState | null): boolean {
@@ -294,9 +581,8 @@ function configureChromiumStability(): void {
 
 function logProcessExit(kind: string, detail: Record<string, unknown>): void {
   try {
-    const dir = app.getPath('userData');
-    mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, 'process-exits.jsonl'), JSON.stringify({
+    const path = join(privateUserDataDirectory(), 'process-exits.jsonl');
+    appendPrivateAppTextFile(path, JSON.stringify({
       ts: new Date().toISOString(),
       kind,
       rendererSafeMode,
@@ -332,9 +618,40 @@ function rendererIndexFile(): string {
   return join(__dirname, '../renderer/index.html');
 }
 
-function loadRendererApp(target: BrowserWindow): void {
+function isTrustedRendererUrl(value: string): boolean {
+  try {
+    const actual = new URL(value);
+    const expected = new URL(pathToFileURL(rendererIndexFile()).href);
+    return actual.protocol === 'file:'
+      && actual.host === expected.host
+      && actual.pathname === expected.pathname;
+  } catch {
+    return false;
+  }
+}
+
+function openExternalHttpUrl(value: string): void {
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'https:' || url.protocol === 'http:') void shell.openExternal(url.href);
+  } catch {
+    // Invalid and privileged schemes are ignored.
+  }
+}
+
+function requireTrustedIpcSender(event: Electron.IpcMainInvokeEvent): void {
+  if (
+    !event.senderFrame
+    || event.senderFrame !== event.sender.mainFrame
+    || !isTrustedRendererUrl(event.senderFrame.url)
+  ) {
+    throw new Error('IPC request rejected from an untrusted document.');
+  }
+}
+
+function loadRendererApp(target: BrowserWindow): Promise<void> {
   const initialView = process.env.IDCTL_VIEW;
-  void target.loadFile(rendererIndexFile(), initialView ? { search: `view=${initialView}` } : undefined);
+  return target.loadFile(rendererIndexFile(), initialView ? { search: `view=${initialView}` } : undefined);
 }
 
 function rendererCrashFallbackHtml(state: RendererCrashState | null, details: Electron.RenderProcessGoneDetails): string {
@@ -368,6 +685,7 @@ function rendererCrashFallbackHtml(state: RendererCrashState | null, details: El
 }
 
 function scheduleRendererRecovery(target: BrowserWindow, details: Electron.RenderProcessGoneDetails, state: RendererCrashState | null): void {
+  if (appShutdown.isQuiescing()) return;
   const now = Date.now();
   if (!rendererRecoveryFirstAt || now - rendererRecoveryFirstAt > RENDERER_RECOVERY_WINDOW_MS) {
     rendererRecoveryFirstAt = now;
@@ -376,11 +694,15 @@ function scheduleRendererRecovery(target: BrowserWindow, details: Electron.Rende
   rendererRecoveryAttempts += 1;
   const attempt = rendererRecoveryAttempts;
   const delayMs = Math.min(1000 + attempt * 750, 4000);
-  setTimeout(() => {
+  const timer = setTimeout(() => {
+    pendingRendererRecoveryTimers.delete(timer);
+    if (appShutdown.isQuiescing()) return;
     try {
       if (target.isDestroyed()) return;
       if (attempt <= RENDERER_RECOVERY_MAX_RELOADS) {
-        loadRendererApp(target);
+        void loadRendererApp(target).catch((error) => {
+          logStartupRecoveryFailure('renderer-recovery', startupFailureReport(error));
+        });
       } else {
         void target.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(rendererCrashFallbackHtml(state, details))}`);
       }
@@ -388,6 +710,7 @@ function scheduleRendererRecovery(target: BrowserWindow, details: Electron.Rende
       console.warn('[renderer-crash] recovery failed:', e);
     }
   }, delayMs);
+  pendingRendererRecoveryTimers.add(timer);
 }
 
 function scheduleRendererStableReset(): void {
@@ -400,7 +723,505 @@ function scheduleRendererStableReset(): void {
   rendererStableTimer.unref?.();
 }
 
-configureChromiumStability();
+// Destroying a partially created window must not trigger the normal
+// window-all-closed quit path while the native recovery dialog is active.
+let startupRecoveryActive = false;
+
+function logStartupRecoveryFailure(scope: string, report: StartupFailureReport): void {
+  // Never log the originating exception: startup errors commonly contain home
+  // paths, query-string credentials, or child-process environment fragments.
+  console.error(`[${scope}]`, {
+    code: report.code,
+    diagnosticId: report.diagnosticId,
+    ...(report.systemCode ? { systemCode: report.systemCode } : {}),
+  });
+}
+
+function showShutdownCleanupFailure(report: StartupFailureReport): void {
+  shutdownCleanupFailureReport = report;
+  if (shutdownFailureDialog) return;
+  const prompt = app.whenReady()
+    .then(() => dialog.showMessageBox({
+      type: 'error',
+      title: 'IDACC is still stopping safely',
+      message: 'IDACC kept the application open because shutdown cleanup could not be confirmed.',
+      detail: `No restart, update, or forced exit was attempted. Retry the guarded cleanup, or keep the application open and try Quit again later.\n\nDiagnostic ID: ${report.diagnosticId}`,
+      buttons: ['Retry Shutdown', 'Keep App Open'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    }))
+    .then((choice) => {
+      if (shutdownFailureDialog === prompt) shutdownFailureDialog = null;
+      if (choice.response === 0) void appShutdown.retry();
+    })
+    .catch((error) => {
+      if (shutdownFailureDialog === prompt) shutdownFailureDialog = null;
+      logStartupRecoveryFailure('shutdown-dialog', startupFailureReport(error));
+    });
+  shutdownFailureDialog = prompt;
+}
+
+function presentShutdownCleanupRecovery(): boolean {
+  if (appShutdown.status().phase !== 'cleanup-failed') return false;
+  showShutdownCleanupFailure(
+    shutdownCleanupFailureReport
+      ?? startupFailureReport(new Error('Guarded application cleanup is still incomplete.')),
+  );
+  return true;
+}
+
+function handleSecondInstanceRequest(): void {
+  const disposition = shutdownReentryDisposition(appShutdown.status().phase);
+  if (disposition === 'recover-cleanup') {
+    presentShutdownCleanupRecovery();
+    return;
+  }
+  if (disposition === 'ignore') return;
+  pendingSecondInstanceFocus = true;
+  focusPrimaryConsumerWindow();
+}
+
+function handleConsumerAppActivation(): void {
+  const disposition = shutdownReentryDisposition(appShutdown.status().phase);
+  if (disposition === 'recover-cleanup') {
+    presentShutdownCleanupRecovery();
+    return;
+  }
+  if (disposition === 'ignore') return;
+  if (!consumerActivationReady) {
+    pendingConsumerActivation = true;
+    return;
+  }
+  if (BrowserWindow.getAllWindows().length !== 0) return;
+  void activationWindowWork.run(async () => {
+    if (appShutdown.isQuiescing()) return;
+    const creation = createWindow();
+    const target = win;
+    let readyTarget: BrowserWindow | null;
+    try {
+      readyTarget = await guardActivationWindowCreation(
+        creation,
+        target,
+        () => appShutdown.isQuiescing(),
+        (lateTarget) => {
+          if (win === lateTarget) win = null;
+        },
+      );
+    } catch (error) {
+      // Renderer loading may reject because terminal shutdown destroyed the
+      // guarded late window. That expected cancellation has already been
+      // contained and must not turn a clean shutdown into cleanup-failed.
+      if (appShutdown.isQuiescing()) return;
+      throw error;
+    }
+    if (readyTarget && !readyTarget.isDestroyed()) {
+      startUpdaterSafely(readyTarget);
+    }
+  }).catch((error) => handleUnrecoverableStartupFailure(error));
+}
+
+function focusPrimaryConsumerWindow(): void {
+  if (appShutdown.isQuiescing()) return;
+  try {
+    const target = win && !win.isDestroyed()
+      ? win
+      : BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed()) ?? null;
+    if (focusExistingPrimaryWindow(target)) pendingSecondInstanceFocus = false;
+  } catch (error) {
+    logStartupRecoveryFailure('second-instance-focus', startupFailureReport(error));
+  }
+}
+
+function startUpdaterSafely(target: BrowserWindow): void {
+  try {
+    startUpdater(target);
+  } catch (error) {
+    try { stopUpdater(); } catch { /* updater initialization was incomplete */ }
+    logStartupRecoveryFailure('updater-start', startupFailureReport(error));
+  }
+}
+
+function recoveryProfileRoot(): string {
+  const userDataRoot = app.getPath('userData');
+  const explicitDataDir = String(process.env.IDACC_DATA_DIR || '').trim();
+  if (explicitDataDir && isAbsolute(explicitDataDir)) return explicitDataDir;
+  let preference: AppProfilePreference | null = null;
+  try {
+    preference = readAppProfilePreference(userDataRoot);
+  } catch {
+    // The failure that opened recovery already contains the safe diagnostic.
+    // Fall back to the application data root so the user can repair the pointer.
+    return userDataRoot;
+  }
+  if (preference?.dataDir) return preference.dataDir;
+  const requestedName = String(process.env.IDACC_PROFILE || preference?.profile || 'default');
+  let profileName = 'default';
+  try {
+    profileName = normalizeAppProfileName(requestedName);
+  } catch {
+    // An invalid selector is itself recoverable; open the neutral profiles root.
+  }
+  return join(userDataRoot, 'profiles', profileName);
+}
+
+function recoveryFolderToOpen(): string {
+  const profileRoot = recoveryProfileRoot();
+  if (existsSync(profileRoot)) return profileRoot;
+  const parent = dirname(profileRoot);
+  if (existsSync(parent)) return parent;
+  return app.getPath('userData');
+}
+
+async function restartWithRecoveryProfile(
+  preference: AppProfilePreference,
+): Promise<boolean> {
+  const previousDataDir = process.env.IDACC_DATA_DIR;
+  const previousProfile = process.env.IDACC_PROFILE;
+  if (preference.dataDir) {
+    process.env.IDACC_DATA_DIR = preference.dataDir;
+    delete process.env.IDACC_PROFILE;
+  } else {
+    delete process.env.IDACC_DATA_DIR;
+    process.env.IDACC_PROFILE = preference.profile;
+  }
+  try {
+    writeAppProfilePreference(app.getPath('userData'), preference);
+    void appShutdown.request({ kind: 'relaunch' });
+    return true;
+  } catch (error) {
+    if (previousDataDir === undefined) delete process.env.IDACC_DATA_DIR;
+    else process.env.IDACC_DATA_DIR = previousDataDir;
+    if (previousProfile === undefined) delete process.env.IDACC_PROFILE;
+    else process.env.IDACC_PROFILE = previousProfile;
+    const report = startupFailureReport(error);
+    logStartupRecoveryFailure('startup-profile-preference', report);
+    await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Profile could not be selected',
+      message: 'IDACC could not safely save and restart with that profile.',
+      detail: `The current profile remains selected. Repair access to the application-data folder, then try again.\n\nDiagnostic ID: ${report.diagnosticId}`,
+      buttons: ['Continue'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    return false;
+  }
+}
+
+function trackBackgroundStop(result: void | Promise<void>): void {
+  if (!result || typeof (result as Promise<void>).then !== 'function') return;
+  const record: { promise: Promise<void>; error?: unknown } = {
+    promise: Promise.resolve(),
+  };
+  record.promise = Promise.resolve(result).catch((error) => {
+    record.error = error;
+  });
+  pendingBackgroundStops.push(record);
+}
+
+async function drainConsumerBackgroundActivities(deadlineAt: number): Promise<void> {
+  const errors: unknown[] = [];
+  while (pendingBackgroundStops.length > 0) {
+    const batch = pendingBackgroundStops.slice();
+    const settled = await workSettledWithin(
+      Promise.all(batch.map((record) => record.promise)),
+      remainingShutdownDrainMs(deadlineAt),
+    );
+    if (!settled) {
+      throw new Error(
+        `Shutdown could not confirm ${batch.length} background stop operation(s) before the guarded deadline.`,
+      );
+    }
+    pendingBackgroundStops.splice(0, batch.length);
+    errors.push(...batch.flatMap((record) => record.error === undefined ? [] : [record.error]));
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'One or more background activities did not stop cleanly.');
+  }
+}
+
+function quiesceConsumerBackgroundActivities(): void {
+  consumerActivationReady = false;
+  pendingConsumerActivation = false;
+  if (rendererStableTimer) clearTimeout(rendererStableTimer);
+  rendererStableTimer = null;
+  if (storeChangeTimer) clearTimeout(storeChangeTimer);
+  storeChangeTimer = null;
+  pendingStoreChangeDomains.clear();
+  pendingStoreChangeMethods.clear();
+  for (const timer of pendingRendererRecoveryTimers) clearTimeout(timer);
+  pendingRendererRecoveryTimers.clear();
+  trackBackgroundStop(activationWindowWork.stop());
+  trackBackgroundStop(controlLogBackgroundWork.stop());
+  trackBackgroundStop(stopDraftDispatcherWork());
+  trackBackgroundStop(delayedGoalDriverWork.stop());
+  if (activeBrainApprovalInboxSyncs.size > 0) {
+    trackBackgroundStop(Promise.all([...activeBrainApprovalInboxSyncs]).then(() => undefined));
+  }
+  providerRuntimeRehydrationAbort?.abort();
+  providerRuntimeRehydrationAbort = null;
+  const activeProviderRuntimeRehydration = providerRuntimeRehydrationWork;
+  providerRuntimeRehydrationWork = null;
+  providerRuntimeRehydrationPending = false;
+  if (activeProviderRuntimeRehydration) {
+    trackBackgroundStop(activeProviderRuntimeRehydration);
+  }
+
+  // Clear references before calling userland stop closures so re-entrant
+  // shutdown paths cannot invoke a partially stopped loop twice.
+  const stops = [
+    stopOrgSyncRunner,
+    stopProviderRuntimeRehydrationListener,
+    stopGoalDriver,
+    stopLearnQueueRunner,
+    stopLearnBrainBackfillRunner,
+    stopMaterialChangeBridge,
+    stopBrainApprovalAutomation,
+    stopDraftDispatcher,
+    stopScheduledDreamArchive,
+  ];
+  stopOrgSyncRunner = null;
+  stopProviderRuntimeRehydrationListener = null;
+  stopGoalDriver = null;
+  stopLearnQueueRunner = null;
+  stopLearnBrainBackfillRunner = null;
+  stopMaterialChangeBridge = null;
+  stopBrainApprovalAutomation = null;
+  stopDraftDispatcher = null;
+  stopScheduledDreamArchive = null;
+  kickLearnQueueRunner = null;
+  kickLearnBrainBackfillRunner = null;
+  for (const stop of stops) {
+    try { trackBackgroundStop(stop?.()); } catch (error) {
+      trackBackgroundStop(Promise.reject(error));
+    }
+  }
+}
+
+function quiesceConsumerOwnedServices(): void {
+  try { stopUpdater(); } catch (error) { trackBackgroundStop(Promise.reject(error)); }
+  trackBackgroundStop(drainUpdater());
+  try { trackBackgroundStop(stopActiveMcpProbes()); } catch (error) {
+    trackBackgroundStop(Promise.reject(error));
+  }
+  try { trackBackgroundStop(stopAllBackgroundStacks()); } catch (error) {
+    trackBackgroundStop(Promise.reject(error));
+  }
+  try { trackBackgroundStop(stopBroker()); } catch (error) {
+    trackBackgroundStop(Promise.reject(error));
+  }
+  try { globalShortcut.unregisterAll(); } catch { /* shortcuts may be unavailable */ }
+  quiesceConsumerBackgroundActivities();
+}
+
+function retireBrainDashboardSession(isolatedSession: Session | null): void {
+  if (!isolatedSession) return;
+  isolatedSession.webRequest.onBeforeRequest(
+    { urls: ['<all_urls>'] },
+    (_details, callback) => callback({ cancel: true }),
+  );
+  isolatedSession.webRequest.onBeforeSendHeaders(
+    { urls: ['<all_urls>'] },
+    (details, callback) => {
+      const denied = denyBrainDashboardRequest(details.requestHeaders);
+      callback({
+        cancel: true,
+        requestHeaders: denied.requestHeaders,
+      });
+    },
+  );
+  trackBackgroundStop(isolatedSession.clearStorageData().catch(() => {
+    // The in-memory session remains deny-all if storage cleanup fails.
+  }));
+}
+
+function closeBrainDashboard(): void {
+  const currentWindow = brainDashboardWin;
+  brainDashboardWin = null;
+  try {
+    if (currentWindow && !currentWindow.isDestroyed()) currentWindow.destroy();
+  } catch { /* shutdown continues through the isolated session cleanup */ }
+  brainDashboardChildWindows.destroyAll();
+  const isolatedSession = brainDashboardSession;
+  brainDashboardSession = null;
+  brainDashboardSessionBinding = '';
+  retireBrainDashboardSession(isolatedSession);
+}
+
+function cleanupForThisInstance(): Promise<void> {
+  // A process that lost the single-instance lock never initialized a profile,
+  // broker, background driver, or managed service. Its terminal cleanup must
+  // therefore remain a strict no-op and must not touch the primary's resources.
+  return cleanupOwnedPrimaryInstance(
+    ownsSingleInstanceLock,
+    cleanupForTerminalShutdown,
+  );
+}
+
+async function cleanupForTerminalShutdown(): Promise<void> {
+  try {
+    if (win && !win.isDestroyed()) saveWinState(win);
+  } catch { /* geometry persistence must not block service shutdown */ }
+  // Close every source of future work before yielding to an in-flight drain.
+  closeBrainDashboard();
+  quiesceConsumerOwnedServices();
+  // Startup and all background stop handles share one aggregate deadline. A
+  // timeout fails closed into the guarded Retry Shutdown flow; a retry gets a
+  // fresh deadline while preserving the original terminal intent.
+  const activityDrainDeadline = Date.now() + CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS;
+  const ipcDrained = await activeIpcWork.drain();
+  if (!ipcDrained) {
+    throw new Error(`Shutdown could not drain ${activeIpcWork.activeCount()} active application request(s).`);
+  }
+  await drainConsumerStartup(activityDrainDeadline);
+  // Startup may have crossed an asynchronous boundary before observing
+  // quiescence; collect any stop handle it published in that interval.
+  quiesceConsumerOwnedServices();
+  await drainConsumerBackgroundActivities(activityDrainDeadline);
+  await stopUnifiedStack();
+}
+
+async function cleanupFailedConsumerStartup(): Promise<void> {
+  closeBrainDashboard();
+  quiesceConsumerOwnedServices();
+  const activityDrainDeadline = Date.now() + CONSUMER_SHUTDOWN_DRAIN_TIMEOUT_MS;
+  try {
+    if (win && !win.isDestroyed()) win.destroy();
+  } catch { /* recovery dialog does not depend on the renderer window */ }
+  win = null;
+  try {
+    await drainConsumerBackgroundActivities(activityDrainDeadline);
+    await stopUnifiedStack();
+  } catch (error) {
+    logStartupRecoveryFailure('startup-cleanup', startupFailureReport(error));
+  }
+}
+
+async function promptForStartupRecovery(report: StartupFailureReport): Promise<StartupRecoveryDecision> {
+  for (;;) {
+    if (appShutdown.isQuiescing()) return 'quit';
+    const choice = await dialog.showMessageBox({
+      type: 'error',
+      title: report.title,
+      message: report.title,
+      detail: `${report.detail}\n\nChoosing another profile restarts IDACC in a fresh process. “Start Fresh Profile” creates a separate profile and keeps the current profile untouched.\n\nDiagnostic ID: ${report.diagnosticId}`,
+      buttons: [
+        'Try Again',
+        'Open Profile Folder',
+        'Choose Another Profile…',
+        'Start Fresh Profile',
+        'Quit',
+      ],
+      defaultId: 0,
+      cancelId: 4,
+      noLink: true,
+    });
+    if (appShutdown.isQuiescing()) return 'quit';
+    if (choice.response === 0) return 'retry';
+    if (choice.response === 1) {
+      const openError = await shell.openPath(recoveryFolderToOpen());
+      if (openError) {
+        const openReport = startupFailureReport(new Error(openError));
+        logStartupRecoveryFailure('startup-open-profile', openReport);
+        await dialog.showMessageBox({
+          type: 'warning',
+          title: 'Profile folder could not be opened',
+          message: 'IDACC could not open the profile folder in the system file browser.',
+          detail: `Your data remains untouched. You can still choose another profile or retry.\n\nDiagnostic ID: ${openReport.diagnosticId}`,
+          buttons: ['Continue'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        });
+      }
+      continue;
+    }
+    if (choice.response === 2) {
+      const selected = await dialog.showOpenDialog({
+        title: 'Choose an IDACC profile folder',
+        message: 'Choose an existing IDACC profile folder or create an empty folder.',
+        buttonLabel: 'Use This Profile',
+        properties: ['openDirectory', 'createDirectory', 'promptToCreate'],
+      });
+      const selectedPath = selected.filePaths[0];
+      if (!selected.canceled && selectedPath) {
+        try {
+          const profileFolder = validateRecoveryProfileFolder(
+            selectedPath,
+            app.getPath('userData'),
+            [app.getPath('home')],
+            [app.getAppPath(), process.resourcesPath],
+          );
+          if (await restartWithRecoveryProfile({ dataDir: profileFolder })) {
+            return 'quit';
+          }
+        } catch (error) {
+          const folderReport = startupFailureReport(error);
+          logStartupRecoveryFailure('startup-profile-folder', folderReport);
+          await dialog.showMessageBox({
+            type: 'warning',
+            title: 'Choose a dedicated IDACC profile folder',
+            message: 'That folder cannot safely be used as an IDACC profile.',
+            detail: `Choose an empty folder or an existing IDACC profile folder. Broad folders such as your home, application, or app-data folder are not changed.\n\nDiagnostic ID: ${folderReport.diagnosticId}`,
+            buttons: ['Choose Again'],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true,
+          });
+        }
+      }
+      continue;
+    }
+    if (choice.response === 3) {
+      if (await restartWithRecoveryProfile({ profile: freshRecoveryProfileName() })) {
+        return 'quit';
+      }
+      continue;
+    }
+    return 'quit';
+  }
+}
+
+async function handleConsumerStartupFailure(
+  report: StartupFailureReport,
+): Promise<StartupRecoveryDecision> {
+  if (appShutdown.isQuiescing()) {
+    startupRecoveryActive = false;
+    return 'quit';
+  }
+  startupRecoveryActive = true;
+  logStartupRecoveryFailure('startup', report);
+  await cleanupFailedConsumerStartup();
+  if (appShutdown.isQuiescing()) {
+    startupRecoveryActive = false;
+    return 'quit';
+  }
+  const decision = await promptForStartupRecovery(report);
+  if (decision === 'quit') startupRecoveryActive = false;
+  return decision;
+}
+
+async function handleUnrecoverableStartupFailure(error: unknown): Promise<void> {
+  if (appShutdown.isQuiescing()) return;
+  startupRecoveryActive = true;
+  const report = startupFailureReport(error);
+  logStartupRecoveryFailure('startup-recovery', report);
+  await cleanupFailedConsumerStartup();
+  if (appShutdown.isQuiescing()) return;
+  try {
+    dialog.showErrorBox(
+      'IDACC could not open recovery',
+      `IDACC stopped its local services safely and did not reset your profile. Close the app, then reopen it to try again.\n\nDiagnostic ID: ${report.diagnosticId}`,
+    );
+  } catch {
+    // The safe report above is still available in the process log.
+  }
+  void appShutdown.request({ kind: 'exit', code: 1 });
+}
+
+if (ownsSingleInstanceLock) configureChromiumStability();
 
 async function syncGoalInstructionsAfterMutation(action: string): Promise<void> {
   try {
@@ -411,12 +1232,25 @@ async function syncGoalInstructionsAfterMutation(action: string): Promise<void> 
 }
 
 function kickGoalDriverAfterMutation(goal: Goal | null | undefined, action: string): void {
-  if (!goal || goal.status !== 'active' || goal.autopilot !== true) return;
-  setTimeout(() => {
-    void bridgeCall('goalDriver:runOnce', []).catch((e) => {
-      console.warn(`[goals] ${action}: saved locally, but immediate Autopilot run failed:`, e);
-    });
-  }, 250).unref?.();
+  if (
+    appShutdown.isQuiescing()
+    || !goal
+    || goal.status !== 'active'
+    || goal.autopilot !== true
+  ) {
+    return;
+  }
+  delayedGoalDriverWork.schedule(250, async () => {
+    if (appShutdown.isQuiescing()) return;
+    try {
+      // Goal edits must become visible to Brain immediately, but they must not
+      // bypass the configured manager cadence and create another burst of work.
+      // The explicit Run now control remains the only force-run path.
+      await bridgeCall('goalDriver:syncNow', []);
+    } catch (e) {
+      console.warn(`[goals] ${action}: saved locally, but Autopilot cadence sync failed:`, e);
+    }
+  });
 }
 
 function planHasTag(plan: Plan, tag: string): boolean {
@@ -474,20 +1308,121 @@ function normalizeBrainDashboardTab(value: unknown): BrainDashboardTab {
   throw new Error(`Unsupported Brain dashboard tab "${tab}"`);
 }
 
+function brainDashboardWebPreferences(isolatedSession: Session) {
+  return {
+    contextIsolation: true,
+    sandbox: true,
+    nodeIntegration: false,
+    webSecurity: true,
+    devTools: false,
+    session: isolatedSession,
+  };
+}
+
+function configureBrainDashboardWindow(
+  window: BrowserWindow,
+  origin: string,
+  isolatedSession: Session,
+): void {
+  window.webContents.setWindowOpenHandler(({ url: target }) => {
+    if (brainDashboardNavigationAllowed(target, origin)) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          webPreferences: brainDashboardWebPreferences(isolatedSession),
+        },
+      };
+    }
+    // This bearer-authorized surface cannot prove that an external window was
+    // requested by a trusted user gesture rather than stored/scripted content.
+    // Keep it fail-closed instead of turning the system browser into an
+    // authenticated-data exfiltration channel.
+    return { action: 'deny' };
+  });
+  window.webContents.on('did-create-window', (childWindow) => {
+    const release = brainDashboardChildWindows.track(childWindow);
+    childWindow.on('closed', release);
+    configureBrainDashboardWindow(childWindow, origin, isolatedSession);
+  });
+  window.webContents.on('will-navigate', (event, target) => {
+    if (brainDashboardNavigationAllowed(target, origin)) return;
+    event.preventDefault();
+  });
+}
+
+function ensureBrainDashboardSession(
+  origin: string,
+  authorizationHeader: string,
+): Session {
+  const canonicalOrigin = canonicalBrainDashboardOrigin(origin);
+  const binding = `${canonicalOrigin}\0${authorizationHeader}`;
+  if (brainDashboardSession && brainDashboardSessionBinding === binding) {
+    return brainDashboardSession;
+  }
+  closeBrainDashboard();
+
+  const isolatedSession = session.fromPartition(
+    `idacc-brain-dashboard-${randomUUID()}`,
+    { cache: false },
+  );
+  const requestDecision = (
+    url: string,
+    requestHeaders: Record<string, string> = {},
+  ) => authorizeBrainDashboardRequest(
+    url,
+    canonicalOrigin,
+    authorizationHeader,
+    requestHeaders,
+  );
+  isolatedSession.webRequest.onBeforeRequest(
+    { urls: ['<all_urls>'] },
+    (details, callback) => {
+      callback({ cancel: !requestDecision(details.url).allowed });
+    },
+  );
+  isolatedSession.webRequest.onBeforeSendHeaders(
+    { urls: ['<all_urls>'] },
+    (details, callback) => {
+      const decision = requestDecision(details.url, details.requestHeaders);
+      callback({
+        cancel: !decision.allowed,
+        requestHeaders: decision.requestHeaders,
+      });
+    },
+  );
+  brainDashboardSession = isolatedSession;
+  brainDashboardSessionBinding = binding;
+  return isolatedSession;
+}
+
 async function openBrainDashboard(value: unknown): Promise<{ ok: true; tab: BrainDashboardTab; url: string }> {
   const tab = normalizeBrainDashboardTab(value);
   const cfg = BRAIN_DASHBOARD_TABS[tab];
-  const url = `http://127.0.0.1:4200${cfg.path}`;
+  const access = unifiedStackBrainRequestAccess();
+  const origin = canonicalBrainDashboardOrigin(access.origin);
+  const url = `${origin}${cfg.path}`;
+  const isolatedSession = ensureBrainDashboardSession(
+    origin,
+    access.authorizationHeader,
+  );
   if (!brainDashboardWin || brainDashboardWin.isDestroyed()) {
-    brainDashboardWin = new BrowserWindow({
+    const createdWindow = new BrowserWindow({
       width: 1100,
       height: 800,
       title: cfg.title,
-      webPreferences: {
-        contextIsolation: true,
-      },
+      webPreferences: brainDashboardWebPreferences(isolatedSession),
     });
-    brainDashboardWin.on('closed', () => { brainDashboardWin = null; });
+    brainDashboardWin = createdWindow;
+    configureBrainDashboardWindow(createdWindow, origin, isolatedSession);
+    createdWindow.on('closed', () => {
+      if (brainDashboardWin !== createdWindow) return;
+      brainDashboardWin = null;
+      brainDashboardChildWindows.destroyAll();
+      const retiredSession = brainDashboardSession;
+      brainDashboardSession = null;
+      brainDashboardSessionBinding = '';
+      retireBrainDashboardSession(retiredSession);
+    });
   }
   brainDashboardWin.setTitle(cfg.title);
   brainDashboardWin.show();
@@ -496,6 +1431,85 @@ async function openBrainDashboard(value: unknown): Promise<{ ok: true; tab: Brai
     await brainDashboardWin.loadURL(url);
   }
   return { ok: true, tab, url };
+}
+
+type BrainDashboardLifecycleSelftestResult = {
+  childCreated: boolean;
+  childTracked: boolean;
+  childUsedIsolatedSession: boolean;
+  childDestroyed: boolean;
+  retiredRequestCancelled: boolean;
+  sessionRotated: boolean;
+  allPassed: boolean;
+};
+
+async function runBrainDashboardLifecycleSelftest(): Promise<BrainDashboardLifecycleSelftestResult> {
+  let child: BrowserWindow | null = null;
+  let originalSession: Session | null = null;
+  try {
+    const opened = await openBrainDashboard('graph');
+    const parent = brainDashboardWin;
+    originalSession = brainDashboardSession;
+    if (!parent || !originalSession) {
+      throw new Error('Brain dashboard did not create its isolated window and session');
+    }
+    const childPromise = new Promise<BrowserWindow>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error('Brain dashboard window.open child was not created')),
+        5_000,
+      );
+      parent.webContents.once('did-create-window', (createdChild) => {
+        clearTimeout(timeout);
+        resolve(createdChild);
+      });
+    });
+    await parent.webContents.executeJavaScript(
+      `Boolean(window.open(${JSON.stringify(`${opened.url}/child`)}, '_blank'))`,
+      true,
+    );
+    child = await childPromise;
+    const childCreated = !child.isDestroyed();
+    const childTracked = brainDashboardChildWindows.size() === 1;
+    const childUsedIsolatedSession = child.webContents.session === originalSession;
+
+    closeBrainDashboard();
+    const childDestroyed = child.isDestroyed();
+    let retiredRequestCancelled = false;
+    try {
+      const response = await originalSession.fetch(
+        `${new URL(opened.url).origin}/dashboard-retired-probe`,
+        {
+          headers: { Authorization: 'Bearer must-be-stripped' },
+          signal: AbortSignal.timeout(3_000),
+        },
+      );
+      await response.body?.cancel();
+    } catch {
+      retiredRequestCancelled = true;
+    }
+
+    await openBrainDashboard('graph');
+    const sessionRotated = Boolean(
+      brainDashboardSession
+      && brainDashboardSession !== originalSession,
+    );
+    closeBrainDashboard();
+    const result = {
+      childCreated,
+      childTracked,
+      childUsedIsolatedSession,
+      childDestroyed,
+      retiredRequestCancelled,
+      sessionRotated,
+      allPassed: false,
+    };
+    result.allPassed = Object.entries(result)
+      .filter(([key]) => key !== 'allPassed')
+      .every(([, value]) => value === true);
+    return result;
+  } finally {
+    closeBrainDashboard();
+  }
 }
 
 type ComputerUseAttachedAgent = { id?: string; name?: string; team?: string; authority?: string };
@@ -515,9 +1529,12 @@ function attachedComputerUseStamp(agents: ComputerUseAttachedAgent[], team: stri
 async function armComputerUseFromCurrentAttached(teamArg: unknown, expectedAttachedStampArg?: unknown) {
   const team = typeof teamArg === 'string' && teamArg.trim() ? teamArg.trim() : 'default';
   const attached = await bridgeCall('cu:attached', [team]) as ComputerUseAttachedAgent[];
-  const expected = typeof expectedAttachedStampArg === 'string' ? expectedAttachedStampArg : '';
+  if (typeof expectedAttachedStampArg !== 'string') {
+    throw new Error('Computer Use arming requires a reviewed attachment snapshot. Refresh Who can drive and try again.');
+  }
+  const expected = expectedAttachedStampArg;
   const actualStamp = attachedComputerUseStamp(attached ?? [], team);
-  if (expected && expected !== actualStamp) {
+  if (expected !== actualStamp) {
     throw new Error('Computer Use blessed agents changed before arming; refresh and review Who can drive.');
   }
   const status = brokerStatus();
@@ -525,10 +1542,13 @@ async function armComputerUseFromCurrentAttached(teamArg: unknown, expectedAttac
     ...(status.blessed ?? []).filter((authority: string) => !authority.startsWith(`${team}:`)),
     ...(attached ?? []).map((agent) => scopedComputerUseAuthority(agent, team)),
   ]).split('|').filter(Boolean);
-  return { ...armBroker(next), team, attached: attached?.length ?? 0 };
+  const result = armBroker(next);
+  if (!result.ok) throw new Error(result.error || 'Computer Use could not be armed.');
+  return { ...result, team, attached: attached?.length ?? 0 };
 }
 
 function publishStoreChange(method: string): void {
+  if (appShutdown.isQuiescing()) return;
   const domains = syncDomainsForMethod(method);
   if (!domains.length) return;
   for (const domain of domains) pendingStoreChangeDomains.add(domain);
@@ -552,22 +1572,18 @@ function publishStoreChange(method: string): void {
   storeChangeTimer.unref?.();
 }
 
-function startLearnQueueRunner(): () => void {
-  let stopped = false;
-  let running = false;
+function startLearnQueueRunner(): () => Promise<void> {
+  const gate = createSingleFlightBackgroundGate();
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const schedule = (delayMs = LEARN_QUEUE_RUNNER_DELAYS.idleMs) => {
-    if (stopped) return;
+    if (gate.isStopped()) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void tick(), Math.max(0, delayMs));
     timer.unref?.();
   };
 
-  const tick = async () => {
-    if (stopped) return;
-    if (running) { schedule(LEARN_QUEUE_RUNNER_DELAYS.alreadyRunningMs); return; }
-    running = true;
+  const tick = (): Promise<void> => gate.run(async () => {
     try {
       recoverStaleMaterials();
       const current = listMaterials();
@@ -580,18 +1596,23 @@ function startLearnQueueRunner(): () => void {
       if (hasQueued) {
         const material = await processNextMaterial(await learnProcessContext());
         if (material) {
-          publishStoreChange('materials:processNext');
-          recordControlAction('materials:processNext', ['background'], material);
+          if (!appShutdown.isQuiescing()) {
+            publishStoreChange('materials:processNext');
+            recordControlAction('materials:processNext', ['background'], material);
+          }
           if (material.status === 'ready' || material.status === 'blocked') kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialReadyKickMs);
         }
       }
       const taskBackfill = await autoCreatePendingLearnTasks({ limit: hasQueued ? 2 : 6 });
-      if (taskBackfill.created || taskBackfill.deferred || taskBackfill.failed) {
+      if (
+        !appShutdown.isQuiescing()
+        && (taskBackfill.created || taskBackfill.deferred || taskBackfill.failed)
+      ) {
         publishStoreChange('materials:tasks');
         recordControlAction('materials:tasks', ['background'], taskBackfill);
       }
       const routeBackfill = await routePendingLearnMaterials({ limit: hasQueued ? 1 : 3 });
-      if (routeBackfill.dispatched || routeBackfill.failed) {
+      if (!appShutdown.isQuiescing() && (routeBackfill.dispatched || routeBackfill.failed)) {
         publishStoreChange('materials:tasks');
         recordControlAction('materials:routeLeads', ['background'], routeBackfill);
       }
@@ -600,18 +1621,54 @@ function startLearnQueueRunner(): () => void {
     } catch (e) {
       console.warn('[learn] auto-process queue failed:', e);
       schedule(LEARN_QUEUE_RUNNER_DELAYS.retryMs);
-    } finally {
-      running = false;
     }
-  };
+  });
 
   kickLearnQueueRunner = schedule;
   schedule(LEARN_QUEUE_RUNNER_DELAYS.bootMs);
   return () => {
-    stopped = true;
     kickLearnQueueRunner = null;
     if (timer) clearTimeout(timer);
+    return gate.stop();
   };
+}
+
+function approvalReviewerSpecialty(team: string, agent: string): BrainApprovalReviewer['specialty'] {
+  if (/skill|capabilit|catalog|tool/i.test(agent)) return 'skill-domain';
+  if (/research|fact-check/i.test(agent)) return 'evidence';
+  if (/coder|architect|engineer|qa/i.test(agent)) return 'implementation';
+  return 'coordination';
+}
+
+async function availableBrainApprovalReviewers(): Promise<BrainApprovalReviewer[]> {
+  const groups = await bridgeCall('agents:allTeams', []) as FleetAgentGroup[];
+  const reviewers: BrainApprovalReviewer[] = [];
+  for (const group of groups ?? []) {
+    const team = String(group.team || group.name || '').trim();
+    if (!team) continue;
+    for (const row of group.agents ?? []) {
+      const agent = String(row.name || '').trim();
+      const status = String(row.status || '').toLowerCase();
+      if (!agent || !['running', 'active', 'working', 'idle'].includes(status)) continue;
+      const candidate = (team === 'default' && ['coder', 'researcher', 'lead'].includes(agent))
+        || /(?:research|engineering|security|skills?|capabilities|catalog)-lead$/i.test(agent);
+      if (!candidate) continue;
+      reviewers.push({ team, agent, specialty: approvalReviewerSpecialty(team, agent) });
+    }
+  }
+  return reviewers;
+}
+
+function configureAutomaticBrainApprovalReview(): void {
+  configureBrainApprovalAutomation({
+    reviewers: availableBrainApprovalReviewers,
+    start: async (reviewer, prompt, sessionId) => bridgeCall('dispatch:start', [
+      `/ask ${reviewer.agent} ${JSON.stringify(prompt)}`,
+      sessionId,
+      reviewer.team,
+    ]) as Promise<{ queryId?: string; inline?: string }>,
+    poll: async (reviewer, queryId) => bridgeCall('query:poll', [queryId, 0, reviewer.team]) as Promise<{ status?: string; text?: string; error?: string }>,
+  });
 }
 
 async function learnProcessContext(): Promise<ProcessMaterialContext> {
@@ -629,40 +1686,36 @@ async function learnProcessContext(): Promise<ProcessMaterialContext> {
   }, liveTeams);
 }
 
-function startLearnBrainBackfillRunner(): () => void {
-  let stopped = false;
-  let running = false;
+function startLearnBrainBackfillRunner(): () => Promise<void> {
+  const gate = createSingleFlightBackgroundGate();
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const schedule = (delayMs = LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.idleMs) => {
-    if (stopped) return;
+    if (gate.isStopped()) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void tick(), Math.max(0, delayMs));
     timer.unref?.();
   };
 
-  const tick = async () => {
-    if (stopped) return;
-    if (running) { schedule(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.alreadyRunningMs); return; }
-    running = true;
+  const tick = (): Promise<void> => gate.run(async () => {
     try {
       const result = await syncUnsyncedMaterialsToBrain({ limit: 2 });
-      if (result.attempted > 0) publishStoreChange('materials:brainSync');
+      if (!appShutdown.isQuiescing() && result.attempted > 0) {
+        publishStoreChange('materials:brainSync');
+      }
       schedule(result.remaining > 0 ? LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.activeMs : LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.idleMs);
     } catch (e) {
       console.warn('[learn] brain backfill failed:', e);
       schedule(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.retryMs);
-    } finally {
-      running = false;
     }
-  };
+  });
 
   kickLearnBrainBackfillRunner = schedule;
   schedule(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.bootMs);
   return () => {
-    stopped = true;
     kickLearnBrainBackfillRunner = null;
     if (timer) clearTimeout(timer);
+    return gate.stop();
   };
 }
 
@@ -670,17 +1723,145 @@ function evmEnvKeyName(id: string): string {
   return `IDCTL_EVM_${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
 }
 
+function secureCredentialStorageAvailable(): boolean {
+  return secureStorageStatus(safeStorage).available;
+}
+
 function encryptSecret(secret: string): string {
+  if (!secureCredentialStorageAvailable()) {
+    throw new Error('Secure operating-system credential storage is unavailable. Unlock or configure your system credential store and retry.');
+  }
   return safeStorage.encryptString(secret).toString('base64');
 }
 
 function decryptSecret(encrypted?: string): string | undefined {
-  if (!encrypted) return undefined;
+  if (!encrypted || !secureCredentialStorageAvailable()) return undefined;
   try {
     return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
   } catch {
     return undefined;
   }
+}
+
+function configureSecureSettings(): void {
+  configureSettingsSecretCodec({ encrypt: encryptSecret, decrypt: decryptSecret });
+  try {
+    const migrated = migrateSettingsSecrets();
+    if (migrated.providers || migrated.mcpServers) {
+      console.info(`[settings] encrypted ${migrated.providers} provider and ${migrated.mcpServers} MCP connection secret set(s)`);
+    }
+    configureUnifiedStackMcpConnections(managedMcpConnectionEnvironment());
+  } catch (error) {
+    // Linux keyrings can be temporarily unavailable before the desktop session
+    // unlocks. Existing data remains untouched and migration retries next boot.
+    console.warn('[settings] secure secret migration deferred:', error);
+  }
+}
+
+function presentProviderRehydrationStatus(report: ProviderRehydrationReport): void {
+  const detail = providerRehydrationActionMessage(report);
+  if (!detail) return;
+
+  // Deliberately log only aggregate counts and stable reason codes. Provider
+  // credentials and Manager exception text never enter startup diagnostics.
+  console.warn('[provider-runtime] managed restart left provider agents safely paused', {
+    attempted: report.attempted,
+    resumed: report.resumed,
+    issues: report.issues.map((issue) => issue.reason),
+  });
+
+  const options = {
+    type: 'warning' as const,
+    title: 'Some agents are paused',
+    message: 'IDACC kept API-connected agents paused until their provider access can be restored safely.',
+    detail,
+    buttons: ['OK'],
+    defaultId: 0,
+    noLink: true,
+  };
+  const prompt = win && !win.isDestroyed()
+    ? dialog.showMessageBox(win, options)
+    : dialog.showMessageBox(options);
+  void prompt.catch((error) => {
+    logStartupRecoveryFailure('provider-runtime-status', startupFailureReport(error));
+  });
+}
+
+function waitForProviderRehydrationRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    const error = new Error('Provider runtime restoration was cancelled');
+    error.name = 'AbortError';
+    return Promise.reject(error);
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    timer.unref?.();
+    const onAbort = () => {
+      clearTimeout(timer);
+      const error = new Error('Provider runtime restoration was cancelled');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function resumeProviderAgentsWithStartupRetry(
+  signal: AbortSignal,
+): Promise<ProviderRehydrationReport> {
+  let report: ProviderRehydrationReport = { attempted: 0, resumed: 0, issues: [] };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    report = await resumeManagedProviderAgentsAfterRestart(signal);
+    const retryable = report.issues.some((issue) => (
+      issue.reason === 'manager_rebind_failed'
+      || issue.reason === 'fleet_inventory_unavailable'
+    ));
+    if (!retryable || attempt === 2) return report;
+    await waitForProviderRehydrationRetry(500 * (attempt + 1), signal);
+  }
+  return report;
+}
+
+function rehydrateProviderAgentsForReadyManager(): Promise<void> {
+  if (providerRuntimeRehydrationWork) {
+    providerRuntimeRehydrationPending = true;
+    return providerRuntimeRehydrationWork;
+  }
+  providerRuntimeRehydrationPending = false;
+  const abort = new AbortController();
+  providerRuntimeRehydrationAbort = abort;
+  const work = resumeProviderAgentsWithStartupRetry(abort.signal)
+    .then((report) => {
+      if (!appShutdown.isQuiescing()) presentProviderRehydrationStatus(report);
+    })
+    .catch(() => {
+      if (appShutdown.isQuiescing()) return;
+      presentProviderRehydrationStatus({
+        attempted: 0,
+        resumed: 0,
+        issues: [{
+          team: 'all teams',
+          reason: 'fleet_inventory_unavailable',
+        }],
+      });
+    })
+    .finally(() => {
+      if (providerRuntimeRehydrationWork === work) {
+        providerRuntimeRehydrationWork = null;
+      }
+      if (providerRuntimeRehydrationAbort === abort) {
+        providerRuntimeRehydrationAbort = null;
+      }
+      if (providerRuntimeRehydrationPending && !appShutdown.isQuiescing()) {
+        providerRuntimeRehydrationPending = false;
+        void rehydrateProviderAgentsForReadyManager();
+      }
+    });
+  providerRuntimeRehydrationWork = work;
+  return work;
 }
 
 function evmKeySourceOf(rpc: EvmRpcProfile): EvmRpcKeySource {
@@ -941,22 +2122,140 @@ async function guardedEvmRead(chainId: number, method: string, params: unknown[]
   return typeof result === 'string' ? result : JSON.stringify(result);
 }
 
-function configureLiveKeyProvider(): void {
-  configureKeyProvider(new SafeRolesKeyProvider({
-    statePath: () => join(app.getPath('userData'), 'keys', 'safe-roles-state.json'),
-    rpcRead: guardedEvmRead,
-    ensureSigner: ensureAgentSigner,
-    rotateSigner: rotateAgentSigner,
-    inspectAssets: async (chainId, safeAddress) => {
-      const rpc = evmRpcForChain(chainId);
-      if (!rpc) throw new Error(`No enabled RPC is configured for chain ${chainId}.`);
-      return inspectAlchemyAssets({
-        rpcUrl: rpcUrlForRequest(rpc.httpsUrl, resolveEvmRpcKey(rpc)),
-        safeAddress,
-        chainId,
-      });
-    },
+type IdentityVerificationRequest = {
+  domain?: string;
+  controllerWallet?: string;
+  smartAccount?: string;
+  chainId?: number;
+  contractAddresses?: string[];
+};
+
+async function verifyIdentityEvidence(input: IdentityVerificationRequest) {
+  const domain = String(input?.domain ?? '').trim().replace(/\.$/, '').toLowerCase();
+  const controllerWallet = String(input?.controllerWallet ?? '').trim().toLowerCase();
+  const smartAccount = String(input?.smartAccount ?? '').trim().toLowerCase();
+  const expectedAddresses = new Set([controllerWallet, smartAccount].filter((value) => /^0x[0-9a-f]{40}$/.test(value)));
+  const chainId = Number(input?.chainId ?? 1);
+  const contracts = [...new Set((input?.contractAddresses ?? [])
+    .map((value) => String(value).trim().toLowerCase())
+    .filter((value) => /^0x[0-9a-f]{40}$/.test(value)))]
+    .slice(0, 8);
+
+  const resolver = {
+    state: 'unavailable' as 'verified' | 'mismatch' | 'unbound' | 'missing' | 'unavailable',
+    address: '',
+    resolvedAddress: '',
+    detail: domain ? 'Resolver check has not completed.' : 'No public ENS identity is registered.',
+  };
+  if (domain && domain.endsWith('.eth')) {
+    try {
+      const resolverResult = await guardedEvmRead(1, 'eth_call', [{
+        to: ENS_REGISTRY_ADDRESS,
+        data: encodeEnsCall(ENS_RESOLVER_SELECTOR, domain),
+      }, 'latest']);
+      const resolverAddress = decodeAbiAddress(resolverResult);
+      if (!resolverAddress) {
+        resolver.state = 'missing';
+        resolver.detail = `${domain} has no resolver in the Ethereum ENS registry.`;
+      } else {
+        resolver.address = resolverAddress;
+        const resolverCode = await guardedEvmRead(1, 'eth_getCode', [resolverAddress, 'latest']);
+        if (!hasRuntimeCode(resolverCode)) {
+          resolver.state = 'missing';
+          resolver.detail = `ENS returned ${resolverAddress}, but no resolver bytecode was found.`;
+        } else {
+          const addrResult = await guardedEvmRead(1, 'eth_call', [{
+            to: resolverAddress,
+            data: encodeEnsCall(ENS_ADDR_SELECTOR, domain),
+          }, 'latest']);
+          const resolvedAddress = decodeAbiAddress(addrResult);
+          resolver.resolvedAddress = resolvedAddress ?? '';
+          const binding = classifyEnsBinding(resolvedAddress, expectedAddresses);
+          if (binding === 'missing') {
+            resolver.state = 'missing';
+            resolver.detail = `Resolver ${resolverAddress} is deployed, but ${domain} has no EVM address record.`;
+          } else if (binding === 'mismatch') {
+            resolver.state = 'mismatch';
+            resolver.detail = `${domain} resolves to ${resolvedAddress}, which does not match the selected controller or Agent Safe.`;
+          } else if (binding === 'unbound') {
+            resolver.state = 'unbound';
+            resolver.detail = `${domain} resolves to ${resolvedAddress}, but no selected controller or Agent Safe address is available to verify that binding.`;
+          } else {
+            resolver.state = 'verified';
+            resolver.detail = `${domain} resolves through deployed resolver ${resolverAddress} to ${resolvedAddress}.`;
+          }
+        }
+      }
+    } catch (error) {
+      resolver.state = 'unavailable';
+      resolver.detail = `Live ENS verification unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  } else if (domain) {
+    resolver.detail = `${domain} is not an Ethereum .eth name; no compatible live resolver contract is configured.`;
+  }
+
+  const contractEvidence = await Promise.all(contracts.map(async (address) => {
+    try {
+      const code = await guardedEvmRead(chainId, 'eth_getCode', [address, 'latest']);
+      const deployed = hasRuntimeCode(code);
+      return {
+        address,
+        state: deployed ? 'verified' as const : 'missing' as const,
+        deployed,
+        detail: deployed ? `Deployed runtime bytecode verified on chain ${chainId}.` : `No runtime bytecode on chain ${chainId}.`,
+      };
+    } catch (error) {
+      return {
+        address,
+        state: 'unavailable' as const,
+        deployed: false,
+        detail: `Contract check unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }));
+
+  return { checkedAt: Date.now(), chainId, resolver, contracts: contractEvidence };
+}
+
+function configureKeyProviderFromSettings(settings = loadSettings().rootIdentity ?? defaultRootIdentitySettings()): void {
+  const rootIdentity = configuredRootIdentity(settings);
+  keyProviderConfigurationError = '';
+  if (!rootIdentity) {
+    configureKeyProvider(new MockKeyProvider());
+    return;
+  }
+  try {
+    configureKeyProvider(new SafeRolesKeyProvider({
+      rootIdentity,
+      statePath: () => join(configDir(resolveConfigPath()), 'safe-roles-state.json'),
+      rpcRead: guardedEvmRead,
+      ensureSigner: ensureAgentSigner,
+      rotateSigner: rotateAgentSigner,
+      inspectAssets: async (chainId, safeAddress) => {
+        const rpc = evmRpcForChain(chainId);
+        if (!rpc) throw new Error(`No enabled RPC is configured for chain ${chainId}.`);
+        return inspectAlchemyAssets({
+          rpcUrl: rpcUrlForRequest(rpc.httpsUrl, resolveEvmRpcKey(rpc)),
+          safeAddress,
+          chainId,
+        });
+      },
+    }));
+  } catch (error) {
+    keyProviderConfigurationError = error instanceof Error ? error.message : String(error);
+    configureKeyProvider(new MockKeyProvider());
+    console.error(`[root-identity] live provider disabled: ${keyProviderConfigurationError}`);
+  }
+}
+
+function currentRootIdentityStatus(): RootIdentityStatus {
+  const settings = loadSettings().rootIdentity ?? defaultRootIdentitySettings();
+  const configured = configuredRootIdentity(settings);
+  return {
+    settings,
+    activeProvider: configured && !keyProviderConfigurationError ? 'safe-roles' : 'local',
+    ...(keyProviderConfigurationError ? { error: keyProviderConfigurationError } : {}),
+  };
 }
 
 function runtimeCodeHash(code: string): string {
@@ -1020,11 +2319,26 @@ async function verifySafeRehearsal(): Promise<{ ok: boolean; detail: string }> {
   }
 }
 
-async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
+async function keyProductionReadiness(options: { probeProtectedStorage?: boolean } = {}): Promise<KeyProductionReadiness> {
   const checkedAt = Date.now();
+  const probeProtectedStorage = options.probeProtectedStorage === true;
   const caps = await bridgeCall('keys:caps', []) as KeyCapabilities;
   const settings = loadSettings();
+  const rootStatus = currentRootIdentityStatus();
+  const rootIdentity = configuredRootIdentity(settings.rootIdentity);
   const checks: KeyReadinessCheck[] = [];
+  const rootIdentityActive = Boolean(rootIdentity && rootStatus.activeProvider === 'safe-roles');
+  checks.push({
+    id: 'root-identity',
+    label: 'Profile root identity',
+    status: rootIdentityActive ? 'pass' : 'block',
+    detail: rootIdentityActive
+      ? `${rootIdentity!.ensRoot} is explicitly bound to ${rootIdentity!.safeAddress} on chain ${rootIdentity!.chainId}.`
+      : rootStatus.error || 'This profile is local/mock; no live ENS root or Safe address is enabled.',
+    remediation: rootIdentityActive
+      ? undefined
+      : 'In Settings, manually enter and enable the ENS root and Safe address owned by this profile. No bundled identity is imported automatically.',
+  });
   checks.push({
     id: 'live-provider',
     label: 'Live Safe provider',
@@ -1034,15 +2348,19 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
       : `${caps.provider} is simulation-only; it cannot deploy Safes or change authority.`,
     remediation: caps.live ? undefined : 'Install and configure the Safe 1.4.1 + Zodiac Roles live provider before provisioning.',
   });
-  const signerVault = agentSignerVaultStatus();
+  const signerVault = agentSignerVaultStatus({ verifyEncryption: probeProtectedStorage });
   checks.push({
     id: 'signer-custody',
     label: 'Agent signer custody',
-    status: signerVault.available ? 'pass' : 'block',
+    status: signerVault.verified && signerVault.available ? 'pass' : 'block',
     detail: signerVault.available
       ? `${signerVault.backend} is available; ${signerVault.signerCount} encrypted agent signer(s) are present.`
       : signerVault.error ?? 'Agent signer encryption is unavailable.',
-    remediation: signerVault.available ? undefined : 'Unlock macOS Keychain and retry. IDACC will not store plaintext agent keys.',
+    remediation: signerVault.available
+      ? undefined
+      : signerVault.verified
+        ? 'Unlock or configure secure operating-system credential storage and retry. IDACC will not store plaintext agent keys.'
+        : 'Choose Re-run preflight when you are ready for IDACC to verify protected storage.',
   });
   const walletConnect = settings.walletConnect ?? { enabled: false, projectId: '' };
   const connectorReady = walletConnect.enabled && /^[a-f0-9]{32}$/i.test(walletConnect.projectId);
@@ -1054,21 +2372,29 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
     remediation: connectorReady ? undefined : 'Enable the root Safe connector in Settings and save a valid Reown project ID.',
   });
 
-  const rpc = ethereumMainnetRpc();
-  if (!rpc) {
+  const rpc = rootIdentity ? ethereumMainnetRpc() : undefined;
+  if (rpc && rootIdentity && !probeProtectedStorage) {
+    const deferred = 'Protected RPC and onchain checks are not run automatically. Choose Re-run preflight to verify them.';
+    checks.push({ id: 'ethereum-rpc', label: 'Ethereum mainnet RPC', status: 'block', detail: deferred });
+    checks.push({ id: 'asset-inspection', label: 'Asset revocation guard', status: 'block', detail: deferred });
+    checks.push({ id: 'module-attestation', label: 'Pinned module bytecode', status: 'block', detail: deferred });
+    checks.push({ id: 'root-safe-contract', label: 'Root Safe contract', status: 'block', detail: deferred });
+  } else if (!rpc || !rootIdentity) {
     checks.push({
       id: 'asset-inspection',
       label: 'Asset revocation guard',
       status: 'block',
-      detail: 'Full asset inspection requires an enabled Ethereum mainnet Alchemy RPC.',
-      remediation: 'Configure the encrypted Alchemy RPC used for native, ERC-20, ERC-721, and ERC-1155 inspection.',
+      detail: rootIdentity
+        ? 'Full asset inspection requires an enabled Ethereum mainnet Alchemy RPC.'
+        : 'Asset inspection is unavailable until a profile root identity is explicitly enabled.',
+      remediation: rootIdentity ? 'Configure the encrypted Alchemy RPC used for native, ERC-20, ERC-721, and ERC-1155 inspection.' : 'Configure the profile root identity first.',
     });
     checks.push({
       id: 'ethereum-rpc',
       label: 'Ethereum mainnet RPC',
       status: 'block',
-      detail: 'No enabled Ethereum mainnet RPC is configured.',
-      remediation: 'Add and successfully check an Ethereum mainnet RPC in Settings.',
+      detail: rootIdentity ? 'No enabled Ethereum mainnet RPC is configured.' : 'No live root identity is enabled for an Ethereum RPC preflight.',
+      remediation: rootIdentity ? 'Add and successfully check an Ethereum mainnet RPC in Settings.' : 'Configure the profile root identity first.',
     });
     checks.push({
       id: 'module-attestation',
@@ -1100,8 +2426,8 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
     if (checks.at(-1)?.id === 'ethereum-rpc' && checks.at(-1)?.status === 'pass') {
       const assets = await inspectAlchemyAssets({
         rpcUrl: rpcUrlForRequest(rpc.httpsUrl, resolveEvmRpcKey(rpc)),
-        safeAddress: ROOT_AGENT_SAFE_ADDRESS,
-        chainId: 1,
+        safeAddress: rootIdentity.safeAddress,
+        chainId: rootIdentity.chainId,
       });
       checks.push({
         id: 'asset-inspection',
@@ -1119,16 +2445,16 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
         remediation: moduleEvidence.ok ? undefined : 'Do not use the module stack until every deployed runtime matches the pinned manifest.',
       });
       try {
-        const code = await evmJsonRpc(rpc, 'eth_getCode', [ROOT_AGENT_SAFE_ADDRESS, 'latest']);
+        const code = await evmJsonRpc(rpc, 'eth_getCode', [rootIdentity.safeAddress, 'latest']);
         if (!/^0x[0-9a-f]{40,}$/i.test(code)) throw new Error('root address has no verified contract bytecode');
-        const owners = decodeAbiAddressArray(await evmJsonRpc(rpc, 'eth_call', [{ to: ROOT_AGENT_SAFE_ADDRESS, data: '0xa0e67e2b' }, 'latest']));
-        const threshold = Number(decodeAbiUint(await evmJsonRpc(rpc, 'eth_call', [{ to: ROOT_AGENT_SAFE_ADDRESS, data: '0xe75235b8' }, 'latest'])));
+        const owners = decodeAbiAddressArray(await evmJsonRpc(rpc, 'eth_call', [{ to: rootIdentity.safeAddress, data: '0xa0e67e2b' }, 'latest']));
+        const threshold = Number(decodeAbiUint(await evmJsonRpc(rpc, 'eth_call', [{ to: rootIdentity.safeAddress, data: '0xe75235b8' }, 'latest'])));
         const hardened = owners.length >= 2 && threshold >= 2;
         checks.push({
           id: 'root-safe-contract',
           label: 'Root Safe contract',
           status: hardened ? 'pass' : 'block',
-          detail: `Verified Safe proxy at ${ROOT_AGENT_SAFE_ADDRESS}: ${owners.length} owners, threshold ${threshold}.`,
+          detail: `Verified Safe proxy at ${rootIdentity.safeAddress}: ${owners.length} owners, threshold ${threshold}.`,
           remediation: hardened ? undefined : 'Raise the root Safe threshold to at least 2 before it can authorize independent agent Safes.',
         });
       } catch (error) {
@@ -1183,8 +2509,8 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
   return {
     ready: checks.every((check) => check.status !== 'block'),
     checkedAt,
-    chainId: 1,
-    rootSafe: ROOT_AGENT_SAFE_ADDRESS,
+    chainId: rootIdentity?.chainId ?? 1,
+    rootSafe: rootIdentity?.safeAddress ?? '',
     provider: caps.provider,
     checks,
   };
@@ -1192,10 +2518,12 @@ async function keyProductionReadiness(): Promise<KeyProductionReadiness> {
 
 // --- window state: reopen the app where/how the user left it ---
 interface WinState { x?: number; y?: number; width: number; height: number; fullScreen?: boolean }
-function winStatePath(): string { return join(app.getPath('userData'), 'window-state.json'); }
+function winStatePath(): string {
+  return join(privateUserDataDirectory(), 'window-state.json');
+}
 function loadWinState(): WinState {
   try {
-    const s = JSON.parse(readFileSync(winStatePath(), 'utf8')) as WinState;
+    const s = JSON.parse(readPrivateAppTextFile(winStatePath())) as WinState;
     if (typeof s.width === 'number' && typeof s.height === 'number') return s;
   } catch { /* first run / corrupt → defaults */ }
   return { width: 1180, height: 780 };
@@ -1211,7 +2539,11 @@ function saveWinState(w: BrowserWindow): void {
     // macOS fullscreen we save the pre-fullscreen bounds and re-enter fullscreen on restore.
     const fullScreen = w.isFullScreen();
     const b = fullScreen ? w.getNormalBounds() : w.getBounds();
-    writeFileSync(winStatePath(), JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height, fullScreen }));
+    const path = winStatePath();
+    writePrivateAppTextFileInPlace(
+      path,
+      JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height, fullScreen }),
+    );
   } catch { /* best-effort */ }
 }
 /** Only restore a saved position if a usable chunk of the titlebar lands on some
@@ -1224,10 +2556,10 @@ function isOnScreen(s: WinState): boolean {
   });
 }
 
-function createWindow() {
+async function createWindow(): Promise<BrowserWindow> {
   const st = loadWinState();
   const placeAt = isOnScreen(st) && typeof st.x === 'number' && typeof st.y === 'number';
-  win = new BrowserWindow({
+  const target = new BrowserWindow({
     width: st.width,
     height: st.height,
     ...(placeAt ? { x: st.x, y: st.y } : {}),
@@ -1235,21 +2567,32 @@ function createWindow() {
     minHeight: 600,
     title: 'ID Agents Control Center',
     backgroundColor: '#0e1116',
-    titleBarStyle: 'hiddenInset', // native traffic lights over our custom chrome
+    // hiddenInset is a macOS-only frame treatment. Windows and Linux keep
+    // their native title bar so minimize, maximize, and close remain present.
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: join(__dirname, '../preload/preload.cjs'),
       contextIsolation: true,
+      sandbox: true,
       nodeIntegration: false,
       spellcheck: !rendererSafeMode, // safe mode favors stability over text-service integrations
     },
   });
+  win = target;
 
   if (st.fullScreen) win.setFullScreen(true);
   // Persist geometry (debounced on move/resize; immediate on close + before-quit) so the next
   // launch — including after a self-update relaunch — reopens at the same size/position.
   let saveT: ReturnType<typeof setTimeout> | null = null;
-  const saveNow = () => { if (saveT) { clearTimeout(saveT); saveT = null; } if (win) saveWinState(win); };
-  const scheduleSave = () => { if (saveT) clearTimeout(saveT); saveT = setTimeout(saveNow, 400); };
+  const saveNow = () => {
+    if (saveT) { clearTimeout(saveT); saveT = null; }
+    if (!appShutdown.isQuiescing() && win) saveWinState(win);
+  };
+  const scheduleSave = () => {
+    if (appShutdown.isQuiescing()) return;
+    if (saveT) clearTimeout(saveT);
+    saveT = setTimeout(saveNow, 400);
+  };
   win.on('resize', scheduleSave);
   win.on('move', scheduleSave);
   win.on('close', saveNow);
@@ -1259,8 +2602,7 @@ function createWindow() {
     if (details.reason === 'crashed' || details.reason === 'oom') {
       crashState = recordRendererCrash(details);
       if (!rendererSafeMode) {
-        app.relaunch();
-        app.exit(0);
+        void appShutdown.request({ kind: 'relaunch' });
         return;
       }
     }
@@ -1270,8 +2612,13 @@ function createWindow() {
 
   // Open external links in the system browser, never in-app.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalHttpUrl(url);
     return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (event, url) => {
+    if (isTrustedRendererUrl(url)) return;
+    event.preventDefault();
+    openExternalHttpUrl(url);
   });
 
   // Right-click menu: spelling corrections for a misspelled word, plus the
@@ -1298,7 +2645,7 @@ function createWindow() {
     if (menu.items.length > 0) menu.popup({ window: win ?? undefined });
   });
 
-  loadRendererApp(win);
+  const initialRendererLoad = loadRendererApp(win);
 
   // Verification hook: with IDCTL_SHOT=<path>, capture the rendered window once
   // data has loaded, write a PNG, and quit. Lets the build be proven headlessly.
@@ -1348,10 +2695,59 @@ function createWindow() {
         } catch (err) {
           console.error('screenshot failed:', err);
         }
-        app.quit();
+        void appShutdown.request({ kind: 'quit' });
       }, 3500);
     });
   }
+  await initialRendererLoad;
+  if (pendingSecondInstanceFocus) focusPrimaryConsumerWindow();
+  return target;
+}
+
+async function archiveScheduledDreams(team: string): Promise<{ archived: number; discovered: number }> {
+  const feed = await bridgeCall('dreams:scheduledRuns', [team]) as {
+    schedules?: ScheduleEntry[];
+    newsByAgent?: Record<string, ScheduledDreamNewsItem[]>;
+  };
+  const candidates = scheduledDreamArchives(
+    Array.isArray(feed?.schedules) ? feed.schedules : [],
+    feed?.newsByAgent && typeof feed.newsByAgent === 'object' ? feed.newsByAgent : {},
+    team,
+  );
+  let archived = 0;
+  for (const candidate of candidates) {
+    if (getDream(candidate.id)) continue;
+    saveDream(candidate);
+    archived++;
+  }
+  return { archived, discovered: candidates.length };
+}
+
+async function archiveAllScheduledDreams(): Promise<number> {
+  const teams = await bridgeCall('teams', []).catch(() => []) as Array<{ name?: string }>;
+  const names = [...new Set((teams.length ? teams : [{ name: 'default' }])
+    .map((team) => String(team.name || '').trim())
+    .filter(Boolean))];
+  let archived = 0;
+  for (const team of names) {
+    archived += (await archiveScheduledDreams(team).catch(() => ({ archived: 0, discovered: 0 }))).archived;
+  }
+  if (archived > 0) publishStoreChange('dreams:archiveScheduled');
+  return archived;
+}
+
+function startScheduledDreamArchiveLoop(): () => Promise<void> {
+  const gate = createSingleFlightBackgroundGate();
+  const run = (): Promise<void> => gate.run(async () => {
+    await archiveAllScheduledDreams();
+  });
+  const initial = setTimeout(() => void run(), 5_000);
+  const interval = setInterval(() => void run(), 5 * 60 * 1000);
+  return () => {
+    clearTimeout(initial);
+    clearInterval(interval);
+    return gate.stop();
+  };
 }
 
 // App-level (main-process) methods that don't go through the manager bridge.
@@ -1362,21 +2758,29 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'update:status':
       return getStatus();
     case 'update:check':
-      return checkForUpdate();
+      return beginUpdateCheck();
+    case 'update:download':
+      return beginUpdateDownload();
     case 'update:applyNow':
-      return { applying: applyStagedAndRelaunch() };
+      {
+        const applying = prepareStagedUpdateInstall();
+        if (applying) void appShutdown.request({ kind: 'install-update' });
+        return { applying };
+      }
     case 'update:getSettings':
       return loadSettings().update ?? null;
     case 'update:setSettings':
       return setUpdateSettings((args[0] as Record<string, unknown>) ?? {}).update ?? null;
-    case 'managerUpdate:status':
-      return getManagerUpdateStatus();
-    case 'managerUpdate:check':
-      return checkManagerUpdate();
-    case 'managerUpdate:apply':
-      return applyManagerUpdate();
-    case 'managerUpdate:bootstrap':
-      return bootstrapManagerInstall();
+    case 'brainAutomation:getSettings':
+      return loadSettings().brainAutomation ?? null;
+    case 'brainAutomation:setSettings':
+      {
+        const next = setBrainAutomationSettings(
+          (args[0] as Partial<BrainAutomationSettings>) ?? {},
+        ).brainAutomation;
+        if (next) await configureUnifiedBrainAutomation(next);
+        return next ?? null;
+      }
     case 'evmRpc:list':
       return loadEvmRpcsMigratingSecrets().map(redactEvmRpc);
     case 'evmRpc:save':
@@ -1402,12 +2806,21 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return probeEvmRpc(String(args[0] ?? ''));
     case 'evmRpc:read':
       return guardedEvmRead(Number(args[0]), String(args[1] ?? ''), Array.isArray(args[2]) ? args[2] : []);
+    case 'identity:verifyEvidence':
+      return verifyIdentityEvidence((args[0] as IdentityVerificationRequest) ?? {});
+    case 'rootIdentity:get':
+      return currentRootIdentityStatus();
+    case 'rootIdentity:set': {
+      const cfg = setRootIdentitySettings((args[0] as Partial<RootIdentitySettings>) ?? {});
+      configureKeyProviderFromSettings(cfg.rootIdentity);
+      return currentRootIdentityStatus();
+    }
     case 'walletConnect:get':
       return loadSettings().walletConnect ?? { enabled: false, projectId: '' };
     case 'walletConnect:set':
       return setWalletConnectSettings((args[0] as Record<string, unknown>) ?? {}).walletConnect;
     case 'keys:productionReadiness':
-      return keyProductionReadiness();
+      return keyProductionReadiness({ probeProtectedStorage: args[0] === true });
     case 'subs:status':
       return subsStatus(
         args[0] && typeof args[0] === 'object'
@@ -1456,11 +2869,23 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'stack:backgroundStatus':
       return backgroundStackStatus(Array.isArray(args[0]) ? args[0] as string[] : []);
     case 'stack:startBackground':
-      return startBackgroundStack(args[0], args[1], app.getPath('userData'));
+      return startBackgroundStack(args[0], args[1], appProfilePaths().logs);
     case 'stack:stopBackground':
       return stopBackgroundStack(args[0]);
     case 'stack:dockerStatus':
       return dockerStatus();
+    case 'unifiedStack:status':
+      return unifiedStackStatus();
+    case 'onboarding:status':
+      return consumerOnboardingStatus((args[0] as { force?: boolean } | undefined) ?? {});
+    case 'onboarding:configureProvider':
+      return configureOnboardingProvider(args[0] as Parameters<typeof configureOnboardingProvider>[0]);
+    case 'onboarding:runStarterFleet':
+      return runStarterFleetOnboarding(args[0]);
+    case 'onboarding:defer':
+      return deferConsumerOnboarding();
+    case 'onboarding:resume':
+      return resumeConsumerOnboarding();
     case 'brain:openDashboard':
       return openBrainDashboard(args[0]);
     case 'brain:openGraph':
@@ -1519,8 +2944,6 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return patchChat(args[0] as string, (args[1] as ChatPatch) ?? {});
     case 'chat:genTitle':
       return genTitle(args[0] as string);
-    case 'chat:genReason':
-      return genReason(args[0] as string);
     case 'plans:list':
       await convertLearnTaskDraftPlans();
       return listPlans(args[0] as string | undefined);
@@ -1549,7 +2972,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       await syncGoalInstructionsAfterMutation('remove');
       return result;
     }
-    // Brain plans: read-only LIVE view of <projectsRoot>/brain/plans (README index + files).
+    // Brain Plans live in the active app profile. A legacy project checkout is
+    // consulted only by the one-time, read-only import in brainplans.ts.
     case 'brain:plans':
       return listBrainPlans(args[0] as string | undefined);
     case 'brain:plan':
@@ -1563,6 +2987,8 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       );
     case 'brain:createPlan':
       return createBrainPlan(args[0] as string, args[1] as string, args[2] as string | undefined);
+    case 'brain:consolidatePlans':
+      return consolidateBrainPlans((args[0] as BrainPlanConsolidationRequest | undefined) ?? { files: [] });
     // Loops: saved sequential agent→task chains (definition + last-run results).
     case 'loops:list':
       return listLoops(args[0] as string | undefined);
@@ -1575,6 +3001,12 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     // Dreams: saved offline-reflection reports (consolidation/insights/ideas/simulations).
     case 'dreams:list':
       return listDreams(args[0] as string | undefined);
+    case 'dreams:archiveScheduled': {
+      const team = String(args[0] || 'default');
+      const result = await archiveScheduledDreams(team);
+      if (result.archived > 0) publishStoreChange('dreams:archiveScheduled');
+      return result;
+    }
     case 'dreams:get':
       return getDream(args[0] as string);
     case 'dreams:save':
@@ -1679,13 +3111,26 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return disarmBroker();
     case 'cu:watch':
       return setWatching(Boolean(args[0]));
+    case 'cu:setDisplay':
+      return setBrokerDisplay(Number(args[0]));
     case 'cu:audit':
       return auditTail(args[0] as number | undefined);
     case 'cu:panic':
       return panicBroker();
     case 'cu:setSupervised':
+      if (typeof args[1] === 'string' && brokerStatus().controlMode !== args[1]) {
+        throw new Error('Computer Use safety mode changed before this request; refresh and review the current mode.');
+      }
       return setSupervised(Boolean(args[0]));
+    case 'cu:setFullControl':
+      if (typeof args[1] === 'string' && brokerStatus().controlMode !== args[1]) {
+        throw new Error('Computer Use safety mode changed before this request; refresh and review the current mode.');
+      }
+      return setFullControl(Boolean(args[0]));
     case 'cu:pause':
+      if (typeof args[1] === 'boolean' && brokerStatus().paused !== args[1]) {
+        throw new Error('Computer Use pause state changed before this request; refresh and review the current state.');
+      }
       return setPaused(Boolean(args[0]));
     case 'cu:confirm':
       return confirmAction(args[0] as string, Boolean(args[1]));
@@ -1698,34 +3143,53 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
     case 'cu:openPermission':
       return openPermissionSettings(args[0] as CuPermissionPane);
     case 'cu:relaunch':
-      relaunchApp();
+      void appShutdown.request({ kind: 'relaunch' });
       return { ok: true };
     default:
       return bridgeCall(method, args);
   }
 }
 
-// Single IPC entry point → app methods + allowlisted bridge methods.
-ipcMain.handle('idagents:call', async (_e, method: string, args: unknown[]) => {
-  try {
-    const result = await appCall(method, args);
-    // Mirror successful control actions to the self-learning brain (best-effort, fire-and-forget):
-    // this is the single choke point every renderer mutation flows through, so the brain learns
-    // config/org/project changes that never reach the manager. Never awaited — can't delay the reply.
-    recordControlAction(method, Array.isArray(args) ? args : [], result);
-    publishStoreChange(method);
-    return { ok: true, result };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-});
+if (ownsSingleInstanceLock) {
+  // Single IPC entry point → app methods + allowlisted bridge methods.
+  ipcMain.handle('idagents:call', async (event, method: string, args: unknown[]) => {
+    try {
+      requireTrustedIpcSender(event);
+      if (appShutdown.isQuiescing()) {
+        throw new Error('IDACC is shutting down and cannot accept new requests.');
+      }
+      const finishIpcCall = activeIpcWork.begin();
+      try {
+        const result = await appCall(method, args);
+        const safeResult = sanitizeSecretPayload(result);
+        if (!appShutdown.isQuiescing()) {
+          // Mirror successful control actions to the self-learning brain (best-effort,
+          // fire-and-forget). Once shutdown starts, do not create fresh learning,
+          // audit, or renderer-sync work behind the cleanup barrier.
+          const safeArgs = sanitizeSecretPayload(Array.isArray(args) ? args : []);
+          recordControlAction(method, safeArgs, safeResult);
+          publishStoreChange(method);
+        }
+        return { ok: true, result: safeResult };
+      } finally {
+        finishIpcCall();
+      }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
-// Write-only clipboard channel for user-invoked copy actions. Keep this separate
-// from idagents:call so copied communication text never enters the control log.
-ipcMain.handle('idagents:clipboardWrite', (_e, value: unknown) => {
-  clipboard.writeText(String(value ?? ''));
-  return true;
-});
+  // Write-only clipboard channel for user-invoked copy actions. Keep this separate
+  // from idagents:call so copied communication text never enters the control log.
+  ipcMain.handle('idagents:clipboardWrite', (event, value: unknown) => {
+    requireTrustedIpcSender(event);
+    if (appShutdown.isQuiescing()) {
+      throw new Error('IDACC is shutting down and cannot accept new requests.');
+    }
+    clipboard.writeText(String(value ?? ''));
+    return true;
+  });
+}
 
 // Headless self-test of the update flow (no window). IDCTL_UPDATE_SELFTEST=
 //   check → run a manifest check, print status, quit.
@@ -1737,8 +3201,11 @@ ipcMain.handle('idagents:clipboardWrite', (_e, value: unknown) => {
 // Dev-only (never in the packaged app) so the shipped build can't be coaxed into
 // serving screenshots headlessly via an env var.
 const cuSelftest = !app.isPackaged && process.env.IDCTL_CU_SELFTEST;
-if (cuSelftest) {
-  setTimeout(() => { console.log('CU_SELFTEST_TIMEOUT'); app.exit(1); }, 15000).unref?.();
+if (ownsSingleInstanceLock && cuSelftest) {
+  setTimeout(() => {
+    console.log('CU_SELFTEST_TIMEOUT');
+    void appShutdown.request({ kind: 'exit', code: 1 });
+  }, 15000).unref?.();
   app.whenReady().then(async () => {
     await startBroker(() => {});
     setWatching(true);
@@ -1769,11 +3236,18 @@ if (cuSelftest) {
       const riskyPend = pendingActions();
       if (riskyPend.length) confirmAction(riskyPend[0].id, false);
       const riskyRes = await risky;
-      console.log('CU_SELFTEST ' + JSON.stringify({ port: st.port, shotOk: shot.ok, imageBytes: shot.image ? Buffer.from(shot.image, 'base64').length : 0, width: shot.width, height: shot.height, driverOk: st.driverOk, accessibility: st.accessibility, moveOk: mv.ok, moveDetail: mv.detail, moveReason: mv.reason, supervisedHeld: pend.length, supervisedApprovedOk: heldRes.ok, autoNormalOk: normal.ok, autoRiskyHeld: riskyPend.length, autoRiskyDenied: riskyRes.reason === 'declined' }));
+      let fullControlModeOk = false;
+      try {
+        setFullControl(true);
+        fullControlModeOk = brokerStatus().fullControl === true;
+      } finally {
+        setSupervised(true);
+      }
+      console.log('CU_SELFTEST ' + JSON.stringify({ port: st.port, shotOk: shot.ok, imageBytes: shot.image ? Buffer.from(shot.image, 'base64').length : 0, width: shot.width, height: shot.height, driverOk: st.driverOk, accessibility: st.accessibility, moveOk: mv.ok, moveDetail: mv.detail, moveReason: mv.reason, supervisedHeld: pend.length, supervisedApprovedOk: heldRes.ok, autoNormalOk: normal.ok, autoRiskyHeld: riskyPend.length, autoRiskyDenied: riskyRes.reason === 'declined', fullControlModeOk }));
     } catch (e) {
       console.log('CU_SELFTEST_ERR ' + (e instanceof Error ? e.message : String(e)));
     }
-    app.quit();
+    void appShutdown.request({ kind: 'quit' });
   });
 }
 
@@ -1781,89 +3255,458 @@ if (cuSelftest) {
 // input addon loads + the current mouse position, then quit. No synthetic input.
 const driverProbe = process.env.IDCTL_CU_DRIVERPROBE;
 const selftest = process.env.IDCTL_UPDATE_SELFTEST;
-if (cuSelftest) { /* handled above */ } else if (driverProbe) {
+const stackSelftest = process.env.IDACC_STACK_SELFTEST;
+if (!ownsSingleInstanceLock) {
+  // The shutdown request was issued immediately after the lock attempt. The
+  // secondary process deliberately performs no ready/startup/profile work.
+} else if (cuSelftest) { /* handled above */ } else if (driverProbe) {
   app.whenReady().then(() => {
     console.log('CU_DRIVER ' + JSON.stringify({ cap: driverCapability(), mouse: getMousePos() }));
-    app.exit(0);
+    void appShutdown.request({ kind: 'exit', code: 0 });
   });
 } else if (selftest) {
   app.whenReady().then(async () => {
-    const st = await checkForUpdate();
+    await checkForUpdate();
+    // Automatic downloads are deliberately detached from the metadata check
+    // so renderer IPC never stays open for a large transfer. The self-test,
+    // however, must wait for all updater-owned work before inspecting whether
+    // the verified artifact is staged and eligible to install.
+    await drainUpdater();
+    const st = getStatus();
     console.log('SELFTEST_STATUS ' + JSON.stringify(st));
     if (selftest === 'apply' && st.staged) {
-      const applied = applyStagedAndRelaunch(); // spawns detached swapper, then quits
+      const applied = prepareStagedUpdateInstall();
       console.log('SELFTEST_APPLY ' + applied);
+      if (applied) void appShutdown.request({ kind: 'install-update' });
     } else {
-      app.quit();
+      void appShutdown.request({ kind: 'quit' });
     }
   });
-} else {
-  app.whenReady().then(() => {
-    configureLiveKeyProvider();
-    createWindow();
-    if (win) startUpdater(win);
-    // Persist window geometry on EVERY quit path (Cmd-Q, menu, and the self-update relaunch,
-    // which calls app.quit()) before the window is destroyed — registered once, app-wide.
-    app.on('before-quit', () => { if (win && !win.isDestroyed()) saveWinState(win); });
-    // Reactive org-sync: keep every agent's goals & instructions file composed from the lead
-    // hierarchy + brain team-instructions (first pass ~15s after boot, then every 5 min).
-    try { startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }
-    // Keep model lanes current and notify mounted pickers after each bounded refresh pass.
-    try { startModelRefreshLoop(() => publishStoreChange('runtime:probe')); } catch (e) { console.warn('[model-refresh] failed to start:', e); }
-    // Disabled by default: when enabled, active+autopilot goals gap-fill fleet tasks.
-    try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
-    // Work > Learn queue: process newly-added materials even when the Learn tab is not mounted.
+} else if (stackSelftest) {
+  app.whenReady().then(async () => {
+    const profile = initializeAppProfile();
+    let status: Awaited<ReturnType<typeof unifiedStackStatus>> = {
+      managed: false,
+      services: [],
+      companions: [],
+      brainCatalog: {
+        healthy: false,
+        profileOwned: false,
+        skillCount: 0,
+        error: 'stack has not started',
+      },
+      managerCompatibility: {
+        ready: false,
+        apiVersion: 0,
+        missingFeatures: [],
+        missingRoutes: [],
+        unexpectedFeatures: [],
+        unexpectedRoutes: [],
+        issues: ['stack:not-started'],
+        error: 'stack has not started',
+      },
+      brainAutomation: loadSettings().brainAutomation ?? {
+        cycleEnabled: false,
+        cycleCadenceHours: 24,
+      },
+      ready: false,
+    };
+    let authPassed = true;
+    let adminToken: string | null = null;
+    let selftestError: string | undefined;
+    let brainCycleOptIn: {
+      initiallyDisabled: boolean;
+      initiallyRunning: boolean;
+      listenerRunningBeforeOptIn: boolean;
+      stateAbsentBeforeOptIn: boolean;
+      enabledAt: number;
+      persisted: boolean;
+    } | undefined;
+    let runtimeContract: UnifiedRuntimeContractSelftestResult | undefined;
+    let brainDashboardLifecycle: BrainDashboardLifecycleSelftestResult | undefined;
     try {
-      stopMaterialChangeBridge = subscribeMaterialChanges((reason, material) => {
-        publishStoreChange(reason === 'tasks' ? 'materials:tasks' : 'materials:changed');
-        if (reason === 'write' && 'status' in material && material.status === 'queued') {
-          kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.queuedWriteKickMs);
+      const startedStack = await startUnifiedStack(profile);
+      const managerUrl = startedStack.services.find((service) => service.name === 'manager')?.url;
+      if (managerUrl) updateManagedManagerProfileUrl(profile.config, managerUrl);
+      const activeManagerUrl = managerUrl || process.env.MANAGER_URL || 'http://127.0.0.1:4110';
+      adminToken = unifiedStackAdminToken();
+      configureManagedManager(activeManagerUrl, adminToken);
+      configureComputerUseAuditManager(activeManagerUrl, adminToken);
+      const readinessTimeoutInput = Number(
+        process.env.IDACC_STACK_SELFTEST_READY_TIMEOUT_MS || 25_000,
+      );
+      const readinessTimeoutMs = Number.isFinite(readinessTimeoutInput)
+        ? Math.min(120_000, Math.max(1_000, Math.floor(readinessTimeoutInput)))
+        : 25_000;
+      const deadline = Date.now() + readinessTimeoutMs;
+      status = await unifiedStackStatus();
+      while (!status.ready && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        status = await unifiedStackStatus();
+      }
+      if (!status.ready) {
+        throw new Error(status.managerCompatibility.error || 'Unified runtime did not become ready');
+      }
+      // Test fixtures may opt out only in an unpackaged development build.
+      // A production artifact always executes the full behavioral contract.
+      if (app.isPackaged || process.env.IDACC_STACK_CONTRACT_SELFTEST !== '0') {
+        runtimeContract = await runUnifiedRuntimeContractSelftest(activeManagerUrl, adminToken);
+      }
+      if (process.env.IDACC_STACK_SELFTEST_ENABLE_BRAIN_CYCLE === '1') {
+        const initialCycle = status.companions.find((companion) => companion.name === 'brain-cycle');
+        const initialListener = status.companions.find((companion) => companion.name === 'brain-listener');
+        const stateAbsentBeforeOptIn = !existsSync(join(profile.brain, 'brain-cycle-state.json'));
+        const enabledAt = Date.now();
+        const saved = setBrainAutomationSettings({
+          cycleEnabled: true,
+          cycleCadenceHours: status.brainAutomation.cycleCadenceHours,
+        }, profile.config).brainAutomation;
+        if (!saved) throw new Error('Brain cycle opt-in did not persist');
+        await configureUnifiedBrainAutomation(saved);
+        const observeInput = Number(process.env.IDACC_STACK_SELFTEST_CYCLE_OBSERVE_MS || 1_200);
+        const observeMs = Number.isFinite(observeInput)
+          ? Math.min(5_000, Math.max(0, Math.floor(observeInput)))
+          : 1_200;
+        if (observeMs) await new Promise((resolve) => setTimeout(resolve, observeMs));
+        status = await unifiedStackStatus();
+        brainCycleOptIn = {
+          initiallyDisabled: initialCycle?.enabled === false && initialCycle.phase === 'disabled',
+          initiallyRunning: initialCycle?.running === true,
+          listenerRunningBeforeOptIn: initialListener?.running === true,
+          stateAbsentBeforeOptIn,
+          enabledAt,
+          persisted: loadSettings(profile.config).brainAutomation?.cycleEnabled === true,
+        };
+      }
+      if (process.env.IDACC_STACK_AUTH_SELFTEST === '1') {
+        let forgedStatus = 0;
+        let desktopAuthenticated = false;
+        let brainAnonymousHealthMinimal = false;
+        const brainAnonymousStatuses: Record<string, number> = {};
+        const brainAuthenticatedStatuses: Record<string, number> = {};
+        const managerAnonymousStatuses: Record<string, number> = {};
+        const managerBrainServiceStatuses: Record<string, number> = {};
+        try {
+          const forged = await fetch(new URL('/control/brain', activeManagerUrl), {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-id-admin': '1',
+            },
+            body: JSON.stringify({ method: 'GET', path: '/health' }),
+          });
+          forgedStatus = forged.status;
+          await forged.body?.cancel();
+          desktopAuthenticated = Boolean(await bridgeCall('brain:coreHealth', []));
+          const brainAccess = unifiedStackBrainRequestAccess();
+          const sensitiveReads = [
+            '/memory/shared',
+            '/timeline',
+            '/facts/export',
+            '/approvals?status=pending&limit=1',
+            '/learning-tasks?limit=1',
+            '/dashboard',
+            '/graph/app/data?limit=1',
+          ];
+          const anonymousHealth = await fetch(`${brainAccess.origin}/health`, {
+            redirect: 'error',
+            signal: AbortSignal.timeout(5_000),
+            headers: { accept: 'application/json' },
+          });
+          const anonymousHealthPayload = await anonymousHealth.json() as Record<string, unknown>;
+          const sensitiveHealthKeys = [
+            'nodes',
+            'edges',
+            'memories',
+            'entities',
+            'timelineEvents',
+            'facts',
+            'factStatus',
+            'factEntityIntegrity',
+            'routeInventory',
+          ];
+          brainAnonymousHealthMinimal = anonymousHealth.status === 200
+            && anonymousHealthPayload.ok === true
+            && sensitiveHealthKeys.every((key) => !(key in anonymousHealthPayload));
+          for (const path of sensitiveReads) {
+            const anonymous = await fetch(`${brainAccess.origin}${path}`, {
+              redirect: 'error',
+              signal: AbortSignal.timeout(5_000),
+              headers: { accept: 'application/json' },
+            });
+            brainAnonymousStatuses[path] = anonymous.status;
+            await anonymous.body?.cancel();
+            const authenticated = await fetch(`${brainAccess.origin}${path}`, {
+              redirect: 'error',
+              signal: AbortSignal.timeout(5_000),
+              headers: {
+                accept: 'application/json',
+                authorization: brainAccess.authorizationHeader,
+              },
+            });
+            brainAuthenticatedStatuses[path] = authenticated.status;
+            await authenticated.body?.cancel();
+          }
+          const managerAccess = unifiedStackManagerServiceRequestAccess();
+          const managerSensitiveReads = [
+            '/teams',
+            '/agents?team=default',
+            '/events?since=0&limit=1',
+          ];
+          for (const path of managerSensitiveReads) {
+            const anonymous = await fetch(`${managerAccess.origin}${path}`, {
+              redirect: 'error',
+              signal: AbortSignal.timeout(5_000),
+              headers: {
+                accept: 'application/json',
+                'x-id-team': 'default',
+              },
+            });
+            managerAnonymousStatuses[path] = anonymous.status;
+            await anonymous.body?.cancel();
+            const brainService = await fetch(`${managerAccess.origin}${path}`, {
+              redirect: 'error',
+              signal: AbortSignal.timeout(5_000),
+              headers: {
+                accept: 'application/json',
+                authorization: managerAccess.authorizationHeader,
+                'x-id-service': managerAccess.serviceHeader,
+                'x-id-team': 'default',
+              },
+            });
+            managerBrainServiceStatuses[path] = brainService.status;
+            await brainService.body?.cancel();
+          }
+        } catch {
+          desktopAuthenticated = false;
         }
-        if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked' || material.status === 'failed')) {
-          kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.terminalWriteKickMs);
-        }
-        if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked')) {
-          kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialWriteKickMs);
-        }
-      });
-    } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }
-    try { stopLearnQueueRunner = startLearnQueueRunner(); } catch (e) { console.warn('[learn] failed to start queue runner:', e); }
-    try { stopLearnBrainBackfillRunner = startLearnBrainBackfillRunner(); } catch (e) { console.warn('[learn] failed to start brain backfill runner:', e); }
-    // Draft dispatcher: opt-in only. Draft/proposal rows are review-only unless
-    // the operator explicitly enables this bridge in settings.
-    try { stopDraftDispatcher = startDraftDispatcher(); } catch (e) { console.warn('[draft-dispatcher] failed to start:', e); }
-    // Computer Use broker: loopback controller + live frame pump + approval prompts → the renderer.
-    void startBroker(
-      (frame) => { try { win?.webContents.send('computeruse:frame', frame); } catch { /* window gone */ } },
-      (evt) => { try { win?.webContents.send('computeruse:pending', evt); } catch { /* window gone */ } },
-    );
-    // Global PANIC hotkey: instant stop from anywhere, even when the app isn't focused.
+        const brainSensitiveReadsProtected = Object.values(brainAnonymousStatuses)
+          .every((status) => status === 401)
+          && Object.keys(brainAnonymousStatuses).length === 7;
+        const brainAuthenticatedReadsSucceeded = Object.values(brainAuthenticatedStatuses)
+          .every((status) => status === 200)
+          && Object.keys(brainAuthenticatedStatuses).length === 7;
+        const managerSensitiveReadsProtected = Object.values(managerAnonymousStatuses)
+          .every((status) => status === 401)
+          && Object.keys(managerAnonymousStatuses).length === 3;
+        const managerBrainServiceReadsSucceeded = Object.values(managerBrainServiceStatuses)
+          .every((status) => status === 200)
+          && Object.keys(managerBrainServiceStatuses).length === 3;
+        // The managed Manager rejects a missing bearer in its authentication
+        // middleware with 401. A compatible route-level implementation may
+        // reject the same forged legacy admin header with 403. Both are
+        // explicit authentication failures; no other status is accepted.
+        const forgedAdminRejected = forgedStatus === 401 || forgedStatus === 403;
+        authPassed = forgedAdminRejected
+          && desktopAuthenticated
+          && brainAnonymousHealthMinimal
+          && brainSensitiveReadsProtected
+          && brainAuthenticatedReadsSucceeded
+          && managerSensitiveReadsProtected
+          && managerBrainServiceReadsSucceeded;
+        console.log('IDACC_STACK_AUTH_SELFTEST ' + JSON.stringify({
+          forgedStatus,
+          forgedAdminRejected,
+          desktopAuthenticated,
+          brainAnonymousHealthMinimal,
+          brainSensitiveReadsProtected,
+          brainAuthenticatedReadsSucceeded,
+          managerSensitiveReadsProtected,
+          managerBrainServiceReadsSucceeded,
+          brainAnonymousStatuses,
+          brainAuthenticatedStatuses,
+          managerAnonymousStatuses,
+          managerBrainServiceStatuses,
+        }));
+      }
+      if (process.env.IDACC_STACK_DASHBOARD_SELFTEST === '1') {
+        brainDashboardLifecycle = await runBrainDashboardLifecycleSelftest();
+        authPassed = authPassed && brainDashboardLifecycle.allPassed;
+      }
+    } catch (error) {
+      authPassed = false;
+      selftestError = error instanceof Error ? error.message : String(error);
+    }
+
+    let resultPublished = true;
+    const result = sanitizeSecretPayload({
+      ...status,
+      authPassed,
+      ...(runtimeContract ? { runtimeContract } : {}),
+      ...(brainCycleOptIn ? { brainCycleOptIn } : {}),
+      ...(brainDashboardLifecycle ? { brainDashboardLifecycle } : {}),
+      ...(selftestError ? { selftestError } : {}),
+    });
     try {
-      const ok = globalShortcut.register('CommandOrControl+Alt+Shift+P', () => {
-        panicBroker();
-        try { win?.webContents.send('computeruse:panic', { ts: Date.now() }); } catch { /* */ }
-      });
-      setPanicHotkey(ok);
-      if (!ok) console.warn('[cu] PANIC hotkey not registered (already taken); use the on-screen button');
-    } catch { /* the on-screen PANIC button is the fallback */ }
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      const serialized = JSON.stringify(result);
+      if (
+        !unifiedStackCredentialGuardSelftest()
+        || unifiedStackPayloadContainsCredential(serialized)
+      ) {
+        throw new Error('stack self-test result contained a generated runtime credential');
+      }
+      const secretCandidates = [
+        adminToken,
+        process.env.BRAIN_TOKEN,
+        process.env.IDACC_ADMIN_TOKEN,
+        process.env.IDACC_MANAGER_SERVICE_TOKEN,
+      ].filter((value): value is string => Boolean(value && value.length >= 8));
+      if (secretCandidates.some((secret) => serialized.includes(secret))) {
+        throw new Error('stack self-test result contained a runtime credential');
+      }
+      const requestedResultFile = process.env.IDACC_STACK_SELFTEST_RESULT_FILE;
+      if (requestedResultFile) {
+        writeStackSelftestResultFile(requestedResultFile, profile.root, result);
+      }
+      console.log('IDACC_STACK_SELFTEST ' + serialized);
+    } catch (error) {
+      resultPublished = false;
+      console.error('IDACC_STACK_SELFTEST_RESULT_ERROR ' + (
+        error instanceof Error ? error.message : String(error)
+      ));
+    }
+
+    try {
+      const firstStop = stopUnifiedStack();
+      const concurrentStop = stopUnifiedStack();
+      if (firstStop !== concurrentStop) {
+        throw new Error('unified stack shutdown was not single-flight');
+      }
+      await firstStop;
+    } catch (error) {
+      resultPublished = false;
+      console.error('IDACC_STACK_SELFTEST_STOP_ERROR ' + (
+        error instanceof Error ? error.message : String(error)
+      ));
+    }
+    void appShutdown.request({
+      kind: 'exit',
+      code: status.ready && authPassed && !selftestError && resultPublished ? 0 : 1,
     });
   });
+} else {
+  const startup = app.whenReady()
+    .then(() => runStartupRecoveryLoop(async () => {
+      requireConsumerStartupActive();
+      prepareConsumerBackgroundActivitiesForStartup();
+      startupRecoveryActive = true;
+      const profile = initializeAppProfile();
+      configureSecureSettings();
+      const startedStack = await startUnifiedStack(profile);
+      requireConsumerStartupActive();
+      const managerUrl = startedStack.services.find((service) => service.name === 'manager')?.url;
+      if (managerUrl) updateManagedManagerProfileUrl(profile.config, managerUrl);
+      const activeManagerUrl = managerUrl || process.env.MANAGER_URL || 'http://127.0.0.1:4110';
+      const adminToken = unifiedStackAdminToken();
+      configureManagedManager(activeManagerUrl, adminToken);
+      configureComputerUseAuditManager(activeManagerUrl, adminToken);
+      configureKeyProviderFromSettings();
+      stopProviderRuntimeRehydrationListener = subscribeUnifiedStackServiceReady((event) => {
+        if (event.name !== 'manager' || appShutdown.isQuiescing()) return;
+        return rehydrateProviderAgentsForReadyManager();
+      });
+      await createWindow();
+      requireConsumerStartupActive();
+      // Treat the app-owned Computer Use controller as part of startup. If its
+      // private loopback listener cannot bind, recovery closes the new window
+      // and stops the unified stack before any long-lived handlers are added.
+      await startBroker(
+        (frame) => { try { win?.webContents.send('computeruse:frame', frame); } catch { /* window gone */ } },
+        (evt) => { try { win?.webContents.send('computeruse:pending', evt); } catch { /* window gone */ } },
+      );
+      requireConsumerStartupActive();
+      // Reactive org-sync: keep every agent's goals & instructions file composed from the lead
+      // hierarchy + brain team-instructions (first pass ~15s after boot, then every 5 min).
+      try { stopOrgSyncRunner = startOrgSync(); } catch (e) { console.warn('[org-sync] failed to start:', e); }
+      // Globally available by default, but only active goals whose own Autopilot
+      // switch is enabled can gap-fill fleet tasks.
+      try { stopGoalDriver = startGoalDriver(); } catch (e) { console.warn('[goaldriver] failed to start:', e); }
+      // Medium-risk, non-authority Brain skill proposals are reviewed by two
+      // independent fleet agents. Only genuine disagreement or privileged/sensitive
+      // scope is allowed to reach the operator Inbox; unavailable reviewers wait.
+      try {
+        configureAutomaticBrainApprovalReview();
+        stopBrainApprovalAutomation = startBrainApprovalAutomationLoop((result) => {
+          if (appShutdown.isQuiescing()) return;
+          const publish = () => {
+            if (!appShutdown.isQuiescing()) {
+              publishStoreChange('brainApproval:autoReview');
+              recordControlAction('brainApproval:autoReview', ['background'], result);
+            }
+          };
+          const sync = syncBrainApprovalInbox({ force: true })
+            .then(publish, publish)
+            .then(() => undefined);
+          activeBrainApprovalInboxSyncs.add(sync);
+          void sync.then(() => { activeBrainApprovalInboxSyncs.delete(sync); });
+        });
+        void runBrainApprovalAutomationOnce();
+      } catch (e) { console.warn('[brain-approval-review] failed to start:', e); }
+      // Work > Learn queue: process newly-added materials even when the Learn tab is not mounted.
+      try {
+        stopMaterialChangeBridge = subscribeMaterialChanges((reason, material) => {
+          if (appShutdown.isQuiescing()) return;
+          publishStoreChange(reason === 'tasks' ? 'materials:tasks' : 'materials:changed');
+          if (reason === 'write' && 'status' in material && material.status === 'queued') {
+            kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.queuedWriteKickMs);
+          }
+          if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked' || material.status === 'failed')) {
+            kickLearnQueueRunner?.(LEARN_QUEUE_RUNNER_DELAYS.terminalWriteKickMs);
+          }
+          if (reason === 'write' && 'status' in material && (material.status === 'ready' || material.status === 'blocked')) {
+            kickLearnBrainBackfillRunner?.(LEARN_BRAIN_BACKFILL_RUNNER_DELAYS.materialWriteKickMs);
+          }
+        });
+      } catch (e) { console.warn('[learn] failed to start material change bridge:', e); }
+      try { stopLearnQueueRunner = startLearnQueueRunner(); } catch (e) { console.warn('[learn] failed to start queue runner:', e); }
+      try { stopLearnBrainBackfillRunner = startLearnBrainBackfillRunner(); } catch (e) { console.warn('[learn] failed to start brain backfill runner:', e); }
+      // Draft dispatcher: opt-in only. Draft/proposal rows are review-only unless
+      // the operator explicitly enables this bridge in settings.
+      try { stopDraftDispatcher = startDraftDispatcher(); } catch (e) { console.warn('[draft-dispatcher] failed to start:', e); }
+      // Reconcile completed scheduled Dream queries into the profile-owned Dream
+      // archive. Agent news is durable, so runs completed while IDACC was closed
+      // are imported idempotently after the unified stack comes back.
+      try { stopScheduledDreamArchive = startScheduledDreamArchiveLoop(); } catch (e) { console.warn('[dream-archive] failed to start:', e); }
+      // Global PANIC hotkey: instant stop from anywhere, even when the app isn't focused.
+      try {
+        const ok = globalShortcut.register('CommandOrControl+Alt+Shift+P', () => {
+          panicBroker();
+          try { win?.webContents.send('computeruse:panic', { ts: Date.now() }); } catch { /* */ }
+        });
+        setPanicHotkey(ok);
+        if (!ok) console.warn('[cu] PANIC hotkey not registered (already taken); use the on-screen button');
+      } catch { /* the on-screen PANIC button is the fallback */ }
+      consumerActivationReady = true;
+      if (pendingConsumerActivation) {
+        pendingConsumerActivation = false;
+        handleConsumerAppActivation();
+      }
+      if (win && !win.isDestroyed()) startUpdaterSafely(win);
+      startupRecoveryActive = false;
+    }, handleConsumerStartupFailure))
+    .then((started) => {
+      if (!started) void appShutdown.request({ kind: 'quit' });
+    })
+    .catch((error) => handleUnrecoverableStartupFailure(error));
+  consumerStartupPromise = startup;
+  const clearStartupPromise = () => {
+    if (consumerStartupPromise === startup) consumerStartupPromise = null;
+  };
+  void startup.then(clearStartupPromise, clearStartupPromise);
 }
 
-app.on('will-quit', stopUpdater);
-app.on('will-quit', stopBroker);
-app.on('will-quit', () => { try { stopGoalDriver?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { stopLearnQueueRunner?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { stopLearnBrainBackfillRunner?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { stopMaterialChangeBridge?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { stopDraftDispatcher?.(); } catch { /* */ } });
-app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch { /* */ } });
-app.on('child-process-gone', (_event, details) => {
-  logProcessExit('child-process', details as unknown as Record<string, unknown>);
-});
+if (ownsSingleInstanceLock) {
+  app.on('child-process-gone', (_event, details) => {
+    logProcessExit('child-process', details as unknown as Record<string, unknown>);
+  });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+  app.on('window-all-closed', () => {
+    // The headless stack self-test deliberately creates and destroys an
+    // isolated Brain dashboard window. On Linux and Windows, closing that
+    // fixture must not terminate Electron before the result is published and
+    // the supervised Manager/Brain shutdown has completed.
+    if (stackSelftest) return;
+    if (startupRecoveryActive || BrowserWindow.getAllWindows().length > 0) return;
+    if (process.platform !== 'darwin') void appShutdown.request({ kind: 'quit' });
+  });
+}

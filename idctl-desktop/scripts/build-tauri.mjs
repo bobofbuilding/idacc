@@ -6,6 +6,12 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+if (process.env.IDACC_TAURI_SIMULATION !== 'developer-only') {
+  throw new Error(
+    'The Tauri frontend is a developer-only interface simulation. '
+    + 'It cannot build a unified production application; use the Electron release workflow.',
+  );
+}
 rmSync(resolve(ROOT, 'dist-tauri'), { recursive: true, force: true });
 mkdirSync(resolve(ROOT, 'dist-tauri'), { recursive: true });
 

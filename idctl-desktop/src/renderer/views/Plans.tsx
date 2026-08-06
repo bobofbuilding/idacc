@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import { useToast } from '../components/toast.tsx';
 import { buildPrimaryLeadPlanWork, mergePlanTaskRefs, planWorkGoalId } from '../../shared/planWork.ts';
@@ -7,12 +7,12 @@ import { primaryLeadReadiness } from '../../shared/planRouting.ts';
 /**
  * Plans tab (under Work). Two sets, one shared organizer (search / sort /
  * optional filters / completed visibility) at the top:
- *  - Brain plans — the LIVE plan set the brain maintains on disk. Read-only content,
+ *  - Profile plans — the LIVE plan set IDACC core maintains on disk. Read-only content,
  *    but per-plan actions can AUDIT the real status (and write it back), find BLOCKERS,
  *    COMPILE the plan into tasks, or set it PENDING.
  *  - Your drafts — local AI-generated plans you draft + finalize, then PROMOTE into the
- *    living brain plans. Lifecycle: draft (AI-assisted) → active (human edits) → done
- *    (finalized) → ↑ Promote → a brain plan at ⏳ pending → 🔄 partial → ✅ done.
+ *    living profile plans. Lifecycle: draft (AI-assisted) → active (human edits) → done
+ *    (finalized) → ↑ Promote → a profile plan at ⏳ pending → 🔄 partial → ✅ done.
  */
 
 type PlanStatus = 'draft' | 'active' | 'done' | 'archived';
@@ -25,6 +25,7 @@ interface Plan {
 type PlanSummary = { id: string; title: string; status: PlanStatus; version: number; agent?: string; team: string; createdAt: number; updatedAt: number; tags?: string[] };
 type BrainPlan = { num?: string; title: string; file: string; status?: string; effort?: string; notes?: string; mtime?: number };
 type BrainPlansResp = { dir: string | null; plans: BrainPlan[] };
+type BrainPlanConsolidationResult = { ok: boolean; file?: string; num?: string; title?: string; status?: string; archived?: string[]; error?: string; stale?: boolean };
 type BrainPlanField = 'title' | 'status' | 'mtime';
 type DraftPlanField = 'title' | 'status' | 'version' | 'updatedAt' | 'content' | 'tags';
 type SortMode = 'recent' | 'title' | 'status';
@@ -162,11 +163,12 @@ export function Plans({ store }: { store: FleetStore }) {
   }
   useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [team, store.lastUpdated, draftSyncVersion]);
 
-  // ---- brain plans (live, read-only content) ----
+  // ---- profile plans (live, read-only content) ----
   const [brain, setBrain] = useState<BrainPlansResp>({ dir: null, plans: [] });
   const [planProgress, setPlanProgress] = useState<Record<string, PlanProgress>>({});
   const [brainOpen, setBrainOpen] = useState<string | null>(null);
   const [brainContent, setBrainContent] = useState('');
+  const [selectedBrainFiles, setSelectedBrainFiles] = useState<Set<string>>(new Set());
   async function reloadBrain() { setBrain(await call<BrainPlansResp>('brain:plans').catch(() => ({ dir: null, plans: [] }))); }
   useEffect(() => {
     void reloadBrain();
@@ -232,7 +234,7 @@ export function Plans({ store }: { store: FleetStore }) {
     const current = (await call<BrainPlansResp>('brain:plans').catch(() => ({ dir: null, plans: [] }))).plans.find((x) => x.file === p.file) ?? null;
     if (!current) {
       if (!quiet) {
-        window.alert(`${action} blocked: this brain plan no longer exists in the live plan index.`);
+        window.alert(`${action} blocked: this plan no longer exists in the live profile plan list.`);
         await reloadBrain();
       }
       return null;
@@ -247,7 +249,7 @@ export function Plans({ store }: { store: FleetStore }) {
           '',
           ...changed.map((field) => `- ${field}: ${changedText(before[field], after[field])}`),
           '',
-          'Plans will refresh; review the current brain plan before applying another change.',
+          'Plans will refresh; review the current profile plan before applying another change.',
         ].join('\n'));
         await reloadBrain();
       }
@@ -306,7 +308,7 @@ export function Plans({ store }: { store: FleetStore }) {
     if (!fresh) return;
     const currentKey = brainStatusKey(fresh.status);
     if (action && currentKey === action.key) { setMsg(`"${fresh.title}" is already ${brainStatusLabel(action.key).toLowerCase()}`); return; }
-    if (!window.confirm(`${action?.label ?? 'Update status'} for "${fresh.title}"?\n\nThis writes the live brain plan status to ${brainStatusLabel(action?.key ?? brainStatusKey(status))} and will ${action?.confirm ?? 'update the plan lifecycle state'}.`)) return;
+    if (!window.confirm(`${action?.label ?? 'Update status'} for "${fresh.title}"?\n\nThis writes the live profile plan status to ${brainStatusLabel(action?.key ?? brainStatusKey(status))} and will ${action?.confirm ?? 'update the plan lifecycle state'}.`)) return;
     if (busyFilesRef.current.has(fresh.file)) { setMsg(`"${fresh.title}" is already being updated`); return; }
     setBrainPlanBusy(fresh.file, true); setMsg(`${action?.label ?? 'Updating status'} for "${fresh.title}"...`);
     try {
@@ -540,7 +542,7 @@ export function Plans({ store }: { store: FleetStore }) {
           ...(savedGoal.driver ?? {}),
           taskRefs: mergePlanTaskRefs(savedGoal.driver?.taskRefs, refs),
           lastRunAt: Date.now(),
-          note: `Delegated from brain plan ${work.source} to ${created.length} team-lead task(s)`,
+          note: `Delegated from profile plan ${work.source} to ${created.length} team-lead task(s)`,
         },
       });
       if (res.dispatched <= 0) {
@@ -698,6 +700,48 @@ export function Plans({ store }: { store: FleetStore }) {
     } finally { setBrainPlanBusy(fresh.file, false); }
   }
 
+  async function consolidateSelectedPlans() {
+    if (selectedBrainFiles.size < 2) return;
+    const live = await call<BrainPlansResp>('brain:plans').catch(() => ({ dir: null, plans: [] }));
+    const selected = [...selectedBrainFiles]
+      .map((file) => live.plans.find((plan) => plan.file === file))
+      .filter((plan): plan is BrainPlan => Boolean(plan));
+    if (selected.length !== selectedBrainFiles.size) {
+      setMsg('The plan list changed. Review the refreshed plans and select them again.');
+      setSelectedBrainFiles(new Set());
+      setBrain(live);
+      return;
+    }
+    const label = selected.map((plan) => `${plan.num ?? plan.file} “${plan.title}”`).join(' and ');
+    if (!window.confirm(`Consolidate ${label}?\n\nThe original files will be retained in the private plan archive.`)) return;
+    for (const plan of selected) setBrainPlanBusy(plan.file, true);
+    const progress = toast({ kind: 'progress', text: `Consolidating ${selected.length} plans…` });
+    try {
+      const expected = Object.fromEntries(selected.map((plan) => [
+        plan.file,
+        { status: plan.status, mtime: plan.mtime },
+      ]));
+      const result: BrainPlanConsolidationResult = await call<BrainPlanConsolidationResult>('brain:consolidatePlans', {
+        files: selected.map((plan) => plan.file),
+        expected,
+      }).catch((error): BrainPlanConsolidationResult => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      if (!result.ok) {
+        progress.update({ kind: 'error', text: `Plans were not consolidated: ${result.error ?? 'core plan action failed'}` });
+        setMsg(`${result.error ?? 'Plan consolidation failed.'}${result.stale ? ' Refresh and try again.' : ''}`);
+        return;
+      }
+      setSelectedBrainFiles(new Set());
+      await reloadBrain();
+      progress.update({ kind: 'success', text: `Created plan ${result.num} “${result.title}” · ${result.archived?.length ?? selected.length} source files archived.` });
+      setMsg(`consolidated into plan ${result.num} · status ${result.status}`);
+    } finally {
+      for (const plan of selected) setBrainPlanBusy(plan.file, false);
+    }
+  }
+
   async function open(id: string) {
     if (detail?.id === id) { setDetail(null); return; }
     setViewVer(null); setShowLog(false); setConfirmDel(false); setUpdInstr('');
@@ -782,7 +826,7 @@ export function Plans({ store }: { store: FleetStore }) {
   }
 
   /** Field edit (title/status/tags). "done" no longer auto-files — a done draft stays
-   *  visible so you can finalize it and Promote it into the live brain plans (→ ⏳ pending). */
+   *  visible so you can finalize it and Promote it into the live profile plans (→ ⏳ pending). */
   async function patchPlan(p: Partial<Plan>) {
     if (!detail) return;
     if (p.status && p.status !== detail.status && !window.confirm(`Change draft plan "${detail.title}" status to ${p.status}?\n\nThis writes the saved draft lifecycle state.`)) return;
@@ -800,11 +844,11 @@ export function Plans({ store }: { store: FleetStore }) {
     if (!detail) return;
     const current = await ensureDraftPlanFresh(detail, `Promote plan ${detail.title}`, ['title', 'status', 'version', 'updatedAt', 'content', 'tags']);
     if (!current) return;
-    if (!window.confirm(`Promote "${current.title}" to a live brain plan?\n\nThis writes a new brain plan at PENDING and removes the draft copy so it does not appear twice.`)) return;
+    if (!window.confirm(`Promote "${current.title}" to a live profile plan?\n\nThis writes a new profile plan at PENDING and removes the draft copy so it does not appear twice.`)) return;
     setBusy(true); setMsg(`promoting “${clip(current.title, 40)}” to a live plan…`);
     try {
       const res = await call<{ ok: boolean; file?: string; num?: string; committed?: boolean; error?: string }>('brain:createPlan', current.title, current.content);
-      if (!res?.ok) { if (aliveRef.current) setMsg(`promote failed: ${res?.error ?? 'could not write the brain plan'}`); return; }
+      if (!res?.ok) { if (aliveRef.current) setMsg(`promote failed: ${res?.error ?? 'could not write the profile plan'}`); return; }
       await call('plans:remove', current.id).catch(() => {});
       setDetail(null);
       await reloadBrain();
@@ -851,7 +895,7 @@ export function Plans({ store }: { store: FleetStore }) {
     return list;
   }, [plans, q, draftStatus, tagFilter, sort]);
 
-  // Focus the default view on actionable work. Completed Brain plans and filed drafts are
+  // Focus the default view on actionable work. Completed profile plans and filed drafts are
   // still one click away, and also appear automatically when their status filter is active.
   const brainActive = organizedBrain.filter((p) => brainStatusKey(p.status) !== 'done');
   const brainCompleted = organizedBrain.filter((p) => brainStatusKey(p.status) === 'done');
@@ -910,6 +954,14 @@ export function Plans({ store }: { store: FleetStore }) {
             {p.mtime ? <span className="muted small" title={`file last modified ${abs(p.mtime)}`}>updated {ago(p.mtime)}</span> : null}
           </div>
           <div className="plan-row-actions" onClick={(e) => e.stopPropagation()}>
+          <label className="muted small" title="Select this plan for a guarded consolidation">
+            <input
+              type="checkbox"
+              checked={selectedBrainFiles.has(p.file)}
+              disabled={acting}
+              onChange={() => toggle(setSelectedBrainFiles, p.file)}
+            /> combine
+          </label>
           <button className="btn small primary" disabled={acting}
             title="Audit this plan, pause on blockers with Inbox questions, or delegate remaining work and mark it partial."
             onClick={() => void runWork(p)}>{acting ? 'Working...' : workLabel}</button>
@@ -967,10 +1019,10 @@ export function Plans({ store }: { store: FleetStore }) {
                 {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
               {(detail.tags ?? []).some((t) => /^→ plan /.test(t)) ? (
-                <span className="ok-text small" title="This draft has been promoted into the live brain plans.">✓ promoted ({(detail.tags ?? []).find((t) => /^→ plan /.test(t))})</span>
+                <span className="ok-text small" title="This draft has been promoted into the live profile plans.">✓ promoted ({(detail.tags ?? []).find((t) => /^→ plan /.test(t))})</span>
               ) : detail.status === 'done' || detail.status === 'active' ? (
                 <button className={`btn small${detail.status === 'done' ? ' primary' : ''}`} disabled={busy}
-                  title="Promote this finalized draft into the live brain plans at ⏳ PENDING — from there it runs pending → partial → done."
+                  title="Promote this finalized draft into the live profile plans at ⏳ PENDING — from there it runs pending → partial → done."
                   onClick={() => void promoteDraft()}>↑ Promote to live plan</button>
               ) : null}
               <input style={{ flex: '0 1 200px', fontSize: 12 }} placeholder="tags (comma-separated)" value={tagInput} disabled={busy} onChange={(e) => setTagInput(e.target.value)} onBlur={() => void patchPlan({ tags: splitTags(tagInput) })} title="categorize this plan" />
@@ -1107,14 +1159,22 @@ export function Plans({ store }: { store: FleetStore }) {
             <span className="muted small">· {brainActive.length} active{brainCompleted.length ? ` · ${brainCompleted.length} completed` : ''} · ⟳ live</span>
             {brain.dir
               ? <span className="muted small mono plan-path" title={brain.dir}>{brain.dir.replace(/^.*\/projects\//, '…/')}</span>
-              : <span className="warn-text small">brain plans dir not found</span>}
+              : <span className="warn-text small">profile plan store unavailable</span>}
           </div>
+          <button
+            className="btn small"
+            disabled={selectedBrainFiles.size < 2 || busyFiles.size > 0}
+            title={selectedBrainFiles.size < 2 ? 'Select at least two plans using the combine checkboxes' : 'Create one recoverable plan and archive the selected source files'}
+            onClick={() => void consolidateSelectedPlans()}
+          >
+            Combine selected{selectedBrainFiles.size ? ` (${selectedBrainFiles.size})` : ''}
+          </button>
           <button className="btn small primary" disabled={!nextWorkPlan} title={nextWorkPlan ? `Work next matching plan: ${nextWorkPlan.title}` : busyPlanCount ? 'All matching pending, partial, or paused plans are already running' : 'No pending, partial, or paused plan matches the current filters'} onClick={() => void runNextPlan()}>
             {nextWorkPlan ? (busyPlanCount ? `Work next (${busyPlanCount} running)` : 'Work next') : busyPlanCount ? `Working ${busyPlanCount}` : 'No work queued'}
           </button>
         </div>
         {brain.plans.length === 0 ? (
-          <p className="muted small">{brain.dir ? 'No plans in the brain index yet.' : 'Could not locate the brain plans directory (projects root not detected — set it in Projects).'}</p>
+          <p className="muted small">{brain.dir ? 'No plans in the profile plan list yet.' : 'Could not open the private profile plan store.'}</p>
         ) : brainActive.length === 0 && !includeCompleted ? (
           <p className="muted center pad">No active plans match the filter.{brainCompleted.length ? ' Use Completed to show finished plans.' : ''}</p>
         ) : (

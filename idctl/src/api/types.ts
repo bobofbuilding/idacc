@@ -58,6 +58,17 @@ export interface AgentMetadata {
   [key: string]: unknown;
 }
 
+export interface AgentBrainTools {
+  skillInstalled?: boolean;
+  contextInjection?: boolean;
+  mcpExplicit?: boolean;
+  mcpAttached?: boolean;
+  mcpServerCount?: number;
+  localRuntime?: boolean;
+  runtimeSupportsMcp?: boolean;
+  activeToolAccess?: boolean;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -73,6 +84,7 @@ export interface Agent {
   createdAt: number;
   lastHealthCheck?: number;
   metadata?: AgentMetadata;
+  brainTools?: AgentBrainTools;
   teamName?: string;
   deploymentShape?: 'local-process' | 'remote-endpoint';
   pid?: number | null;
@@ -112,6 +124,15 @@ export interface ManagerEvent {
 export interface EventsResponse {
   events: ManagerEvent[];
   next_seq: number;
+  /** Stable identity for this team's durable event stream. Newer Managers use
+   * the profile-owned team id so cursors cannot bleed between app profiles. */
+  stream_id?: string;
+  /** The supplied cursor is not valid for this stream (for example, it is
+   * ahead of a freshly-created profile). Consumers must replace their cursor
+   * with `next_seq`, even when that moves the cursor backwards to zero. */
+  cursor_reset?: boolean;
+  cursor_reset_reason?: string;
+  latest_available_seq?: number | null;
   replay_truncated?: boolean;
   earliest_available_seq?: number | null;
 }

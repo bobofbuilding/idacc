@@ -144,7 +144,10 @@ export function OnboardView() {
       <Wizard
         title="Onboard agent"
         steps={wizardSteps}
-        onCancel={reset}
+        onCancel={() => {
+          reset();
+          goto('dash');
+        }}
         onSubmit={(values) => {
           setPlan(planFromValues(values));
           setMode('review');

@@ -1,12 +1,10 @@
 /**
- * Agent key-management model: agent.bittrees.eth controls one Safe smart
- * account per agent. Agents act through scoped, revocable authority; the root
- * Safe retains recovery and revocation authority. Expiry is only advertised
- * when the active provider can enforce it on-chain.
+ * Agent key-management model. Local profiles use explicit mock identities.
+ * A consumer-provided root Safe may control one smart account per agent only
+ * after that identity is validated and enabled in profile settings.
  */
 
-export const ROOT_AGENT_SAFE_ENS = 'agent.bittrees.eth';
-export const ROOT_AGENT_SAFE_ADDRESS = '0x8A6445277b81b9dC27ef248aB25b53e6b255Cfb8';
+import { LOCAL_AGENT_IDENTITY_ROOT } from '../settings/schema.ts';
 
 export type AgentAccountStatus = 'draft' | 'active' | 'revoked';
 
@@ -23,8 +21,10 @@ export function agentEnsLabel(agent: string): string {
   return label;
 }
 
-export function agentEnsName(agent: string): string {
-  return `${agentEnsLabel(agent)}.${ROOT_AGENT_SAFE_ENS}`;
+export function agentEnsName(agent: string, ensRoot = LOCAL_AGENT_IDENTITY_ROOT): string {
+  const root = String(ensRoot).trim().replace(/^\.+|\.+$/g, '').toLowerCase();
+  if (!root) throw new Error('An ENS root is required for an agent identity.');
+  return `${agentEnsLabel(agent)}.${root}`;
 }
 
 export interface SessionScope {

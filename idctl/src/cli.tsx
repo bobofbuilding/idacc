@@ -91,9 +91,7 @@ USAGE
   idctl status [--json]      Print a one-shot fleet snapshot and exit
   idctl config               Show the config file path + saved profiles
   idctl init                 Create an empty config file if none exists
-  idctl upgrade              Check for, download & stage the latest release
-                             (applied automatically on next launch)
-  idctl upgrade --check      Report whether an update is available (exit 10) and stop
+  idctl upgrade              Explain how idctl is updated with the unified app
   idctl --help
 
 OPTIONS
@@ -111,12 +109,6 @@ In the TUI: [Tab]/1-9/0 switch views · [r] refresh · [t] team · [?] help · [
 Settings live under view 0: connect managers + inference backends, assign models.`;
 
 async function main() {
-  // STEP 0: apply any pending staged update BEFORE parsing UI args or rendering.
-  // No-ops under tsx (dev) and when re-exec'd (env guard). If it applies, it
-  // re-execs into the new binary and the call never returns.
-  const { applyPendingAndReExec } = await import('./update/apply.ts');
-  if (applyPendingAndReExec()) return;
-
   const parsed = parseArgs(process.argv);
   const { command, json } = parsed;
 

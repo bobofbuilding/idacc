@@ -94,7 +94,7 @@ async function main(): Promise<void> {
     status: 'ok',
     sourceId: 'learn:syncsmoke',
     at: material?.brainSync?.at,
-    schemaVersion: 3,
+    schemaVersion: 4,
     exactEntity: true,
     entity: true,
     sourceEntity: true,

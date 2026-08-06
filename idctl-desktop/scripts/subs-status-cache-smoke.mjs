@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 
 const main = await readFile(new URL('../src/main/main.ts', import.meta.url), 'utf8');
 const subscriptions = await readFile(new URL('../src/main/subscriptions.ts', import.meta.url), 'utf8');
+const onboarding = await readFile(new URL('../src/main/consumerOnboarding.ts', import.meta.url), 'utf8');
 const bridge = await readFile(new URL('../src/main/bridge.ts', import.meta.url), 'utf8');
+const readCallCache = await readFile(new URL('../src/shared/readCallCache.ts', import.meta.url), 'utf8');
 const settings = await readFile(new URL('../src/renderer/views/Settings.tsx', import.meta.url), 'utf8');
 const teams = await readFile(new URL('../src/renderer/views/Teams.tsx', import.meta.url), 'utf8');
 
@@ -20,8 +22,14 @@ assert.ok(
     && subscriptions.includes("install: 'npm install -g @openai/codex'"),
   'primary Claude and Codex subscription runtimes should expose reviewed installers',
 );
-for (const path of ['.nvm/versions/node', '.volta/bin', '.asdf/shims', '.mise/shims', '.local/share/pnpm']) {
-  assert.ok(subscriptions.includes(path), `packaged CLI discovery should include ${path}`);
+for (const pathParts of [
+  ["'.nvm', 'versions', 'node'"],
+  ['VOLTA_HOME', "'.volta', 'bin'"],
+  ["'.asdf', 'shims'"],
+  ["'.mise', 'shims'"],
+  ["'.local', 'share', 'pnpm'"],
+]) {
+  assert.ok(pathParts.every((part) => subscriptions.includes(part)), `packaged CLI discovery should include ${pathParts.join(' / ')}`);
 }
 assert.ok(
   subscriptions.includes("localeCompare(a.name, undefined, { numeric: true })"),
@@ -30,6 +38,29 @@ assert.ok(
 assert.ok(
   subscriptions.includes('now - subsStatusCache.at < maxAgeMs'),
   'subscription status cache should honor caller-provided maxAgeMs',
+);
+assert.ok(
+  subscriptions.includes('latestSubsStatusRequestSequence === requestSequence')
+    && subscriptions.includes('latestAssignmentSubsStatusRequestSequence === requestSequence')
+    && subscriptions.includes('subsStatusGeneration === generation'),
+  'both subscription cache lanes must publish only their newest request generation',
+);
+assert.ok(
+  subscriptions.includes('if (subsStatusInflight === request) subsStatusInflight = null')
+    && subscriptions.includes('if (assignmentSubsStatusInflight === request) assignmentSubsStatusInflight = null')
+    && subscriptions.includes('subsStatusInflight = null;')
+    && subscriptions.includes('assignmentSubsStatusInflight = null;'),
+  'subscription invalidation and completion must not retain or clear the wrong overlapping request',
+);
+assert.ok(
+  onboarding.includes('latestStatusRequestSequence === requestSequence')
+    && onboarding.includes('if (options.force) cachedStatus = null'),
+  'forced onboarding must supersede older cached/in-flight status publication',
+);
+assert.ok(
+  readCallCache.includes("if (method === 'subs:status') return [];")
+    && readCallCache.includes("(first as { force?: unknown }).force === true"),
+  'both legacy and object-form forced subscription reads must supersede the canonical outer cache',
 );
 assert.ok(
   main.includes("case 'subs:cachedStatus':") && main.includes('cachedSubsStatus() ?? {}'),
@@ -56,8 +87,18 @@ assert.ok(
   'Settings should not report a sign-in state before the first provider probe',
 );
 assert.ok(
-  teams.includes("'subs:assignmentStatus'") && teams.includes("'runtime:probeLocal'") && teams.includes('Refresh runtimes'),
-  'Teams Build should refresh assignable subscription readiness and local liveness without probing unrelated backends',
+  settings.includes('const [pendingSignin, setPendingSignin]')
+    && settings.includes('async function confirmSignin(provider: SubKey)')
+    && settings.includes('I’ve finished — re-check'),
+  'managed subscription sign-in should wait for explicit user completion before a forced status check',
+);
+assert.ok(
+  !settings.includes('setTimeout(() => void refreshManagedSubscriptions({ force: true }), 4000)'),
+  'managed subscription sign-in should not assume a fixed OAuth completion time',
+);
+assert.ok(
+  teams.includes("'subs:assignmentStatus'") && teams.includes("'runtime:probe'") && teams.includes('Refresh runtimes'),
+  'Teams Build should refresh assignable subscription readiness and model catalogs only after an explicit action',
 );
 assert.ok(
   subscriptions.includes("'grok', 'antigravity', 'copilot', 'kiro-cli'")
@@ -71,7 +112,7 @@ assert.ok(
 );
 assert.ok(
   bridge.includes('client.runtimePreflight(runtime, model || undefined)')
-    && bridge.includes('The connected ID Agents manager is outdated and cannot verify runtime assignments.'),
+    && bridge.includes('The bundled Agent manager cannot verify runtime assignments.'),
   'Team Builder must require manager-authoritative runtime/model preflight before spawn',
 );
 assert.ok(

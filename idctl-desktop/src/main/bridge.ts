@@ -5,7 +5,7 @@
  * allow-listed methods below over IPC.
  */
 
-import { inspectLibraryPluginMetadata, ManagerClient, ManagerError } from '../../../idctl/src/api/client.ts';
+import { heuristicSkillTags, inspectLibraryPluginMetadata, ManagerClient, ManagerError } from '../../../idctl/src/api/client.ts';
 import type { Agent, Task } from '../../../idctl/src/api/types.ts';
 import { brain } from '../../../idctl/src/api/brain.ts';
 import { configureControlEventEmitter } from './controlLog.ts';
@@ -45,27 +45,52 @@ import { configDir, resolveConfigPath } from '../../../idctl/src/settings/paths.
 import { detectProjectsRoot, scanProjectsRoot } from './projects.ts';
 import { realpathSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
-import { ProviderClient } from '../../../idctl/src/settings/ProviderClient.ts';
+import { ProviderClient, type ProbeOutcome } from '../../../idctl/src/settings/ProviderClient.ts';
+import {
+  normalizeProviderBaseUrl,
+  providerTransportDecision,
+  providerUrlIsLoopback,
+} from '../../../idctl/src/settings/providerTransport.ts';
 import { discoverLocalServers, mergeLocalDiscoveryCandidates, type DiscoveredServer } from '../../../idctl/src/settings/localDiscovery.ts';
 import { type HeadroomPilotSettings, type IdctlConfig, type ProviderKind, type ProviderModelSelection, type ProviderProfile, type McpServerProfile, type ProjectEntry } from '../../../idctl/src/settings/schema.ts';
 import { providerNeedsKey } from '../../../idctl/src/settings/providerCatalog.ts';
-import { buildProviderModelLanes, buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider, localProviderRouteIsLive, settingsAvailableRuntimeSet, managedRuntimeHasEvidence, runtimeDisplayLabel, runtimeHasManagerHarness, type RuntimeModelLaneKind } from '../../../idctl/src/settings/runtimeCatalog.ts';
+import { buildProviderModelLanes, buildRuntimeCatalog, RUNTIMES, providerKindToRuntimes, isLocalProvider, localProviderRouteIsLive, settingsAvailableRuntimeSet, managedRuntimeHasEvidence, runtimeDisplayLabel, runtimeHasManagerHarness, starterMcpCapabilityPolicy, type RuntimeModelLaneKind } from '../../../idctl/src/settings/runtimeCatalog.ts';
 import { subsStatus, subsStatusForRuntimes } from './subscriptions.ts';
 import { testMcpServer } from './mcpTest.ts';
-import { headroomBackendContractAudit, headroomCoreAudit, headroomStatus } from './headroom.ts';
-import { headroomPluginPathAudit } from './headroomPlugin.ts';
+import { headroomCoreAudit, headroomStatus } from './headroom.ts';
 import { contextBudgetDryRun, contextBudgetReport, loadRecentContextBudgetRecords, optimizeAskCommand, readContextBudgetRecord } from './contextBudget.ts';
 import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayOptions } from './contextReplay.ts';
-import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
-import { normalizeGoalDriverConfig, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, type GoalDriverConfig } from './goaldriver.ts';
-import { processDraftProposalsOnce, startDraftDispatcherLoop } from './draftDispatcher.ts';
+import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, fanOutObjectiveToActiveTeamLeads, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
+import { normalizeGoalDriverConfig, readGoalDriverStatus, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, syncGoalDriverConfig, type GoalDriverConfig } from './goaldriver.ts';
+import { discoverClaudeCliModels } from './claudeModels.ts';
+import {
+  processDraftProposalsOnce,
+  resetDraftDispatcherWork,
+  startDraftDispatcherLoop,
+  stopDraftDispatcherWork,
+} from './draftDispatcher.ts';
 import { buildOrgHierarchy, previewOrgSync, syncOrg, startOrgSyncLoop } from './orgSync.ts';
+import { inspectOllamaStarterToolModels } from './starterToolCapability.ts';
+import {
+  handleRuntimeFreshnessRequest,
+  runtimeFreshnessReadPolicy,
+  type RuntimeFreshnessReadPolicy,
+} from './runtimeFreshnessPolicy.ts';
 import { syncDomainsForMethod } from '../shared/syncDomains.ts';
 import { COALESCED_READ_METHODS, ReadCallCache } from '../shared/readCallCache.ts';
 import { mapTeamAgentGroups } from '../shared/teamAgentGroups.ts';
 import { isDashboardRelevantEvent } from '../shared/dashboardEvents.ts';
+import { identityRegisterNoop } from '../shared/identityVerification.ts';
+import { isDreamSchedule, type ScheduledDreamNewsItem } from '../shared/dreamSchedule.ts';
+import { sanitizeSecretPayload } from './secretRedaction.ts';
+import { externalChildEnvironment } from './externalChildEnvironment.ts';
+import { configureUnifiedStackMcpConnections } from './unifiedStack.ts';
+import {
+  rehydrateManagedProviderAgents,
+  type ProviderRehydrationReport,
+} from './providerRuntimeRehydration.ts';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
@@ -87,6 +112,275 @@ const ETH_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const PRIMARY_TEAM = 'default';
 const DEFAULT_PRIMARY_AGENT = 'lead';
 const DEFAULT_VALIDATORS = ['coder', 'researcher'];
+
+interface SettingsSecretCodec {
+  encrypt(value: string): string;
+  decrypt(value: string): string | undefined;
+}
+
+let settingsSecretCodec: SettingsSecretCodec | null = null;
+const unlockedEncryptedProviderCredentials = new Set<string>();
+
+export function configureSettingsSecretCodec(codec: SettingsSecretCodec): void {
+  settingsSecretCodec = codec;
+}
+
+function requireSettingsSecretCodec(): SettingsSecretCodec {
+  if (!settingsSecretCodec) throw new Error('Secure settings storage is not available yet.');
+  return settingsSecretCodec;
+}
+
+function providerKey(provider: ProviderProfile): string | undefined {
+  if (!providerTransportDecision(provider.baseUrl).ok) return undefined;
+  if (provider.apiKeyEncrypted) {
+    const decrypted = settingsSecretCodec?.decrypt(provider.apiKeyEncrypted);
+    if (decrypted) {
+      unlockedEncryptedProviderCredentials.add(provider.name);
+      return decrypted;
+    }
+  }
+  return resolveProviderKey(provider);
+}
+
+function backgroundProviderProbeAllowed(provider: ProviderProfile): boolean {
+  return !provider.apiKeyEncrypted
+    || unlockedEncryptedProviderCredentials.has(provider.name);
+}
+
+function providerForStorage(input: ProviderProfile): ProviderProfile {
+  const normalizedBaseUrl = normalizeProviderBaseUrl(input.baseUrl);
+  const previous = loadSettings().providers.find((provider) => provider.name === input.name);
+  const plaintext = input.apiKey?.trim();
+  const encrypted = plaintext
+    ? requireSettingsSecretCodec().encrypt(plaintext)
+    : previous?.apiKeyEncrypted;
+  const stored: ProviderProfile = {
+    ...(previous ?? {}),
+    ...input,
+    baseUrl: normalizedBaseUrl,
+    apiKey: undefined,
+    apiKeyEncrypted: encrypted,
+  };
+  delete stored.apiKey;
+  if (!stored.apiKeyEncrypted) delete stored.apiKeyEncrypted;
+  return stored;
+}
+
+async function probeConfiguredProvider(
+  provider: ProviderProfile,
+  timeoutMs?: number,
+): Promise<ProbeOutcome> {
+  const transport = providerTransportDecision(provider.baseUrl);
+  if (!transport.ok || !transport.normalizedUrl) {
+    return {
+      ok: false,
+      status: 'error',
+      models: [],
+      message: transport.error || 'Provider URL is not allowed.',
+    };
+  }
+  return new ProviderClient(
+    { ...provider, baseUrl: transport.normalizedUrl },
+    providerKey(provider),
+  ).probe(undefined, timeoutMs);
+}
+
+const MCP_CONNECTION_FIELDS = ['args', 'env', 'url', 'headers'] as const;
+type McpConnectionFields = Pick<McpServerProfile, typeof MCP_CONNECTION_FIELDS[number]>;
+const PINNED_MCP_PACKAGES: Record<string, string> = {
+  '@modelcontextprotocol/server-filesystem': '@modelcontextprotocol/server-filesystem@2026.7.10',
+  '@modelcontextprotocol/server-memory': '@modelcontextprotocol/server-memory@2026.7.4',
+  '@modelcontextprotocol/server-sequential-thinking': '@modelcontextprotocol/server-sequential-thinking@2025.12.18',
+  '@modelcontextprotocol/server-github': '@modelcontextprotocol/server-github@2025.4.8',
+  '@playwright/mcp@latest': '@playwright/mcp@0.0.77',
+  '@upstash/context7-mcp@latest': '@upstash/context7-mcp@3.2.5',
+  'mcp-server-fetch': 'mcp-server-fetch==2026.6.4',
+};
+
+function pinKnownMcpConnection<T extends McpServerProfile>(profile: T): T {
+  if (!Array.isArray(profile.args)) return profile;
+  const args = profile.args.map((arg) => PINNED_MCP_PACKAGES[arg] ?? arg);
+  return args.some((arg, index) => arg !== profile.args?.[index])
+    ? { ...profile, args }
+    : profile;
+}
+
+function mcpConnection(profile: McpServerProfile): McpConnectionFields {
+  return {
+    ...(profile.args !== undefined ? { args: profile.args } : {}),
+    ...(profile.env !== undefined ? { env: profile.env } : {}),
+    ...(profile.url !== undefined ? { url: profile.url } : {}),
+    ...(profile.headers !== undefined ? { headers: profile.headers } : {}),
+  };
+}
+
+function mcpForStorage(input: McpServerProfile): McpServerProfile {
+  input = pinKnownMcpConnection(input);
+  const previous = loadSettings().mcpServers?.find((server) => server.name === input.name);
+  const incoming = mcpConnection(input);
+  const hasIncoming = Object.keys(incoming).length > 0;
+  const connectionEncrypted = hasIncoming
+    ? requireSettingsSecretCodec().encrypt(JSON.stringify(incoming))
+    : previous?.connectionEncrypted;
+  const stored: McpServerProfile = {
+    ...(previous ?? {}),
+    ...input,
+    connectionEncrypted,
+  };
+  for (const field of MCP_CONNECTION_FIELDS) delete stored[field];
+  delete stored.hasStoredConnection;
+  delete stored.registryRevision;
+  if (!stored.connectionEncrypted) delete stored.connectionEncrypted;
+  return stored;
+}
+
+function hydrateMcp(profile: McpServerProfile): McpServerProfile {
+  if (!profile.connectionEncrypted) return pinKnownMcpConnection({ ...profile });
+  const plaintext = settingsSecretCodec?.decrypt(profile.connectionEncrypted);
+  if (!plaintext) throw new Error(`Cannot decrypt the saved connection for MCP server "${profile.name}".`);
+  let connection: McpConnectionFields;
+  try {
+    connection = JSON.parse(plaintext) as McpConnectionFields;
+  } catch {
+    throw new Error(`Saved connection for MCP server "${profile.name}" is corrupt.`);
+  }
+  const hydrated = { ...profile, ...connection };
+  delete hydrated.connectionEncrypted;
+  delete hydrated.hasStoredConnection;
+  return pinKnownMcpConnection(hydrated);
+}
+
+function mcpConnectionEnvironmentName(name: string): string {
+  const digest = createHash('sha256').update(String(name).trim().toLowerCase()).digest('hex').slice(0, 20);
+  return `IDACC_MCP_CONNECTION_${digest.toUpperCase()}`;
+}
+
+export function managedMcpConnectionEnvironment(): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const stored of loadSettings().mcpServers ?? []) {
+    try {
+      const profile = hydrateMcp(stored);
+      environment[mcpConnectionEnvironmentName(profile.name)] = JSON.stringify(mcpConnection(profile));
+    } catch {
+      // A locked/corrupt entry remains encrypted and unavailable. The Manager
+      // will omit that referenced MCP rather than persisting or logging it.
+    }
+  }
+  return environment;
+}
+
+function refreshManagedMcpConnectionEnvironment(): void {
+  configureUnifiedStackMcpConnections(managedMcpConnectionEnvironment());
+}
+
+function hydrateRegisteredMcp(profile: McpServerProfile): McpServerProfile {
+  const registered = loadSettings().mcpServers?.find((server) => server.name === profile.name);
+  return hydrateMcp(registered ?? profile);
+}
+
+function hydrateRequiredRegisteredMcp(profile: McpServerProfile): McpServerProfile {
+  const registered = loadSettings().mcpServers?.find((server) => server.name === profile.name);
+  if (!registered) {
+    throw new Error(`MCP server "${profile.name}" is no longer in the registry. Refresh capabilities and try again.`);
+  }
+  return hydrateMcp(registered);
+}
+
+function mcpRegistryRevision(profile: McpServerProfile): string {
+  return createHash('sha256').update(JSON.stringify({
+    name: profile.name,
+    transport: profile.transport,
+    command: profile.command ?? '',
+    enabled: profile.enabled !== false,
+    connectionEncrypted: profile.connectionEncrypted ?? '',
+    args: profile.args ?? [],
+    env: profile.env ?? {},
+    url: profile.url ?? '',
+    headers: profile.headers ?? {},
+  })).digest('hex');
+}
+
+function rendererMcp(profile: McpServerProfile): McpServerProfile {
+  const safe = { ...profile, hasStoredConnection: Boolean(
+    profile.connectionEncrypted || MCP_CONNECTION_FIELDS.some((field) => profile[field] !== undefined),
+  ), registryRevision: mcpRegistryRevision(profile) };
+  for (const field of MCP_CONNECTION_FIELDS) delete safe[field];
+  delete safe.connectionEncrypted;
+  return safe;
+}
+
+function rendererMcpList(): McpServerProfile[] {
+  return (loadSettings().mcpServers ?? []).map(rendererMcp);
+}
+
+function rendererMcpStamp(profile: McpServerProfile): string {
+  return JSON.stringify({
+    name: profile.name,
+    transport: profile.transport,
+    command: profile.command ?? '',
+    enabled: profile.enabled !== false,
+    hasStoredConnection: profile.hasStoredConnection === true,
+    registryRevision: profile.registryRevision ?? '',
+  });
+}
+
+function canonicalMcpValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalMcpValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => [key, canonicalMcpValue(child)]),
+  );
+}
+
+function rendererAgentMcpStamp(servers: McpServerSpec[]): string {
+  return JSON.stringify(canonicalMcpValue(sanitizeSecretPayload(servers ?? [])));
+}
+
+/** Migrate legacy plaintext provider and MCP connection material in place. */
+export function migrateSettingsSecrets(): { providers: number; mcpServers: number } {
+  const codec = requireSettingsSecretCodec();
+  const config = loadSettings();
+  let providers = 0;
+  let mcpServers = 0;
+  config.providers = config.providers.map((provider) => {
+    if (!provider.apiKey) return provider;
+    providers += 1;
+    const migrated = {
+      ...provider,
+      apiKeyEncrypted: provider.apiKeyEncrypted || codec.encrypt(provider.apiKey),
+    };
+    delete migrated.apiKey;
+    return migrated;
+  });
+  config.mcpServers = (config.mcpServers ?? []).map((server) => {
+    if (server.connectionEncrypted) {
+      const decrypted = codec.decrypt(server.connectionEncrypted);
+      if (!decrypted) return server;
+      try {
+        const connection = JSON.parse(decrypted) as McpConnectionFields;
+        const pinned = pinKnownMcpConnection({ ...server, ...connection });
+        if (JSON.stringify(mcpConnection(pinned)) === JSON.stringify(connection)) return server;
+        mcpServers += 1;
+        return { ...server, connectionEncrypted: codec.encrypt(JSON.stringify(mcpConnection(pinned))) };
+      } catch {
+        return server;
+      }
+    }
+    if (!MCP_CONNECTION_FIELDS.some((field) => server[field] !== undefined)) return server;
+    mcpServers += 1;
+    const pinned = pinKnownMcpConnection(server);
+    const migrated = {
+      ...pinned,
+      connectionEncrypted: codec.encrypt(JSON.stringify(mcpConnection(pinned))),
+    };
+    for (const field of MCP_CONNECTION_FIELDS) delete migrated[field];
+    return migrated;
+  });
+  if (providers || mcpServers) saveSettings(config);
+  return { providers, mcpServers };
+}
 
 function assertDefaultPrimaryWrite(team: string, agent: string): void {
   if (team !== PRIMARY_TEAM || agent !== DEFAULT_PRIMARY_AGENT) {
@@ -183,8 +477,8 @@ function recoverPersonalSignAddress(message: string, signature: string): string 
   if (recovery !== 0 && recovery !== 1) {
     throw new Error('Controller signature has an unsupported recovery id.');
   }
-  const sig = secp256k1.Signature.fromCompact(bytes.slice(0, 64)).addRecoveryBit(recovery);
-  const publicKey = sig.recoverPublicKey(personalSignHash(message)).toRawBytes(false);
+  const sig = secp256k1.Signature.fromBytes(bytes.slice(0, 64), 'compact').addRecoveryBit(recovery);
+  const publicKey = sig.recoverPublicKey(personalSignHash(message)).toBytes(false);
   return `0x${bytesToHex(keccak_256(publicKey.slice(1)).slice(-20))}`;
 }
 
@@ -206,7 +500,7 @@ async function verifyControllerChallenge(agent: string, wallet: string, signatur
   if (recovered.toLowerCase() !== wallet.toLowerCase()) {
     throw new Error('Controller signature does not match the challenge wallet.');
   }
-  const verified = { ...record, signature: trimmed, verifiedAt: Date.now() };
+  const verified = { ...record, signature: '', verifiedAt: Date.now() };
   controllerProofs.set(key, verified);
   return verified;
 }
@@ -378,7 +672,7 @@ async function previewProjectsSync(rootArg?: string): Promise<{
   return { ok: true, root, found: scan.found.length, added, adopted, existing, total: projects.length + added, addNames, adoptNames };
 }
 
-type CliModelRuntime = 'grok' | 'antigravity';
+type CliModelRuntime = 'claude' | 'grok' | 'antigravity';
 type CliModelCacheEntry = { at: number; models: string[] };
 const LIVE_CLI_MODEL_TIMEOUT_MS = 15_000;
 const cliModelCache = new Map<CliModelRuntime, CliModelCacheEntry>();
@@ -392,9 +686,11 @@ function cliEnv(): NodeJS.ProcessEnv {
     '/usr/local/bin',
     '/usr/bin',
     '/bin',
-    ...(process.env.PATH ? process.env.PATH.split(':') : []),
+    ...(process.env.PATH ? process.env.PATH.split(delimiter) : []),
   ];
-  return { ...process.env, PATH: Array.from(new Set(dirs)).join(':') };
+  return externalChildEnvironment(process.env, {
+    PATH: Array.from(new Set(dirs)).join(delimiter),
+  });
 }
 
 function codexModelsFromCache(): string[] {
@@ -429,15 +725,19 @@ function compareVersions(a: string | undefined, b: string): number {
   return 0;
 }
 
+let cachedCodexCliVersion: string | null | undefined;
 function codexCliVersion(): string | undefined {
+  if (cachedCodexCliVersion !== undefined) return cachedCodexCliVersion ?? undefined;
   try {
-    return execFileSync('codex', ['--version'], {
+    cachedCodexCliVersion = execFileSync('codex', ['--version'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 3000,
       env: cliEnv(),
     }).trim();
+    return cachedCodexCliVersion;
   } catch {
+    cachedCodexCliVersion = null;
     return undefined;
   }
 }
@@ -452,17 +752,52 @@ function filterCodexModelsForInstalledCli(models: string[], cachedModels: string
   return models.filter((model) => !CODEX_GPT56_RE.test(model));
 }
 
+function savedCliModelInfo(runtime: CliModelRuntime): CliModelCacheEntry | undefined {
+  const saved = loadSettings().runtimeModelCache?.[runtime];
+  if (!saved || !Number.isFinite(saved.at) || !Array.isArray(saved.models)) return undefined;
+  return {
+    at: saved.at,
+    models: Array.from(new Set(saved.models.map(String).map((model) => model.trim()).filter(Boolean))),
+  };
+}
+
+function saveCliModelInfo(runtime: CliModelRuntime, entry: CliModelCacheEntry): void {
+  const settings = loadSettings();
+  settings.runtimeModelCache = {
+    ...(settings.runtimeModelCache ?? {}),
+    [runtime]: entry,
+  };
+  saveSettings(settings);
+}
+
 function cachedCliModels(runtime: CliModelRuntime, refresh: boolean, load: () => string[]): string[] {
-  const cached = cliModelCache.get(runtime);
-  if (cached && !refresh) return cached.models;
+  const memory = cliModelCache.get(runtime);
+  if (memory && !refresh) return memory.models;
+  const saved = savedCliModelInfo(runtime);
+  if (saved && !refresh) {
+    cliModelCache.set(runtime, saved);
+    return saved.models;
+  }
+  const fallback = memory ?? saved;
   try {
-    const models = load();
-    cliModelCache.set(runtime, { at: Date.now(), models });
-    return models;
+    const models = Array.from(new Set(load().map((model) => model.trim()).filter(Boolean)));
+    if (!models.length && fallback?.models.length) {
+      cliModelCache.set(runtime, fallback);
+      return fallback.models;
+    }
+    const next = { at: Date.now(), models };
+    cliModelCache.set(runtime, next);
+    saveCliModelInfo(runtime, next);
+    return next.models;
   } catch {
-    if (cached) return cached.models;
-    cliModelCache.set(runtime, { at: Date.now(), models: [] });
-    return [];
+    if (fallback) {
+      cliModelCache.set(runtime, fallback);
+      return fallback.models;
+    }
+    const empty = { at: Date.now(), models: [] };
+    cliModelCache.set(runtime, empty);
+    saveCliModelInfo(runtime, empty);
+    return empty.models;
   }
 }
 
@@ -511,12 +846,16 @@ function antigravityModelsFromCli(refresh = false): string[] {
 }
 
 /** Catalog with subscription CLI live model lists merged into curated/runtime providers. */
-function runtimeCatalogWithLiveCliModels(options: { refreshCli?: boolean } = {}): Record<string, string[]> {
+function runtimeCatalogWithLiveCliModels(options: { refreshCli?: boolean; refreshClaude?: boolean } = {}): Record<string, string[]> {
   const cat = buildRuntimeCatalog(loadSettings().providers);
+  const refreshCli = Boolean(options.refreshCli);
+  const claude = cachedCliModels('claude', refreshCli || Boolean(options.refreshClaude), () => discoverClaudeCliModels().models);
+  for (const runtime of ['claude-code-cli', 'claude-code-local']) {
+    if (claude.length) cat[runtime] = Array.from(new Set([...claude, ...(cat[runtime] ?? [])]));
+  }
   const codex = codexModelsFromCache();
   if (codex.length) cat.codex = Array.from(new Set([...codex, ...(cat.codex ?? [])]));
   cat.codex = filterCodexModelsForInstalledCli(cat.codex ?? [], codex);
-  const refreshCli = Boolean(options.refreshCli);
   const grok = grokModelsFromCli(refreshCli);
   if (grok.length) cat.grok = Array.from(new Set([...grok, ...(cat.grok ?? [])]));
   const antigravity = antigravityModelsFromCli(refreshCli);
@@ -528,8 +867,8 @@ function runtimeCatalogWithLiveCliModels(options: { refreshCli?: boolean } = {})
  * Per-runtime model freshness: the live list + where it came from + when it was last
  * refreshed. Feeds the UI so the operator can see each runtime's models really are current
  * (and which ones are curated fallbacks with no live source). codex reads its own CLI cache
- * (mtime = freshness); the claude and ollama runtimes read their backing provider's last sync;
- * cursor-cli is curated-only (no public model API).
+ * (mtime = freshness); Claude Code reads its CLI policy/account cache; provider-backed
+ * runtimes read their backing provider's last sync; cursor-cli is curated-only.
  */
 type RuntimeFreshness = {
   runtime: string;
@@ -537,19 +876,30 @@ type RuntimeFreshness = {
   kind?: 'harness' | RuntimeModelLaneKind;
   models: string[];
   count: number;
-  source: 'codex-cache' | 'grok-cli' | 'antigravity-cli' | 'provider' | 'curated' | 'none';
+  source: 'claude-cli' | 'codex-cache' | 'grok-cli' | 'antigravity-cli' | 'provider' | 'curated' | 'none';
   provider?: string;
   lastCheckedMs: number | null;
   selectable?: boolean;
+  providerKind?: ProviderKind;
+  /** Effective Brain MCP support for at least one model in this row. */
+  supportsMcp?: boolean;
+  /** Model subset with authoritative starter-compatible tool evidence. */
+  mcpModels?: string[];
+  mcpEvidence?: 'runtime' | 'ollama-show' | 'none';
+  mcpExcludedModels?: string[];
+  mcpDetail?: string;
   detail?: string;
 };
-async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
+async function runtimeFreshness(
+  policy: RuntimeFreshnessReadPolicy = runtimeFreshnessReadPolicy(),
+): Promise<RuntimeFreshness[]> {
   const providers = loadSettings().providers;
   const enrichedProviders = listProvidersEnriched();
-  const cat = runtimeCatalogWithLiveCliModels();
+  const cat = runtimeCatalogWithLiveCliModels(policy.catalog);
+  const claudeInfo = cliModelInfo('claude');
   const grokInfo = cliModelInfo('grok');
   const antigravityInfo = cliModelInfo('antigravity');
-  const managed = await subsStatus().then((rows) => Object.values(rows)).catch(() => []);
+  const managed = await subsStatus(policy.subscriptions).then((rows) => Object.values(rows)).catch(() => []);
   const available = settingsAvailableRuntimeSet(enrichedProviders, managed);
   const managedByRuntime = new Map(managed.filter(managedRuntimeHasEvidence).map((s) => [s.runtime, s]));
   // Newest enabled provider that has synced models AND backs this runtime.
@@ -571,6 +921,7 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
     count: lane.models.length,
     source: lane.source,
     provider: lane.provider,
+    providerKind: lane.providerKind,
     lastCheckedMs: lane.lastCheckedMs,
     selectable: lane.selectable,
     detail: lane.detail,
@@ -593,6 +944,20 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
       const live = codexModelsFromCache().length > 0;
       return { runtime: rt, kind: 'harness', models, count: models.length, source: live ? 'codex-cache' : 'curated', lastCheckedMs: live ? mt : null, selectable, detail: unavailableDetail };
     }
+    if (rt === 'claude-code-cli' || rt === 'claude-code-local') {
+      const discovery = discoverClaudeCliModels();
+      const live = (claudeInfo?.models.length ?? 0) > 0;
+      return {
+        runtime: rt,
+        kind: 'harness',
+        models,
+        count: models.length,
+        source: live ? 'claude-cli' : 'curated',
+        lastCheckedMs: live ? (discovery.lastCheckedMs ?? claudeInfo?.at ?? null) : null,
+        selectable,
+        detail: unavailableDetail ?? discovery.detail,
+      };
+    }
     if (rt === 'grok') {
       const live = (grokInfo?.models.length ?? 0) > 0;
       const canRun = selectable || live;
@@ -607,12 +972,59 @@ async function runtimeFreshness(): Promise<RuntimeFreshness[]> {
     if (p) return { runtime: rt, kind: 'harness', models, count: models.length, source: 'provider', provider: p.name, lastCheckedMs: p.lastSync?.at ?? null, selectable, detail: unavailableDetail };
     return { runtime: rt, kind: 'harness', models, count: models.length, source: models.length ? 'curated' : 'none', lastCheckedMs: null, selectable, detail: unavailableDetail };
   });
-  return [...harnessRows, ...providerRows];
+  return Promise.all([...harnessRows, ...providerRows].map(async (row): Promise<RuntimeFreshness> => {
+    const policy = starterMcpCapabilityPolicy(row.runtime, row.providerKind);
+    if (policy === 'runtime') {
+      return {
+        ...row,
+        supportsMcp: true,
+        mcpModels: [...row.models],
+        mcpEvidence: 'runtime',
+        mcpExcludedModels: [],
+        mcpDetail: `${runtimeDisplayLabel(row.runtime)} supplies model-independent MCP tool access for the Brain-backed starter workspace.`,
+      };
+    }
+
+    if (policy === 'ollama-model') {
+      const provider = row.runtime === 'ollama'
+        ? providerFor('ollama')
+        : providers.find((candidate) => candidate.name === row.provider);
+      if (row.selectable !== true || provider?.kind !== 'ollama') {
+        return {
+          ...row,
+          supportsMcp: false,
+          mcpModels: [],
+          mcpEvidence: 'none',
+          mcpExcludedModels: [...row.models],
+          mcpDetail: 'This Ollama route must be live before IDACC can verify model-specific Brain tool capability.',
+        };
+      }
+      const evidence = await inspectOllamaStarterToolModels(provider.baseUrl, row.models);
+      return {
+        ...row,
+        supportsMcp: evidence.toolCapableModels.length > 0,
+        mcpModels: evidence.toolCapableModels,
+        mcpEvidence: 'ollama-show',
+        mcpExcludedModels: [...evidence.nonToolModels, ...evidence.unverifiedModels],
+        mcpDetail: evidence.detail,
+      };
+    }
+
+    const mcpDetail = policy === 'unverified'
+      ? 'The Manager can wire MCP into this provider route, but this provider/model catalog has no deterministic tool-capability proof. It remains available for general agents and is conservatively excluded from starter setup.'
+      : `${runtimeDisplayLabel(row.runtime)} does not consume the Manager MCP attachment required by the Brain-backed starter workspace.`;
+    return {
+      ...row,
+      supportsMcp: false,
+      mcpModels: [],
+      mcpEvidence: 'none',
+      mcpExcludedModels: [...row.models],
+      mcpDetail,
+    };
+  }));
 }
 
-/** Probe every enabled provider that backs a runtime, refresh its synced model list, and
- *  return the rebuilt per-runtime catalog. Shared by the manual `runtime:probe` method and
- *  the background model-refresh loop ("the checker that stays up to date"). */
+/** Probe every enabled provider that backs a runtime after an explicit operator action. */
 async function probeAllRuntimes(): Promise<Record<string, string[]>> {
   const providers = loadSettings().providers;
   await Promise.all(
@@ -620,7 +1032,7 @@ async function probeAllRuntimes(): Promise<Record<string, string[]>> {
       .filter((p) => p.enabled !== false)
       .map(async (p) => {
         try {
-          const outcome = await new ProviderClient(p, resolveProviderKey(p)).probe();
+          const outcome = await probeConfiguredProvider(p);
           recordProviderSync(p.name, {
             at: Date.now(),
             status: outcome.status,
@@ -641,16 +1053,25 @@ async function probeLocalRuntimes(): Promise<Record<string, string[]>> {
   const providers = loadSettings().providers;
   await Promise.all(
     providers
-      .filter((p) => p.enabled !== false && isLocalProvider(p))
+      .filter((p) => (
+        p.enabled !== false
+        && isLocalProvider(p)
+        && backgroundProviderProbeAllowed(p)
+      ))
       .map(async (p) => {
-        const outcome = await new ProviderClient(p, resolveProviderKey(p)).probe(undefined, 3000);
-        recordProviderSync(p.name, {
-          at: Date.now(),
-          status: outcome.status,
-          modelCount: outcome.models.length,
-          models: outcome.models.slice(0, 200).map((m) => m.id),
-          keySource: keySourceOf(p),
-        });
+        try {
+          const outcome = await probeConfiguredProvider(p, 3000);
+          recordProviderSync(p.name, {
+            at: Date.now(),
+            status: outcome.status,
+            modelCount: outcome.models.length,
+            models: outcome.models.slice(0, 200).map((m) => m.id),
+            keySource: keySourceOf(p),
+          });
+        } catch {
+          // Preserve the last known-good provider catalog; other runtime lanes
+          // still refresh during this pass.
+        }
       }),
   );
   return runtimeCatalogWithLiveCliModels();
@@ -689,7 +1110,7 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
     const p = loadSettings().providers.find((x) => x.name === name);
     if (!p) return;
     try {
-      const outcome = await new ProviderClient(p, resolveProviderKey(p)).probe(undefined, 8000);
+      const outcome = await probeConfiguredProvider(p, 8000);
       recordProviderSync(p.name, {
         at: Date.now(),
         status: outcome.status,
@@ -753,7 +1174,7 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
         label: runtimeDisplayLabel(row.runtime),
         model: row.model || undefined,
         ok: false,
-        detail: 'The connected ID Agents manager is outdated and cannot verify runtime assignments. Open Settings, run Update & sync manager, then retry.',
+        detail: 'The bundled Agent manager cannot verify runtime assignments. Open Settings, check for a unified IDACC update, then retry.',
         source: 'harness',
         modelCount: models.length,
       };
@@ -789,22 +1210,22 @@ async function verifyRuntimeAssignments(assignments: RuntimeAssignment[]): Promi
 
 /** Where a provider's API key resolves from, without exposing the value. */
 function keySourceOf(p: ProviderProfile): 'config' | 'env' | 'none' {
-  if (p.apiKey) return 'config';
-  if (resolveProviderKey(p)) return 'env';
+  if (p.apiKey || p.apiKeyEncrypted) return 'config';
+  if (providerKey(p)) return 'env';
   return 'none';
 }
 /** Provider list enriched with the (non-secret) key source for the UI. */
 function listProvidersEnriched(): (ProviderProfile & { keySource: 'config' | 'env' | 'none'; needsKey: boolean })[] {
-  return loadSettings().providers.map((p) => ({ ...p, keySource: keySourceOf(p), needsKey: providerNeedsKey(p) }));
+  return loadSettings().providers.map((p) => {
+    const { apiKey: _apiKey, apiKeyEncrypted: _apiKeyEncrypted, ...safe } = p;
+    void _apiKey;
+    void _apiKeyEncrypted;
+    return { ...safe, keySource: keySourceOf(p), needsKey: providerNeedsKey(p) };
+  });
 }
 
 function isLoopbackProvider(p: ProviderProfile): boolean {
-  try {
-    const host = new URL(p.baseUrl).hostname.toLowerCase();
-    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
-  } catch {
-    return false;
-  }
+  return providerUrlIsLoopback(p.baseUrl);
 }
 
 function providerBridgeStamp(p: ProviderProfile): string {
@@ -837,18 +1258,21 @@ function providerLaneName(runtime: string): string | null {
   }
 }
 
-function providerLaneEnvName(name: string): string {
-  return `IDCTL_${name.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
-}
-
-function resolveProviderLaneAssignment(runtime: string): { providerName: string; provider: { name: string; kind?: string; baseUrl: string; apiKey?: string; keyEnv?: string } } | null {
+function resolveProviderLaneAssignment(runtime: string): { providerName: string; provider: { name: string; kind?: string; baseUrl: string; apiKey?: string } } | null {
   const providerName = providerLaneName(runtime);
   if (!providerName) return null;
   const p = loadSettings().providers.find((x) => x.name === providerName);
   if (!p) throw new Error(`provider lane "${providerName}" is no longer configured in Settings`);
   if (!providerRouteReadyForAssignment(p)) throw new Error(`provider lane "${providerName}" is not ready; Connect & sync it in Settings first`);
-  const apiKey = resolveProviderKey(p) || (!providerNeedsKey(p) && isLoopbackProvider(p) ? 'idacc-local-provider-no-key' : '');
-  if (providerNeedsKey(p) && !apiKey) throw new Error(`provider lane "${providerName}" is missing an API key`);
+  const needsKey = providerNeedsKey(p);
+  // A local/no-key provider may retain an obsolete encrypted key after its
+  // profile is edited. Never unlock the OS credential store for that dead
+  // field during automatic Manager restart restoration. Credential-backed
+  // providers still decrypt only when their live route actually needs it.
+  const apiKey = needsKey
+    ? providerKey(p)
+    : (isLoopbackProvider(p) ? 'idacc-local-provider-no-key' : '');
+  if (needsKey && !apiKey) throw new Error(`provider lane "${providerName}" is missing an API key`);
   return {
     providerName,
     provider: {
@@ -856,13 +1280,13 @@ function resolveProviderLaneAssignment(runtime: string): { providerName: string;
       kind: p.kind,
       baseUrl: p.baseUrl,
       ...(apiKey ? { apiKey } : {}),
-      keyEnv: providerLaneEnvName(p.name),
     },
   };
 }
 
 function providerRouteReadyForAssignment(p: ProviderProfile): boolean {
-  const keyReady = !providerNeedsKey(p) || Boolean(resolveProviderKey(p));
+  if (!providerTransportDecision(p.baseUrl).ok) return false;
+  const keyReady = !providerNeedsKey(p) || Boolean(providerKey(p));
   const modelCount = p.lastSync?.models?.length ?? p.lastSync?.modelCount ?? 0;
   if (isLocalProvider(p)) return keyReady && localProviderRouteIsLive(p);
   return p.enabled !== false && keyReady && modelCount > 0 && (p.lastSync?.status === 'live' || p.lastSync?.status === 'preset' || modelCount > 0);
@@ -875,13 +1299,58 @@ async function setAgentRuntimeFromSettings(agentId: string, runtime: string, tea
   return scoped.setAgentProviderRuntime(String(agentId), String(runtime), assignment.provider);
 }
 
+async function applyAgentConfigurationFromSettings(
+  agentId: string,
+  configuration: { runtime: string; model: string; effort?: string; speed?: string },
+  expected: { runtime?: string; model?: string; effort?: string; speed?: string },
+  team?: string,
+) {
+  const scoped = team ? client.withTeam(String(team)) : client;
+  const assignment = resolveProviderLaneAssignment(configuration.runtime);
+  return scoped.applyAgentConfiguration(
+    String(agentId),
+    configuration,
+    expected,
+    assignment?.provider,
+  );
+}
+
+/**
+ * Restore only provider agents that the previous Manager deliberately marked
+ * for restart. Missing/decrypt-failed Settings leave those agents offline with
+ * their marker intact; unrelated desktop startup continues.
+ */
+export async function resumeManagedProviderAgentsAfterRestart(
+  signal?: AbortSignal,
+): Promise<ProviderRehydrationReport> {
+  return rehydrateManagedProviderAgents({
+    listTeams: async (activeSignal) => {
+      const teams = await client.teams(activeSignal);
+      return [...new Set([
+        PRIMARY_TEAM,
+        cfg.team ?? PRIMARY_TEAM,
+        ...teams.map((team) => team.name),
+      ])];
+    },
+    listAgents: (team, activeSignal) => client.withTeam(team).agents(activeSignal),
+    resolveAssignment: resolveProviderLaneAssignment,
+    rebindAndResume: (team, agentId, runtime, provider, activeSignal) =>
+      client.withTeam(team).rebindAndResumeAgentProviderRuntime(
+        agentId,
+        runtime,
+        provider,
+        activeSignal,
+      ),
+  }, signal);
+}
+
 async function prepareOnboardRuntime(plan: OnboardPlan): Promise<PreparedRuntime | undefined> {
   const runtime = String(plan.runtime ?? '');
   const assignment = resolveProviderLaneAssignment(runtime);
   if (!assignment) {
     const preflight = await client.runtimePreflight(runtime || undefined, plan.model);
     if (!preflight) {
-      throw new Error('The connected ID Agents manager is outdated and cannot verify runtime assignments. Open Settings, run Update & sync manager, then retry.');
+      throw new Error('The bundled Agent manager cannot verify runtime assignments. Open Settings, check for a unified IDACC update, then retry.');
     }
     if (!preflight.ok) {
       throw new Error(preflight.detail || preflight.issues.map((issue) => issue.message).join('; ') || 'Manager runtime preflight failed.');
@@ -1029,7 +1498,6 @@ function localSkillCandidateRoots(): Array<{ label: string; root: string }> {
   return [
     { label: 'Codex', root: join(home, '.codex', 'skills') },
     { label: 'Agents', root: join(home, '.agents', 'skills') },
-    { label: 'ID Agents', root: join(home, 'bob', 'Library', 'Assistants', 'idagents', '.agents', 'skills') },
   ];
 }
 
@@ -1150,7 +1618,7 @@ async function projectPluginSkill(name: string): Promise<ProjectPluginSkillResul
 }
 import type { LibrarySkillEntry, McpServerSpec, CreateSkillInput, LibraryPluginInspection, ProjectPluginSkillResult } from '../../../idctl/src/api/client.ts';
 import { filterParkedMcpServers } from '../../../idctl/src/settings/mcpCatalog.ts';
-import { brokerServerPath, mintAgentToken, revokeAgentToken, brokerUrl } from './computeruse/broker.ts';
+import { brokerServerPath, brokerSessionPath, mintAgentToken, revokeAgentToken, brokerUrl } from './computeruse/broker.ts';
 // The Computer Use MCP server name. NEVER "computer-use" — Claude Code reserves that
 // name and rejects the entire MCP config, breaking every dispatch. CU_MCP_ALIASES
 // includes the old broken name so existing attachments can be detected + cleaned up.
@@ -1192,6 +1660,18 @@ const keys = new Proxy({} as KeyProvider, {
 export function configureKeyProvider(provider: KeyProvider): void {
   activeKeyProvider = provider;
 }
+
+/** Point the desktop bridge at the app-owned Manager after profile bootstrap. */
+export function configureManagedManager(url: string, adminToken?: string): void {
+  // A startup retry may replace the supervised Manager. Never let completed or
+  // in-flight reads from the previous endpoint/profile satisfy the new client.
+  readCallCache.clear();
+  controllerProofs.clear();
+  cfg = { ...cfg, managerUrl: url, apiKey: adminToken };
+  client = new ManagerClient(cfg);
+  brain.setTransport((request) => client.brainRequest(request));
+  configureControlEventEmitter((event) => client.emitControlEvent(event));
+}
 const RECENT_DONE_TASK_LIMIT = 25;
 let doneTaskLimitUnsupportedAt = 0;
 
@@ -1204,6 +1684,7 @@ type OrgControlRead = {
 };
 
 let controlStateWriteTail: Promise<void> = Promise.resolve();
+let mcpRegistryWriteTail: Promise<void> = Promise.resolve();
 
 function controlStateClient(): ManagerClient {
   // App-wide control state must not move when the operator changes the visible
@@ -1217,11 +1698,36 @@ function serializeControlStateWrite<T>(write: () => Promise<T>): Promise<T> {
   return next;
 }
 
+function serializeMcpRegistryWrite<T>(write: () => Promise<T>): Promise<T> {
+  const next = mcpRegistryWriteTail.then(write, write);
+  mcpRegistryWriteTail = next.then(() => undefined, () => undefined);
+  return next;
+}
+
 function mirrorProjects(projects: ProjectEntry[]): ProjectEntry[] {
   const settings = loadSettings();
   settings.projects = projects;
   saveSettings(settings);
   return projects;
+}
+
+function projectControlStamp(project: ProjectEntry): string {
+  return JSON.stringify({
+    id: project.id,
+    name: project.name,
+    status: project.status,
+    description: project.description ?? '',
+    team: project.team ?? '',
+    lead: project.lead ?? '',
+    policy: project.policy ?? 'balanced',
+    tags: project.tags ?? [],
+    links: project.links ?? [],
+    path: project.path ?? '',
+    notes: project.notes ?? '',
+    autoCommit: project.autoCommit ?? 'off',
+    createdAt: project.createdAt ?? 0,
+    updatedAt: project.updatedAt ?? 0,
+  });
 }
 
 async function managerProjects(): Promise<ProjectEntry[]> {
@@ -1280,7 +1786,7 @@ async function managerOrgControl(options: { allowLegacyRead?: boolean } = {}): P
       return {
         value: orgControlSnapshot(),
         source: 'local-compat',
-        warning: 'Using the local organization cache because this manager does not expose control state. Update id-agents to v0.1.111 or newer.',
+        warning: 'Using the local organization cache because the bundled service does not expose control state. Update or repair the unified IDACC application from Settings, then retry.',
       };
     }
     throw error;
@@ -1461,22 +1967,64 @@ function goalDriverConfig(): GoalDriverConfig {
   return normalizeGoalDriverConfig(loadSettings().goalDriver);
 }
 
-async function eventTailCursor(scopedClient: ManagerClient): Promise<number> {
+type EventTailState = {
+  next_seq: number;
+  stream_id?: string;
+  cursor_reset?: boolean;
+};
+
+async function eventTailState(scopedClient: ManagerClient): Promise<EventTailState> {
   const requestedTail = await scopedClient.events(0, { wait: 0, limit: 1, tail: true });
-  if (!requestedTail.events?.length) return Number(requestedTail.next_seq) || 0;
+  if (!requestedTail.events?.length) {
+    return {
+      next_seq: Number(requestedTail.next_seq) || 0,
+      ...(requestedTail.stream_id ? { stream_id: requestedTail.stream_id } : {}),
+      ...(requestedTail.cursor_reset === true ? { cursor_reset: true } : {}),
+    };
+  }
 
   // Older managers ignore tail=1 and return the oldest retained event. Keep the
   // expensive catch-up inside the main process so React doesn't render thousands
   // of historical rows during startup. Patched managers return above immediately.
   let cursor = Number(requestedTail.next_seq) || 0;
+  let streamId = requestedTail.stream_id;
   for (let i = 0; i < 200; i += 1) {
     const page = await scopedClient.events(cursor, { wait: 0, limit: 1000 });
+    streamId = page.stream_id ?? streamId;
     const next = Number(page.next_seq) || cursor;
-    if (!page.events?.length || next <= cursor) return cursor;
+    if (!page.events?.length || next <= cursor) {
+      return { next_seq: cursor, ...(streamId ? { stream_id: streamId } : {}) };
+    }
     cursor = next;
-    if (page.events.length < 1000) return cursor;
+    if (page.events.length < 1000) {
+      return { next_seq: cursor, ...(streamId ? { stream_id: streamId } : {}) };
+    }
   }
-  return cursor;
+  return { next_seq: cursor, ...(streamId ? { stream_id: streamId } : {}) };
+}
+
+async function eventTailCursor(scopedClient: ManagerClient): Promise<number> {
+  return (await eventTailState(scopedClient)).next_seq;
+}
+
+async function strictAllTeamAgentGroups(): Promise<Array<{ team: string; agents: Agent[] }>> {
+  // Destructive fleet-wide operations must distinguish "this team is empty"
+  // from "the Manager could not enumerate/read this team". The ordinary roster
+  // remains best-effort for display, while this path propagates every read
+  // failure so a registry entry cannot be deleted from an incomplete snapshot.
+  const teams = await client.teams();
+  const names = [...new Set(
+    (teams.length
+      ? [PRIMARY_TEAM, cfg.team ?? PRIMARY_TEAM, ...teams.map((row) => row.name)]
+      : [cfg.team ?? PRIMARY_TEAM])
+      .map((name) => String(name).trim())
+      .filter(Boolean),
+  )];
+  const groups: Array<{ team: string; agents: Agent[] }> = [];
+  for (const team of names) {
+    groups.push({ team, agents: await client.withTeam(team).agents() });
+  }
+  return groups;
 }
 
 const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
@@ -1485,14 +2033,15 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   agents: () => client.agents(),
   teams: () => client.teams(),
   // Agents across ALL teams, grouped — for the Health roster.
-  'agents:allTeams': async () => {
+  'agents:allTeams': async (options?: { requireComplete?: boolean }) => {
+    if (options?.requireComplete) return strictAllTeamAgentGroups();
     const teams = await client.teams().catch(() => []);
     const names = teams.length ? teams.map((t) => t.name) : [cfg.team ?? 'default'];
     const groups = await mapTeamAgentGroups<Agent>(names, (name) => client.withTeam(name).agents());
     return groups.filter((g) => g.agents.length > 0);
   },
   events: (since: number) => client.events(Number(since) || 0, { wait: 20, limit: 100 }),
-  'events:tail': () => eventTailCursor(client).then((next_seq) => ({ next_seq })),
+  'events:tail': () => eventTailState(client),
   // Holistic activity: merge every team's recent events into one stream (tagged with
   // team), newest last. Used by the "All teams" Dashboard feed.
   'events:multi': async (limit?: number) => {
@@ -1682,6 +2231,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'work:teamLeads': (teams: string[]) => teamLeads(client, Array.isArray(teams) ? teams.map(String) : []),
   'work:fanout': (objective: string, teams: string[]) =>
     fanOutObjective(client, String(objective), Array.isArray(teams) ? teams.map(String) : []),
+  // Primary-lead Chat delegation: discover active non-default team leads in the
+  // main process, then dispatch to every one in parallel.
+  'work:fanoutToTeamLeads': (objective: string, currentTeam?: string) =>
+    fanOutObjectiveToActiveTeamLeads(client, String(objective), String(currentTeam || 'default')),
   // Lead triages unassigned To-Do tasks: assign each to the best active agent + dispatch.
   'work:triage': async (lead: string, team?: string, projectId?: string) => {
     const route = await projectRouting(projectId, team, lead);
@@ -1690,8 +2243,16 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'draftDispatcher:runOnce': () => processDraftProposalsOnce(client),
   'goalDriver:getConfig': async () => goalDriverConfig(),
   'goalDriver:setConfig': async (partial: Partial<GoalDriverConfig>) => {
-    setGoalDriver(normalizeGoalDriverConfig({ ...goalDriverConfig(), ...(partial ?? {}) }));
-    return goalDriverConfig();
+    const next = normalizeGoalDriverConfig({ ...goalDriverConfig(), ...(partial ?? {}) });
+    setGoalDriver(next);
+    await syncGoalDriverConfig(client, next);
+    return next;
+  },
+  'goalDriver:getStatus': async () => readGoalDriverStatus(client, goalDriverConfig()),
+  'goalDriver:syncNow': async () => {
+    const config = goalDriverConfig();
+    await syncGoalDriverConfig(client, config);
+    return readGoalDriverStatus(client, config);
   },
   'goalDriver:runOnce': async () => runGoalDriverOnce(() => client, goalDriverConfig()),
   'goals:syncInstructions': async () => {
@@ -1709,19 +2270,6 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   probeOne: (name: string, team?: string) => (team ? client.withTeam(String(team)) : client).probeOne(String(name)),
   'headroom:status': () => headroomStatus(),
   'headroom:audit': async () => headroomCoreAudit(loadSettings().headroomPilot),
-  'headroom:pluginPath': async () => headroomPluginPathAudit({
-    managerCapabilities: await client.capabilities().catch(() => null),
-    managerPlugins: await client.libraryPlugins().catch(() => []),
-    headroomStatus: await headroomStatus(),
-  }),
-  'headroom:backendContract': async () => {
-    const pluginPath = await headroomPluginPathAudit({
-      managerCapabilities: await client.capabilities().catch(() => null),
-      managerPlugins: await client.libraryPlugins().catch(() => []),
-      headroomStatus: await headroomStatus(),
-    });
-    return headroomBackendContractAudit(pluginPath);
-  },
   'headroom:pilot': async () => loadSettings().headroomPilot,
   'headroom:setPilot': async (partial: Partial<HeadroomPilotSettings>) => setHeadroomPilot(partial).headroomPilot,
   'context:budgetReport': async () => contextBudgetReport(),
@@ -1736,6 +2284,29 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   checkins: () => client.checkins(),
   'checkins:close': (id: string) => client.closeCheckin(String(id)),
   schedules: () => client.schedules(),
+  // Scheduled Dream reports complete asynchronously inside the agent runtime.
+  // Return the exact schedule receipts + query-completion rows so the app-local
+  // Dream store can reconcile them idempotently, including after an app restart.
+  'dreams:scheduledRuns': async (team?: string) => {
+    const targetTeam = team ? String(team) : client.team;
+    const teamClient = client.withTeam(targetTeam);
+    const schedules = (await teamClient.schedules()).filter(isDreamSchedule);
+    // Include the full current roster, not only active schedule targets. A run
+    // can complete after its schedule was edited or deleted; its durable
+    // marker-bearing receipt still identifies it as Dream work.
+    const roster = await teamClient.agents().catch(() => [] as Agent[]);
+    const agents = [...new Set([
+      ...schedules.flatMap((schedule) => schedule.targets),
+      ...roster.map((agent) => agent.name),
+    ].filter(Boolean))];
+    const pairs = await Promise.all(agents.map(async (agent) => {
+      const result = await teamClient
+        .remote<{ items?: ScheduledDreamNewsItem[] }>(`/news ${JSON.stringify(agent)}`)
+        .catch(() => null);
+      return [agent, result?.result?.items ?? []] as const;
+    }));
+    return { schedules, newsByAgent: Object.fromEntries(pairs) };
+  },
   // Every team's schedules, each tagged with its team — so the Schedule tab can surface
   // heartbeats whose target isn't in the CURRENT team's roster (e.g. a cross-team or
   // manager-level "task-master" heartbeat) instead of silently hiding them.
@@ -1824,13 +2395,30 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // dashboard: switch runtime (rebuild required to apply)
   setAgentRuntime: (id: string, runtime: string, team?: string) =>
     setAgentRuntimeFromSettings(String(id), String(runtime), team ? String(team) : undefined),
+  applyAgentConfiguration: (
+    id: string,
+    configuration: { runtime: string; model: string; effort?: string; speed?: string },
+    expected: { runtime?: string; model?: string; effort?: string; speed?: string },
+    team?: string,
+  ) => applyAgentConfigurationFromSettings(
+    String(id),
+    configuration,
+    expected,
+    team ? String(team) : undefined,
+  ),
+  setAgentModel: (id: string, model: string, team?: string) =>
+    (team ? client.withTeam(String(team)) : client).setAgentModel(String(id), String(model)),
   setAgentEffort: (id: string, effort: string, team?: string) =>
     (team ? client.withTeam(String(team)) : client).setAgentEffort(String(id), String(effort ?? '')),
   setAgentSpeed: (id: string, speed: string, team?: string) =>
     (team ? client.withTeam(String(team)) : client).setAgentSpeed(String(id), String(speed ?? '')),
+  setAgentSkills: (id: string, skills: string[], team?: string) =>
+    (team ? client.withTeam(String(team)) : client).setAgentSkills(String(id), Array.isArray(skills) ? skills.map(String) : []),
   // reassign a local agent to another team (rebuilds it there)
   'agent:move': (id: string, team: string, sourceTeam?: string, createTarget?: boolean) =>
     (sourceTeam ? client.withTeam(String(sourceTeam)) : client).moveAgent(String(id), String(team), { createTarget: Boolean(createTarget) }),
+  'agent:delete': (agent: string, team?: string) =>
+    (team ? client.withTeam(String(team)) : client).remote(`/delete ${JSON.stringify(String(agent))}`),
 
   // per-agent persistent instructions (system-prompt addendum, e.g. coordinator role).
   // Optional `team` scopes the read to a specific team (so the HR structure editor can load a
@@ -1859,8 +2447,16 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'identity:register': async (agent: string, team?: string) => {
     const name = String(agent);
     const teamName = team ? String(team) : undefined;
+    const scopedClient = teamName ? client.withTeam(teamName) : client;
+    const current = (await scopedClient.agents()).find((row) => row.name === name || row.id === name);
+    if (!current) throw new Error(`Agent "${name}" is no longer in ${teamName ?? client.team ?? 'default'}.`);
+    const registration = identityRegisterNoop(current);
+    if (registration.noop) {
+      return { ok: true, noop: true, changed: false, domain: registration.domain };
+    }
     await requireControllerProof(name, teamName);
-    return (teamName ? client.withTeam(teamName) : client).remote(`/register ${name}`);
+    const result = await scopedClient.remote(`/register ${name}`);
+    return { ok: true, noop: false, changed: true, result };
   },
   'wallet:provision': async (agent: string, team?: string) => {
     const name = String(agent);
@@ -1868,7 +2464,10 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     await requireControllerProofIfWalletExists(name, teamName);
     return (teamName ? client.withTeam(teamName) : client).remote(`/agent ${name} wallet provision`);
   },
-  'onboard:run': (plan: OnboardPlan) => runOnboarding(client, plan, { prepareRuntime: prepareOnboardRuntime }),
+  'onboard:run': (plan: OnboardPlan) => runOnboarding(client, {
+    ...plan,
+    mcpServers: plan.mcpServers?.map((server) => hydrateRegisteredMcp(server as McpServerProfile)),
+  }, { prepareRuntime: prepareOnboardRuntime }),
 
   // dashboard: per-runtime model catalog (synced providers + codex cache + curated)
   'runtime:models': async () => runtimeCatalogWithLiveCliModels(),
@@ -1879,7 +2478,11 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'runtime:verifyAssignments': async (assignments: RuntimeAssignment[]) => verifyRuntimeAssignments(assignments),
   // Per-runtime model freshness (live list + source + when last refreshed) for the
   // "models stay up to date" panel.
-  'runtime:freshness': async () => runtimeFreshness(),
+  // Explicit setup retries bypass the outer five-minute read cache and every
+  // nested source cache used to construct authoritative assignment evidence.
+  'runtime:freshness': async (options?: { force?: boolean }) => (
+    handleRuntimeFreshnessRequest(options, runtimeFreshness)
+  ),
   // Runtime credential lane cooldowns (newer managers); empty on stock/older managers.
   'runtime:cooldowns': async () => client.runtimeCooldowns(),
 
@@ -1903,7 +2506,12 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const cached = loadSettings().skillTags ?? {};
     const targets = skills.filter((s) => !(s.tags && s.tags.length) && (force || !cached[s.name]));
     if (!targets.length) return cached;
-    const derived = await client.categorizeSkillsAI(targets.map((s) => ({ name: s.name, description: s.description })));
+    // First-load categorization is deterministic and offline. AI refinement is
+    // reserved for the explicit, confirmed "AI re-tag" action (force=true), so
+    // merely opening Capabilities can never create a billable model request.
+    const derived = force
+      ? await client.categorizeSkillsAI(targets.map((s) => ({ name: s.name, description: s.description })))
+      : Object.fromEntries(targets.map((s) => [s.name, heuristicSkillTags(s.name, s.description)]));
     setSkillTags(derived);
     return loadSettings().skillTags ?? {};
   },
@@ -1947,7 +2555,25 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   deleteSkill: (name: string) => client.deleteSkill(String(name)),
   uninstallSkill: (skill: string, agent: string, team?: string) => (team ? client.withTeam(String(team)) : client).uninstallSkill(String(skill), String(agent)),
   usage: () => client.usage(),
-  setAgentMcp: (agentId: string, servers: McpServerSpec[], team?: string) => (team ? client.withTeam(String(team)) : client).setAgentMcp(String(agentId), filterParkedMcpServers(servers ?? [])),
+  setAgentMcp: (agentId: string, servers: McpServerSpec[], team?: string, expectedServers?: McpServerSpec[]) => serializeMcpRegistryWrite(async () => {
+    if (!Array.isArray(expectedServers)) {
+      throw new Error('Agent MCP writes require a reviewed current attachment snapshot. Refresh capabilities and try again.');
+    }
+    const scopedClient = team ? client.withTeam(String(team)) : client;
+    const currentAgent = (await scopedClient.agents()).find((agent) => agent.id === String(agentId));
+    if (!currentAgent) throw new Error(`Agent "${agentId}" is no longer in ${team ? String(team) : (client.team ?? 'default')}.`);
+    const currentReviewed = (((currentAgent.metadata as any)?.mcpServers) ?? []) as McpServerSpec[];
+    if (rendererAgentMcpStamp(expectedServers) !== rendererAgentMcpStamp(currentReviewed)) {
+      throw new Error('Agent MCP capabilities changed before this write. Refresh and review the current attachment list.');
+    }
+
+    // Agent metadata contains only safe Manager-side connection references.
+    // Rehydrate every desired attachment from the encrypted main-process
+    // registry, while using the safe reviewed list for Manager CAS.
+    const desiredExact = filterParkedMcpServers((servers ?? []).map((server) =>
+      hydrateRequiredRegisteredMcp(server as McpServerProfile)));
+    return scopedClient.setAgentMcp(String(agentId), desiredExact, currentReviewed);
+  }),
   rebuildAgent: (agent: string, team?: string) => (team ? client.withTeam(String(team)) : client).remote(`/agent ${agent} rebuild`),
 
   // Computer Use: attach/detach the bundled computer-use MCP server to an agent
@@ -1969,9 +2595,21 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     // (the broker derives identity from the token, not a self-reported name). The
     // server name MUST NOT be "computer-use" — Claude Code reserves that and rejects
     // the WHOLE MCP config, breaking every dispatch to the agent.
-    const spec: McpServerSpec = { name: CU_MCP_NAME, command: 'node', args: [brokerServerPath()], env: { ID_CU_AGENT: authority, ID_CU_AGENT_NAME: String(a.name), ID_CU_TEAM: authorityTeam, ID_CU_TOKEN: mintAgentToken(authority), ID_CU_URL: brokerUrl() } };
+    const spec: McpServerSpec = {
+      name: CU_MCP_NAME,
+      command: 'node',
+      args: [brokerServerPath()],
+      env: {
+        ID_CU_AGENT: authority,
+        ID_CU_AGENT_NAME: String(a.name),
+        ID_CU_TEAM: authorityTeam,
+        ID_CU_TOKEN: mintAgentToken(authority),
+        ID_CU_URL: brokerUrl(),
+        ID_CU_SESSION_FILE: brokerSessionPath(),
+      },
+    };
     const next = filterParkedMcpServers([...cur.filter((s) => !CU_MCP_ALIASES.includes(s.name)), spec]); // also strips the old broken name
-    return scopedClient.setAgentMcp(a.id, next);
+    return scopedClient.setAgentMcp(a.id, next, cur);
   },
   'cu:detach': async (agentId: string, agentName?: string, team?: string) => {
     const teamName = team ? String(team) : undefined;
@@ -1980,7 +2618,11 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const a = requireCurrentComputerUseAgent(agents, agentId, agentName);
     revokeAgentToken(scopedAgentKey(a.name, teamName ?? client.team ?? 'default'));
     const cur = (((a.metadata as any)?.mcpServers) ?? []) as McpServerSpec[];
-    return scopedClient.setAgentMcp(a.id, filterParkedMcpServers(cur.filter((s) => !CU_MCP_ALIASES.includes(s.name))));
+    return scopedClient.setAgentMcp(
+      a.id,
+      filterParkedMcpServers(cur.filter((s) => !CU_MCP_ALIASES.includes(s.name))),
+      cur,
+    );
   },
   // Agents that have computer-use attached (for the view's "blessed" list) — detects
   // the old reserved name too, so a previously-broken agent shows up to be removed/re-blessed.
@@ -1994,16 +2636,62 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   },
 
   // MCP server registry (local settings catalog)
-  'mcp:list': async () => loadSettings().mcpServers ?? [],
-  'mcp:add': async (profile: McpServerProfile) => {
-    upsertMcpServer(profile);
-    return loadSettings().mcpServers ?? [];
-  },
-  'mcp:remove': async (name: string) => {
+  'mcp:list': async () => rendererMcpList(),
+  'mcp:add': (profile: McpServerProfile, expected?: McpServerProfile | null) => serializeMcpRegistryWrite(async () => {
+    if (expected === undefined) {
+      throw new Error('MCP registry writes require a reviewed current snapshot. Refresh the registry and try again.');
+    }
+    const current = rendererMcpList().find((row) => row.name === profile.name);
+    if (expected === null && current) {
+      throw new Error(`MCP server "${profile.name}" was added before this write. Refresh and review the current registry.`);
+    }
+    if (expected && (!current || rendererMcpStamp(current) !== rendererMcpStamp(expected))) {
+      throw new Error(`MCP server "${profile.name}" changed before replacement. Refresh and review the current registry.`);
+    }
+    upsertMcpServer(mcpForStorage(profile));
+    refreshManagedMcpConnectionEnvironment();
+    return rendererMcpList();
+  }),
+  'mcp:remove': (name: string, expected?: McpServerProfile) => serializeMcpRegistryWrite(async () => {
+    if (!expected) {
+      throw new Error('MCP registry removal requires a reviewed current snapshot. Refresh the registry and try again.');
+    }
+    const current = rendererMcpList().find((profile) => profile.name === String(name));
+    if (!current) throw new Error(`MCP server "${String(name)}" is no longer registered.`);
+    if (expected && rendererMcpStamp(current) !== rendererMcpStamp(expected)) {
+      throw new Error(`MCP server "${String(name)}" changed before removal. Refresh and review the current registry.`);
+    }
+    const attached = (await strictAllTeamAgentGroups()).flatMap((group) => group.agents
+      .filter((agent) => (((agent.metadata as any)?.mcpServers ?? []) as Array<{ name?: string }>)
+        .some((server) => server.name === String(name)))
+      .map((agent) => `${group.team}/${agent.name}`));
+    if (attached.length) {
+      throw new Error(`MCP server "${String(name)}" is still attached to ${attached.slice(0, 8).join(', ')}${attached.length > 8 ? ` and ${attached.length - 8} more` : ''}. Registry removal was blocked.`);
+    }
+    const stored = loadSettings().mcpServers?.find((profile) => profile.name === String(name));
+    if (!stored) throw new Error(`MCP server "${String(name)}" is no longer registered.`);
     removeMcpServer(String(name));
-    return loadSettings().mcpServers ?? [];
-  },
-  'mcp:test': (spec: McpServerSpec) => testMcpServer(spec),
+    refreshManagedMcpConnectionEnvironment();
+    try {
+      const appeared = (await strictAllTeamAgentGroups()).flatMap((group) => group.agents
+        .filter((agent) => (((agent.metadata as any)?.mcpServers ?? []) as Array<{ name?: string }>)
+          .some((server) => server.name === String(name)))
+        .map((agent) => `${group.team}/${agent.name}`));
+      if (appeared.length) {
+        upsertMcpServer(stored);
+        refreshManagedMcpConnectionEnvironment();
+        throw new Error(`MCP server "${String(name)}" was re-attached during removal. Its registry entry was restored; review ${appeared.slice(0, 8).join(', ')}.`);
+      }
+    } catch (error) {
+      if (!loadSettings().mcpServers?.some((profile) => profile.name === String(name))) {
+        upsertMcpServer(stored);
+        refreshManagedMcpConnectionEnvironment();
+      }
+      throw error;
+    }
+    return rendererMcpList();
+  }),
+  'mcp:test': (spec: McpServerSpec) => testMcpServer(hydrateRegisteredMcp(spec as McpServerProfile)),
 
   // Projects are Manager-owned. The settings copy is a cache used by existing
   // local git helpers and can be rebuilt from this control-plane registry.
@@ -2012,9 +2700,17 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const project = { ...p, updatedAt: Date.now() };
     return serializeControlStateWrite(() => persistProject(project));
   },
-  'projects:remove': async (id: string) => {
+  'projects:remove': async (id: string, expectedProject?: ProjectEntry) => {
     const key = String(id);
-    await serializeControlStateWrite(() => controlStateClient().controlStateDelete('project', key));
+    await serializeControlStateWrite(async () => {
+      const manager = controlStateClient();
+      const current = await manager.controlStateGet<ProjectEntry>('project', key);
+      if (!current) throw new Error('Project was already removed. Refresh Projects before trying again.');
+      if (!expectedProject || projectControlStamp(current.value) !== projectControlStamp(expectedProject)) {
+        throw new Error('Project changed after review. Refresh Projects before deleting it.');
+      }
+      await manager.controlStateDelete('project', key, current.version);
+    });
     const next = (loadSettings().projects ?? []).filter((project) => project.id !== key);
     return mirrorProjects(next);
   },
@@ -2186,7 +2882,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // inference providers (settings store + probe + connect/sync)
   'providers:list': async () => listProvidersEnriched(),
   'providers:add': async (profile: ProviderProfile) => {
-    upsertProvider(profile);
+    upsertProvider(providerForStorage(profile));
     return listProvidersEnriched();
   },
   'providers:remove': async (name: string) => {
@@ -2213,7 +2909,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'providers:probe': async (name: string) => {
     const p = loadSettings().providers.find((x) => x.name === name);
     if (!p) throw new Error('provider not found');
-    return new ProviderClient(p, resolveProviderKey(p)).probe();
+    return probeConfiguredProvider(p);
   },
   // Connect & sync: resolve the key (config → env), validate live, cache the
   // discovered model list onto the provider so models stay discoverable.
@@ -2222,8 +2918,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     if (!p) throw new Error('provider not found');
     const expected = typeof expectedStamp === 'string' ? expectedStamp : '';
     if (expected && providerBridgeStamp(p) !== expected) throw new Error('provider changed before sync started');
-    const key = resolveProviderKey(p);
-    const outcome = await new ProviderClient(p, key).probe();
+    const outcome = await probeConfiguredProvider(p);
     const latest = loadSettings().providers.find((x) => x.name === name);
     if (!latest) throw new Error('provider removed before sync completed');
     if (expected && providerBridgeStamp(latest) !== expected) throw new Error('provider changed before sync completed');
@@ -2349,48 +3044,18 @@ export function info() {
 }
 
 /** Start the reactive org-sync loop, always reading the live (possibly-reassigned) client. */
-export function startOrgSync(): () => void {
+export function startOrgSync(): () => Promise<void> {
   return startOrgSyncLoop(() => client);
 }
 
-/** Start the disabled-by-default goal driver loop against the live manager client. */
-export function startGoalDriver(): () => void {
+/** Keep the manager-owned goal cadence configuration synchronized with IDACC settings. */
+export function startGoalDriver(): () => Promise<void> {
   return startGoalDriverLoop(() => client, goalDriverConfig);
 }
 
 /** Promote task-shaped draft replies into manager-routed tasks in the background. */
-export function startDraftDispatcher(): () => void {
+export function startDraftDispatcher(): () => Promise<void> {
   return startDraftDispatcherLoop(() => client);
 }
 
-/**
- * Background model refresh. Local loopback lanes are cheap to check and can appear or
- * disappear during a session, so refresh them frequently. Cloud/API catalogs change less
- * often and stay on a wider cadence. Every successful pass clears the read cache and notifies
- * the shell so mounted runtime pickers update without an operator pressing Refresh.
- */
-export function startModelRefreshLoop(onRefresh: (scope: 'local' | 'all') => void = () => {}): () => void {
-  let stopped = false;
-  let running = false;
-  const tick = async (scope: 'local' | 'all') => {
-    if (stopped || running) return;
-    running = true;
-    try {
-      if (scope === 'local') await probeLocalRuntimes();
-      else await probeAllRuntimes();
-      readCallCache.clear();
-      onRefresh(scope);
-    } catch {
-      // Preserve the last known-good catalog. The next bounded pass retries.
-    } finally {
-      running = false;
-    }
-  };
-  const first = setTimeout(() => void tick('all'), 10_000);
-  const local = setInterval(() => void tick('local'), 2 * 60 * 1000);
-  const all = setInterval(() => void tick('all'), 30 * 60 * 1000);
-  first.unref?.();
-  local.unref?.();
-  all.unref?.();
-  return () => { stopped = true; clearTimeout(first); clearInterval(local); clearInterval(all); };
-}
+export { resetDraftDispatcherWork, stopDraftDispatcherWork };

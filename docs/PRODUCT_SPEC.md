@@ -1,33 +1,63 @@
 # ID Agents Control Center — Product Spec
 
-_Updated 2026-07-01 · reflects app **v0.1.396**. This is a page-by-page specification of
-the desktop app as it actually ships today, produced by reviewing every page._
+_Updated 2026-07-26 · reflects the unified **v0.1.685 production candidate**.
+This is a page-by-page specification of the desktop application that will ship
+when the signed candidate is promoted._
 
 ---
 
 ## 1. What it is
 
-**ID Agents Control Center** is a macOS desktop app (Electron + React) — a mouse-and-keyboard
-GUI for running a fleet of AI agents. It is a **control client**, not the engine: all agents,
-state, identity, and workspaces live in the **id-agents manager daemon** (a local HTTP server at
-`http://127.0.0.1:4100`). The app is to the manager what Lens/kubectl is to Kubernetes — it reads
-and drives, it never owns the runtime.
+**ID Agents Control Center** is a macOS, Windows, and Linux desktop application
+(Electron + React) for running a private fleet of AI agents. One installation
+contains the interface, the pinned Agent Manager, and the pinned Brain. The
+application verifies and supervises both services on random loopback ports and
+owns their mutable data inside the active user profile; consumers do not need
+to install or update either service separately.
 
 ### Architecture
-- **Main process** (`src/main/*`) holds the `ManagerClient` (HTTP), settings, keys, and OS
-  integrations (file dialogs, git, Ollama, subscriptions CLIs, Computer-Use broker). It exposes an
-  allow-listed IPC surface to the renderer via `window.idagents.call(method, …args)` →
-  `bridge.ts` (manager-proxied methods) + `main.ts appCall` (app-local methods; falls through to
-  the bridge).
+- **Main process** (`src/main/*`) verifies and supervises the bundled Manager
+  and Brain, holds the `ManagerClient` (HTTP), settings, keys, and OS
+  integrations (file dialogs, git, local/provider discovery, and the
+  Computer-Use broker). It exposes an allow-listed IPC surface to the
+  sandboxed renderer via `window.idagents.call(method, …args)` → `bridge.ts`
+  (Manager/Brain-proxied methods) + `main.ts appCall` (app-local methods).
+- **Bundled services** run from an immutable, checksummed application payload.
+  Manager and Brain state, generated work, skill catalogs, service logs, and
+  automation cursors live under the active profile. Brain plans are read from
+  the active profile's plan directory, and repository digestion is limited to
+  projects explicitly registered in that profile; the application does not
+  import an operator's home directory, current working directory, or bundled
+  release sources as consumer memory. The Brain event listener is supervised
+  alongside the two services. The mutation-capable bounded maintenance cycle
+  defaults off and starts only after explicit Settings opt-in.
+- **Profile privacy boundary:** app-owned config, goals, plans, Manager and
+  Brain databases, generated state, credentials, logs, and caches are private
+  to the active OS user. `workspace/` is an explicit user-content boundary:
+  its root is private and new direct children inherit that protection, but
+  IDACC does not traverse or rewrite ACLs inside an existing repository.
+  Existing repository descendants retain their user-managed permissions, so
+  their confidentiality remains the user's responsibility on every platform.
+- **Managed service boundary:** each app run generates three pairwise-distinct
+  credentials for Manager administration, Brain access, and Brain-to-Manager
+  service reads. The Manager service bearer reaches only Manager, the Brain
+  daemon, and `brain-listener`; Brain presents it with `X-Id-Service: brain`
+  only for `GET`/`HEAD` `/teams`, `/agents`, and `/events`. It never enters
+  renderer/IPC data, logs, URLs, workers, generic companions, or `brain-cycle`.
+  Consumer-managed consolidation takes remain disabled rather than widening
+  this read-only principal.
 - **Renderer** (`src/renderer/*`) is the React UI. `store.ts` (`useFleet`) polls the manager every
   ~3s (agents/teams/inbox snapshot) plus a long-poll event cursor, exposing `store.{agents, teams,
-  team, coordinator, events, inbox, connection, …}`.
-- **Holistic by default (v0.1.119+):** the app opens in an **All teams** view — the Dashboard
-  and activity feed show every team's fleet at once (`store.viewAll`, default on, persisted).
-  **Action-centric pages** (Work, Chat, HR Manager, Capabilities, Computer Use) still operate on
-  one **active team** (`store.team`); pick a specific team from the status-bar selector (§2.2) to
-  scope them. In All-teams mode, per-agent Dashboard actions route to each agent's **own** team.
-  Counts shown are **running / total** agents.
+  team, coordinator, events, inbox, connection, …}`. Expensive catalog and observability reads
+  are coalesced behind longer caches or their own refresh cadence rather than rerunning on every
+  fleet poll.
+- **Holistic by default:** the app opens in an **All teams** view (`store.viewAll`, default on,
+  persisted). Dashboard coordination spans every configured team, while its activity feed
+  emphasizes currently active teams and its conversation is pinned to `default/lead`.
+  **Action-centric pages** (Work, HR Manager, Capabilities, Computer Use) operate on one
+  **active team** (`store.team`); pick a specific team from the status-bar selector (§2.2) to
+  scope them. Holistic per-agent actions always carry the agent's **own** team. Counts shown are
+  **running / total** agents.
 
 ---
 
@@ -56,58 +86,85 @@ shows a spinner while working and updates to **✓ result** or **⚠ error**. To
 routing**, so a confirmation still arrives if you navigate away (the work runs in the manager
 process and is never tied to a view). Auto-dismiss after ~8s or on click.
 
-### 2.4 Prompt modal & update banner
+### 2.4 Setup, prompt modal & update banner
 Electron has no `window.prompt`, so text input uses an in-app modal (`usePrompt`). When a newer
 release is staged, the sidebar shows **⬆ vX → vY · Restart & update**.
+
+On a new or incomplete profile, the setup wizard verifies the bundled Manager and Brain, requires
+a manager-executable runtime/model route with effective Brain MCP support, keeps Claude/Codex MCP
+routes at runtime-level readiness, and requires model-specific `tools` evidence from a bounded
+Ollama `/api/show` check before offering an Ollama model. Generic provider lanes and Ollama models
+without deterministic tool evidence remain available for general work but are excluded from starter
+setup with a clear diagnostic. Setup creates only missing neutral starter agents
+(`lead`, `coder`, `researcher`). Existing starter agents are preserved. If the user explicitly
+re-runs setup, IDACC first verifies the whole repair batch, then repairs stale runtime/model
+assignments, missing effective Brain attachments, and stopped starters. A limited mode keeps Settings and diagnostics
+available without claiming the starter workspace is ready.
+
+### 2.5 Command palette, control drawer & receipts
+**⌘/Ctrl+K** opens one fuzzy-search command palette for navigation, fleet refresh/probes,
+project/work/org actions, plans, the task board, and runtime/capability controls. Focused actions
+open a right-side drawer; deeper or higher-risk workflows hand off to their owning page. Unsaved
+drawer edits require an explicit discard, and a running action keeps the drawer open until it
+settles.
+
+Medium/high-risk commands use propose → confirm before mutation. Every accepted command receives
+an idempotency key and a bounded receipt showing running, succeeded, deferred, blocked, failed,
+or timed-out state. Receipts survive page navigation and app restart, preserve recovery guidance,
+and link back to the owning page. Offline or incompatible Manager capabilities block the handler
+before it can mutate state.
 
 ---
 
 ## 3. Dashboard (nav: "Dashboard" ▦, route: `dashboard`)
 
-**Purpose:** The operator's home — a live surface over the fleet with inline runtime/model switching
-and lifecycle actions, beside a real-time activity feed and a detail panel. **Holistic by default**:
-shows every team's agents grouped by team (each group headed `team · N/M running`), or just the
-active team when one is selected in the status bar. Per-agent actions route to that agent's own team.
+**Purpose:** The operator's command entry surface — observe the live organization, talk to the
+neutral `default/lead`, find or start a common action, and see an immediate durable acknowledgement.
+Dense editors remain in Work, Projects, HR Manager, Capabilities, and Settings.
 
 **What you can do**
-- Header summary: read-only `talk to` target showing the routed team lead; routing edits belong in
-  HR Manager Manage, not Dashboard.
-- **Probe runtimes** (header) — re-query each runtime's provider to refresh model lists.
-- **Agent grid**, grouped by team in All-teams mode (lead pinned first within each group): name,
-  status (colored dot), runtime, model, port, actions.
-  Click a row to select it (populates the detail panel).
-- **Runtime dropdown** (local agents only): switch runtime or a synced API provider lane →
-  auto-picks a compatible model → rebuilds. Remote agents show a static runtime label.
-- **Model dropdown**: pick from the runtime's models (+ current); selecting rebuilds immediately. A
-  model/runtime mismatch is flagged `⚠` with a tooltip.
-- **Actions** (⋯) per agent: Start, Stop, Rebuild, Probe, Delete (Delete confirms; working files
-  kept).
-- **Activity feed** (aside): all live fleet events, newest first, topic-chip + plain-English
-  description (agent ids → names) + relative age; live count in the header.
-- **Detail panel**: status, runtime, model, port, skill chips, working directory.
+- **Live Coordination**: read the primary → secondary → team-lead hierarchy, each team's worker
+  state (working / idle / stopped), current task evidence, and 24h fleet token-spend summary.
+  Configured stopped teams remain visible; an incompatible hierarchy contract raises a visible
+  recovery warning instead of presenting an empty fleet.
+- **Lead chat**: manage multiple saved conversations with `default/lead`, focus one on a registered
+  project, attach files, generate images, and watch query-scoped work activity. Team-specific chat
+  and routing changes belong in HR Manager.
+- **Confirmed chat controls**: propose `/dispatch`, `/project new`, `/promote-lead`, or `/triage`;
+  inspect the exact impact and risk; then Confirm or Decline. Malformed reserved control syntax and
+  attachment-bearing control commands are rejected locally and never fall through as ordinary
+  agent messages.
+- **Activity feed**: review recent Manager events, task state, cross-team communications, and Inbox
+  needs across active teams, newest first. Expand long messages, copy the full message, and open
+  recognized public addresses in their explorer.
+- **Command surface**: use ⌘/Ctrl+K and the focused Project driver, Organization, Plans, Board, and
+  Control center drawers described in §2.5. Advanced work always has an owning-page handoff.
 
-**Data & actions:** `info`/`agents`/`teams`/`events` (store poll); `runtime:models`,
-`providers:list`, `runtime:probe`, `setAgentRuntime`; `remote` for `/model`, `/agent … rebuild|
-start|stop|probe`, `/delete`.
+**Data & actions:** `org:hierarchy`, `usage`, `events:multi`, `tasks:allTeams`, `news:allTeams`,
+the shared fleet/Inbox store, Chat routes from §4, `manager:capabilities`, and the Manager-backed
+drawer commands for project, organization, plan, task-lane, provider, and concurrency state, plus
+read-only MCP catalog inspection.
 
 **Known issues / polish**
-- Two unrelated operations both say "Probe" (header = provider model probe; ⋯ = agent liveness probe).
-- Errors are surfaced two ways on one page (transient busy-string banner vs `window.alert`).
-- `runtime:models` re-fetches on every 3s poll (minor IPC churn).
-- Mismatch warning is heuristic; unknown runtimes never warn.
+- None outstanding for the v0.1.685 command-surface design. Fleet liveness is labeled **Probe
+  all agents (health check)** in the palette/Health surface; provider model refresh belongs to
+  Settings. Catalog reads are coalesced (runtime models use a five-minute cache), and Dashboard
+  activity/usage use independent 15-second refreshes rather than the fleet's ~3-second poll.
+- The narrower Dashboard controls are intentional: high-impact or highly detailed edits continue
+  on the owning page with their full previews and guards.
 
 ---
 
-## 4. Chat (nav: "Chat" ✦, route: `chat`)
+## 4. Chat (embedded in Dashboard)
 
-**Purpose:** A multi-session conversational workspace for talking to the fleet — message any agent
-(default: the team coordinator), optionally scope to a project, attach files, and watch the agent's
-live tool/file activity stream. The composer also generates images and can auto-save plan-style
-replies into Work › Plans.
+**Purpose:** A multi-session conversational workspace pinned to the neutral
+`default/lead` on Dashboard. Optionally scope a conversation to a project, attach files, and watch
+the lead's live tool/file activity stream. The composer also generates images and can auto-save
+clear plan-request replies into Work › Plans.
 
 **What you can do**
-- Compose & send (Enter sends, Shift+Enter newline); **target any agent** from the Address sidebar;
-  view the coordinator marker there; routing changes hand off to HR Manager Manage.
+- Compose & send (Enter sends, Shift+Enter newline) to `default/lead`. Use HR Manager and the
+  owning team workflows for team-specific routing.
 - **Focus on a project** (dropdown) — adds a `[Focus: …]` context line and sets the attachment
   destination; banner with **open ↗** to Finder.
 - **Attach files** (📎 / paste / drop) — chips with remove; land in `<project>/uploads` or the
@@ -118,9 +175,11 @@ replies into Work › Plans.
 - **Live "behind the scenes" feed** while a dispatch runs (tool/file steps + delegations,
   elapsed timer); a collapsible trace persists with the finished reply.
 - **Sessions:** open/rename/delete chats, ＋ New, unread dots, auto-titled from the first message.
-- **Resumable dispatches:** a reply keeps polling across navigation and app restart, lands in the
-  right chat with an unread badge; transient failures auto-retry; a sustained outage posts one
-  soft notice and keeps polling.
+- **Resumable dispatches:** the exact Manager query ID is persisted before the composer unlocks.
+  Polling continues while Dashboard is mounted and resumes for every saved in-flight chat when
+  Dashboard or the application reopens; a backgrounded reply then lands in the right chat with an
+  unread badge. Transient failures auto-retry, and a sustained outage posts one soft notice without
+  discarding the recovery handle.
 
 **Data & actions:** `chats:list/get/save/patch/remove/inflight/markRead/unreadCount`,
 `chat:genTitle/pickFiles/saveFiles/savePasted`, `dispatch:start` + `query:poll`, `activity:get`,
@@ -128,11 +187,15 @@ replies into Work › Plans.
 `App navigation:teams:route`.
 
 **Known issues / polish**
-- "untitled chat" placeholder copy vs always-auto-named sessions (cosmetic).
-- `endRef` dead code; `persist()`/`patch()` overlap.
-- Plan auto-save heuristic can false-positive.
-- Concurrent dispatches can misattribute the live delegation trace (no queryId on the event log) —
-  acknowledged in code.
+- The dead `endRef` path is removed, plan auto-save uses a conservative explicit plan-intent
+  heuristic, and reserved Dashboard control commands cannot leak into ordinary chat when malformed.
+- Reply delivery, the agent's own activity, and the delegation strand are query-ID scoped. Broader
+  Manager events remain available in Dashboard activity, but Chat intentionally excludes them from
+  reply annotations so concurrent work can never be attributed by a timestamp guess.
+- Message appends, title/focus changes, reply delivery, and system notices use targeted
+  read-merge-write patches so concurrent updates do not overwrite one another. Delete is
+  single-flight, rechecks after confirmation, and explicitly warns when a pending reply would be
+  discarded.
 
 ---
 
@@ -227,40 +290,59 @@ fanout/teamLeads/triage`, `questions:add`, `dispatch`.
 ### 6.3 Work › Schedule
 **Purpose:** Per-agent **heartbeats** (interval self-checks) and a **supervision check-ins** tracker
 (auto-created watchers that ping a delegator about a tracked task on a cadence).
-**What you can do:** set/enable/update a heartbeat interval per agent (1m–24h), pause/resume,
-disable; see status (♥ on / paused / ⚠ missed / ⚠ last run failed); view check-ins with cadence &
-fire counts, **Close** one, or **🧹 Clean up N** stale ones (watching finished/removed tasks).
+**What you can do:** set/enable/update a heartbeat interval (1m–24h) and its internal self-check
+objective per agent, pause/resume, or disable it; see status (♥ on / paused / ⚠ missed / ⚠ last run
+failed); view check-ins with cadence & fire counts, **Close** one, or **🧹 Clean up N** stale ones
+(watching finished/removed tasks).
 **Data & actions:** `schedules` (`/schedule list`), `checkins`, `addHeartbeat`, `pause/resume/
 removeSchedule`, `checkins:close`.
-**Polish:** auto-close copy slightly overpromises; heartbeat message is fixed; no confirm on disable/cleanup.
+**Polish:** the page says the Manager *may* auto-close a supervision check-in when completion is
+observed; it never promises that every check-in closes automatically. Heartbeat objectives are
+editable. Close, disable, and bulk cleanup use preview confirmation, re-read the exact schedule or
+check-in set after confirmation, and fail closed if state changed or cannot be verified. Scheduled
+self-check definitions persist across restarts, but the bundled Manager dispatches them only while
+the unified IDACC application is running.
 
 ### 6.4 Work › Loops
 **Purpose:** **Agent chains** (an AI-drafted sequential agent→task pipeline; each step's output
 feeds the next; runs on demand while the app is open) **and** **Scheduled objectives** (one agent
-runs a fixed objective on a calendar cadence via the manager — runs 24/7 even when the app is closed).
+runs a fixed objective on a persistent calendar cadence through the bundled Manager while IDACC is
+running; the definition resumes after restart).
 **What you can do:** draft a chain from a goal (✦ Draft chain), edit/reorder/add/remove steps, save,
 run (per-step live status + output, stops on failure), load/delete saved chains; create scheduled
 objectives (agent + objective + cadence + time), Run now, pause/resume/delete.
 **Data & actions:** `loops:list/get/save/remove`, `dispatch`, `schedules`, `addCalendarCheckin`,
 `pause/resume/removeSchedule`.
-**Polish:** chains-vs-scheduled distinction is fine-print; draft caps 12 vs store caps 20; Run-now is
-serial with generic failure.
+**Polish:** the builder and tracker label the on-demand/persistent-cadence distinction directly.
+Editor, AI-import, legacy-load, run, schedule, and profile-store paths share one 20-step limit; the
+store rejects oversized writes instead of silently truncating them. Run-now failures identify the
+exact step or `team/agent`, and every scheduled mutation rechecks the current row after confirmation.
+Dream schedules are excluded from the Scheduled objectives table.
 
 ### 6.5 Work › Dream
 **Purpose:** Have an agent run an offline "dream" — a reflection over recent work + the brain/memory
 — returning a Markdown report (Consolidation / Insights / Ideas / Simulations), saved as a digest.
-**What you can do:** pick an agent + optional focus → **✦ Dream now** (saved + opened); **Schedule
-nightly** (03:00 daily calendar check-in); browse/expand/delete saved dreams.
-**Data & actions:** `dreams:list/get/save/remove`, `dispatch`, `addCalendarCheckin`.
-**Polish:** scheduled nightly dreams deliver to chat and are **not** saved into this tab's list (only
-manual dreams persist); nightly time/cadence hard-coded; report shown as raw markdown in `<pre>`.
+**What you can do:** pick an agent + optional focus → **✦ Dream now** (saved + opened); configure a
+recurring Dream's time and days; create, edit, pause/resume, or delete that schedule inline; see each
+matching schedule with active/paused, timezone, last-run, and last-status evidence; browse/expand/
+delete saved dreams.
+Saved reports render their Markdown headings, emphasis, inline code, bullets, and numbered lists as
+readable content.
+**Data & actions:** `dreams:list/get/save/remove/archiveScheduled`, `dispatch`, `schedules`,
+`addCalendarCheckin`, `pause/resume/removeSchedule`.
+**Polish:** completed scheduled reports are joined from the durable agent news history using the
+schedule receipt's exact Manager query ID, then saved idempotently in the active profile's Dream
+archive. The background reconciler imports reports completed while the Dream view was closed and
+reconciles any durable pre-shutdown completion after the unified stack restarts. Dream cadence
+definitions persist across app restarts; they do not claim to execute while IDACC is closed.
 
 ---
 
 ## 7. Projects (nav: "Projects" ◆, route: `projects`)
 
 **Purpose:** A local project tracker (status/description/team/tags/links/notes) with live git state
-and one-click git ops, auto-discovered from the id-agents workspace folder.
+and one-click git ops. IDACC can detect the workspace root, but adding its subfolders to the tracker
+is an explicit, previewed **Sync workspace** action.
 
 **What you can do:** browse/filter by status (with counts); see & change the workspace root;
 **⟳ Sync workspace** (additive/idempotent discovery); **⤓ Add from GitHub** (clone SSH→HTTPS,
@@ -274,7 +356,9 @@ pickFolder/openFolder/cloneGithub/githubMeta`, `dispatch:start/query:poll`.
 
 **Polish:** Project-team AI helpers are pinned to the selected project's team, git fan-out ignores stale
 loads after newer project snapshots arrive, removed rows close their inline panels, and crowded project
-headers wrap long names/actions instead of overflowing.
+headers wrap long names/actions instead of overflowing. Deleting the last tracker row now remains
+deleted on reload; IDACC reports the detected workspace for review and never silently auto-syncs it
+back. A later explicit **Sync workspace** can intentionally re-add folders that still exist.
 
 ---
 
@@ -291,8 +375,10 @@ and errors.
 
 **Data & actions:** `usage` (`/usage`, null when absent), `agents:allTeams`, `probeAll/probeOne`.
 
-**Polish:** token numbers are manager-reported harness telemetry for trends, not provider billing
-invoices; stale last-turn samples remain visible but no longer drive the live gauge. The model-lanes
+**Polish:** token numbers are manager-reported harness performance telemetry for trends, not provider
+billing invoices. Provider invoices remain provider-owned; IDACC does not estimate or reconcile them
+from heterogeneous subscription, API, and local-runtime token reports. The source is labeled
+**harness telemetry**, and stale last-turn samples remain visible but no longer drive the live gauge. The model-lanes
 panel uses aligned runtime/type/models/source/checked columns plus the same Settings availability gate
 as the per-agent Harness dropdown: unavailable curated fallback harnesses are hidden unless already
 assigned, synced API/provider lanes are selectable through the manager `provider-api` harness, and
@@ -300,7 +386,20 @@ unsynced API lanes stay visible but disabled until **Connect & sync** succeeds. 
 dropdown follows the effective staged Harness catalog: changing Harness
 resets the staged model to a valid option for that harness, and stale saved cross-harness model values
 show as drift instead of selectable options.
-"Running" is a status-string regex (non-matching healthy statuses show red).
+The per-agent **Speed** picker appears only for Claude Code runtimes. **Standard** explicitly disables
+Claude Code fast mode for that managed agent; **Fast (Opus · usage credits)** requests Claude Code's
+supported fast service tier after the reviewed rebuild. Fast retains the supported Opus model's
+quality and capabilities and does not lower the separately selected reasoning effort, but Claude Code
+can switch a different configured model to a supported Opus model. Fast costs more per token, requires
+a compatible Claude Code release, billed usage credits (extra usage), and any organization approval,
+and can fall back to standard speed when unavailable or rate-limited. Those model, billing,
+eligibility, and fallback effects are stated in the picker and again in the apply confirmation before
+IDACC writes the preference.
+Roster color and Probe-all eligibility use exact Manager lifecycle states plus structured health.
+Explicit unhealthy evidence wins over an optimistic lifecycle label; PID alone is never liveness
+proof, and the remote fallback requires both a recent last-seen timestamp and a recent successful
+probe. Probe-all blocks if the complete current fleet cannot be re-read. An unfamiliar status
+remains **unknown** and is never guessed to mean running.
 
 ---
 
@@ -312,8 +411,10 @@ against a mock provider ("Base Sepolia (mock)") while keeping the same UI contra
 Safe4337 + bundler path. The page also shows the enabled agent chain RPCs from Settings as the
 chain allowlist a granted key can use once a live signing provider is wired.
 
-**What you can do:** pick an agent; see identity (domain/wallet), **Register identity**, **Provision
-wallet**; review Brain controller sync; review onchain metadata standard coverage for ENSIP-24,
+**What you can do:** pick an agent; see identity (domain/wallet), idempotently **Register identity**,
+**Provision wallet**; review Brain controller sync; **Verify live evidence** through configured RPCs
+(Ethereum ENS resolver/address binding plus deployed bytecode for the Agent Safe and declared
+metadata contracts); review onchain metadata standard coverage for ENSIP-24,
 ERC-8004, ERC-8048 / ERC-721T, ERC-8049, and B20 `extraMetadata`; review **Operational Chain
 Access** from Settings RPCs without exposing RPC keys; see the Safe account (deployed vs
 counterfactual, address, owner), **Create account**, **Deploy**; list **session keys** (scope,
@@ -321,23 +422,36 @@ address, time-remaining / revoked / expired), **Revoke**; **Issue a session key*
 (registry-write / skill-publish / payments / full) + TTL preset (1h / 24h / 7d / 30d / until revoked).
 
 **Data & actions:** `keys:caps/presets/list/ensure/deploy/issue/revoke`, `evmRpc:list`,
-`identity:register`, `wallet:provision`.
+`identity:register/verifyEvidence`, `wallet:provision`.
+
+Every identity, wallet, account, session-key, authority-revocation, and live-signing write reports
+an inline **Action failed** or operation-specific error with its recovery context; write failures
+are no longer swallowed.
 
 **Guardrails:** controller-wallet precedence is OWS address, generic provider-wallet metadata,
 legacy SkillMesh provider metadata, then address-shaped OWS wallet. The standards panel is read-only
 and recognizes common manager metadata fields for ENSIP-24 arbitrary resolver data, ERC-8004 agent
 registry/agentURI/agentWallet evidence, ERC-8048/ERC-721T token-level context/endpoints, ERC-8049
 contract-level metadata, and B20 `extraMetadata` without dumping raw resolver bytes, contract bytes,
-or issuer-defined metadata blobs into the UI. Live resolver/contract reads and manifest/runtime
-signature verification remain pending checks.
+or issuer-defined metadata blobs into the UI. Live reads verify the configured RPC chain, ENS
+registry → deployed resolver → EVM address path, and runtime bytecode at the selected/declared
+contracts; they do not equate deployed bytecode with conformance to a particular metadata ABI.
 Operational Chain Access is read-only: it mirrors enabled Settings RPC networks, key-source labels,
 last probe status/block, and mock-vs-live signing mode. RPC secrets remain encrypted in the main
 process and a mock key provider still means no IDACC transaction broadcast, even when chain RPCs are
 configured.
 
-**Polish:** Register has no idempotency guard; standards coverage currently reads manager metadata
-and controller evidence only, so live chain reads still need a backend contract before the page can
-mark those standards as externally verified.
+**Polish:** Register re-reads the current Manager row and returns a visible no-op when a public domain
+already exists, so it cannot submit a duplicate registration transaction. A Manager identity record
+is labeled as declared until the live ENS resolver address matches the selected controller or Agent
+Safe; resolving an address with no comparison target is not marked verified. Verified controller
+signatures are discarded after recovery and only their short-lived proof timestamps remain. ENS
+address binding and deployed-contract evidence are live-verifiable, but neither generic bytecode nor
+an ENS address record proves draft metadata-standard conformance. Standard-specific external
+verification for ENSIP-24, ERC-8004, ERC-8048/ERC-721T, ERC-8049, and B20 requires canonical targets,
+versioned ABI/interface contracts, and subject bindings from the Manager/backend before those
+individual claims can be marked verified. Manifest hashes, metadata-hook trust, and runtime signatures
+remain external trust claims until the Manager supplies a versioned attestation schema and trust roots.
 
 ---
 
@@ -347,17 +461,16 @@ mark those standards as externally verified.
 primary cross-team lead), edit per-agent instructions, and govern cross-team delegation. (File:
 `Teams.tsx`; page title "HR Manager".)
 
-**Owner:** `legal/hr-manager` owns the HR Manager page's staffing workflows, instruction-drafting
-behavior, and future page optimization proposals. Escalate legal-team policy or personnel-process
-questions through `legal/general-counsel`.
+**Ownership:** The person using IDACC owns staffing, instruction-drafting, and hierarchy decisions.
+The app does not assume an organization-specific legal, HR, or escalation team; optional specialist
+teams can be added explicitly when a workspace needs them.
 
 **What you can do** — four top-level tabs: **Structure · Health · Build · Manage**, plus header
 **+ From template** and **✦ Build a team**.
 - **AI Team Builder** (describe/paste a spec → live deterministic parse → **✦ Build with AI**
   (`team:designAI`, constrained to Settings-available harnesses, synced API provider lanes, models, and skills) → editable roster (per-agent ★lead,
   name, runtime, model, role, persona/instructions, skill chips) → fleet-wide options (multiple
-  MCP servers, shared skills, heartbeat, OWS wallet, probe-after) → opt-in coordination preset (off by default, with an extra
-  primary-route warning for default-team wiring) + cross-team relay → **Build** for a new team or
+  MCP servers, shared skills, heartbeat, OWS wallet, probe-after) → **Build** for a new team or
   **Build + merge** for an existing target (sequential `onboard:run` with duplicate names skipped,
   explicit **One new agent** reset for single-agent adds, automatic runtime/model verification that
   refreshes every manager-assignable subscription CLI (including Claude Code, Codex, and Grok
@@ -370,9 +483,11 @@ questions through `legal/general-counsel`.
   Ollama and LM Studio lanes require a successful recent loopback probe, and rows remain unassigned with
   an actionable Settings handoff when no manager-executable runtime is ready. Team creation remains
   disabled while readiness is unresolved; curated model names and a paid web subscription are not
-  execution evidence without the corresponding installed, authenticated CLI. Managers that predate
-  this preflight contract block the build with an **Update & sync manager** handoff instead of allowing
-  a partially-created team.
+  execution evidence without the corresponding installed, authenticated CLI. If the bundled Manager
+  cannot satisfy the current preflight contract, the build remains blocked and the UI hands off to
+  the single verified IDACC application update path instead of creating a partial team. Team
+  building changes only the reviewed roster: it preserves coordinators, lead instructions, and
+  relay policy, then hands routing review to the one authoritative **Manage > Hierarchy** editor.
 - **Create team from template/config** (+ From template): pick source (default template / library
   template / saved config), name it, debounced **Preflight** preview, create.
 - **Structure**: live **team graph** (lead-on-top, click to select/switch), **⭑ make primary lead**,
@@ -405,9 +520,12 @@ questions through `legal/general-counsel`.
 `agent:move`, `team:lifecycle/probe/delete`, `libraryTeams`, `configs`, `team:preflight/install`,
 `deployTeam`.
 
-**Polish:** relay UI + coordinator preset are reimplemented in two places (drift risk); per-agent
-"inherit" vs explicit-empty is ambiguous in the displayed mode; AI draft/design require a running
-agent (fresh team fails with no guidance); `makePrimary` can silently no-op.
+**Polish:** the duplicate Builder relay/coordinator editor has been removed. **Manage > Hierarchy**
+is the single routing authority, and per-agent rows now distinguish inherited team policy (including
+its effective value), explicit all/selected policies, and an explicit blocked override. Coordinator
+and primary-lead writes report confirmed persistence, compatibility blocks, and Manager failures
+instead of silently no-oping. AI drafting still requires an active HR-capable agent; when none is
+available the control is disabled with that dependency shown.
 
 ---
 
@@ -426,28 +544,33 @@ selection in the active team.
   per-row **Attach / Detach / Test / ✕**, **Rebuild <targets>**, and a hidden **Add server** panel
   for catalog/custom MCP profiles. The reference/test `everything` server is parked and filtered from
   settings/attach payloads so it cannot be bulk-attached to production agents. `mcp:list` and
-  `mcp:test` stay read-only; only add/remove emit cross-page sync.
+  `mcp:test` stay read-only; only add/remove emit cross-page sync. Removing a registry profile first
+  re-verifies, detaches, and rebuilds every current agent copy across teams; the catalog entry is
+  deleted only after all copies are clean.
 - **Skills**: catalog cards (license, install `have/target`, tags incl. **auto-categorized**),
   **Install / Uninstall** per selection, two-step **delete**, search + tag filter, batch
-  **auto-categorize** (+ ↻ re-categorize), **Create skill**, low-noise Brain skill count/sync chip,
+  offline deterministic **auto-categorize** plus explicitly confirmed **AI re-tag…** (the only path
+  that may use billable model capacity), **Create skill**, low-noise Brain skill count/sync chip,
   and explicit **Preview & sync** for Brain catalog writes. Brain-wide Health/Fleet/Agents/Graph
   review states guard the Brain launchers but do not render as Skills-tab notices.
 - **Brain dashboard popouts**: Fleet, Health, Skills, Learning, Agents, and Graph are treated as
   read-only observation surfaces. They lead with `/fleet-report`'s IDACC manager authority when live,
   fall back to Brain cache only with explicit cache/partial warnings, expose redacted optional-provider
-  evidence such as SkillMesh plugin identity and advertised-skill summaries, and avoid dashboard-side
-  approval/replay POST controls.
+  identity evidence and advertised-skill summaries, and avoid dashboard-side
+  approval/replay POST controls. Every popout and same-origin child uses one ephemeral,
+  exact-origin authenticated session; closing or rotating the dashboard destroys all children before
+  that session is permanently retired behind deny-all request guards and private-storage cleanup.
   Brain Agents now mirrors the Identity & Keys controller-wallet precedence (`ows_address`, then
   optional provider wallet address, then address-shaped OWS wallet) and shows per-agent total ETH
   gas spend vs last-24h ETH gas from Brain timeline transaction/gas evidence.
   The Brain listener snapshots every manager team into team-qualified cache rows, retires
   no-longer-live rows as stale, and `/fleet-report` excludes stale rows when comparing live manager
   totals against Brain cache, so duplicate bare-name agents do not create false drift.
-  SkillMesh is treated as a bundled optional provider/plugin: neutral agents do not receive SkillMesh
-  keys or env vars unless the SkillMesh plugin/provider is attached or explicit opt-in env is set.
+  Organization-specific integrations are treated as optional providers/plugins: neutral agents do not
+  receive provider keys or env vars unless that provider is explicitly attached or opted into.
   IDACC GUI examples, HR first-run lead presets, manager recommendation hints, and Brain table labels
-  no longer present SkillMesh as a built-in core team or identity pillar; generic provider-wallet
-  metadata is first-class while legacy SkillMesh metadata remains read-only compatible.
+  use generic provider language; generic provider-wallet metadata is first-class while legacy provider
+  metadata remains read-only compatible.
 - **Brain Graph**: `/graph/app/data` is a sanitized node-link snapshot. Entity data is reduced to
   safe matching/display fields; live lifecycle, provider/plugin address, and skill counts come only from
   the unambiguous `/fleet-report` overlay; raw metadata, private keys, creator keys, auth tokens,
@@ -460,16 +583,21 @@ selection in the active team.
 `libraryPluginInspections`, `skills:autoTags/categorize`, `createSkill`, `projectPluginSkill`,
 `deleteSkill`, `installSkill/uninstallSkill`, `setAgentMcp`, `rebuildAgent`.
 
-**Polish:** the Rebuild button disappears after detaching the *last* server (can't trigger the
-rebuild that applies it); `setAgentMcp` is a wholesale replace (can clobber concurrent changes);
-removing a registry entry doesn't detach it from agents; auto-categorize makes a billable call on
-first load.
+**Polish:** **Rebuild** remains available for selected agents after detaching the final MCP server.
+Attach/detach sends the freshly read prior server set as a compare-and-swap precondition, so a
+concurrent capability edit is rejected for refresh instead of being overwritten. Secret-bearing
+MCP rows are compared in redacted renderer form but reconciled and committed with exact unredacted
+Manager state in the main process. Multi-target MCP writes restore confirmed earlier writes if a
+later target fails, without overwriting a target that changed again. Registry deletion re-checks
+the complete fleet after deletion and restores the catalog row if an attachment appears or fleet
+verification fails. Opening the page categorizes locally and cannot invoke a model; possible model
+cost is disclosed before the operator-confirmed AI refinement action.
 
 ---
 
 ## 12. Computer Use (nav: "Computer Use" 🖥, route: `computer`)
 
-**Purpose:** Let a "blessed" Claude/codex agent see your Mac's screen and drive mouse+keyboard,
+**Purpose:** Let a blessed agent with a Manager-executable MCP runtime see your Mac's screen and drive mouse+keyboard,
 watched live in-app, routed through an in-app **broker** that only acts while **ARMED**. Disarmed by
 default; gated on macOS Screen Recording + Accessibility; per-action approval, pause, and panic stop.
 Screen Recording and Accessibility stay strict hard gates. Input Monitoring and Automation are
@@ -481,8 +609,9 @@ Accessibility gates.
 
 **What you can do:** **Arm/Disarm** (Arm blesses the currently-attached agents across HR-synced
 teams); **Pause/Resume**;
-**PANIC** (■, never blocked, global hotkey ⌘⌥⇧P); watch the **live view** of the primary display;
-manage **Permissions** (Open Settings / Relaunch / Re-check); **Bless / Remove** one or more
+**PANIC** (■, never blocked, global hotkey ⌘⌥⇧P); choose any connected display and watch its
+**live view**; manage **Permissions** (Open Settings / Relaunch / Re-check); **Bless / Repair /
+Remove** one or more
 capable agents from any HR Manager team (attaches the bundled `mac-control` MCP server + rebuilds
 that agent in its own team); read the **Activity log** (last 40,
 blocked actions flagged); toggle **Safety → "Approve every action"** (supervised default-on; in
@@ -490,11 +619,18 @@ autonomous mode risky actions — Trash, ⌘Q, destructive shell — are still h
 **approval prompts** (Allow/Deny, 60s auto-decline).
 
 **Data & actions:** `cu:permissions/status/attached/audit/arm/disarm/pause/setSupervised/panic/
-confirm/watch/openPermission/relaunch/attach/detach`, `rebuildAgent`; push events `onComputerFrame/
+confirm/watch/setDisplay/openPermission/relaunch/attach/detach`, `rebuildAgent`; push events `onComputerFrame/
 Pending/Panic`; 2.5s poll.
 
-**Polish:** bless eligibility is runtime-name regex; attach-then-rebuild-fail leaves an agent
-blessed-but-not-wired (only the `⚠` text signals it); primary-display only; per-frame React state churn.
+**Polish:** bless eligibility uses the shared runtime capability table and requires both a current
+Manager harness and native MCP support. A failed initial rebuild automatically revokes/rolls back the
+attachment; every existing attachment also has a visible **Repair** action that refreshes its scoped
+token before rebuilding. An interrupted multi-team armed-set refresh disarms the broker. Display
+selection declines pending actions and resets the coordinate anchor; every action is bound to the
+same Agent, display ID, geometry, and fresh screenshot before and after approval. Screenshot edge
+coordinates cannot map onto an adjacent display, and coordinate-free scroll first moves to the
+selected frame's center.
+The bounded ~2.2fps live pane still uses React frame state.
 
 ---
 
@@ -512,18 +648,25 @@ Manager; this is the plumbing.)
 - **Manager/local/backend diagnostics**: manager extension compatibility,
   open-or-pinned provider routing, local runtime readiness, backend readiness, and contextual fixes
   live in the cards that own those systems instead of a separate first-run checkpoint.
-- **Self-update**: separate installed/status rows and checks for the IDACC app and its managed
-  ID Agents manager. **Update & sync manager** uses the installer's guarded updater to accept only
-  fast-forward tagged releases from the configured source, validate and build the checkout, and
-  activate it only after active queries drain; successful activation refreshes manager-backed
-  Settings, fleet, Dashboard, and Work state without redeploying teams. A downloaded-app-only first
-  run instead offers **Install current manager**, using installer scripts bundled in the app to
-  create the guarded checkout, manager service, updater service, and local manager profile without
-  replacing dirty/foreign source or an unknown process. App background checks can
-  stage newer builds, but applying a staged app build still requires the explicit Restart & update
-  action; stale/consumed staged zips are gated during status, check, staging, and apply.
+- **Self-update**: IDACC, Agent manager, and Brain have one versioned application update authority.
+  The card shows the bundled component versions and live readiness, checks only the compiled
+  `bobofbuilding/idacc` release feed, and never offers a separate Manager install or update action.
+  electron-builder metadata verifies downloaded bytes, macOS/Windows production releases require
+  platform signatures, downgrades and prereleases are rejected, and an available update exposes
+  **Download update** with live progress when automatic download is off. Concurrent requests share
+  one download, shutdown drains it, and applying a staged build still requires the explicit
+  **Restart & update** action. The installer is not started until the
+  application-wide shutdown coordinator has quiesced UI mutations, stopped background loops, and
+  completed bounded Manager/Brain process-tree cleanup. Linux AppImage builds support that
+  replacement path; Debian packages direct the user to the system package manager instead.
+  Both Linux release forms enable Electron's sandbox before bundled application modules load
+  and refuse sandbox-disabling launch switches. The Debian installer configures the Chromium
+  sandbox helper when required and conditionally configures its pinned AppArmor profile when
+  AppArmor is enabled with the supported ABI; release gates inspect both the built AppImage and
+  Debian archives.
 - **Managed subscription sign-ins**: CLI OAuth/device/browser flows (no API key) for `claude-*`,
-  `codex`, `cursor-cli`, `grok`, Antigravity `agy`, `copilot`, `kiro-cli`, and legacy `q` only when installed. Rows distinguish
+  `codex`, `cursor-cli`, `grok`, Antigravity `agy`, `copilot`, `kiro-cli`, `kimi-cli`, and legacy `q`
+  only when installed. Rows distinguish
   status-inspectable CLIs from TUI-owned account state, auto-detect installed binaries after a
   visible installer handoff, show safe account labels from provider status/cache metadata when
   available, label live CLI-confirmed rows as signed in, label cache-evidence rows as account linked
@@ -537,9 +680,11 @@ Manager; this is the plumbing.)
   **Inference backends** rather than the subscription sign-in card.
   Agent Harness pickers only offer manager-executable runtimes that Settings can currently prove
   through sign-in, route-ready API backend, or synced local-backend evidence; existing assigned
-  runtimes remain visible as the current value for review. Linked managed subscription CLIs without
-  a manager adapter, such as Grok Build, Antigravity, Copilot, Kiro, and legacy Q, show in Health as
-  adapter-needed read-only lanes instead of selectable harnesses. Synced API/cloud provider lanes
+  runtimes remain visible as the current value for review. The bundled Manager includes executable
+  harnesses for Grok Build, Antigravity, GitHub Copilot, Kiro, and Kimi Code, so each becomes
+  selectable only after its corresponding installed/account-readiness evidence is available.
+  Legacy Amazon Q remains a linked/current-only lane because the bundled Manager does not expose a
+  Q harness. Synced API/cloud provider lanes
   such as OpenRouter and NVIDIA are selectable in Health and HR Manager Build via the manager
   `provider-api` harness; synced local OpenAI-compatible lanes such as LM Studio use the same
   provider-specific route and are never translated to the incompatible generic Ollama harness.
@@ -550,8 +695,8 @@ Manager; this is the plumbing.)
   `oauth-personal` evidence is not part of managed sign-in availability because consumer Gemini Code
   Assist / Google AI Pro / Ultra OAuth is deprecated in Gemini CLI; use the Google Gemini API preset
   under Inference backends instead. Antigravity CLI is managed from Settings as the consumer
-  subscription successor, but is not offered as an agent harness until the manager exposes an
-  Antigravity adapter.
+  subscription successor and is offered as an agent harness only after its live model probe confirms
+  that the installed CLI is ready.
 - **Local models & backends**: compact four-cell status summary for Ollama, routing, installed
   stacks, and catalog state; primary **Check catalog**, **Scan running**, and **Stack setup** actions;
   guarded next-step setup; quiet local concurrency when manager data is available; passive Ollama
@@ -594,24 +739,35 @@ Manager; this is the plumbing.)
   stack port warnings suppress a stack's own configured/discovered port so an installed LocalAI-style
   backend does not warn against itself.
 
-**Data & actions:** `app:hardware`, `manager:capabilities`, `app:version`, `update:status/check/
-getSettings/setSettings`, `subs:status/signin/signout/install`, `manager:localConcurrency/
+**Data & actions:** `app:hardware`, `manager:capabilities`, `app:version`, `unifiedStack:status`,
+`update:status/check/download/getSettings/setSettings`, `subs:status/signin/signout/install`, `manager:localConcurrency/
 setLocalConcurrency`, `ollama:tags/catalogCheck/pull/remove`, `evmRpc:list/save/remove/probe`,
 `image:getServer/setServer/detectServer`,
 `app:runInTerminal`, `providers:list/add/remove/setDefault/toggle/connect/discover`.
 
-**Polish:** signin success is assumed after a 4s recheck (slow OAuth leaves the card stale);
-concurrency running/queued figures are a snapshot; clipboard fallbacks fail silently.
+**Polish:** managed sign-in no longer assumes success on a timer: the vendor flow stays pending until
+the user selects **I've finished — re-check**, then IDACC forces a status refresh and reports
+confirmed, not-yet-visible, or status-unavailable evidence. A staged unified update exposes
+**Restart & update**, rechecks the exact staged version after confirmation, and applies IDACC,
+Manager, and Brain together. Manual update mode exposes **Download update**, accurate progress and
+failure status, and never races a metadata check or abandons an active download at shutdown. Local
+concurrency running/queued counts refresh every three seconds
+while Settings is visible, refresh on focus, and have a manual **Refresh** action with freshness/
+unavailable evidence. Clipboard fallbacks confirm successful copy; when clipboard access is
+unavailable, the full command or diagnostic report remains visible for manual selection.
 
 ---
 
 ## 14. Cross-cutting concepts
 
-- **Active-team scoping**: everything is scoped to `store.team`; switch via the status-bar selector.
-- **Runtimes**: `claude-*`, `codex`, `cursor-cli`, and `ollama` are manager-executable harnesses today.
-  Grok, Antigravity, Copilot, Kiro, and legacy `q` are managed subscription CLI lanes that can be linked
-  in Settings and reviewed in Health, but they stay adapter-needed until the manager ships matching
-  harnesses. `ollama` / local servers and metered API providers are
+- **Scope is explicit**: Dashboard observation is holistic across current teams and its chat is
+  pinned to `default/lead`. Work fan-out and HR Health can span teams. Action-centric editors use
+  the active `store.team`; switch it with the status-bar selector. Per-agent holistic actions carry
+  the agent's own team explicitly rather than borrowing the selected team.
+- **Runtimes**: `claude-*`, `codex`, `cursor-cli`, `grok`, `antigravity`, `copilot`, `kiro-cli`,
+  `kimi-cli`, and `ollama` are bundled Manager harnesses. Managed subscription harnesses become
+  assignable only when Settings can prove the installed account route is ready. Legacy `q` remains
+  linked/current-only because it has no bundled Manager harness. `ollama` / local servers and metered API providers are
   configured in Settings → Inference. MCP works where a runtime/tool harness supports it; skills and
   portable plugin packages are assigned as neutral metadata with Skill/MCP/native/direct-fallback
   adapters deciding execution.
@@ -621,33 +777,61 @@ concurrency running/queued figures are a snapshot; clipboard fallbacks fail sile
   (`work:fanout` → `/ask <team>/<lead>`), each running it independently and in parallel.
 
 ### Release process (operator note)
-Bump `idctl-desktop/package.json` + lockfile → CHANGELOG `## [X.Y.Z]` → commit + tag `vX.Y.Z` +
-push (SSH) → `cd idctl-desktop && CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist` → ditto-zip the
-arm64 asset → publish **directly** with the deployer PAT and assign an ops-lead follow-up task
-(local tool `.iacc-publish/release-publish.py X.Y.Z`). The app self-updates from GitHub
-`releases/latest`; local release zips are deleted after upload verification because GitHub releases
-are the durable archive.
+Run `scripts/release.sh "Meaningful summary" X.Y.Z --publish=true`. This is the
+only production release path: it preflights GitHub authentication and signing,
+updates both application manifests and the changelog, commits, creates a signed
+annotated `vX.Y.Z` tag, atomically pushes the exact commit and tag, requires
+GitHub signature verification, and dispatches the cross-platform **Production
+release** workflow. The workflow builds, signs, verifies, attests, and assembles
+the unified macOS, Windows, and Linux application. Use `--publish=false` for the
+same production gates with a retained draft, and
+`scripts/release.sh --resume X.Y.Z --publish=true` to continue safely without
+duplicate publication. Lightweight or unsigned tags and local direct publishing
+are rejected. The audited legacy cutover preserves the exact lightweight
+and annotated `v0.1.620` through `v0.1.684` refs as immutable history. Its
+schema-v3 record binds 63 exact lightweight refs, two exact unsigned annotated
+tag objects, 62 exact published release identities, and 3 absent releases
+(`v0.1.622`, `v0.1.624`, and `v0.1.625`). It fails closed if any tag object,
+peeled target, signature state, or recorded release identity/state changes, or
+if another incomplete tag appears. While the cutover is active, the current
+GitHub Latest and the changelog baseline remain `v0.1.619`; `v0.1.684` is the
+historical version floor that the first canonical signed release must exceed.
+The app self-updates from the verified GitHub release feed. The retained Tauri
+frontend is labeled and gated as a developer-only interface simulation; its
+production package commands fail because it does not bundle or supervise
+Manager and Brain.
 
 ---
 
-## 15. Polish backlog (prioritized, from this review)
+## 15. v0.1.685 design closeout
 
-**Should fix (user-facing correctness/UX)**
-1. Identity & Keys: write actions silently swallow errors → add error surfacing.
-2. Capabilities: Rebuild affordance disappears after detaching the last MCP server → keep it when a
-   detach is pending.
-3. Capabilities: `setAgentMcp` wholesale-replace can clobber concurrent changes → guard like
-   `cu:attach`.
-4. Computer Use: "bless applies on next Arm" copy contradicts re-sync-while-armed behavior → fix copy.
-5. Projects: deleting all projects silently repopulates on next load (auto-sync) → gate first-run
-   auto-sync so it doesn't undo deletions.
-6. Dashboard: two different "Probe" meanings → relabel one.
+The earlier review backlog has been reconciled against the production candidate. These items are
+implemented and covered by focused smoke or rendered-interaction tests:
 
-**Nice to have**
-- Dashboard/Health: throttle re-fetches that run on every 3s poll.
-- Work › Dream: scheduled nightly dreams don't appear in the saved list; render markdown (not `<pre>`).
-- Settings: add "Restart & apply now"; confirm signin instead of timed recheck.
-- HR Manager: de-duplicate the two relay pickers / coordinator presets; clarify inherit-vs-blocked.
-- Chat: remove dead `endRef`; tighten the plan auto-save heuristic.
+| Area | Completed behavior |
+|---|---|
+| Dashboard command surface | ⌘/Ctrl+K registry, guarded drawers, confirmed chat mutations, capability gating, idempotency, durable receipts, owner-page recovery, and rendered focus/interruption coverage |
+| Dashboard / Health refresh | Fleet probes are clearly labeled as health checks; provider model refresh lives in Settings; catalog reads are coalesced and observability uses an independent cadence |
+| Identity & Keys | Mutation failures surface inline with recovery context; Register is an idempotent no-op for an existing domain; live ENS resolver/address and deployed-contract evidence is available through configured RPCs |
+| Capabilities | Rebuild remains available after the final MCP detach; MCP writes use fresh compare-and-swap state; registry removal cleans every agent copy before deletion; first-load categorization is offline |
+| Computer Use | Bless eligibility uses declared MCP/harness capabilities; failed wiring rolls back with visible Repair; the armed set is re-synchronized; any connected display can be selected |
+| Projects | Deletion is Manager-authoritative and guarded; reload never silently re-adds deleted rows; workspace discovery requires explicit previewed Sync |
+| Work › Dream | Recurring schedules are configurable and managed inline; completed scheduled output is reconciled by exact query ID into the profile Dream archive; reports render readable Markdown |
+| Work › Schedule / Loops | Heartbeat objectives are editable; schedule/check-in writes are freshness-guarded and confirmed; every loop path shares the 20-step bound; scheduled cadence copy reflects the bundled Manager lifecycle |
+| Settings | Unified **Restart & update** revalidates the staged version; managed sign-in waits for explicit user completion before a forced recheck; concurrency counts refresh live; clipboard/manual-command handoffs always show truthful confirmation |
+| HR Manager | Builder owns roster construction only; **Manage > Hierarchy** is the single routing authority and distinguishes inherited, explicit, and blocked relay state |
+| Chat | Dead scroll-ref code is removed; plan detection is conservative; malformed or attachment-bearing reserved control commands fail locally; reply, activity, and delegation annotations are exact-query scoped; concurrent writes and deletion are guarded |
+| First-run setup | Existing starter agents are preserved; stale assignments and stopped starters are repaired only inside an explicit, batch-verified setup run |
+| Unified runtime lifecycle | Manager, Brain, listener, and cycle roots use retained POSIX process-group ownership or Windows Job Objects; a root crash cannot orphan descendants, failed cleanup blocks replacement, and every quit/relaunch/update path runs through one early graceful-shutdown coordinator |
 
-_None of the above are regressions; they're refinements surfaced by the page-by-page review._
+The remaining external and intentional scope boundaries are documented here so they are not
+mistaken for incomplete consumer design work:
+
+| Area | External or intentional scope boundary |
+|---|---|
+| Identity & Keys | Draft ENSIP-24, ERC-8004, ERC-8048/ERC-721T, ERC-8049, and B20 conformance stays declared until the Manager/backend supplies canonical targets, versioned interfaces, subject bindings, and trust roots. Manifest hashes, metadata-hook trust, and runtime signatures likewise require a versioned external attestation contract |
+| Health | Throughput is Manager harness performance telemetry. Provider invoices remain provider-owned and are not inferred from heterogeneous runtime token reports |
+| Context compression | The optional Headroom retrieval resolver is a validated pilot, not a core route. Production uses deterministic direct routing and protected-content fallback until the Manager advertises a versioned resolve-before-act contract and quality gates pass |
+
+_These boundaries do not prevent the unified application, Manager, Brain, local goals, or deterministic
+context path from operating as documented in v0.1.685._

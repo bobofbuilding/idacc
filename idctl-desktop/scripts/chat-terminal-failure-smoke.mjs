@@ -15,5 +15,18 @@ assert.ok(
   chat.includes('text: terminalQueryText(confirmed)'),
   'confirmed terminal failures should use the same detail-preserving formatter',
 );
+assert.equal(
+  chat.includes("call<string>('chat:genReason'"),
+  false,
+  'behind-the-scenes summaries must come from exact activity traces, not a model paraphrase that can invent actions',
+);
+assert.ok(
+  chat.includes('Work-plan integrity rule:'),
+  'agent prompts must forbid unsupported Work-plan mutation claims',
+);
+assert.ok(
+  chat.includes("call<PlanConsolidationResult>('brain:consolidatePlans'"),
+  'explicit chat requests to merge numbered plans must use the guarded IDACC core action',
+);
 
 console.log('chat terminal failure guard ok');
