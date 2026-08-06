@@ -53,9 +53,9 @@ function enqueueBudgeted(client: ManagerClient, command: string, source: string)
 /** A task is complete once the manager reports a done/complete status. */
 function isTaskDone(status?: string): boolean { return /done|complete/i.test(status ?? ''); }
 
-/** Every identifier a created task might be keyed by, so a dependent's stored ref
- *  matches the prerequisite regardless of which field the create call returned. */
-function taskKeys(t: Task): string[] {
+/** Every identifier a completed task might be keyed by, so a dependent's stored ref
+ *  can match the prerequisite regardless of which field the create call returned. */
+function taskCompletionKeys(t: Task): string[] {
   return [t.shortId, t.name, t.uuid, t.title].filter(Boolean) as string[];
 }
 function taskRef(t: Task): string { return t.shortId ?? t.name ?? t.uuid ?? t.title; }
@@ -169,6 +169,18 @@ async function openTasks(client: ManagerClient): Promise<Task[]> {
 
 async function recentDoneTasks(client: ManagerClient): Promise<Task[]> {
   return client.tasksByStatus('done', { limit: WORK_COMPLETION_DONE_TASK_LIMIT }).catch(() => [] as Task[]);
+}
+
+function taskCompletionOrderValue(task: Task): number {
+  return Number(task.completedAt ?? task.updatedAt ?? task.createdAt ?? 0) || 0;
+}
+
+function taskCompletedAfter(task: Task, sinceMs: number): boolean {
+  return taskCompletionOrderValue(task) >= sinceMs;
+}
+
+export function taskMatchesCompletionWait(task: Task, ref: string, sinceMs: number): boolean {
+  return taskCompletedAfter(task, sinceMs) && taskCompletionKeys(task).includes(ref);
 }
 
 /** An agent is routable only when it's actually running. Anything clearly
@@ -922,21 +934,20 @@ export async function createAndDispatchPlan(
   // the chain forever (the auto-pilot re-dispatches stalled prereqs in the meantime).
   const COMPLETION_POLL_MS = 5000;
   const COMPLETION_TIMEOUT_MS = 20 * 60 * 1000;
-  const waiters: { ref: string; resolve: () => void; deadline: number }[] = [];
+  const waiters: { ref: string; sinceMs: number; resolve: () => void; deadline: number }[] = [];
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   const tickPoll = async (): Promise<void> => {
     if (!waiters.length) { if (pollTimer) { clearInterval(pollTimer); pollTimer = undefined; } return; }
     const snap = await recentDoneTasks(client);
-    const doneKeys = new Set<string>();
-    for (const t of snap) if (isTaskDone(t.status)) for (const k of taskKeys(t)) doneKeys.add(k);
     const now = Date.now();
     for (let k = waiters.length - 1; k >= 0; k--) {
       const w = waiters[k];
-      if (doneKeys.has(w.ref) || now >= w.deadline) { waiters.splice(k, 1); w.resolve(); }
+      const matched = snap.some((task) => isTaskDone(task.status) && taskMatchesCompletionWait(task, w.ref, w.sinceMs));
+      if (matched || now >= w.deadline) { waiters.splice(k, 1); w.resolve(); }
     }
   };
-  const waitForTaskDone = (ref: string): Promise<void> => new Promise((resolve) => {
-    waiters.push({ ref, resolve, deadline: Date.now() + COMPLETION_TIMEOUT_MS });
+  const waitForTaskDone = (ref: string, sinceMs: number): Promise<void> => new Promise((resolve) => {
+    waiters.push({ ref, sinceMs, resolve, deadline: Date.now() + COMPLETION_TIMEOUT_MS });
     if (!pollTimer) { pollTimer = setInterval(() => void tickPoll(), COMPLETION_POLL_MS); (pollTimer as { unref?: () => void }).unref?.(); }
   });
 
@@ -954,11 +965,12 @@ export async function createAndDispatchPlan(
     const deps = backDeps.map((d) => done[d]).filter(Boolean); // each resolves on prereq COMPLETION
     const prevForOwner = ownerChain[c.agent];
     const waits = prevForOwner ? [...deps, prevForOwner] : deps;
+    const completionSinceMs = Date.now();
     if (c.managerKickoff) {
       // Assigned lead parents are woken and prompted by the manager during
       // /task create. A second /ask duplicates the kickoff and consumes a
       // second query lane for the same task.
-      const p = Promise.allSettled(waits).then(() => waitForTaskDone(c.ref));
+      const p = Promise.allSettled(waits).then(() => waitForTaskDone(c.ref, completionSinceMs));
       ownerChain[c.agent] = p;
       return p;
     }
@@ -987,7 +999,7 @@ export async function createAndDispatchPlan(
       }
       // Hold this task's done-promise open until the task itself finishes — that's what gates
       // its dependents (and its owner's next task).
-      await waitForTaskDone(c.ref);
+      await waitForTaskDone(c.ref, completionSinceMs);
     });
     ownerChain[c.agent] = p; // the owner's next task waits for THIS one to complete
     return p;
