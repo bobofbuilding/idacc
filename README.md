@@ -1,11 +1,38 @@
-# ID Agents Control Center
+# IDACC — ID Agents Control Center
 
-ID Agents Control Center (IDACC) is a unified desktop workspace for running and
-coordinating private AI-agent teams. The consumer application includes the
-desktop interface, Agent manager, and Brain together; a new user does not need a
-separate manager or Brain checkout.
+Run private AI-agent teams, see what every agent is doing, unblock work, and
+steer the whole operation from one local desktop workspace.
 
-## Current release: v0.1.704
+IDACC is a self-contained product: the consumer application bundles its verified
+Agent manager and Brain runtimes. A new user does not need another Bittrees
+product, a separate manager or Brain checkout, shared navigation, or an internal
+control plane to reach first value.
+
+## Current release: v0.1.708
+
+**[Download the latest IDACC release](https://github.com/bobofbuilding/idacc/releases/latest)**
+
+[Latest releases](https://github.com/bobofbuilding/idacc/releases/latest)
+· [Security policy](SECURITY.md)
+· [Build from source](#desktop-gui)
+
+The first-use path is product-owned: install IDACC, create or select a local
+profile, configure a team, and start coordinating agents. Profiles, updates,
+recovery behavior, and support evidence remain within IDACC's documented
+release and security boundary.
+
+- **In scope:** local agent-team setup, chat, work and goal coordination,
+  schedules, learning, memory, runtime health, and application updates.
+- **Out of scope:** a hosted multi-tenant agent service, governance or financial
+  functions supplied by another product, and any guarantee that optional
+  third-party providers remain available.
+- **Optional integrations:** MCP servers, model providers, wallets, external
+  repositories, and other Bittrees-created products connect through documented
+  boundaries. Their absence or failure must not make IDACC's core local
+  workspace depend on a sibling product.
+- **Release status:** v0.1.708 is an owner-authorized unsigned stable release.
+  The macOS and Windows packages are not Developer ID/Authenticode signed, and
+  macOS packages are not notarized. See the release notice before installing.
 
 The current application line completes the move to one profile-owned, unified
 desktop runtime:
@@ -253,6 +280,8 @@ Normal agent-facing Manager operations and some Brain reads remain available to
 local agents. See the [local security model](docs/SECURITY_MODEL.md) for the
 precise trust boundary and guidance for isolating mutually untrusted workloads.
 
-## License
+## Acknowledgements & license
 
-Licensed under the MIT License. See `LICENSE`.
+Licensed under the MIT License — see [LICENSE](LICENSE).
+
+<sub>Created by Bittrees.</sub>
