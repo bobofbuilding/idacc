@@ -3,10 +3,10 @@
   "components": {
     "manager": {
       "repository": "https://github.com/bobofbuilding/id-agents.git",
-      "commit": "409bdc26519ce1acd01702c4f7b84df0a6283ed9",
-      "tree": "7ecd3001dbee1267f0989a7edf49021e710a8d3a",
-      "version": "0.1.168",
-      "packageLockSha256": "f58ee476c709221450be10a45653cf87cb3d23dd996bd017ca0e554c247d9af6",
+      "commit": "4a0994ad71e91b215a747be8ddf31c64ea7a3580",
+      "tree": "bb27b3cde2400443f235178880d0b1958c3712a9",
+      "version": "0.1.169",
+      "packageLockSha256": "f98c13d8f33a9c99671d8642d049cfd1d814c178310b0eb32abac93290e01f44",
       "entrypoint": "dist/start-agent-manager.js",
       "serviceId": "idagents-manager"
     },
