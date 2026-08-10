@@ -874,10 +874,10 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
    * accepted the parallel team-lead queries; the resulting task rows and agent
    * activity continue in Work and Dashboard without locking this chat for the
    * duration of the entire objective. */
-  async function beginLeadDelegation(sid: string, replyId: number, scopedMessage: string): Promise<boolean> {
+  async function beginLeadDelegation(sid: string, replyId: number, scopedMessage: string, projectId?: string): Promise<boolean> {
     let results: FanoutResult[];
     try {
-      results = await call<FanoutResult[]>('work:fanoutToTeamLeads', scopedMessage, team);
+      results = await call<FanoutResult[]>('work:fanoutToTeamLeads', scopedMessage, team, projectId || undefined);
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       await resolveMsg(sid, replyId, { role: 'system', text: `✗ Lead delegation could not start: ${raw}`, pending: false });
@@ -1182,7 +1182,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
       // session.inflight (which drives the UI), and polls until a reply lands.
       const primaryLead = isPrimaryLeadChatTarget(team, target, store.coordinator);
       if (primaryLead && shouldDelegatePrimaryLeadRequest(text)) {
-        await beginLeadDelegation(sid, replyId, scopedMessage);
+        await beginLeadDelegation(sid, replyId, scopedMessage, session.projectId);
       } else {
         await beginDispatch(sid, replyId, target, scopedMessage, { planRequest, planText: text });
       }

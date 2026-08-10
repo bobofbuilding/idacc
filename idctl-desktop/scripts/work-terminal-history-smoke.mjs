@@ -59,7 +59,7 @@ if (scenario === 'all' || scenario === 'terminal') {
     },
   );
 
-  const result = await fanOutObjectiveToActiveTeamLeads(client, objective, 'default');
+  const result = await fanOutObjectiveToActiveTeamLeads(client, objective, 'default', 'tcp', '/workspace/projects/tcp');
 
   assert.ok(statuses.includes('done'), 'repository reruns must inspect terminal history before creating a task');
   assert.equal(result[0]?.status, 'dispatched', 'completed history must permit a fresh tracked run');
@@ -67,6 +67,8 @@ if (scenario === 'all' || scenario === 'terminal') {
     commands.some((command) => /^\/task create\b/.test(command) && !/^\/task create "Audit reconcile authorized projects"\b/.test(command)),
     'the fresh run must use a collision-free task identity instead of the completed canonical name',
   );
+  assert.ok(commands.some((command) => /^\/task create\b/.test(command) && /--project "tcp"/.test(command)), 'the fresh task must retain the selected project');
+  assert.ok(commands.some((command) => /^\/task create\b/.test(command) && /Project root: \/workspace\/projects\/tcp/.test(command)), 'the fresh task must retain the exact project checkout path');
   assert.equal(commands.some((command) => /jumpstart-stalled.*#a6c3b790/.test(command)), false, 'completed work must never be jumpstarted');
 }
 

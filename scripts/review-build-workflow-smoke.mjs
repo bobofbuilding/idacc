@@ -292,7 +292,15 @@ assert.match(workflow, /--config\.publish\.channel=review/);
 assert.match(workflow, /if \[ "\$\{\{ matrix\.platform \}\}" = mac \]; then\s+sudo sysctl -w kern\.maxfiles=524288\s+sudo sysctl -w kern\.maxfilesperproc=524288\s+ulimit -n 524288\s+test "\$\(ulimit -n\)" = 524288\s+fi/);
 assert.match(workflow, /IDACC_REVIEW_BUILD:\s*"1"/);
 assert.match(workflow, /IDACC_REVIEW_VERSION:\s*\$\{\{\s*needs\.prepare\.outputs\.review_version\s*\}\}/);
+assert.match(
+  workflow,
+  /REVIEW_TAG="unsigned-review-v\$\{VERSION\}-review\.\$\{GITHUB_RUN_ID\}\.\$\{GITHUB_RUN_ATTEMPT\}"/,
+);
 assert.match(workflow, /REVIEW_VERSION="\$VERSION"/);
+assert.match(workflow, /review_tag:\s*\$\{\{\s*steps\.source\.outputs\.review_tag\s*\}\}/);
+assert.match(workflow, /REVIEW_TAG:\s*\$\{\{\s*needs\.prepare\.outputs\.review_tag\s*\}\}/);
+assert.match(workflow, /TAG="\$REVIEW_TAG"/);
+assert.doesNotMatch(workflow, /TAG="v\$REVIEW_APPLICATION_VERSION"/);
 assert.match(workflow, /candidate=review-v%s-%s/);
 assert.match(workflow, /review_version=%s/);
 assert.match(workflow, /--application-version "\$IDACC_REVIEW_VERSION"/);

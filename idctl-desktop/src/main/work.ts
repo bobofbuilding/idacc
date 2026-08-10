@@ -30,7 +30,7 @@ export interface TeamLeadDelegationResult {
   errors: string[];
   raw?: string;
 }
-export interface TeamLeadDelegationOptions { currentTeam?: string; primaryLead?: string }
+export interface TeamLeadDelegationOptions { currentTeam?: string; primaryLead?: string; projectId?: string; planId?: string }
 
 /** Quote a free-text argument as ONE token for the manager tokenizer (matches client qArg). */
 function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
@@ -684,6 +684,8 @@ Return ONLY a JSON array (no prose, no markdown fence) of up to ${maxSubtasks} o
 
 Rules:
 - Assign work ONLY to agents that are running; never assign a task to one marked [STOPPED — do not assign].
+- Route by the live catalog: role, expertise, availability, cost tier, and notSuitableFor. Do not route from an agent name alone.
+- Give an assignee at most one live task at a time. Put additional work behind a real dependency or defer it instead of stacking concurrent asks on a busy agent.
 - Do not assign execution to yourself/the coordinator when any non-coordinator assignee is available.
 - On the default team, coder and researcher validate completed work; do not assign normal execution to them when another worker or team lead is available.
 - Produce implementation-grade work, not status-only packets. Unless the objective is explicitly research-only, include tasks that result in shipped artifacts, code/content/data changes, deployment/release wiring, and validation.
@@ -1090,6 +1092,8 @@ export async function delegateObjectiveToTeamLeads(
         allowCoordinatorOwners: true,
         ownerOpenTaskCap: Math.max(WORK_OWNER_OPEN_TASK_CAP, WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP),
         leadCoordination: true,
+        projectId: opts.projectId,
+        planId: opts.planId,
       });
       dispatched += result.dispatched;
       deferred += result.deferred;
@@ -1159,16 +1163,21 @@ export async function teamLeads(client: ManagerClient, teams: string[]): Promise
   );
 }
 
-const FANOUT_PROMPT = (objective: string, team: string) =>
+const FANOUT_PROMPT = (objective: string, team: string, projectId?: string, projectRoot?: string) =>
   `You are the lead of the "${team}" team. Take ownership of this objective for your team and drive it to completion:
 
 ${objective}
 
+${projectId ? `Project scope: ${projectId}. Every task created for this objective must include --project ${qArg(projectId)}.` : 'Project scope: none was supplied. Do not guess or borrow a project from unrelated work.'}
+${projectRoot ? `Project root: ${projectRoot}. Include this exact project root in every repository task description and run repository commands from it; do not use an agent's persistent workspace as the checkout.` : ''}
+
 How to run it:
-1. Break it into concrete, independently-actionable tasks for your ACTIVE teammates (skip anyone stopped).
-2. Create each as a real task with dispatch-ready metadata: /task create "<short title>" --owner <teammate> --description "<what to do + expected output>" --goal "<goal id from objective, or goal_manual_dispatch>" --expected-output "<artifact or result>" --acceptance "<how to verify done>" --validation-path "coder and researcher review substantial work" --out-of-scope "<what not to do>" --backlog-policy "Non-required recommendations become backlog candidates." --work-relevance "medium: directly improves the requested workspace outcome and managed-agent throughput."
-3. Dispatch the work, coordinate, and keep task status updated as things progress.
-4. Other teams are handling their own slices in parallel — own yours end to end.
+1. Inspect the live roster and candidate catalogs first. Route by role, expertise, availability, cost tier, and notSuitableFor; skip stopped, busy, or unsuitable agents.
+2. Break the objective into concrete, independently-actionable tasks. Give each assignee at most one live task; queue dependent work instead of stacking concurrent asks.
+3. Create each as a real task with dispatch-ready metadata: /task create "<short title>" --owner <teammate>${projectId ? ` --project ${qArg(projectId)}` : ''} --description "<what to do + expected output>" --goal "<goal id from objective, or goal_manual_dispatch>" --expected-output "<artifact or result>" --acceptance "<how to verify done>" --validation-path "coder and researcher review substantial work" --out-of-scope "<what not to do>" --backlog-policy "Non-required recommendations become backlog candidates." --work-relevance "medium: directly improves the requested workspace outcome and managed-agent throughput."
+4. Dispatch the work, coordinate, and keep task status updated as things progress. Reuse an existing matching task instead of renaming around the duplicate guard.
+5. Other teams are handling their own slices in parallel — own yours end to end.
+${/^(?:operations-team|operations|ops-team|ops)$/i.test(team) ? '6. For site or release objectives, own an early release preflight that verifies the project checkout, repository remote/default branch, application build entry, hosting target and access policy, custom domain, and post-deploy HTTP result. Surface a failed prerequisite before downstream deployment work starts.' : ''}
 
 Reply with a short summary of the tasks you created and who you assigned each to.`;
 
@@ -1180,7 +1189,7 @@ Reply with a short summary of the tasks you created and who you assigned each to
  * createAndDispatchPlan. Teams with no running agent are reported 'no-active-agent'
  * and never dispatched into the void.
  */
-export async function fanOutObjective(client: ManagerClient, objective: string, teams: string[]): Promise<FanoutResult[]> {
+export async function fanOutObjective(client: ManagerClient, objective: string, teams: string[], projectId?: string, projectRoot?: string): Promise<FanoutResult[]> {
   const obj = (objective || '').trim();
   const uniq = [...new Set((teams || []).map((t) => String(t).trim()).filter(Boolean))];
   if (!obj) return uniq.map((team) => ({ team, status: 'failed' as const, detail: 'describe the work first' }));
@@ -1193,7 +1202,7 @@ export async function fanOutObjective(client: ManagerClient, objective: string, 
         if (!lead) return { team, status: 'no-active-agent', detail: agents.length ? `${agents.length} agent(s), none running` : 'no agents' };
         const guard = await guardLeadQueue(tc, lead, 'fan-out');
         if (!guard.ok) return { team, lead, status: 'deferred', detail: guard.detail };
-        const env = await remoteBudgeted<{ queryId?: string }>(tc, `/ask ${lead} ${qArg(FANOUT_PROMPT(obj, team))}`, 'work:fanout');
+        const env = await remoteBudgeted<{ queryId?: string }>(tc, `/ask ${lead} ${qArg(FANOUT_PROMPT(obj, team, projectId, projectRoot))}`, 'work:fanout');
         recordLeadDispatch(tc, lead, env.result?.queryId, 'work:fanout');
         return { team, lead, status: 'dispatched', queryId: env.result?.queryId };
       } catch (e) {
@@ -1213,6 +1222,8 @@ export async function fanOutObjectiveToActiveTeamLeads(
   client: ManagerClient,
   objective: string,
   currentTeam = 'default',
+  projectId?: string,
+  projectRoot?: string,
 ): Promise<FanoutResult[]> {
   const targets = await resolveActiveTeamLeadTargets(client, currentTeam);
   if (!targets.length) {
@@ -1237,12 +1248,12 @@ export async function fanOutObjectiveToActiveTeamLeads(
         detail: 'the General Council was explicitly requested, but legal/general-counsel is not active',
       }];
     }
-    return fanOutObjective(client, objective, [legal.team]);
+    return fanOutObjective(client, objective, [legal.team], projectId, projectRoot);
   }
 
   const repositoryAuthorityRequest = isRepositoryAuthorityObjective(objective);
   if (!repositoryAuthorityRequest) {
-    return fanOutObjective(client, objective, targets.map((target) => target.team));
+    return fanOutObjective(client, objective, targets.map((target) => target.team), projectId, projectRoot);
   }
 
   const operations = targets.find((target) => /^(?:operations-team|operations|ops-team|ops)$/i.test(target.team));
@@ -1273,7 +1284,7 @@ export async function fanOutObjectiveToActiveTeamLeads(
   const terminalHistory = (await scoped.tasksByStatus('done', { limit: WORK_COMPLETION_DONE_TASK_LIMIT }).catch(() => [] as Task[]))
     .find((task) => task.name === REPOSITORY_AUTHORITY_TASK_NAME);
   const runId = terminalHistory ? repositoryAuthorityRunId() : undefined;
-  const packet = FANOUT_PROMPT(objective, operations.team);
+  const packet = FANOUT_PROMPT(objective, operations.team, projectId, projectRoot);
   const created = await createAndDispatchPlan(scoped, objective, [{
     title: runId ? `${REPOSITORY_AUTHORITY_TASK_TITLE} ${runId}` : REPOSITORY_AUTHORITY_TASK_TITLE,
     agent: operations.lead,
@@ -1286,6 +1297,7 @@ export async function fanOutObjectiveToActiveTeamLeads(
     ownerOpenTaskCap: Math.max(WORK_OWNER_OPEN_TASK_CAP, WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP),
     coordinator: operations.lead,
     leadCoordination: true,
+    projectId,
     planId: runId ? `${REPOSITORY_AUTHORITY_TASK_NAME}-${runId}` : undefined,
   });
   const task = created.created[0];

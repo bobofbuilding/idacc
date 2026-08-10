@@ -2229,12 +2229,30 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     delegateObjectiveToTeamLeads(client, String(objective), opts ?? {}),
   // Cross-team fan-out: hand one objective to several teams' ACTIVE leads at once.
   'work:teamLeads': (teams: string[]) => teamLeads(client, Array.isArray(teams) ? teams.map(String) : []),
-  'work:fanout': (objective: string, teams: string[]) =>
-    fanOutObjective(client, String(objective), Array.isArray(teams) ? teams.map(String) : []),
+  'work:fanout': async (objective: string, teams: string[], projectId?: string) => {
+    const projectKey = projectId ? String(projectId) : undefined;
+    const project = projectKey ? (await managerProjects()).find((entry) => entry.id === projectKey) : undefined;
+    return fanOutObjective(
+      client,
+      String(objective),
+      Array.isArray(teams) ? teams.map(String) : [],
+      projectKey,
+      project?.path,
+    );
+  },
   // Primary-lead Chat delegation: discover active non-default team leads in the
   // main process, then dispatch to every one in parallel.
-  'work:fanoutToTeamLeads': (objective: string, currentTeam?: string) =>
-    fanOutObjectiveToActiveTeamLeads(client, String(objective), String(currentTeam || 'default')),
+  'work:fanoutToTeamLeads': async (objective: string, currentTeam?: string, projectId?: string) => {
+    const projectKey = projectId ? String(projectId) : undefined;
+    const project = projectKey ? (await managerProjects()).find((entry) => entry.id === projectKey) : undefined;
+    return fanOutObjectiveToActiveTeamLeads(
+      client,
+      String(objective),
+      String(currentTeam || 'default'),
+      projectKey,
+      project?.path,
+    );
+  },
   // Lead triages unassigned To-Do tasks: assign each to the best active agent + dispatch.
   'work:triage': async (lead: string, team?: string, projectId?: string) => {
     const route = await projectRouting(projectId, team, lead);

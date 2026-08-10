@@ -522,8 +522,8 @@ const ACTIONS: Record<string, (args: unknown[], result: unknown) => Summary> = {
 
   // ── project work orchestration (project-framed decisions) ──
   'work:createPlan': (a) => ({ subject: `plan dispatched: ${clip(a[0], 80)}`, data: { objective: clip(a[0], 400), subtasks: Array.isArray(a[1]) ? a[1].length : 0, team: s(obj(a[2]).team) }, tags: ['project', 'dispatch'] }),
-  'work:fanout': (a) => ({ subject: `fan-out: ${clip(a[0], 80)}`, data: { objective: clip(a[0], 400), teams: a[1] }, tags: ['project', 'dispatch'] }),
-  'work:fanoutToTeamLeads': (a) => ({ subject: `primary lead delegated: ${clip(a[0], 80)}`, data: { objective: clip(a[0], 400), team: s(a[1]) }, tags: ['project', 'dispatch'] }),
+  'work:fanout': (a) => ({ subject: `fan-out: ${clip(a[0], 80)}`, data: { objective: clip(a[0], 400), teams: a[1], projectId: s(a[2]) }, tags: ['project', 'dispatch'] }),
+  'work:fanoutToTeamLeads': (a) => ({ subject: `primary lead delegated: ${clip(a[0], 80)}`, data: { objective: clip(a[0], 400), team: s(a[1]), projectId: s(a[2]) }, tags: ['project', 'dispatch'] }),
   'work:triage': (a) => ({ subject: `triage by ${s(a[0])}`, data: { lead: s(a[0]), team: s(a[1]) }, tags: ['project', 'dispatch'] }),
 
   // ── operator work state (local fs + manager schedules; otherwise brain learned it only incidentally) ──

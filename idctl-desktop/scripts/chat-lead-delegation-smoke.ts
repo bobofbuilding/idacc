@@ -46,8 +46,10 @@ async function main(): Promise<void> {
   assert.match(chat, /isPrimaryLeadChatTarget\(team, target, store\.coordinator\)/, 'pinned Dashboard Chat should still recognize the default-team primary lead');
   assert.match(chat, /shouldDelegatePrimaryLeadRequest\(text\)/, 'Chat should classify actionable primary-lead work locally');
   assert.match(chat, /work:fanoutToTeamLeads/, 'Chat should use deterministic main-process delegation');
+  assert.match(chat, /scopedMessage, team, projectId \|\| undefined/, 'Chat should pass its selected project into lead delegation');
   assert.match(bridge, /fanOutObjectiveToActiveTeamLeads/, 'the bridge should expose active team-lead fan-out');
   assert.match(work, /resolveActiveTeamLeadTargets\(client, currentTeam\)/, 'team leads should be resolved from fresh manager state');
+  assert.match(work, /repository remote\/default branch/, 'operations fan-out should include an early release preflight');
 
   const dispatched: Array<{ team: string; command: string }> = [];
   const activeQueries: Record<string, number> = {};
@@ -79,10 +81,12 @@ async function main(): Promise<void> {
     },
     withTeam: (next: string) => makeClient(next),
   });
-  const result = await fanOutObjectiveToActiveTeamLeads(makeClient('default'), 'Audit every project and ship verified fixes.', 'default');
+  const result = await fanOutObjectiveToActiveTeamLeads(makeClient('default'), 'Audit every project and ship verified fixes.', 'default', 'tcp', '/workspace/projects/tcp');
   assert.deepEqual(result.map((row) => [row.team, row.status]), [['operations-team', 'dispatched']]);
   assert.ok(dispatched.some((row) => row.team === 'operations-team' && /\/agent "ops-lead" start/.test(row.command)), 'the configured stopped operations lead should be started');
   assert.ok(dispatched.some((row) => row.team === 'operations-team' && /^\/task create "Audit reconcile authorized projects" --owner ops-lead\b/.test(row.command)), 'repository work must create the named operations task under ops-lead');
+  assert.ok(dispatched.some((row) => row.team === 'operations-team' && /--project "tcp"/.test(row.command)), 'project-scoped Chat delegation must preserve the project on the parent task');
+  assert.ok(dispatched.some((row) => row.team === 'operations-team' && /Project root: \/workspace\/projects\/tcp/.test(row.command)), 'project-scoped Chat delegation must preserve the exact project checkout path');
   assert.equal(dispatched.some((row) => /content-moderator/.test(row.command)), false, 'an active specialist must not replace the configured operations lead');
 
   dispatched.length = 0;
