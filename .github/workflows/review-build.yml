@@ -23,6 +23,7 @@ jobs:
     outputs:
       candidate: ${{ steps.source.outputs.candidate }}
       commit: ${{ steps.source.outputs.commit }}
+      review_tag: ${{ steps.source.outputs.review_tag }}
       review_version: ${{ steps.source.outputs.review_version }}
       source_epoch: ${{ steps.source.outputs.source_epoch }}
       version: ${{ steps.source.outputs.version }}
@@ -77,11 +78,13 @@ jobs:
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]
           VERSION="$(node -p "require('./idctl-desktop/package.json').version")"
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          REVIEW_VERSION="${VERSION}-review.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          REVIEW_VERSION="$VERSION"
+          REVIEW_TAG="unsigned-review-v${VERSION}-review.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           SOURCE_EPOCH="$(git show -s --format=%ct "$COMMIT")"
           [[ "$SOURCE_EPOCH" =~ ^[1-9][0-9]*$ ]]
           printf 'candidate=review-v%s-%s\n' "$REVIEW_VERSION" "${COMMIT:0:12}" >> "$GITHUB_OUTPUT"
           printf 'commit=%s\n' "$COMMIT" >> "$GITHUB_OUTPUT"
+          printf 'review_tag=%s\n' "$REVIEW_TAG" >> "$GITHUB_OUTPUT"
           printf 'review_version=%s\n' "$REVIEW_VERSION" >> "$GITHUB_OUTPUT"
           printf 'source_epoch=%s\n' "$SOURCE_EPOCH" >> "$GITHUB_OUTPUT"
           printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
@@ -723,8 +726,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REVIEW_APPLICATION_VERSION: ${{ needs.prepare.outputs.review_version }}
           REVIEW_COMMIT: ${{ needs.prepare.outputs.commit }}
+          REVIEW_TAG: ${{ needs.prepare.outputs.review_tag }}
         run: |
-          TAG="v$REVIEW_APPLICATION_VERSION"
+          TAG="$REVIEW_TAG"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "::error::Review release $TAG already exists; start a new workflow run for a new immutable review version." >&2
             exit 1
