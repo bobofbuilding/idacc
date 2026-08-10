@@ -292,7 +292,11 @@ assert.match(workflow, /--config\.publish\.channel=review/);
 assert.match(workflow, /if \[ "\$\{\{ matrix\.platform \}\}" = mac \]; then\s+sudo sysctl -w kern\.maxfiles=524288\s+sudo sysctl -w kern\.maxfilesperproc=524288\s+ulimit -n 524288\s+test "\$\(ulimit -n\)" = 524288\s+fi/);
 assert.match(workflow, /IDACC_REVIEW_BUILD:\s*"1"/);
 assert.match(workflow, /IDACC_REVIEW_VERSION:\s*\$\{\{\s*needs\.prepare\.outputs\.review_version\s*\}\}/);
-assert.match(workflow, /REVIEW_VERSION="\$VERSION"/);
+assert.match(
+  workflow,
+  /REVIEW_VERSION="\$\{VERSION\}-review\.\$\{GITHUB_RUN_ID\}\.\$\{GITHUB_RUN_ATTEMPT\}"/,
+);
+assert.doesNotMatch(workflow, /REVIEW_VERSION="\$VERSION"/);
 assert.match(workflow, /candidate=review-v%s-%s/);
 assert.match(workflow, /review_version=%s/);
 assert.match(workflow, /--application-version "\$IDACC_REVIEW_VERSION"/);
