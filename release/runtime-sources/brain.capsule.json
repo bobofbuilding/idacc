@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "component": "brain",
   "repository": "https://github.com/bobofbuilding/brain.git",
-  "commit": "728c1cf45f35bdd5f360ab1bcb9aa8c871e3511d",
-  "tree": "af040b3871be747c97575e87258c0233db14a2f5",
-  "version": "0.1.8",
-  "packageLockSha256": "032347f169c34d76d24e7604ffd15f7273a4e1d5acc0fde71b54dde7b0e43290",
+  "commit": "c87b51220497955da352ef8583fc820ac2a2c0a2",
+  "tree": "9e7bf874ead1068966d91c1c4ec545e6f1f6641c",
+  "version": "0.1.9",
+  "packageLockSha256": "93a7348be6e93bc8ba745e8a9195cff0452e8e3e567ce9000529800f04ae824d",
   "entrypoint": "brain.mjs",
   "serviceId": "idagents-brain",
   "upstreamMapping": "publisher-asserted-private-source-audit",
@@ -314,16 +314,16 @@
     {
       "path": "package-lock.json",
       "mode": "100644",
-      "size": 52889,
-      "sha256": "032347f169c34d76d24e7604ffd15f7273a4e1d5acc0fde71b54dde7b0e43290",
-      "gitBlobSha1": "222ff091ce72034810b40937046375c601e50544"
+      "size": 66809,
+      "sha256": "93a7348be6e93bc8ba745e8a9195cff0452e8e3e567ce9000529800f04ae824d",
+      "gitBlobSha1": "696da0a8d3fb570a6471c4b6b7e82e0aab1889ea"
     },
     {
       "path": "package.json",
       "mode": "100644",
-      "size": 1258,
-      "sha256": "812093fdf10799b2ccb445c2494e91aa982142e455fb412b1fb233847581707a",
-      "gitBlobSha1": "bbd0964c52d999d639a528a3133cfc6b79a8f1d6"
+      "size": 1290,
+      "sha256": "fabe36d22399f58e1afd87641276e3b7009c9c72b38f11e3a72b7028ad1247e4",
+      "gitBlobSha1": "2756147856b587f28d52c40d07a0a70038197f97"
     },
     {
       "path": "parent-watchdog.mjs",
@@ -384,9 +384,9 @@
     {
       "path": "routes.mjs",
       "mode": "100644",
-      "size": 367056,
-      "sha256": "302a2666acce6a5444d71bf13cdc8f21fc9cad5f2c9f0a8c89a9b237c785399c",
-      "gitBlobSha1": "288c8115ecc96d837bf30c6687e0611c861809e0"
+      "size": 367149,
+      "sha256": "0313003c0a22dbbf29adf804768e8edb575086d9c1c332deeb978c97b1f21a9a",
+      "gitBlobSha1": "f8d57577cb5ad60b27142d1b0240f06a7511f492"
     },
     {
       "path": "routes/approvals.mjs",
@@ -426,9 +426,9 @@
     {
       "path": "routes/graph-app.mjs",
       "mode": "100644",
-      "size": 68812,
-      "sha256": "c1d5faf3b2ab96710466215e85c33a9c6d25e939614830ac16eb0e55f07b480b",
-      "gitBlobSha1": "e1ae4ca29db602723e4d7a2380d47040b0aa0b10"
+      "size": 87862,
+      "sha256": "447cb659098e44cb6850e55093b3e6f87ee0b1a32f32f5a15e8aadf029a858c6",
+      "gitBlobSha1": "7d991e130a2b609270339265d9b34a91736b2c91"
     },
     {
       "path": "routes/instructions.mjs",
@@ -529,5 +529,5 @@
       "gitBlobSha1": "0fbdb2936996b6083174bd762969c8675dfd8a66"
     }
   ],
-  "treeSha256": "68dcaf91c3c91ce797b67c67ac6a28612ca0f5e4e2ee3dc11c43f2b11ef3f1ec"
+  "treeSha256": "d6b2a1101fe0f1ef0354f33108adf936d6444c53d451197d0437aceb62b2b8b9"
 }

@@ -24,6 +24,7 @@ import {
 } from './bridge.ts';
 import {
   providerRehydrationActionMessage,
+  settleProviderRuntimeRehydration,
   type ProviderRehydrationReport,
 } from './providerRuntimeRehydration.ts';
 import {
@@ -1812,17 +1813,12 @@ function waitForProviderRehydrationRetry(delayMs: number, signal: AbortSignal): 
 async function resumeProviderAgentsWithStartupRetry(
   signal: AbortSignal,
 ): Promise<ProviderRehydrationReport> {
-  let report: ProviderRehydrationReport = { attempted: 0, resumed: 0, issues: [] };
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    report = await resumeManagedProviderAgentsAfterRestart(signal);
-    const retryable = report.issues.some((issue) => (
-      issue.reason === 'manager_rebind_failed'
-      || issue.reason === 'fleet_inventory_unavailable'
-    ));
-    if (!retryable || attempt === 2) return report;
-    await waitForProviderRehydrationRetry(500 * (attempt + 1), signal);
-  }
-  return report;
+  return settleProviderRuntimeRehydration({
+    resume: (attempt) => resumeManagedProviderAgentsAfterRestart(signal, {
+      refreshLocalProviders: attempt === 0,
+    }),
+    wait: (delayMs) => waitForProviderRehydrationRetry(delayMs, signal),
+  });
 }
 
 function rehydrateProviderAgentsForReadyManager(): Promise<void> {
