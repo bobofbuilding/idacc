@@ -131,6 +131,7 @@ const ROUTES = [
   { method: 'GET', pattern: '/dashboard/agents', owner: 'dashboard' },
   { method: 'GET', pattern: '/dashboard/graph', owner: 'dashboard' },
   { method: 'GET', pattern: '/graph/app', owner: 'dashboard' },
+  { method: 'GET', pattern: '/graph/app/vendor/3d-force-graph.min.js', owner: 'dashboard' },
   { method: 'GET', pattern: '/graph/app/data', owner: 'dashboard' },
   { method: 'GET', pattern: '/fleet-report', owner: 'fleet' },
   { method: 'GET', pattern: '/graph/stats', owner: 'graph' },

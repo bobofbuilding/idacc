@@ -1258,7 +1258,7 @@ function providerLaneName(runtime: string): string | null {
   }
 }
 
-function resolveProviderLaneAssignment(runtime: string): { providerName: string; provider: { name: string; kind?: string; baseUrl: string; apiKey?: string } } | null {
+function resolveProviderLaneAssignment(runtime: string): { providerName: string; availableModels?: string[]; provider: { name: string; kind?: string; baseUrl: string; apiKey?: string } } | null {
   const providerName = providerLaneName(runtime);
   if (!providerName) return null;
   const p = loadSettings().providers.find((x) => x.name === providerName);
@@ -1275,6 +1275,7 @@ function resolveProviderLaneAssignment(runtime: string): { providerName: string;
   if (needsKey && !apiKey) throw new Error(`provider lane "${providerName}" is missing an API key`);
   return {
     providerName,
+    availableModels: [...new Set(p.lastSync?.models ?? [])],
     provider: {
       name: p.name,
       kind: p.kind,
@@ -1307,6 +1308,14 @@ async function applyAgentConfigurationFromSettings(
 ) {
   const scoped = team ? client.withTeam(String(team)) : client;
   const assignment = resolveProviderLaneAssignment(configuration.runtime);
+  if (
+    assignment
+    && configuration.model.trim()
+    && assignment.availableModels
+    && !assignment.availableModels.includes(configuration.model.trim())
+  ) {
+    throw new Error(`Model "${configuration.model.trim()}" is not currently available from ${assignment.providerName}. Connect & sync the provider, then choose an installed model.`);
+  }
   return scoped.applyAgentConfiguration(
     String(agentId),
     configuration,
@@ -1322,7 +1331,14 @@ async function applyAgentConfigurationFromSettings(
  */
 export async function resumeManagedProviderAgentsAfterRestart(
   signal?: AbortSignal,
+  options: { refreshLocalProviders?: boolean } = {},
 ): Promise<ProviderRehydrationReport> {
+  if (options.refreshLocalProviders !== false) {
+    await probeLocalRuntimes().catch(() => {
+      // The restoration report below remains authoritative and secret-free.
+      // A failed probe leaves the last cached catalog in place.
+    });
+  }
   return rehydrateManagedProviderAgents({
     listTeams: async (activeSignal) => {
       const teams = await client.teams(activeSignal);

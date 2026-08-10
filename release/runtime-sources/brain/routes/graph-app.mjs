@@ -1,16 +1,27 @@
+import { readFileSync } from 'node:fs';
+
 import { classifyEntityEdgeFreshness, entityEdgeFreshnessThresholds } from '../edge-semantics.mjs';
 import { collectGraphQualityMetrics } from '../brain-graph-quality-metrics.mjs';
 import { requestHasValidBearer, requiredRequestToken } from '../http.mjs';
 
-const GRAPH_APP_NODE_LIMIT_DEFAULT = 260;
-const GRAPH_APP_NODE_LIMIT_MAX = 1000;
-const GRAPH_APP_EDGE_LIMIT_DEFAULT = 1600;
-const GRAPH_APP_EDGE_LIMIT_MAX = 5000;
+const GRAPH_APP_NODE_LIMIT_DEFAULT = 500;
+const GRAPH_APP_NODE_LIMIT_MAX = 2500;
+const GRAPH_APP_EDGE_LIMIT_DEFAULT = 3200;
+const GRAPH_APP_EDGE_LIMIT_MAX = 12000;
 const GRAPH_APP_LEARN_MATERIAL_TYPE = 'learn-material';
 const GRAPH_APP_LEARN_ENTITY_RESERVE_MAX = 64;
 const GRAPH_APP_LEARN_SYNC_SCHEMA_VERSION = 3;
 
 const GRAPH_APP_KINDS = new Set(['all', 'skills', 'entities']);
+const GRAPH_APP_TAG_MODE = new Set(['any', 'all']);
+const GRAPH_APP_VIEWS = Object.freeze({
+  overview: { label: 'Overview', kind: 'all', types: [] },
+  knowledge: { label: 'Knowledge', kind: 'entities', types: ['entity', 'concept', 'fact', 'memory', 'reference'] },
+  fleet: { label: 'Fleet', kind: 'entities', types: ['team', 'agent'] },
+  work: { label: 'Work', kind: 'entities', types: ['goal', 'task', 'route', 'query', 'tool'] },
+  sources: { label: 'Sources', kind: 'entities', types: ['source', 'document', 'reference', 'repo', 'learn-material'] },
+  skills: { label: 'Skills', kind: 'skills', types: [] },
+});
 const SENSITIVE_GRAPH_DATA_KEY_RE = /private_?key|creator_?key|secret|api_?key|auth|bearer|password|seed|mnemonic|credential|(^|[_-])token($|[_-])|access_?token|refresh_?token|session_?token/i;
 const SAFE_ENTITY_DATA_KEYS = new Set([
   'id',
@@ -67,9 +78,44 @@ function placeholders(count) {
   return Array.from({ length: count }, () => '?').join(',');
 }
 
-function normalizeKind(searchParams) {
-  const kind = String(searchParams.get('kind') ?? 'all').toLowerCase();
+function normalizeKind(searchParams, fallback = 'all') {
+  const kind = String(searchParams.get('kind') ?? fallback).toLowerCase();
   return GRAPH_APP_KINDS.has(kind) ? kind : 'all';
+}
+
+function filterList(value, { maxItems = 16, maxLength = 80 } = {}) {
+  return [...new Set(String(value ?? '')
+    .split(',')
+    .map(item => item.trim().toLowerCase())
+    .filter(item => (
+      item
+      && item.length <= maxLength
+      && !/[\u0000-\u001f\u007f"\\]/u.test(item)
+    )))]
+    .slice(0, maxItems);
+}
+
+function normalizeView(searchParams) {
+  const view = String(searchParams.get('view') ?? 'overview').trim().toLowerCase();
+  return Object.hasOwn(GRAPH_APP_VIEWS, view) ? view : 'overview';
+}
+
+function normalizeTagMode(searchParams) {
+  const mode = String(searchParams.get('tag_mode') ?? searchParams.get('tagMode') ?? 'any').toLowerCase();
+  return GRAPH_APP_TAG_MODE.has(mode) ? mode : 'any';
+}
+
+function escapeLike(value) {
+  return value.replace(/[\\%_]/g, character => `\\${character}`);
+}
+
+function appendTagConditions(conditions, params, column, tags, tagMode) {
+  if (!tags.length) return;
+  const clauses = tags.map(tag => {
+    params.push(`%"${escapeLike(tag)}"%`);
+    return `LOWER(COALESCE(${column}, '')) LIKE ? ESCAPE '\\'`;
+  });
+  conditions.push(`(${clauses.join(tagMode === 'all' ? ' AND ' : ' OR ')})`);
 }
 
 function parseTags(value) {
@@ -291,14 +337,16 @@ function entityEdgeProvenanceSummary(row) {
   };
 }
 
-function buildSkillGraph({ db, q, limit, edgeLimit, includeNeighbors }) {
+function buildSkillGraph({ db, q, tags, tagMode, limit, edgeLimit, includeNeighbors }) {
   const like = `%${q}%`;
   const params = [];
-  let where = '';
+  const conditions = [];
   if (q) {
-    where = 'WHERE name LIKE ? OR description LIKE ? OR domain LIKE ? OR tags LIKE ?';
+    conditions.push('(name LIKE ? OR description LIKE ? OR domain LIKE ? OR tags LIKE ?)');
     params.push(like, like, like, like);
   }
+  appendTagConditions(conditions, params, 'tags', tags, tagMode);
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = db.prepare(`
     SELECT skill_id, name, description, domain, tags, compute_cost, chainable, use_count, updated_at
     FROM skill_nodes
@@ -309,7 +357,7 @@ function buildSkillGraph({ db, q, limit, edgeLimit, includeNeighbors }) {
 
   const matchIds = rows.map(row => Number(row.skill_id));
   const rowsById = new Map(rows.map(row => [Number(row.skill_id), row]));
-  if (includeNeighbors && q && matchIds.length) {
+  if (includeNeighbors && (q || tags.length) && matchIds.length) {
     const ph = placeholders(matchIds.length);
     const neighborLimit = Math.max(0, limit);
     const neighborRows = db.prepare(`
@@ -357,7 +405,7 @@ function buildSkillGraph({ db, q, limit, edgeLimit, includeNeighbors }) {
   return { nodes, links };
 }
 
-function buildEntityGraph({ db, q, type, limit, edgeLimit, includeNeighbors, freshnessOptions }) {
+function buildEntityGraph({ db, q, types, tags, tagMode, limit, edgeLimit, includeNeighbors, freshnessOptions }) {
   const params = [];
   const conditions = [`(status IS NULL OR status != 'merged')`];
   if (q) {
@@ -365,10 +413,11 @@ function buildEntityGraph({ db, q, type, limit, edgeLimit, includeNeighbors, fre
     conditions.push('(id LIKE ? OR name LIKE ? OR description LIKE ? OR type LIKE ? OR tags LIKE ? OR data LIKE ?)');
     params.push(like, like, like, like, like, like);
   }
-  if (type) {
-    conditions.push('type=?');
-    params.push(type);
+  if (types.length) {
+    conditions.push(`LOWER(type) IN (${placeholders(types.length)})`);
+    params.push(...types);
   }
+  appendTagConditions(conditions, params, 'tags', tags, tagMode);
   const rows = db.prepare(`
     SELECT id, type, name, description, source, data, tags, status, updated_at
     FROM entities
@@ -380,7 +429,7 @@ function buildEntityGraph({ db, q, type, limit, edgeLimit, includeNeighbors, fre
   const matchIds = rows.map(row => String(row.id));
   const rowsById = new Map(rows.map(row => [String(row.id), row]));
   const reservedLearnMaterialIds = new Set();
-  if (!q && !type && limit > 0) {
+  if (!q && !types.length && !tags.length && limit > 0) {
     const reserve = learnMaterialReserve(limit);
     const learnRows = db.prepare(`
       SELECT id, type, name, description, source, data, tags, status, updated_at
@@ -395,7 +444,7 @@ function buildEntityGraph({ db, q, type, limit, edgeLimit, includeNeighbors, fre
       rowsById.set(String(row.id), row);
     }
   }
-  if (includeNeighbors && (q || type) && matchIds.length) {
+  if (includeNeighbors && (q || types.length || tags.length) && matchIds.length) {
     const ph = placeholders(matchIds.length);
     const neighborLimit = Math.max(0, limit);
     const neighborRows = db.prepare(`
@@ -413,7 +462,7 @@ function buildEntityGraph({ db, q, type, limit, edgeLimit, includeNeighbors, fre
     for (const row of neighborRows) rowsById.set(String(row.id), row);
   }
   let orgAnchorCount = 0;
-  if (type === 'agent' && matchIds.length) {
+  if (types.includes('agent') && matchIds.length) {
     const teamIds = [...new Set(rows.map(agentTeamEntityId).filter(Boolean))];
     if (teamIds.length) {
       const ph = placeholders(teamIds.length);
@@ -431,7 +480,7 @@ function buildEntityGraph({ db, q, type, limit, edgeLimit, includeNeighbors, fre
   }
 
   let allRows = [...rowsById.values()];
-  if (!q && !type && allRows.length > limit) {
+  if (!q && !types.length && !tags.length && allRows.length > limit) {
     allRows = allRows
       .sort((a, b) => {
         const aReserved = reservedLearnMaterialIds.has(String(a.id)) ? 0 : 1;
@@ -506,10 +555,80 @@ function buildIdentityBridgeLinks(nodes) {
     }));
 }
 
+function addFacetRows(target, rows, key) {
+  for (const row of rows) {
+    const value = String(row?.[key] ?? '').trim().toLowerCase();
+    if (!value) continue;
+    target.set(value, (target.get(value) ?? 0) + Math.max(0, Number(row.count ?? 0) || 0));
+  }
+}
+
+function rankedFacet(map, key, limit = 120) {
+  return [...map.entries()]
+    .map(([value, count]) => ({ [key]: value, count }))
+    .sort((a, b) => (b.count - a.count) || String(a[key]).localeCompare(String(b[key])))
+    .slice(0, limit);
+}
+
+function graphAppFacets(db, { includeSkills, includeEntities }) {
+  const tags = new Map();
+  const types = new Map();
+  const groups = new Map();
+  if (includeSkills) {
+    addFacetRows(tags, db.prepare(`
+      SELECT LOWER(TRIM(CAST(j.value AS TEXT))) AS tag, COUNT(DISTINCT s.skill_id) AS count
+      FROM skill_nodes s,
+           json_each(CASE WHEN json_valid(s.tags)
+             THEN CASE WHEN json_type(s.tags)='array' THEN s.tags ELSE '[]' END
+             ELSE '[]' END) j
+      WHERE TRIM(CAST(j.value AS TEXT)) != ''
+      GROUP BY LOWER(TRIM(CAST(j.value AS TEXT)))
+    `).all(), 'tag');
+    addFacetRows(groups, db.prepare(`
+      SELECT LOWER(COALESCE(NULLIF(TRIM(domain), ''), 'skill')) AS facet_group, COUNT(*) AS count
+      FROM skill_nodes
+      GROUP BY LOWER(COALESCE(NULLIF(TRIM(domain), ''), 'skill'))
+    `).all(), 'facet_group');
+    types.set('skill', Number(db.prepare('SELECT COUNT(*) AS count FROM skill_nodes').get()?.count ?? 0));
+  }
+  if (includeEntities) {
+    addFacetRows(tags, db.prepare(`
+      SELECT LOWER(TRIM(CAST(j.value AS TEXT))) AS tag, COUNT(DISTINCT e.id) AS count
+      FROM entities e,
+           json_each(CASE WHEN json_valid(e.tags)
+             THEN CASE WHEN json_type(e.tags)='array' THEN e.tags ELSE '[]' END
+             ELSE '[]' END) j
+      WHERE (e.status IS NULL OR e.status != 'merged')
+        AND TRIM(CAST(j.value AS TEXT)) != ''
+      GROUP BY LOWER(TRIM(CAST(j.value AS TEXT)))
+    `).all(), 'tag');
+    const entityTypes = db.prepare(`
+      SELECT LOWER(COALESCE(NULLIF(TRIM(type), ''), 'entity')) AS facet_type, COUNT(*) AS count
+      FROM entities
+      WHERE status IS NULL OR status != 'merged'
+      GROUP BY LOWER(COALESCE(NULLIF(TRIM(type), ''), 'entity'))
+    `).all();
+    addFacetRows(types, entityTypes, 'facet_type');
+    addFacetRows(groups, entityTypes, 'facet_type');
+  }
+  return {
+    tags: rankedFacet(tags, 'tag'),
+    types: rankedFacet(types, 'type'),
+    groups: rankedFacet(groups, 'group'),
+  };
+}
+
 export function buildGraphAppPayload({ db, searchParams } = {}) {
-  const kind = normalizeKind(searchParams);
+  const view = normalizeView(searchParams);
+  const preset = GRAPH_APP_VIEWS[view];
+  const kind = normalizeKind(searchParams, preset.kind);
   const q = String(searchParams.get('q') ?? '').trim().slice(0, 160);
-  const type = String(searchParams.get('type') ?? '').trim().slice(0, 80);
+  const explicitTypes = searchParams.has('types') || searchParams.has('type');
+  const types = explicitTypes
+    ? filterList(searchParams.get('types') ?? searchParams.get('type'))
+    : [...preset.types];
+  const tags = filterList(searchParams.get('tags'), { maxItems: 12, maxLength: 64 });
+  const tagMode = normalizeTagMode(searchParams);
   const limit = clampInt(searchParams.get('limit'), GRAPH_APP_NODE_LIMIT_DEFAULT, 1, GRAPH_APP_NODE_LIMIT_MAX);
   const edgeLimit = clampInt(searchParams.get('edge_limit') ?? searchParams.get('edgeLimit'), GRAPH_APP_EDGE_LIMIT_DEFAULT, 0, GRAPH_APP_EDGE_LIMIT_MAX);
   const includeNeighbors = graphBoolean(searchParams, ['neighbors', 'include_neighbors', 'includeNeighbors'], true);
@@ -521,8 +640,8 @@ export function buildGraphAppPayload({ db, searchParams } = {}) {
   const freshnessOptions = { nowSeconds: Math.floor(Date.now() / 1000), ...freshnessThresholds };
 
   const parts = [];
-  if (includeSkills) parts.push(buildSkillGraph({ db, q, limit: nodeLimitPerGraph, edgeLimit: edgeLimitPerGraph, includeNeighbors }));
-  if (includeEntities) parts.push(buildEntityGraph({ db, q, type, limit: nodeLimitPerGraph, edgeLimit: edgeLimitPerGraph, includeNeighbors, freshnessOptions }));
+  if (includeSkills) parts.push(buildSkillGraph({ db, q, tags, tagMode, limit: nodeLimitPerGraph, edgeLimit: edgeLimitPerGraph, includeNeighbors }));
+  if (includeEntities) parts.push(buildEntityGraph({ db, q, types, tags, tagMode, limit: nodeLimitPerGraph, edgeLimit: edgeLimitPerGraph, includeNeighbors, freshnessOptions }));
 
   const nodes = parts.flatMap(part => part.nodes);
   const bridgeLinks = includeSkills && includeEntities ? buildIdentityBridgeLinks(nodes) : [];
@@ -540,15 +659,22 @@ export function buildGraphAppPayload({ db, searchParams } = {}) {
   }
 
   nodes.sort((a, b) => (b.degree - a.degree) || String(a.label).localeCompare(String(b.label)));
+  const facets = graphAppFacets(db, { includeSkills, includeEntities });
 
   return {
     nodes,
     links,
     meta: {
       generatedAt: new Date().toISOString(),
+      view,
+      views: Object.entries(GRAPH_APP_VIEWS).map(([id, definition]) => ({ id, label: definition.label })),
       kind,
       q,
-      type,
+      type: types.length === 1 ? types[0] : '',
+      types,
+      tags,
+      tagMode,
+      facets,
       limit,
       edgeLimit,
       includeNeighbors,
@@ -584,6 +710,16 @@ export function buildGraphAppPayload({ db, searchParams } = {}) {
   };
 }
 
+let graph3dVendorCache = null;
+
+function graph3dVendorBundle() {
+  if (graph3dVendorCache) return graph3dVendorCache;
+  graph3dVendorCache = readFileSync(
+    new URL('../node_modules/3d-force-graph/dist/3d-force-graph.min.js', import.meta.url),
+  );
+  return graph3dVendorCache;
+}
+
 export async function handleGraphAppRoutes({
   method,
   path,
@@ -600,8 +736,30 @@ export async function handleGraphAppRoutes({
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'",
     });
     res.end(GRAPH_APP_HTML);
+    return true;
+  }
+
+  if (path === '/graph/app/vendor/3d-force-graph.min.js') {
+    if (authorizeGraphApp({ req, res, path })) return true;
+    try {
+      const bundle = graph3dVendorBundle();
+      res.writeHead(200, {
+        'Content-Type': 'text/javascript; charset=utf-8',
+        'Content-Length': bundle.length,
+        'Cache-Control': 'private, max-age=86400',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      res.end(bundle);
+    } catch {
+      res.writeHead(503, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
+      res.end('3D renderer unavailable; use the 2D view.\n');
+    }
     return true;
   }
 
@@ -661,7 +819,7 @@ export const GRAPH_APP_HTML = `<!doctype html>
   }
   header {
     display: grid;
-    grid-template-columns: minmax(140px, 1fr) auto;
+    grid-template-columns: minmax(180px, 0.7fr) minmax(0, 2.3fr);
     gap: 12px;
     align-items: center;
     padding: 10px 12px;
@@ -672,6 +830,7 @@ export const GRAPH_APP_HTML = `<!doctype html>
   .meta { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .controls {
     display: flex;
+    min-width: 0;
     gap: 8px;
     align-items: center;
     flex-wrap: wrap;
@@ -699,8 +858,10 @@ export const GRAPH_APP_HTML = `<!doctype html>
   main {
     min-height: 0;
     display: grid;
-    grid-template-columns: 1fr 320px;
+    grid-template-columns: minmax(0, 1fr) clamp(260px, 24vw, 340px);
   }
+  body.focus-mode main { grid-template-columns: 1fr; }
+  body.focus-mode aside { display: none; }
   #stage {
     position: relative;
     min-width: 0;
@@ -709,6 +870,9 @@ export const GRAPH_APP_HTML = `<!doctype html>
   }
   canvas { width: 100%; height: 100%; display: block; cursor: grab; }
   canvas.dragging { cursor: grabbing; }
+  #graph3d { position: absolute; inset: 0; }
+  #graph3d canvas { cursor: move; }
+  .renderer-hidden { display: none !important; }
   #status {
     position: absolute;
     left: 12px;
@@ -739,7 +903,7 @@ export const GRAPH_APP_HTML = `<!doctype html>
     min-width: 0;
     min-height: 0;
     display: grid;
-    grid-template-rows: auto auto 1fr;
+    grid-template-rows: auto auto auto 1fr;
     border-left: 1px solid var(--line);
     background: var(--panel);
   }
@@ -747,6 +911,7 @@ export const GRAPH_APP_HTML = `<!doctype html>
   .section:last-child { border-bottom: 0; overflow: auto; }
   .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
   #searchResults { max-height: 170px; overflow: auto; }
+  #tagFilters { max-height: 180px; overflow: auto; }
   .result, .neighbor {
     display: block;
     width: 100%;
@@ -791,8 +956,26 @@ export const GRAPH_APP_HTML = `<!doctype html>
     text-overflow: ellipsis;
     vertical-align: middle;
   }
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 26px;
+    margin: 2px 4px 2px 0;
+    padding: 0 8px;
+    border-radius: 999px;
+    color: var(--muted);
+    background: transparent;
+  }
+  .tag-chip.active { color: var(--text); border-color: var(--accent); background: rgba(89, 195, 166, 0.12); }
+  .tag-chip small { opacity: 0.7; }
   .empty { color: var(--muted); }
   .error { color: var(--danger); }
+  @media (max-width: 1200px) {
+    header { grid-template-columns: minmax(170px, 0.55fr) minmax(0, 2.45fr); }
+    .controls { gap: 6px; }
+    .controls input { width: auto; flex: 1 1 220px; }
+  }
   @media (max-width: 800px) {
     body { overflow: auto; }
     header { grid-template-columns: 1fr; }
@@ -812,6 +995,18 @@ export const GRAPH_APP_HTML = `<!doctype html>
   </div>
   <div class="controls">
     <input id="query" type="search" placeholder="Search graph" autocomplete="off">
+    <select id="renderMode" aria-label="Rendering mode">
+      <option value="3d" selected>3D view</option>
+      <option value="2d">2D view</option>
+    </select>
+    <select id="view" aria-label="Graph view">
+      <option value="overview">Overview</option>
+      <option value="knowledge">Knowledge</option>
+      <option value="fleet">Fleet</option>
+      <option value="work">Work</option>
+      <option value="sources">Sources</option>
+      <option value="skills">Skills</option>
+    </select>
     <select id="kind" aria-label="Graph">
       <option value="all">All</option>
       <option value="skills">Skills</option>
@@ -828,12 +1023,20 @@ export const GRAPH_APP_HTML = `<!doctype html>
     </select>
     <select id="limit" aria-label="Limit">
       <option value="160">160</option>
-      <option value="260" selected>260</option>
-      <option value="500">500</option>
+      <option value="260">260</option>
+      <option value="500" selected>500</option>
       <option value="1000">1000</option>
+      <option value="2000">2000</option>
+      <option value="2500">2500</option>
+    </select>
+    <select id="tagMode" aria-label="Tag matching">
+      <option value="any">Any tag</option>
+      <option value="all">All tags</option>
     </select>
     <label class="toggle" title="Include one-hop neighbors for filtered graph searches. Off keeps org views direct and lighter."><input id="neighborsToggle" type="checkbox"> Neighbors</label>
     <label class="toggle" title="Color entity edges by confidence, provenance, and freshness; ring globally orphaned entity nodes."><input id="qualityToggle" type="checkbox" checked> Quality</label>
+    <button id="fitView" type="button">Fit</button>
+    <button id="toggleSidebar" type="button">Focus</button>
     <button id="reload" type="button">Refresh Snapshot</button>
     <button id="popout" type="button">Pop Out</button>
     <a id="jsonLink" class="button" href="/graph/app/data" target="_blank" rel="noreferrer">JSON Snapshot</a>
@@ -843,10 +1046,15 @@ export const GRAPH_APP_HTML = `<!doctype html>
 <main>
   <section id="stage">
     <canvas id="graph"></canvas>
+    <div id="graph3d" class="renderer-hidden"></div>
     <div id="qualityLegend">Quality metrics loading...</div>
     <div id="status">Loading graph...</div>
   </section>
   <aside>
+    <div class="section">
+      <div class="label">Tags · click to filter</div>
+      <div id="tagFilters"><span class="empty">Loading tags...</span></div>
+    </div>
     <div class="section">
       <div class="label">Matches</div>
       <div id="searchResults"><span class="empty">No matches</span></div>
@@ -861,29 +1069,49 @@ export const GRAPH_APP_HTML = `<!doctype html>
     </div>
   </aside>
 </main>
+<script src="/graph/app/vendor/3d-force-graph.min.js"></script>
 <script>
 (function () {
   var canvas = document.getElementById('graph');
   var ctx = canvas.getContext('2d');
+  var graph3dEl = document.getElementById('graph3d');
   var stage = document.getElementById('stage');
   var statusEl = document.getElementById('status');
   var metaEl = document.getElementById('meta');
   var queryEl = document.getElementById('query');
+  var renderModeEl = document.getElementById('renderMode');
+  var viewEl = document.getElementById('view');
   var kindEl = document.getElementById('kind');
   var typeEl = document.getElementById('type');
   var limitEl = document.getElementById('limit');
+  var tagModeEl = document.getElementById('tagMode');
   var neighborsToggleEl = document.getElementById('neighborsToggle');
   var qualityToggleEl = document.getElementById('qualityToggle');
   var qualityLegendEl = document.getElementById('qualityLegend');
   var reloadEl = document.getElementById('reload');
+  var fitViewEl = document.getElementById('fitView');
+  var toggleSidebarEl = document.getElementById('toggleSidebar');
   var popoutEl = document.getElementById('popout');
   var jsonLinkEl = document.getElementById('jsonLink');
   var resultsEl = document.getElementById('searchResults');
+  var tagFiltersEl = document.getElementById('tagFilters');
   var detailsEl = document.getElementById('details');
   var neighborsEl = document.getElementById('neighbors');
   var urlParams = new URLSearchParams(window.location.search);
   var palette = ['#59c3a6', '#e3b955', '#8cb4ff', '#d990e8', '#ee6a5f', '#7ed37e', '#e99b63', '#9aa6ad'];
   var graph = { nodes: [], links: [], meta: {} };
+  var graph3d = null;
+  var graph3dNodesById = new Map();
+  var activeTypes = [];
+  var activeTags = [];
+  var VIEW_PRESETS = {
+    overview: { kind: 'all', types: [] },
+    knowledge: { kind: 'entities', types: ['entity', 'concept', 'fact', 'memory', 'reference'] },
+    fleet: { kind: 'entities', types: ['team', 'agent'] },
+    work: { kind: 'entities', types: ['goal', 'task', 'route', 'query', 'tool'] },
+    sources: { kind: 'entities', types: ['source', 'document', 'reference', 'repo', 'learn-material'] },
+    skills: { kind: 'skills', types: [] }
+  };
   var nodesById = new Map();
   var AMBIGUOUS_MATCH = { ambiguous: true };
   var selected = null;
@@ -929,9 +1157,18 @@ export const GRAPH_APP_HTML = `<!doctype html>
   }
 
   if (urlParams.has('q')) queryEl.value = urlParams.get('q') || '';
+  setSelectIfValid(renderModeEl, urlParams.get('render'));
+  setSelectIfValid(viewEl, urlParams.get('view'));
   setSelectIfValid(kindEl, urlParams.get('kind'));
   setSelectIfValid(typeEl, urlParams.get('type'));
-  if (typeEl.value) kindEl.value = 'entities';
+  setSelectIfValid(tagModeEl, urlParams.get('tag_mode'));
+  var initialPreset = VIEW_PRESETS[viewEl.value] || VIEW_PRESETS.overview;
+  activeTypes = urlParams.has('types')
+    ? String(urlParams.get('types') || '').split(',').map(normalized).filter(Boolean)
+    : (typeEl.value ? [typeEl.value] : initialPreset.types.slice());
+  activeTags = String(urlParams.get('tags') || '').split(',').map(normalized).filter(Boolean).slice(0, 12);
+  if (!urlParams.has('kind')) kindEl.value = initialPreset.kind;
+  if (activeTypes.length) kindEl.value = 'entities';
   setSelectIfValid(limitEl, urlParams.get('limit'));
   if (urlParams.has('neighbors')) {
     neighborsToggleEl.checked = !['0', 'false', 'no', 'off'].includes(String(urlParams.get('neighbors') || '').trim().toLowerCase());
@@ -952,6 +1189,143 @@ export const GRAPH_APP_HTML = `<!doctype html>
 
   function normalized(value) {
     return String(value == null ? '' : value).trim().toLowerCase();
+  }
+
+  function rendererIs3d() {
+    return renderModeEl.value === '3d' && !!graph3d;
+  }
+
+  function linkEndpointId(value) {
+    return value && typeof value === 'object' ? value.id : value;
+  }
+
+  function linkTouchesSelection(link) {
+    if (!selected) return false;
+    return linkEndpointId(link.source) === selected.id || linkEndpointId(link.target) === selected.id;
+  }
+
+  function graphLinkColor(link) {
+    if (linkTouchesSelection(link)) return 'rgba(231,236,239,0.92)';
+    if (qualityToggleEl.checked && link.graph === 'entities') {
+      var freshness = link.freshness && link.freshness.classification;
+      var provenanceCovered = link.provenance && (link.provenance.method || link.provenance.textUnitCount > 0);
+      if (freshness === 'stale') return 'rgba(238,106,95,0.7)';
+      if (Number(link.confidence || 0) < 0.7) return 'rgba(227,185,85,0.62)';
+      if (!provenanceCovered) return 'rgba(217,144,232,0.62)';
+      return 'rgba(89,195,166,0.48)';
+    }
+    return 'rgba(154,166,173,0.22)';
+  }
+
+  function graphNodeColor(node) {
+    if (selected && selected.id === node.id) return '#ffffff';
+    return colorFor(node.group || node.type);
+  }
+
+  function graphNodeLabel(node) {
+    var tags = Array.isArray(node.tags) && node.tags.length ? ' · #' + node.tags.slice(0, 4).join(' #') : '';
+    return '<b>' + escapeHtml(node.label || node.id) + '</b><br><span>' + escapeHtml(node.type || 'node') + escapeHtml(tags) + '</span>';
+  }
+
+  function build3dData() {
+    var total = Math.max(1, graph.nodes.length);
+    var golden = Math.PI * (3 - Math.sqrt(5));
+    var nodes = graph.nodes.map(function (node, index) {
+      var y = 1 - (index / Math.max(1, total - 1)) * 2;
+      var radius = Math.sqrt(Math.max(0, 1 - y * y));
+      var angle = golden * index;
+      return Object.assign({}, node, {
+        x: Math.cos(angle) * radius * 220,
+        y: y * 220,
+        z: Math.sin(angle) * radius * 220
+      });
+    });
+    var links = graph.links.map(function (link) {
+      return Object.assign({}, link, {
+        source: linkEndpointId(link.source),
+        target: linkEndpointId(link.target)
+      });
+    });
+    graph3dNodesById = new Map(nodes.map(function (node) { return [node.id, node]; }));
+    return { nodes: nodes, links: links };
+  }
+
+  function refresh3dStyle() {
+    if (!graph3d) return;
+    graph3d
+      .nodeColor(graphNodeColor)
+      .nodeVal(function (node) { return Math.max(1.8, Math.min(16, 2 + Math.sqrt(Math.max(0, node.degree || 0)) * 1.7)); })
+      .linkColor(graphLinkColor)
+      .linkWidth(function (link) { return linkTouchesSelection(link) ? 2.2 : Math.max(0.35, Math.min(1.4, Number(link.weight || 1) * 0.45)); })
+      .linkDirectionalParticles(function (link) { return linkTouchesSelection(link) ? 2 : 0; })
+      .linkDirectionalParticleWidth(1.8);
+  }
+
+  function render3dGraph() {
+    if (!graph3d) return;
+    var count = graph.nodes.length;
+    graph3d
+      .nodeResolution(count > 1200 ? 4 : count > 600 ? 6 : 10)
+      .linkOpacity(count > 1200 ? 0.16 : 0.26)
+      .warmupTicks(count > 1200 ? 8 : count > 600 ? 16 : 28)
+      .cooldownTicks(count > 1200 ? 80 : 140)
+      .graphData(build3dData());
+    refresh3dStyle();
+  }
+
+  function ensure3dRenderer() {
+    if (graph3d) return true;
+    if (typeof window.ForceGraph3D !== 'function') return false;
+    try {
+      graph3d = window.ForceGraph3D()(graph3dEl)
+        .backgroundColor('#0f1113')
+        .showNavInfo(false)
+        .nodeId('id')
+        .nodeLabel(graphNodeLabel)
+        .nodeOpacity(0.9)
+        .linkSource('source')
+        .linkTarget('target')
+        .linkDirectionalParticleSpeed(0.006)
+        .onNodeHover(function (node) {
+          hovered = node ? nodesById.get(node.id) || null : null;
+        })
+        .onNodeClick(function (node) {
+          selectNode(nodesById.get(node.id));
+        });
+      graph3d.width(width).height(height);
+      return true;
+    } catch (error) {
+      graph3d = null;
+      console.warn('3D renderer unavailable; falling back to 2D', error);
+      return false;
+    }
+  }
+
+  function applyRendererMode() {
+    if (renderModeEl.value === '3d' && !ensure3dRenderer()) renderModeEl.value = '2d';
+    var use3d = rendererIs3d();
+    canvas.classList.toggle('renderer-hidden', use3d);
+    graph3dEl.classList.toggle('renderer-hidden', !use3d);
+    if (use3d) {
+      clearQueuedRender();
+      graph3d.width(width).height(height);
+      render3dGraph();
+    } else {
+      restartLayout();
+    }
+    refreshSnapshotAge();
+    syncLinks();
+  }
+
+  function fitCurrentView() {
+    if (rendererIs3d()) {
+      graph3d.zoomToFit(650, 72);
+      return;
+    }
+    pan.x = width / 2;
+    pan.y = height / 2;
+    scale = 1;
+    requestRender();
   }
 
   function isAgentNode(node) {
@@ -1152,11 +1526,14 @@ export const GRAPH_APP_HTML = `<!doctype html>
   }
 
   function statusText() {
-    return 'Drag to pan, scroll to zoom · read-only Brain graph snapshot · ' + snapshotAgeText() + fleetOverlayAgeText() + layoutStatusText();
+    var controls = rendererIs3d() ? 'Drag to orbit, scroll to zoom' : 'Drag to pan, scroll to zoom';
+    return controls + ' · read-only Brain graph snapshot · ' + snapshotAgeText() + fleetOverlayAgeText() + (rendererIs3d() ? '' : layoutStatusText());
   }
 
   function renderGraphChrome() {
-    metaEl.textContent = graph.meta.nodeCount + ' nodes, ' + graph.meta.linkCount + ' links, ' + graph.meta.kind + (graph.meta.type ? '/' + graph.meta.type : '') + ', ' + new Date(graph.meta.generatedAt).toLocaleTimeString() + learnMaterialMetaText() + ' · ' + (graph.meta.sourceAuthorityLabel || graph.meta.sourceAuthority || 'read-only') + fleetOverlayMetaText();
+    var filterText = graph.meta.types && graph.meta.types.length ? ' · types ' + graph.meta.types.join(', ') : '';
+    if (graph.meta.tags && graph.meta.tags.length) filterText += ' · tags ' + graph.meta.tags.map(function (tag) { return '#' + tag; }).join(' ');
+    metaEl.textContent = graph.meta.nodeCount + ' nodes, ' + graph.meta.linkCount + ' links · ' + (graph.meta.view || 'overview') + ' · ' + graph.meta.kind + filterText + ' · ' + new Date(graph.meta.generatedAt).toLocaleTimeString() + learnMaterialMetaText() + ' · ' + (graph.meta.sourceAuthorityLabel || graph.meta.sourceAuthority || 'read-only') + fleetOverlayMetaText();
     statusEl.textContent = graph.nodes.length ? statusText() : 'No graph rows';
   }
 
@@ -1170,6 +1547,7 @@ export const GRAPH_APP_HTML = `<!doctype html>
     canvas.style.width = width + 'px';
     canvas.style.height = height + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (graph3d) graph3d.width(width).height(height);
     if (!initialized) {
       pan.x = width / 2;
       pan.y = height / 2;
@@ -1254,6 +1632,10 @@ export const GRAPH_APP_HTML = `<!doctype html>
   }
 
   function requestRender(delayMs) {
+    if (rendererIs3d()) {
+      clearQueuedRender();
+      return;
+    }
     if (document.hidden) {
       clearQueuedRender();
       return;
@@ -1476,8 +1858,22 @@ export const GRAPH_APP_HTML = `<!doctype html>
     selected = node || null;
     renderDetails();
     renderNeighbors();
-    requestRender();
-    if (selected) {
+    if (rendererIs3d()) {
+      refresh3dStyle();
+      var node3d = selected && graph3dNodesById.get(selected.id);
+      if (node3d && Number.isFinite(node3d.x) && Number.isFinite(node3d.y) && Number.isFinite(node3d.z)) {
+        var distance = Math.hypot(node3d.x, node3d.y, node3d.z) || 1;
+        var ratio = 1 + 90 / distance;
+        graph3d.cameraPosition(
+          { x: node3d.x * ratio, y: node3d.y * ratio, z: node3d.z * ratio },
+          node3d,
+          700,
+        );
+      }
+    } else {
+      requestRender();
+    }
+    if (selected && !rendererIs3d()) {
       var pt = screenPoint(selected);
       if (pt.x < 40 || pt.x > width - 40 || pt.y < 40 || pt.y > height - 40) {
         pan.x = width / 2 - selected.x * scale;
@@ -1511,7 +1907,8 @@ export const GRAPH_APP_HTML = `<!doctype html>
         return String(node.label || '').toLowerCase().includes(q) ||
           String(node.raw_id || node.id).toLowerCase().includes(q) ||
           String(node.description || '').toLowerCase().includes(q) ||
-          String(node.type || '').toLowerCase().includes(q);
+          String(node.type || '').toLowerCase().includes(q) ||
+          (Array.isArray(node.tags) && node.tags.some(function (tag) { return normalized(tag).includes(q); }));
       })
       .slice(0, 40);
     if (!matches.length) {
@@ -1522,6 +1919,24 @@ export const GRAPH_APP_HTML = `<!doctype html>
       return '<button class="result" data-id="' + escapeHtml(node.id) + '">' +
         escapeHtml(node.label || node.id) +
         ' <span class="empty">' + escapeHtml(node.type || '') + '</span></button>';
+    }).join('');
+  }
+
+  function renderTagFilters() {
+    var facets = graph.meta && graph.meta.facets && Array.isArray(graph.meta.facets.tags)
+      ? graph.meta.facets.tags
+      : [];
+    var counts = new Map(facets.map(function (row) { return [normalized(row.tag), Number(row.count || 0)]; }));
+    var ordered = activeTags.concat(facets.map(function (row) { return normalized(row.tag); }))
+      .filter(function (tag, index, all) { return tag && all.indexOf(tag) === index; })
+      .slice(0, 80);
+    if (!ordered.length) {
+      tagFiltersEl.innerHTML = '<span class="empty">No tags in this view</span>';
+      return;
+    }
+    tagFiltersEl.innerHTML = ordered.map(function (tag) {
+      var active = activeTags.includes(tag);
+      return '<button class="tag-chip' + (active ? ' active' : '') + '" type="button" data-tag="' + escapeHtml(tag) + '" aria-pressed="' + (active ? 'true' : 'false') + '">#' + escapeHtml(tag) + '<small>' + escapeHtml(counts.get(tag) || '') + '</small></button>';
     }).join('');
   }
 
@@ -1577,10 +1992,15 @@ export const GRAPH_APP_HTML = `<!doctype html>
 
   function graphParams() {
     var params = new URLSearchParams();
-    params.set('kind', typeEl.value ? 'entities' : kindEl.value);
+    params.set('view', viewEl.value);
+    params.set('render', renderModeEl.value);
+    params.set('kind', activeTypes.length || typeEl.value ? 'entities' : kindEl.value);
     params.set('limit', limitEl.value);
     params.set('neighbors', neighborsToggleEl.checked ? '1' : '0');
-    if (typeEl.value) params.set('type', typeEl.value);
+    params.set('tag_mode', tagModeEl.value);
+    if (activeTypes.length) params.set('types', activeTypes.join(','));
+    else if (typeEl.value) params.set('type', typeEl.value);
+    if (activeTags.length) params.set('tags', activeTags.join(','));
     if (queryEl.value.trim()) params.set('q', queryEl.value.trim());
     return params;
   }
@@ -1640,12 +2060,16 @@ export const GRAPH_APP_HTML = `<!doctype html>
       graphLoadedAt = Date.now();
       selected = null;
       hovered = null;
+      activeTags = Array.isArray(graph.meta.tags) ? graph.meta.tags.map(normalized).filter(Boolean) : activeTags;
+      activeTypes = Array.isArray(graph.meta.types) ? graph.meta.types.map(normalized).filter(Boolean) : activeTypes;
       setInitialPositions();
+      renderTagFilters();
       renderSearchResults();
       renderDetails();
       renderNeighbors();
       renderQualityLegend();
       renderGraphChrome();
+      applyRendererMode();
       fleetPromise.then(function (report) {
         if (seq !== loadSeq) return;
         applyFleetOverlay(report);
@@ -1661,6 +2085,7 @@ export const GRAPH_APP_HTML = `<!doctype html>
       metaEl.textContent = 'Graph unavailable';
       statusEl.innerHTML = '<span class="error">' + escapeHtml(error.message) + '</span>';
       renderSearchResults();
+      renderTagFilters();
       renderDetails();
       renderNeighbors();
       renderQualityLegend();
@@ -1739,6 +2164,18 @@ export const GRAPH_APP_HTML = `<!doctype html>
     selectNode(nodesById.get(button.getAttribute('data-id')));
   });
 
+  tagFiltersEl.addEventListener('click', function (event) {
+    var button = event.target.closest('button[data-tag]');
+    if (!button) return;
+    var tag = normalized(button.getAttribute('data-tag'));
+    if (!tag) return;
+    if (activeTags.includes(tag)) activeTags = activeTags.filter(function (candidate) { return candidate !== tag; });
+    else if (activeTags.length < 12) activeTags = activeTags.concat(tag);
+    renderTagFilters();
+    syncLinks();
+    loadGraph();
+  });
+
   queryEl.addEventListener('input', function () {
     renderSearchResults();
     syncLinks();
@@ -1746,14 +2183,30 @@ export const GRAPH_APP_HTML = `<!doctype html>
     queryEl._timer = window.setTimeout(loadGraph, 350);
   });
   kindEl.addEventListener('change', function () {
-    if (kindEl.value !== 'entities') typeEl.value = '';
+    activeTypes = [];
+    typeEl.value = '';
     syncLinks();
     loadGraph();
   });
   typeEl.addEventListener('change', function () {
-    if (typeEl.value) kindEl.value = 'entities';
+    activeTypes = typeEl.value ? [typeEl.value] : [];
+    if (activeTypes.length) kindEl.value = 'entities';
     syncLinks();
     loadGraph();
+  });
+  viewEl.addEventListener('change', function () {
+    var preset = VIEW_PRESETS[viewEl.value] || VIEW_PRESETS.overview;
+    kindEl.value = preset.kind;
+    activeTypes = preset.types.slice();
+    typeEl.value = '';
+    activeTags = [];
+    syncLinks();
+    loadGraph();
+  });
+  renderModeEl.addEventListener('change', applyRendererMode);
+  tagModeEl.addEventListener('change', function () {
+    syncLinks();
+    if (activeTags.length) loadGraph();
   });
   limitEl.addEventListener('change', function () {
     syncLinks();
@@ -1765,7 +2218,14 @@ export const GRAPH_APP_HTML = `<!doctype html>
   });
   qualityToggleEl.addEventListener('change', function () {
     renderQualityLegend();
-    requestRender();
+    if (rendererIs3d()) refresh3dStyle();
+    else requestRender();
+  });
+  fitViewEl.addEventListener('click', fitCurrentView);
+  toggleSidebarEl.addEventListener('click', function () {
+    document.body.classList.toggle('focus-mode');
+    toggleSidebarEl.textContent = document.body.classList.contains('focus-mode') ? 'Details' : 'Focus';
+    window.setTimeout(resize, 0);
   });
   reloadEl.addEventListener('click', loadGraph);
   popoutEl.addEventListener('click', function () {

@@ -8,6 +8,22 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.710] — 2026-08-10
+### What changed
+- Bundle Manager v0.1.170, including the project-scoped delegation lifecycle
+  fixes from v0.1.169 and a strict Claude authentication preflight that reports
+  expired or missing sign-in before work is assigned.
+- Wait through Manager's worker-restoration settling window before concluding
+  that no provider agents need recovery, refresh local provider catalogs once,
+  and keep agents safely paused when their selected model is no longer
+  installed.
+- Bundle Brain v0.1.9 with an authenticated offline 3D graph, the existing 2D
+  fallback, six focused view lenses, composable type/tag filters, any/all tag
+  matching, global facets, and a bounded 2,500-node ceiling.
+- Improve the Brain graph's responsive screen use while retaining read-only
+  data handling, secret redaction, local-origin asset loading, and the existing
+  Manager/Brain production boundary.
+
 ## [0.1.709] — 2026-08-10
 ### What changed
 - Preserve exact project scope through delegated execution and validation, surface validation revisions in task history, isolate review releases, and bundle Manager v0.1.169 with refreshed dependency locks.

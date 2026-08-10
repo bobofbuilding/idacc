@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   providerRehydrationActionMessage,
   rehydrateManagedProviderAgents,
+  settleProviderRuntimeRehydration,
 } from '../src/main/providerRuntimeRehydration.ts';
 
 async function main(): Promise<void> {
@@ -33,6 +34,7 @@ const report = await rehydrateManagedProviderAgents({
         id: 'marked-provider',
         name: 'coder',
         runtime: 'provider:openrouter',
+        model: 'provider-model',
         metadata: { managerRestartRequested: true },
       },
       {
@@ -62,6 +64,7 @@ const report = await rehydrateManagedProviderAgents({
     if (runtime === 'provider:missing') throw new Error(`missing ${secret}`);
     return {
       providerName: 'openrouter',
+      availableModels: ['provider-model'],
       provider: {
         name: 'openrouter',
         baseUrl: 'https://openrouter.ai/api/v1',
@@ -99,6 +102,68 @@ const message = providerRehydrationActionMessage(report);
 assert.match(message || '', /Open Settings/i);
 assert.match(message || '', /research\/researcher/);
 assert.doesNotMatch(message || '', new RegExp(secret));
+
+const missingModel = await rehydrateManagedProviderAgents({
+  listTeams: async () => ['default'],
+  listAgents: async () => [{
+    id: 'stale-local-model',
+    name: 'local-worker',
+    runtime: 'provider:ollama',
+    model: 'removed-model:latest',
+    metadata: { managerRestartRequested: true },
+  }],
+  resolveAssignment: () => ({
+    providerName: 'ollama',
+    availableModels: ['installed-model:latest'],
+    provider: {
+      name: 'ollama',
+      kind: 'ollama',
+      baseUrl: 'http://127.0.0.1:11434',
+    },
+  }),
+  rebindAndResume: async () => {
+    throw new Error('an unavailable model must not be resumed');
+  },
+});
+assert.deepEqual(missingModel, {
+  attempted: 1,
+  resumed: 0,
+  issues: [{
+    team: 'default',
+    agent: 'local-worker',
+    provider: 'ollama',
+    model: 'removed-model:latest',
+    reason: 'provider_model_unavailable',
+  }],
+});
+assert.match(providerRehydrationActionMessage(missingModel) || '', /currently installed models/i);
+
+let settlingAttempts = 0;
+const settlingWaits: number[] = [];
+const settled = await settleProviderRuntimeRehydration({
+  resume: async () => {
+    settlingAttempts += 1;
+    if (settlingAttempts < 3) return { attempted: 0, resumed: 0, issues: [] };
+    return { attempted: 1, resumed: 1, issues: [] };
+  },
+  wait: async (delayMs) => { settlingWaits.push(delayMs); },
+});
+assert.deepEqual(settled, { attempted: 1, resumed: 1, issues: [] });
+assert.equal(settlingAttempts, 3);
+assert.deepEqual(settlingWaits, [500, 1000]);
+
+let retryableAttempts = 0;
+const recoveredRetry = await settleProviderRuntimeRehydration({
+  resume: async () => {
+    retryableAttempts += 1;
+    return retryableAttempts === 1
+      ? { attempted: 1, resumed: 0, issues: [{ team: 'default', agent: 'worker', reason: 'manager_rebind_failed' }] }
+      : { attempted: 1, resumed: 1, issues: [] };
+  },
+  wait: async () => {},
+});
+assert.equal(retryableAttempts, 2);
+assert.deepEqual(recoveredRetry, { attempted: 1, resumed: 1, issues: [] });
 
 const failed = await rehydrateManagedProviderAgents({
   listTeams: async () => ['default'],
@@ -185,6 +250,7 @@ assert.equal(rebindAfterAbort, false);
 
 const bridgeSource = readFileSync(new URL('../src/main/bridge.ts', import.meta.url), 'utf8');
 const mainSource = readFileSync(new URL('../src/main/main.ts', import.meta.url), 'utf8');
+const providerSource = readFileSync(new URL('../src/main/providerRuntimeRehydration.ts', import.meta.url), 'utf8');
 const stackSource = readFileSync(new URL('../src/main/unifiedStack.ts', import.meta.url), 'utf8');
 const managerSourcePath = process.env.IDACC_MANAGER_SOURCE
   ? join(process.env.IDACC_MANAGER_SOURCE, 'src', 'agent-manager-db.ts')
@@ -201,7 +267,8 @@ assert.match(mainSource, /subscribeUnifiedStackServiceReady\(\(event\) => \{/);
 assert.match(mainSource, /event\.name !== 'manager'/);
 assert.match(mainSource, /rehydrateProviderAgentsForReadyManager\(\)/);
 assert.match(mainSource, /resumeProviderAgentsWithStartupRetry\(abort\.signal\)/);
-assert.match(mainSource, /issue\.reason === 'manager_rebind_failed'/);
+assert.match(providerSource, /issue\.reason === 'manager_rebind_failed'/);
+assert.match(mainSource, /settleProviderRuntimeRehydration/);
 assert.match(mainSource, /providerRuntimeRehydrationAbort\?\.abort\(\)/);
 assert.ok(
   (stackSource.match(/notifyServiceReady\(service\)/g) || []).length >= 2,

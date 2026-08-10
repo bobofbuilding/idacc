@@ -11,11 +11,15 @@ export interface ProviderRehydrationAgent {
   id: string;
   name: string;
   runtime?: string;
+  model?: string;
+  status?: string;
   metadata?: Record<string, unknown>;
 }
 
 export interface ProviderRehydrationAssignment {
   providerName: string;
+  /** Fresh, provider-reported model ids when the lane supports discovery. */
+  availableModels?: string[];
   provider: {
     name: string;
     kind?: string;
@@ -26,6 +30,7 @@ export interface ProviderRehydrationAssignment {
 
 export type ProviderRehydrationReason =
   | 'provider_settings_unavailable'
+  | 'provider_model_unavailable'
   | 'manager_rebind_failed'
   | 'fleet_inventory_unavailable';
 
@@ -33,6 +38,7 @@ export interface ProviderRehydrationIssue {
   team: string;
   agent?: string;
   provider?: string;
+  model?: string;
   reason: ProviderRehydrationReason;
 }
 
@@ -53,6 +59,11 @@ export interface ProviderRehydrationDependencies {
     provider: ProviderRehydrationAssignment['provider'],
     signal?: AbortSignal,
   ): Promise<{ resumed?: boolean }>;
+}
+
+export interface ProviderRehydrationSettlingDependencies {
+  resume(attempt: number): Promise<ProviderRehydrationReport>;
+  wait(delayMs: number): Promise<void>;
 }
 
 function abortProviderRehydration(signal?: AbortSignal): void {
@@ -145,6 +156,20 @@ export async function rehydrateManagedProviderAgents(
       }
 
       report.attempted += 1;
+      const model = String(agent.model ?? '').trim();
+      const availableModels = Array.isArray(assignment.availableModels)
+        ? new Set(assignment.availableModels.map((candidate) => String(candidate).trim()).filter(Boolean))
+        : null;
+      if (model && availableModels && !availableModels.has(model)) {
+        report.issues.push({
+          team,
+          agent: agent.name,
+          provider: assignment.providerName || provider,
+          model,
+          reason: 'provider_model_unavailable',
+        });
+        continue;
+      }
       try {
         const result = await deps.rebindAndResume(
           team,
@@ -174,11 +199,37 @@ export async function rehydrateManagedProviderAgents(
   return report;
 }
 
+/**
+ * Manager intentionally reports HTTP readiness before its bounded worker
+ * restoration finishes. Poll that settling window until a provider restore
+ * marker is observed; an empty early inventory is not a terminal result.
+ */
+export async function settleProviderRuntimeRehydration(
+  deps: ProviderRehydrationSettlingDependencies,
+  maxAttempts = 5,
+): Promise<ProviderRehydrationReport> {
+  const attempts = Math.max(1, Math.floor(maxAttempts));
+  let report: ProviderRehydrationReport = { attempted: 0, resumed: 0, issues: [] };
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    report = await deps.resume(attempt);
+    const retryable = report.issues.some((issue) => (
+      issue.reason === 'manager_rebind_failed'
+      || issue.reason === 'fleet_inventory_unavailable'
+    ));
+    const markerObserved = report.attempted > 0
+      || report.issues.some((issue) => issue.agent);
+    if ((markerObserved && !retryable) || attempt === attempts - 1) return report;
+    await deps.wait(500 * (attempt + 1));
+  }
+  return report;
+}
+
 export function providerRehydrationActionMessage(report: ProviderRehydrationReport): string | null {
   if (report.issues.length === 0) return null;
+  const missingModels = report.issues.filter((issue) => issue.reason === 'provider_model_unavailable');
   const affected = report.issues
     .filter((issue) => issue.agent)
-    .map((issue) => `${issue.team}/${issue.agent}${issue.provider ? ` (${issue.provider})` : ''}`)
+    .map((issue) => `${issue.team}/${issue.agent}${issue.provider ? ` (${issue.provider})` : ''}${issue.model ? ` needs ${issue.model}` : ''}`)
     .slice(0, 8);
   const extra = report.issues.filter((issue) => issue.agent).length - affected.length;
   const affectedText = affected.length
@@ -186,7 +237,9 @@ export function providerRehydrationActionMessage(report: ProviderRehydrationRepo
     : '';
   return [
     'One or more API-connected agents stayed safely paused because IDACC could not restore their provider access.',
-    'Open Settings, reconnect the affected provider, then restart or rebuild the paused agent.',
+    missingModels.length
+      ? 'Open Settings, reconnect and sync the affected provider, choose one of its currently installed models, then rebuild the paused agent.'
+      : 'Open Settings, reconnect the affected provider, then restart or rebuild the paused agent.',
     affectedText,
   ].join(' ').trim();
 }
