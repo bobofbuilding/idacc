@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.709] — 2026-08-10
+### What changed
+- Preserve exact project scope through delegated execution and validation, surface validation revisions in task history, isolate review releases, and bundle Manager v0.1.169 with refreshed dependency locks.
+- Preserve project scope across delegated validation
+- docs: lead with IDACC product outcome
+
 ## [0.1.708] — 2026-08-06
 ### What changed
 - Fix terminal task completion collision handling and guard task-name reuse across fresh repository runs.
