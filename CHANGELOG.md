@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.712] — 2026-08-11
+### What changed
+- Repair conflict-safe model and runtime switching, and preserve authoritative completed-task results.
+- Make duplicate delegation and Create Work failures actionable with exact task references and retained retry context.
+- Reconcile stale or ownerless work, distinguish live task execution from assignment, add non-destructive recovery controls, and flag missing artifact evidence.
+
 ## [0.1.711] — 2026-08-11
 ### What changed
 - Keep Computer Use shutdown and ordinary disarm passive: do not initialize the

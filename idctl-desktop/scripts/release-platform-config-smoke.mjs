@@ -130,6 +130,7 @@ assert.deepEqual(
     'test:secret-redaction',
     'test:startup-recovery',
     'test:subscription-portability',
+    'test:work-reconcile',
   ],
   'every TypeScript smoke using tsx must remain covered',
 );

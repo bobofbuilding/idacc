@@ -60,7 +60,7 @@ import { testMcpServer } from './mcpTest.ts';
 import { headroomCoreAudit, headroomStatus } from './headroom.ts';
 import { contextBudgetDryRun, contextBudgetReport, loadRecentContextBudgetRecords, optimizeAskCommand, readContextBudgetRecord } from './contextBudget.ts';
 import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayOptions } from './contextReplay.ts';
-import { decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, fanOutObjectiveToActiveTeamLeads, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
+import { auditValidatedTaskEvidence, decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, fanOutObjectiveToActiveTeamLeads, reconcileOwnerlessWaiting, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
 import { normalizeGoalDriverConfig, readGoalDriverStatus, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, syncGoalDriverConfig, type GoalDriverConfig } from './goaldriver.ts';
 import { discoverClaudeCliModels } from './claudeModels.ts';
 import {
@@ -1967,6 +1967,107 @@ async function boardTasksForTeam(team: string): Promise<Task[]> {
   return dedupeTasks([...todo, ...doing, ...done]);
 }
 
+type TaskEvidenceContext = {
+  ref: string;
+  found: boolean;
+  team?: string;
+  task?: Task;
+  completionQueryId?: string;
+  completionQueryStatus?: string;
+  completionReply?: string;
+  structuredDeliverables?: {
+    outcomeResult?: unknown;
+    evmAddresses: string[];
+    urls: string[];
+  };
+};
+
+function queryResultText(value: unknown): string | undefined {
+  if (typeof value === 'string') return value.trim() || undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  return textValue(row.result) || textValue(row.message) || undefined;
+}
+
+function stringsFromEvidence(value: unknown): string[] {
+  try {
+    return [typeof value === 'string' ? value : JSON.stringify(value)];
+  } catch {
+    return [String(value ?? '')];
+  }
+}
+
+function taskStructuredDeliverables(outcomeResult: unknown, completionReply?: string): {
+  outcomeResult?: unknown;
+  evmAddresses: string[];
+  urls: string[];
+} {
+  const text = stringsFromEvidence(outcomeResult).concat(completionReply || '').join('\n');
+  return {
+    ...(outcomeResult !== undefined ? { outcomeResult } : {}),
+    evmAddresses: [...new Set(text.match(/\b0x[a-fA-F0-9]{40}\b/g) ?? [])],
+    urls: [...new Set(text.match(/https?:\/\/[^\s)\]}>"']+/g) ?? [])].slice(0, 20),
+  };
+}
+
+async function taskEvidenceContexts(refs: string[]): Promise<TaskEvidenceContext[]> {
+  const cleanRefs = [...new Set(refs.map((ref) => String(ref || '').trim()).filter(Boolean))].slice(0, 8);
+  const teamRows = await client.teams().catch(() => []);
+  const teams = [...new Set([
+    client.team || cfg.team || 'default',
+    ...teamRows.map((team) => team.name),
+  ].filter(Boolean))];
+  return Promise.all(cleanRefs.map(async (ref): Promise<TaskEvidenceContext> => {
+    let match: { team: string; task: Task } | undefined;
+    for (const team of teams) {
+      try {
+        const response = await managerWorkflowRequest<{ task?: Task }>(
+          team,
+          `/tasks/${encodeURIComponent(ref.replace(/^#/, ''))}`,
+        );
+        if (response.task) {
+          match = { team, task: { ...response.task, teamName: response.task.teamName ?? team } };
+          break;
+        }
+      } catch {
+        // Exact short references are normally unique; keep checking team scopes.
+      }
+    }
+    if (!match) return { ref, found: false };
+    const validation = match.task.validationDetail && typeof match.task.validationDetail === 'object'
+      ? match.task.validationDetail
+      : {};
+    const completionQueryId = textValue(validation.completion_query_id ?? validation.completionQueryId);
+    let completionQueryStatus: string | undefined;
+    let completionReply: string | undefined;
+    if (completionQueryId) {
+      try {
+        const query = await client.withTeam(match.team).query(completionQueryId, 0);
+        completionQueryStatus = query.status;
+        completionReply = queryResultText(query.result);
+      } catch {
+        // The task snapshot remains authoritative even if older query history was pruned.
+      }
+    }
+    const storedCompletion = match.task.completionEvidence;
+    const storedCompletionReply = storedCompletion && typeof storedCompletion === 'object' && !Array.isArray(storedCompletion)
+      ? textValue((storedCompletion as Record<string, unknown>).result)
+      : textValue(storedCompletion);
+    completionReply = completionReply || storedCompletionReply || undefined;
+    const outcomeResult = match.task.outcomeDetail?.result ?? storedCompletion;
+    return sanitizeSecretPayload({
+      ref,
+      found: true,
+      team: match.team,
+      task: match.task,
+      ...(completionQueryId ? { completionQueryId } : {}),
+      ...(completionQueryStatus ? { completionQueryStatus } : {}),
+      ...(completionReply ? { completionReply } : {}),
+      structuredDeliverables: taskStructuredDeliverables(outcomeResult, completionReply),
+    });
+  }));
+}
+
 const readCallCache = new ReadCallCache();
 const READ_ONLY_SYNC_METHODS = new Set([
   'configs',
@@ -2155,7 +2256,25 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
     const per = await Promise.all(names.map((name) => boardTasksForTeam(name)));
     return dedupeTasks(per.flat());
   },
+  'tasks:activeOwnerQueries': async (targets: Array<{ team?: string; agent?: string }>) => {
+    const clean = [...new Map((Array.isArray(targets) ? targets : [])
+      .map((target) => ({
+        team: String(target?.team || client.team || cfg.team || 'default').trim(),
+        agent: String(target?.agent || '').trim(),
+      }))
+      .filter((target) => target.agent)
+      .slice(0, 100)
+      .map((target) => [`${target.team}\u0000${target.agent.toLowerCase()}`, target] as const)).values()];
+    const rows = await Promise.all(clean.map(async (target) => ({
+      ...target,
+      signal: await client.withTeam(target.team).activeAgentQueries(target.agent).catch(() => null),
+    })));
+    return Object.fromEntries(rows.map((row) => [JSON.stringify([row.team, row.agent.toLowerCase()]), row.signal]));
+  },
   'tasks:workflowMetrics': (team?: string) => managerWorkflowRequest(String(team || client.team || cfg.team || 'default'), '/tasks-workflow/metrics'),
+  // Exact task references in Chat are resolved against every live team and
+  // grounded in the durable task snapshot plus its linked completion query.
+  'tasks:context': (refs: string[]) => taskEvidenceContexts(Array.isArray(refs) ? refs : []),
   'tasks:recover': (team: string, taskRef: string, action = 'retry') => managerWorkflowRequest(String(team), `/tasks/${encodeURIComponent(String(taskRef).replace(/^#/, ''))}/recover`, { action }),
   'tasks:block': (team: string, taskRef: string, detail: Record<string, unknown>) => managerWorkflowRequest(String(team), `/tasks/${encodeURIComponent(String(taskRef).replace(/^#/, ''))}/block`, detail),
   'tasks:validate': (team: string, taskRef: string, detail: Record<string, unknown>) => managerWorkflowRequest(String(team), `/tasks/${encodeURIComponent(String(taskRef).replace(/^#/, ''))}/validate`, detail),
@@ -2277,6 +2396,29 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'work:triage': async (lead: string, team?: string, projectId?: string) => {
     const route = await projectRouting(projectId, team, lead);
     return triageUnassigned(route.team ? client.withTeam(String(route.team)) : client, String(route.lead || 'lead'));
+  },
+  // Manager reconciliation owns durable workflow states. This companion pass
+  // covers ownerless tasks omitted from Manager waiting reconciliation, including
+  // Control Center Holding overlays and malformed triage-required rows.
+  'work:reconcileWaiting': async (team: string, refs: string[]) => {
+    const teamName = String(team || client.team || cfg.team || 'default');
+    const overlays = await managerTaskOverlay();
+    const projects = await managerProjects();
+    return reconcileOwnerlessWaiting(
+      client.withTeam(teamName),
+      Array.isArray(refs) ? refs.map(String) : [],
+      overlays.taskLanes ?? {},
+      projects.map((project) => ({ id: project.id, name: project.name, path: project.path })),
+    );
+  },
+  'work:auditTaskEvidence': async (team: string, ref: string) => {
+    const teamName = String(team || client.team || cfg.team || 'default');
+    const projects = await managerProjects();
+    return auditValidatedTaskEvidence(
+      client.withTeam(teamName),
+      String(ref || ''),
+      projects.map((project) => ({ id: project.id, name: project.name, path: project.path })),
+    );
   },
   'draftDispatcher:runOnce': () => processDraftProposalsOnce(client),
   'goalDriver:getConfig': async () => goalDriverConfig(),

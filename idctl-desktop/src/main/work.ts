@@ -71,6 +71,7 @@ const WORK_LEAD_GUARD_TTL_MS = positiveEnvInt('IDACC_WORK_LEAD_GUARD_TTL_MINUTES
 const WORK_OWNER_OPEN_TASK_CAP = positiveEnvInt('IDACC_WORK_OWNER_OPEN_TASK_CAP', 1);
 const WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP = positiveEnvInt('IDACC_WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP', 4);
 const WORK_QUEUE_TODO_CAP = positiveEnvInt('IDACC_WORK_QUEUE_TODO_CAP', 1);
+const WORK_WAITING_RECONCILE_CAP = boundedEnvInt('IDACC_WORK_WAITING_RECONCILE_CAP', 8, 1, 20);
 const WORK_COMPLETION_DONE_TASK_LIMIT = positiveEnvInt('IDACC_WORK_DONE_POLL_LIMIT', 250);
 const WORK_PLANNER_TEAM = process.env.IDACC_WORK_PLANNER_TEAM || 'ops-team';
 const WORK_USE_TASK_MANAGER_PLANNER = /^(1|true|yes|on)$/i.test(String(process.env.IDACC_WORK_USE_TASK_MANAGER_PLANNER || ''));
@@ -810,7 +811,10 @@ export async function createAndDispatchPlan(
   const planItems = subtasks.slice(0, MAX_SUBTASKS).map((st, i, arr) => ({
     title: clip(String(st?.title ?? `Task ${i + 1}`), 120) || `Task ${i + 1}`,
     description: clip(String(st?.description ?? ''), WORK_DESCRIPTION_LIMIT),
-    agent: names.has(st?.agent) ? st.agent : fallback,
+    // Preserve the requested owner in a no-roster failure so the UI can name
+    // the exact target that was not created. Unknown owners still fall back to
+    // a live execution candidate whenever one exists.
+    agent: names.has(st?.agent) ? st.agent : (fallback || String(st?.agent ?? '').trim()),
     dependsOn: (Array.isArray(st?.dependsOn) ? st.dependsOn : [])
       .map((d) => Number(d))
       .filter((d) => Number.isInteger(d) && d >= 0 && d < arr.length && d !== i),
@@ -818,7 +822,14 @@ export async function createAndDispatchPlan(
   const createLimit = Math.min(WORK_CREATE_TASK_CAP, planItems.length);
   const list = planItems.slice(0, createLimit);
   const created: CreatedTask[] = [];
-  if (!fallback) return { created, dispatched: 0, deferred: 0 }; // no agents → nothing to dispatch
+  if (!fallback) {
+    const attempted = planItems.map((st, idx) => capacityDeferredTask(
+      idx,
+      st,
+      `no live assignable owner is available in team ${client.team ?? 'default'}; no live task was created`,
+    ));
+    return { created: attempted, dispatched: 0, deferred: attempted.length };
+  }
   // Don't pile every task on one agent - spread across the active roster (best-fit up to a cap).
   // respectOwners=true keeps explicit execution owners, but still blocks coordinator/validator bypasses.
   if (!opts.respectOwners) balanceOwners(list, [...names]);
@@ -895,7 +906,17 @@ export async function createAndDispatchPlan(
         managerKickoff,
       });
     } catch (e) {
-      created.push({ idx: i, ref: st.title, title: st.title, agent: st.agent, ok: false, error: e instanceof Error ? e.message : String(e), dependsOn: st.dependsOn, dispatched: false });
+      const existing = existingTaskHintFromError(e);
+      created.push({
+        idx: i,
+        ref: existing?.ref ?? st.title,
+        title: st.title,
+        agent: st.agent,
+        ok: false,
+        error: existing ? existingTaskHintDetail(existing) : e instanceof Error ? e.message : String(e),
+        dependsOn: st.dependsOn,
+        dispatched: false,
+      });
     }
   }
   for (let i = createLimit; i < planItems.length; i++) {
@@ -1126,7 +1147,56 @@ export async function delegateObjectiveToTeamLeads(
 // ---- Cross-team fan-out -------------------------------------------------
 
 export interface TeamLead { team: string; lead: string | null; activeCount: number; totalCount: number }
-export interface FanoutResult { team: string; lead?: string; status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed'; queryId?: string; detail?: string }
+export interface ExistingTaskHint {
+  ref: string;
+  name?: string;
+  title?: string;
+  status?: string;
+  owner?: string;
+  suggestedAction?: string;
+}
+export interface FanoutResult {
+  team: string;
+  lead?: string;
+  status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed';
+  queryId?: string;
+  detail?: string;
+  existingTask?: ExistingTaskHint;
+}
+
+function recordOf(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function optionalText(value: unknown): string | undefined {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text || undefined;
+}
+
+/** Preserve Manager duplicate-task evidence so Chat can route the operator to it. */
+export function existingTaskHintFromError(error: unknown): ExistingTaskHint | undefined {
+  if (!(error instanceof Error) || !/existing_task_found/i.test(error.message)) return undefined;
+  const details = recordOf((error as Error & { details?: unknown }).details);
+  const ref = optionalText(details.existing_task_ref) ?? optionalText(details.existing_task);
+  if (!ref) return undefined;
+  return {
+    ref,
+    name: optionalText(details.existing_task),
+    title: optionalText(details.existing_title),
+    status: optionalText(details.existing_status),
+    owner: optionalText(details.existing_owner),
+    suggestedAction: optionalText(details.suggested_action),
+  };
+}
+
+function existingTaskHintDetail(hint: ExistingTaskHint): string {
+  const title = hint.title ? ` “${hint.title}”` : '';
+  const status = hint.status ? ` is ${hint.status}` : ' already exists';
+  const owner = hint.owner ? ` with ${hint.owner}` : '';
+  return `existing task ${hint.ref}${title}${status}${owner}; open Work → Tasks to status-check it`;
+}
 
 const EXPLICIT_GENERAL_COUNSEL_REQUEST = /\b(?:idacc\s+)?general[-\s]+coun(?:cil|sel)\b|\bgeneral-counsel\b/i;
 const REPOSITORY_ACTION = /\b(?:audit|review|reconcile|merge|push|release|update|upgrade|validate|verify)\b/i;
@@ -1206,6 +1276,15 @@ export async function fanOutObjective(client: ManagerClient, objective: string, 
         recordLeadDispatch(tc, lead, env.result?.queryId, 'work:fanout');
         return { team, lead, status: 'dispatched', queryId: env.result?.queryId };
       } catch (e) {
+        const existingTask = existingTaskHintFromError(e);
+        if (existingTask) {
+          return {
+            team,
+            status: 'deferred',
+            detail: existingTaskHintDetail(existingTask),
+            existingTask,
+          };
+        }
         return { team, status: 'failed', detail: e instanceof Error ? e.message : String(e) };
       }
     }),
@@ -1425,4 +1504,178 @@ export async function triageUnassigned(client: ManagerClient, lead: string, opts
     }
   }
   return { considered: unassigned.length, assigned, skipped: unassigned.length - assigned.length, dispatched };
+}
+
+// ---- Ownerless waiting-lane reconciliation ------------------------------
+
+export interface WaitingProjectContext { id: string; name?: string; path?: string }
+export interface WaitingReconcileResult {
+  considered: number;
+  routed: number;
+  skipped: number;
+  refs: string[];
+  lead?: string;
+  queryId?: string;
+  detail?: string;
+}
+export interface EvidenceAuditResult {
+  ok: boolean;
+  ref: string;
+  lead?: string;
+  reply?: string;
+  detail?: string;
+}
+
+/**
+ * The board's Holding lane is a durable Control Center overlay. Manager's
+ * workflow reconciler independently owns workflow_state=blocked and
+ * workflow_state=triage_required. The default selection is overlay-only;
+ * callers may include workflow-managed waiting rows after excluding every task
+ * already present in the Manager reconciliation report.
+ */
+export function ownerlessWaitingCandidates(
+  tasks: readonly Task[],
+  lanes: Readonly<Record<string, string>>,
+  requestedRefs: readonly string[] = [],
+  options: { includeWorkflowManaged?: boolean } = {},
+): Task[] {
+  const requested = new Set(requestedRefs.map((value) => String(value || '').trim()).filter(Boolean));
+  return tasks.filter((task) => {
+    const ref = taskRef(task);
+    if (requested.size && !requested.has(ref)) return false;
+    if (task.ownerName || isTaskDone(task.status)) return false;
+    const workflowWaiting = /^(?:blocked|stalled|failed|triage_required)$/i.test(String(task.workflowState || '').trim());
+    const overlayHolding = statusCol(task.status) === 'todo' && lanes[ref] === 'holding';
+    if (!options.includeWorkflowManaged && workflowWaiting) return false;
+    return overlayHolding || (options.includeWorkflowManaged === true && workflowWaiting);
+  });
+}
+
+function waitingProjectLabel(task: Task, projects: ReadonlyMap<string, WaitingProjectContext>): string {
+  const projectId = String(task.projectId || '').trim();
+  if (!projectId) return 'project scope: not recorded; do not guess a checkout';
+  const project = projects.get(projectId);
+  const root = String(project?.path || '').trim();
+  return root
+    ? `project ${projectId}; exact project root: ${root}`
+    : `project ${projectId}; project root is not recorded, so verify through existing task evidence and do not guess a checkout`;
+}
+
+function waitingStatusCheckPrompt(tasks: readonly Task[], projects: readonly WaitingProjectContext[]): string {
+  const byId = new Map(projects.map((project) => [project.id, project] as const));
+  const rows = tasks.map((task) => [
+    `- ${taskRef(task)} :: ${clip(task.title, 140)}`,
+    `  ${waitingProjectLabel(task, byId)}`,
+    task.description ? `  scope: ${clip(task.description, 360)}` : '',
+  ].filter(Boolean).join('\n')).join('\n');
+  return `Reconcile these EXISTING ownerless waiting-lane tasks for your team. This is a status check, not permission to create replacement tasks.
+
+${rows}
+
+For each exact task reference:
+1. Inspect its existing task record and the exact project root when supplied. Preserve its project ID and task name through every action.
+2. Correlate any prior agent or COMM completion report that matches this exact scope, then check whether the requested artifact or implementation is present and run the relevant acceptance tests. A report or file presence alone is not completion evidence.
+3. If the work is complete and validation passes, close that exact existing task with concise reproducible acceptance evidence through the normal task lifecycle.
+4. If work remains, route or claim that exact existing task to one suitable LIVE owner who has no other live task; do not duplicate or rename it.
+5. Leave it blocked only for a concrete unresolved work blocker. Ask the user only for a genuine external authority decision.
+
+Report what happened for every reference, including tests/evidence or the remaining blocker.`;
+}
+
+/** Route Manager-unhandled ownerless waiting tasks to one bounded lead status-check query. */
+export async function reconcileOwnerlessWaiting(
+  client: ManagerClient,
+  requestedRefs: readonly string[],
+  lanes: Readonly<Record<string, string>>,
+  projects: readonly WaitingProjectContext[] = [],
+): Promise<WaitingReconcileResult> {
+  const [open, roster] = await Promise.all([
+    openTasks(client),
+    client.agents().catch(() => [] as Agent[]),
+  ]);
+  const candidates = ownerlessWaitingCandidates(open, lanes, requestedRefs, { includeWorkflowManaged: true })
+    .slice(0, WORK_WAITING_RECONCILE_CAP);
+  const refs = candidates.map(taskRef);
+  if (!candidates.length) return { considered: 0, routed: 0, skipped: 0, refs: [] };
+
+  const configuredLead = pickConfiguredLead(roster);
+  const lead = configuredLead && isActiveStatus(roster.find((agent) => agent.name === configuredLead)?.status)
+    ? configuredLead
+    : pickActiveLead(roster);
+  if (!lead) {
+    return {
+      considered: candidates.length,
+      routed: 0,
+      skipped: candidates.length,
+      refs,
+      detail: `no live team lead is available to status-check ${refs.join(', ')}`,
+    };
+  }
+  const guard = await guardLeadQueue(client, lead, 'waiting-task reconciliation');
+  if (!guard.ok) {
+    return { considered: candidates.length, routed: 0, skipped: candidates.length, refs, lead, detail: guard.detail };
+  }
+  try {
+    const env = await remoteBudgeted<{ queryId?: string }>(
+      client,
+      `/ask ${lead} ${qArg(waitingStatusCheckPrompt(candidates, projects))}`,
+      'work:reconcile-waiting',
+    );
+    recordLeadDispatch(client, lead, env.result?.queryId, 'work:reconcile-waiting');
+    return {
+      considered: candidates.length,
+      routed: candidates.length,
+      skipped: 0,
+      refs,
+      lead,
+      queryId: env.result?.queryId,
+      detail: `status-check routed to ${client.team ?? 'default'}/${lead}`,
+    };
+  } catch (error) {
+    return {
+      considered: candidates.length,
+      routed: 0,
+      skipped: candidates.length,
+      refs,
+      lead,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/** Read-only repository audit for a task whose Manager validation lacks artifact evidence. */
+export async function auditValidatedTaskEvidence(
+  client: ManagerClient,
+  requestedRef: string,
+  projects: readonly WaitingProjectContext[] = [],
+): Promise<EvidenceAuditResult> {
+  const ref = String(requestedRef || '').trim();
+  const [done, roster] = await Promise.all([
+    client.tasksByStatus('done', { limit: WORK_COMPLETION_DONE_TASK_LIMIT }).catch(() => [] as Task[]),
+    client.agents().catch(() => [] as Agent[]),
+  ]);
+  const task = done.find((candidate) => taskRef(candidate) === ref);
+  if (!task) return { ok: false, ref, detail: `${ref || 'task'} is not a current completed task in ${client.team ?? 'default'}` };
+  if (task.workflowState !== 'validated') return { ok: false, ref, detail: `${ref} is not currently Manager-validated` };
+  const project = projects.find((candidate) => candidate.id === task.projectId);
+  const root = String(project?.path || '').trim();
+  if (!root) return { ok: false, ref, detail: `${ref} has no exact project root; repository evidence was not guessed` };
+  const configuredLead = pickConfiguredLead(roster);
+  const lead = configuredLead && isActiveStatus(roster.find((agent) => agent.name === configuredLead)?.status)
+    ? configuredLead
+    : pickActiveLead(roster);
+  if (!lead) return { ok: false, ref, detail: `no live team lead is available to verify ${ref}` };
+  const guard = await guardLeadQueue(client, lead, 'artifact-evidence audit');
+  if (!guard.ok) return { ok: false, ref, lead, detail: guard.detail };
+  const prompt = `Read-only artifact-integrity audit for EXISTING completed task ${ref} ("${clip(task.title, 180)}").
+Exact project root: ${root}
+Recorded scope: ${clip(task.description || '', 700) || 'not recorded'}
+
+Do not delegate, create or reopen tasks, edit files, install dependencies, commit, or change any task state. The Manager's validated lifecycle verdict is a claim, not proof that repository deliverables exist. Inspect only this exact project root. Check the requested schema/API/UI or other deliverables and run only already-available relevant tests when safe. Return: PRESENT or MISSING, the exact inspected paths, tests and results, and any discrepancy between the task claim and repository state. Do not infer completion from a report or filename alone.`;
+  try {
+    const reply = await dispatchBudgeted(client, `/ask ${lead} ${qArg(prompt)}`, 'work:audit-artifact-evidence');
+    return { ok: true, ref, lead, reply: clip(reply, 12_000), detail: `read-only evidence audit completed by ${client.team ?? 'default'}/${lead}` };
+  } catch (error) {
+    return { ok: false, ref, lead, detail: error instanceof Error ? error.message : String(error) };
+  }
 }

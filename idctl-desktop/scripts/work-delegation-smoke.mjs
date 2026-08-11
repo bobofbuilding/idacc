@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createAndDispatchPlan, taskMatchesCompletionWait } from '../src/main/work.ts';
+import { createWorkOutcome } from '../src/shared/createWorkOutcome.ts';
 
 assert.equal(
   taskMatchesCompletionWait(
@@ -292,3 +293,64 @@ assert.equal(capped.created.length, 10, 'deferred over-cap proposals should rema
 assert.equal(capped.created.filter((task) => task.ok).length, 8);
 assert.equal(capped.created.filter((task) => task.deferred && !task.ok).length, 2);
 assert.match(capped.created[8].warning || '', /live task creation cap 8 reached/);
+
+const noRoster = await createAndDispatchPlan(
+  {
+    ...client,
+    team: 'operations-team',
+    async agents() { return []; },
+  },
+  'Verify hosted release wiring.',
+  [{
+    title: 'Verify hosted release wiring',
+    description: 'Read-only verification.',
+    agent: 'maintainer',
+    dependsOn: [],
+  }],
+  { dispatch: true, respectOwners: true },
+);
+assert.equal(noRoster.created.length, 1, 'a zero-owner result must still return one auditable attempt');
+assert.equal(noRoster.created[0].ok, false);
+assert.equal(noRoster.created[0].deferred, true);
+assert.match(noRoster.created[0].error || '', /no live assignable owner.*operations-team/i);
+
+const duplicateClient = {
+  ...client,
+  async remote() {
+    const error = new Error('existing_task_found');
+    error.details = {
+      existing_task_ref: '#2d87fb3d',
+      existing_task: 'verify-hosted-release-wiring',
+      existing_title: 'Verify hosted release wiring',
+      existing_status: 'doing',
+      existing_owner: 'maintainer',
+    };
+    throw error;
+  },
+};
+const duplicate = await createAndDispatchPlan(
+  duplicateClient,
+  'Verify hosted release wiring.',
+  [{ title: 'Verify hosted release wiring', description: '', agent: 'writer', dependsOn: [] }],
+  { dispatch: true, respectOwners: true },
+);
+assert.equal(duplicate.created[0].ref, '#2d87fb3d');
+assert.match(duplicate.created[0].error || '', /open Work → Tasks to status-check it/);
+
+const failedOutcome = createWorkOutcome([{
+  team: 'operations-team',
+  dispatched: 0,
+  attempts: noRoster.created,
+}], 1);
+assert.equal(failedOutcome.createdCount, 0);
+assert.equal(failedOutcome.complete, false);
+assert.match(failedOutcome.text, /No task created \(0\/1\)/);
+assert.match(failedOutcome.text, /operations-team\/maintainer/);
+assert.match(failedOutcome.text, /no live assignable owner/i);
+
+const successfulOutcome = createWorkOutcome([{
+  team: 'operations-team',
+  dispatched: 1,
+  attempts: [{ ok: true, ref: '#abc12345', agent: 'maintainer', dispatched: true, dependsOn: [], idx: 0, title: 'Verify' }],
+}], 1);
+assert.match(successfulOutcome.text, /task #abc12345/);

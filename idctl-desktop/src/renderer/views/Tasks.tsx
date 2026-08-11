@@ -11,6 +11,9 @@ import { Dream } from './Dream.tsx';
 import { Goals } from './Goals.tsx';
 import { Learn } from './Learn.tsx';
 import { WorkLearningStatus } from './WorkLearningStatus.tsx';
+import { createWorkOutcome } from '../../shared/createWorkOutcome.ts';
+import { needsArtifactIntegrityCheck } from '../../shared/validationIntegrity.ts';
+import { ownerQueryKey, taskHasActiveOwnerQuery, type ActiveOwnerQuerySignal } from '../../shared/taskActivity.ts';
 
 // Auto-decompose IPC shapes (mirror main/work.ts).
 type SubTask = { title: string; description: string; agent: string; dependsOn: number[] };
@@ -29,6 +32,7 @@ type ReconcileReport = {
     considered?: number;
     routed?: number;
     skipped?: number;
+    items?: Array<{ task?: string; team?: string; state?: string; status?: string; actor?: string; actorTeam?: string; reason?: string }>;
   };
   validation?: {
     recovered?: number;
@@ -41,6 +45,16 @@ type ReconcileReport = {
   stalled?: StalledTriageReport;
   unowned?: { assignedCount?: number; skippedCount?: number };
 };
+type WaitingReconcileResult = {
+  considered: number;
+  routed: number;
+  skipped: number;
+  refs: string[];
+  lead?: string;
+  queryId?: string;
+  detail?: string;
+};
+type EvidenceAuditResult = { ok: boolean; ref: string; lead?: string; reply?: string; detail?: string };
 type JumpstartResult = { ok: boolean; status?: string; taskRef?: string; actor?: string; message: string };
 type AssignScope = 'team' | 'selected-teams' | 'team-leads' | 'all-agents';
 type TaskSnapshot = { status: string; owner?: string; team?: string; lane: Lane; delegation?: string };
@@ -300,7 +314,15 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const [hier, setHier] = useState<WorkOrgHierarchy>({ primary: null, secondaries: [], coordinators: {}, teams: [] });
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
-  const [q, setQ] = useState('');
+  const [q, setQ] = useState(() => {
+    try {
+      const focused = sessionStorage.getItem('idacc:tasks:search') ?? '';
+      if (focused) sessionStorage.removeItem('idacc:tasks:search');
+      return focused;
+    } catch {
+      return '';
+    }
+  });
   const [hideRoutine, setHideRoutine] = useState(true);
   const [showArchived, setShowArchived] = useState(false); // done tasks auto-archive (hidden) until revealed
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -308,6 +330,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const [laneOverlay, setLaneOverlay] = useState<Record<string, string>>({}); // ref → fine-grained lane
   const [depsOverlay, setDepsOverlay] = useState<Record<string, string[]>>({}); // ref → prerequisite refs (app-side; manager has no deps)
   const [taskUsage, setTaskUsage] = useState<Record<string, { tokens: number; input: number; output: number; ms: number; turns: number }>>({}); // ref → token spend
+  const [ownerQuerySignals, setOwnerQuerySignals] = useState<Record<string, ActiveOwnerQuerySignal | null>>({});
   const taskStampRef = useRef('');
   const laneStampRef = useRef('');
   const depsStampRef = useRef('');
@@ -622,6 +645,13 @@ function TasksPanel({ store }: { store: FleetStore }) {
         taskStampRef.current = nextStamp;
         setTasks(nextTasks);
       }
+      const ownerTargets = nextTasks
+        .filter((task) => colOf(task.status) === 'doing' && !!task.ownerName)
+        .map((task) => ({ team: String(task.teamName || store.team || 'default'), agent: String(task.ownerName) }));
+      const signals = ownerTargets.length
+        ? await call<Record<string, ActiveOwnerQuerySignal | null>>('tasks:activeOwnerQueries', ownerTargets).catch(() => ({}))
+        : {};
+      setOwnerQuerySignals(signals);
     } catch {
       if (taskStampRef.current !== '[]') {
         taskStampRef.current = '[]';
@@ -893,6 +923,47 @@ function TasksPanel({ store }: { store: FleetStore }) {
     } finally { setTriaging(false); }
   }
 
+  // Manager reconciliation sees durable workflow waiting states, but the board's
+  // Holding overlays are separate. Manager can also omit malformed legacy
+  // waiting rows (for example ownerless status=doing + triage_required). Route
+  // only refs absent from its report to an evidence-first lead status check.
+  async function reconcileUntrackedWaiting(
+    managerItems: NonNullable<NonNullable<ReconcileReport['waiting']>['items']> = [],
+  ): Promise<WaitingReconcileResult> {
+    const managerHandled = new Set(managerItems.map((item) => String(item.task || '').trim()).filter(Boolean));
+    const candidates = [...holdingTasks, ...underReviewTasks.filter((task) => task.workflowState === 'triage_required')]
+      .filter((task, index, all) => all.findIndex((candidate) => ref(candidate) === ref(task)) === index)
+      .filter((task) => !task.ownerName && !managerHandled.has(ref(task)));
+    if (!candidates.length) return { considered: 0, routed: 0, skipped: 0, refs: [] };
+    const byTeam = new Map<string, string[]>();
+    for (const task of candidates) {
+      const team = String(task.teamName || activeTeam || store.team || 'default');
+      const refs = byTeam.get(team) ?? [];
+      refs.push(ref(task));
+      byTeam.set(team, refs);
+    }
+    const results = await Promise.all([...byTeam].map(async ([team, refs]): Promise<WaitingReconcileResult> => {
+      try {
+        return await call<WaitingReconcileResult>('work:reconcileWaiting', team, refs);
+      } catch (error) {
+        return {
+          considered: refs.length,
+          routed: 0,
+          skipped: refs.length,
+          refs,
+          detail: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }));
+    return {
+      considered: results.reduce((sum, result) => sum + result.considered, 0),
+      routed: results.reduce((sum, result) => sum + result.routed, 0),
+      skipped: results.reduce((sum, result) => sum + result.skipped, 0),
+      refs: results.flatMap((result) => result.refs),
+      detail: results.map((result) => result.detail).filter(Boolean).join('; ') || undefined,
+    };
+  }
+
   // The manager owns automatic recovery. Reconcile is the immediate/manual pass and remains
   // backward-compatible with older managers that only expose the separate commands.
   async function reconcileNow() {
@@ -909,23 +980,57 @@ function TasksPanel({ store }: { store: FleetStore }) {
         const triaged = report.stalled?.triagedOwners
           ?? (report.stalled?.items ?? []).filter(triageDelivered).length;
         const waitingRouted = report.waiting?.routed ?? 0;
+        const waitingSkipped = report.waiting?.skipped ?? 0;
         const assigned = report.unowned?.assignedCount ?? 0;
-        const summary = `reconciled: ${waitingRouted} waiting task${waitingRouted === 1 ? '' : 's'} routed, ${recovered} validation recovered (${routed} routed, ${retired} expired), ${triaged} stalled owner${triaged === 1 ? '' : 's'} triaged, ${assigned} task${assigned === 1 ? '' : 's'} assigned`;
+        const waitingAudit = await reconcileUntrackedWaiting(report.waiting?.items ?? []);
+        const managerDeferred = waitingSkipped ? `, ${waitingSkipped} deferred` : '';
+        const waitingStatusChecks = waitingAudit.considered
+          ? `, ${waitingAudit.routed} ownerless waiting status-check${waitingAudit.routed === 1 ? '' : 's'} routed${waitingAudit.skipped ? `, ${waitingAudit.skipped} skipped` : ''}`
+          : '';
+        const summary = `reconciled: ${waitingRouted} workflow-waiting task${waitingRouted === 1 ? '' : 's'} routed${managerDeferred}${waitingStatusChecks}, ${recovered} validation recovered (${routed} routed, ${retired} expired), ${triaged} stalled owner${triaged === 1 ? '' : 's'} triaged, ${assigned} task${assigned === 1 ? '' : 's'} assigned`;
         setNote(summary);
-        progress.update({ kind: 'success', text: summary });
+        progress.update({ kind: waitingSkipped || waitingAudit.skipped ? 'info' : 'success', text: summary });
         await reload();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         if (!/(?:unknown|unsupported).*(?:command|subcommand).*reconcile|usage:.*\/task/i.test(message)) throw err;
         await triage(false);
         if (stalledTasks.length) await jumpstartAll(false, false);
-        progress.update({ kind: 'info', text: 'reconciled with compatibility manager commands' });
+        const waitingAudit = await reconcileUntrackedWaiting();
+        progress.update({
+          kind: 'info',
+          text: `reconciled with compatibility manager commands; ${waitingAudit.routed}/${waitingAudit.considered} ownerless waiting status-checks routed`,
+        });
       }
       await surfaceBlockers(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setNote(`reconcile failed: ${message}`);
       progress.update({ kind: 'error', text: `reconcile failed: ${message}` });
+    } finally {
+      autoRef.current = false;
+    }
+  }
+
+  async function auditTaskEvidence(task: Task) {
+    if (autoRef.current) return;
+    autoRef.current = true;
+    const taskRef = ref(task);
+    const progress = toast({ kind: 'progress', text: `Checking repository evidence for ${taskRef}…` });
+    try {
+      const result = await call<EvidenceAuditResult>(
+        'work:auditTaskEvidence',
+        String(task.teamName || activeTeam || store.team || 'default'),
+        taskRef,
+      );
+      const detail = result.reply || result.detail || 'No evidence result was returned.';
+      const summary = `${taskRef}: ${detail}`;
+      setNote(summary);
+      progress.update({ kind: result.ok ? 'info' : 'error', text: summary });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNote(`${taskRef}: evidence audit failed — ${message}`);
+      progress.update({ kind: 'error', text: `${taskRef}: evidence audit failed — ${message}` });
     } finally {
       autoRef.current = false;
     }
@@ -980,14 +1085,33 @@ function TasksPanel({ store }: { store: FleetStore }) {
     const item = (report.items ?? [])[0] ?? null;
     return jumpstartResultMessage(t, item);
   }
-  async function jumpstart(t: Task) {
-    if (!window.confirm(`Jump-start ${ref(t)}?\n\nThe manager will triage the stalled owner before accepting more work for that agent.`)) return;
-    const tt = toast({ kind: 'progress', text: `Jump-starting ${ref(t)}…` });
+  async function statusCheck(t: Task) {
+    if (!window.confirm([
+      `Status-check ${ref(t)}?`,
+      '',
+      `The Manager will ask ${t.ownerName || 'the current owner'} for an authoritative DONE, BLOCKED, NEEDS-REASSIGNMENT, or IN-PROGRESS update and reconcile this exact task.`,
+      '',
+      'No task or project file will be deleted.',
+    ].join('\n'))) return;
+    setBusy(true);
+    const tt = toast({ kind: 'progress', text: `Status-checking ${ref(t)}…` });
     try {
       const res = await jumpstartCore(t, {}, true, true);
-      tt.update(res.ok ? { kind: 'success', text: res.message } : { kind: res.status === 'owner_busy' || res.status === 'lead_busy' || res.status === 'task_manager_busy' || res.status === 'throttled' || res.status === 'delegated' || res.status === 'not_stalled' ? 'info' : 'error', text: res.message });
-      if (res.ok) await reload();
-    } catch (e) { tt.update({ kind: 'error', text: `jump-start failed: ${e instanceof Error ? e.message : String(e)}` }); }
+      const message = res.ok
+        ? `status-check sent for ${res.taskRef || ref(t)} via ${res.actor || t.ownerName || 'Manager'} ✓`
+        : res.message;
+      tt.update(res.ok
+        ? { kind: 'success', text: message }
+        : { kind: ['owner_busy', 'lead_busy', 'task_manager_busy', 'throttled', 'delegated', 'not_stalled'].includes(res.status || '') ? 'info' : 'error', text: message });
+      setNote(message);
+      await reload();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNote(`status-check failed: ${message}`);
+      tt.update({ kind: 'error', text: `Status-check failed: ${message}` });
+    } finally {
+      setBusy(false);
+    }
   }
   async function jumpstartAll(silent = false, confirmFirst = true) {
     if (!stalledTasks.length) return;
@@ -1120,18 +1244,22 @@ function TasksPanel({ store }: { store: FleetStore }) {
         const subtasks = ags.map((a) => ({ title, description: taskDesc.trim(), agent: a.name, dependsOn: [] as number[] }));
         const coordinator = tm === activeTeam ? leadName : undefined;
         const res = await call<CreatePlanResult>('work:createPlan', title, subtasks, { team: tm, dispatch: true, respectOwners: true, coordinator });
-        const created = res.created.filter((c) => c.ok);
-        return { team: tm, ok: created.length, dispatched: res.dispatched, created };
+        return { team: tm, dispatched: res.dispatched, attempts: res.created };
       }));
-      const ok = results.reduce((n, r) => n + r.ok, 0);
-      const dispatched = results.reduce((n, r) => n + r.dispatched, 0);
-      const assignedOwners = Array.from(new Set(results.flatMap((r) =>
-        r.created.map((c) => r.team === activeTeam ? c.agent : `${r.team}/${c.agent}`),
-      )));
-      t.update({ kind: ok ? 'success' : 'error', text: `assigned ${ok}/${freshTargets.length} · dispatched ${dispatched} across ${results.length} team${results.length === 1 ? '' : 's'}` });
-      setAssignNote(`assigned to ${assignedOwners.length ? assignedOwners.join(', ') : freshTargets.map((a) => agentLabel(a, activeTeam)).join(', ')} ✓`);
-      setObjective(''); setTaskDesc(''); setAssignTo(new Set()); setShowAssign(false);
-      await reload();
+      const outcome = createWorkOutcome(results, freshTargets.length);
+      t.update({
+        kind: outcome.complete && !outcome.dispatchIssues.length ? 'success' : outcome.createdCount ? 'info' : 'error',
+        text: outcome.text,
+      });
+      setAssignNote(outcome.text);
+      if (outcome.complete) {
+        setObjective(''); setTaskDesc(''); setAssignTo(new Set()); setShowAssign(false);
+      } else {
+        // Keep the failed request visible and selected so the operator can act on
+        // the reason. Successful targets are removed to prevent duplicate retries.
+        setAssignTo(new Set(outcome.failedTargetKeys));
+      }
+      if (outcome.createdCount) await reload();
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
       t.update({ kind: 'error', text: `Assign failed: ${m}` }); setAssignNote(`assign failed: ${m}`);
@@ -1305,7 +1433,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
           {visibleOpenCount} visible open{hiddenOpenCount ? ` · ${hiddenOpenCount} hidden open` : ''} · {visibleDoneCount} visible done{hiddenDoneCount ? ` · ${doneCount} done total` : ''}
         </span>
         {/* The manager sweeper runs the same recovery automatically; Reconcile forces it now. */}
-        <span className="muted small" title="The manager automatically routes Under Review and Holding Pattern tasks through bounded team-lead triage, recovers exhausted validation, triages stalled owners, and assigns unowned work. Reconcile runs that deterministic pass immediately and surfaces only genuine user decisions.">
+        <span className="muted small" title="The manager automatically routes durable workflow-waiting tasks through bounded team-lead triage, recovers exhausted validation, triages stalled owners, and assigns unowned To Do work. Reconcile also status-checks ownerless tasks parked only in the Control Center Holding lane, correlating prior completion reports and requiring acceptance evidence before closure.">
           · ⛭ manager-supervised{triaging ? ' · triaging…' : unassignedTodo ? ` · ${unassignedTodo} unassigned` : ''}{underReviewTasks.length ? ` · ${underReviewTasks.length} under review` : ''}{holdingTasks.length ? ` · ${holdingTasks.length} holding` : ''}{stalledTasks.length ? ` · ${stalledTasks.length} stalled` : ''}
         </span>
         <span className="grow" />
@@ -1501,7 +1629,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
           ) : null}
 
           <div className="row-actions" style={{ marginTop: 10, alignItems: 'center' }}>
-            {assignNote ? <span className={`small ${/failed|could not|no agent/.test(assignNote) ? 'status-error' : 'muted'}`}>{assignNote}</span> : null}
+            {assignNote ? <span className={`small ${/failed|could not|no agent|no task created|not created/i.test(assignNote) ? 'status-error' : 'muted'}`}>{assignNote}</span> : null}
             <span className="grow" />
             {mode === 'plan' ? (<>
               {proposal ? <button className="btn" disabled={proposing} onClick={() => { setProposal(null); setAssignNote(''); }}>Discard</button> : null}
@@ -1571,6 +1699,13 @@ function TasksPanel({ store }: { store: FleetStore }) {
             const upMs = t.updatedAt ? (t.updatedAt < 1e12 ? t.updatedAt * 1000 : t.updatedAt) : 0;
             const blocked = isBlocked(t);                        // waiting on a prerequisite → parked in Holding
             const delegated = owned && isDelegatedLeadTask(t);
+            const ownerRoster = store.viewAll
+              ? store.allAgents.filter((agent) => agent.team === t.teamName)
+              : store.agents;
+            const ownerAgent = owned
+              ? ownerRoster.find((agent) => agentNameKey(agent.name) === agentNameKey(t.ownerName ?? ''))
+              : undefined;
+            const ownerStopped = owned && !!ownerAgent && !liveAgent(ownerAgent.status);
             const workflowBlocked = t.workflowState === 'blocked' || t.workflowState === 'stalled' || t.workflowState === 'failed';
             const stale = t.workflowState === 'stalled' || (owned && !blocked && !delegated && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS);
             const retryAtRaw = Number(t.blockedDetail?.retry_at || 0);
@@ -1580,7 +1715,13 @@ function TasksPanel({ store }: { store: FleetStore }) {
               && retryAtMs > nowMs;
             const recoveryRetryIn = recoveryRetryScheduled ? Math.max(1, Math.ceil((retryAtMs - nowMs) / 60000)) : 0;
             const needsAssignment = !workflowBlocked && t.workflowState !== 'triage_required' && phase === 'todo' && !t.ownerName && upMs > 0 && nowMs - upMs > MANAGER_STALL_THRESHOLD_MS;
-            const working = owned && !delegated && !stale && !blocked; // recently moved to doing → plausibly active
+            const artifactEvidenceMissing = needsArtifactIntegrityCheck(t);
+            const ownerQuerySignal = t.ownerName
+              ? ownerQuerySignals[ownerQueryKey(String(t.teamName || store.team || 'default'), t.ownerName)]
+              : null;
+            const activeTaskQuery = owned && taskHasActiveOwnerQuery(t, ownerQuerySignal);
+            const ownerBusyElsewhere = owned && Number(ownerQuerySignal?.count || 0) > 0 && !activeTaskQuery;
+            const working = activeTaskQuery && !delegated && !stale && !blocked && !ownerStopped;
             const cAbs = absTime(t.createdAt);
             const uAbs = absTime(t.updatedAt);
             const dAbs = absTime(t.completedAt ?? t.updatedAt);
@@ -1600,11 +1741,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
               onDragStart={(e) => { setDragRef(ref(t)); e.dataTransfer.setData('text/plain', ref(t)); e.dataTransfer.effectAllowed = 'move'; }}
               onDragEnd={() => setDragRef(null)}
               className="kanban-card"
-              style={{ border: `1px solid ${blocked ? 'rgba(96,165,250,0.5)' : delegated ? 'rgba(96,165,250,0.55)' : working ? 'rgba(60,203,120,0.55)' : stale ? 'rgba(224,163,60,0.55)' : 'var(--border, #2a2a2a)'}`, borderRadius: 6, padding: '6px 8px', background: 'var(--bg, #141414)', cursor: busy ? 'default' : 'grab' }}
+              style={{ border: `1px solid ${blocked ? 'rgba(96,165,250,0.5)' : delegated ? 'rgba(96,165,250,0.55)' : working ? 'rgba(60,203,120,0.55)' : ownerStopped || stale ? 'rgba(224,163,60,0.55)' : 'var(--border, #2a2a2a)'}`, borderRadius: 6, padding: '6px 8px', background: 'var(--bg, #141414)', cursor: busy ? 'default' : 'grab' }}
             >
               <div className="task-card-title b" title={t.title}>{t.title}</div>
               <div className="muted small mono">{t.shortId ?? ref(t)}{isRoutine(t) ? ' · routine' : ''}{store.viewAll && t.teamName ? ` · ${t.teamName}` : ''}{(() => { const n = blocksCount(t); return n ? ` · blocks ${n}` : ''; })()}</div>
-              {t.workflowState ? <div className={`small ${workflowBlocked ? 'warn-text' : 'muted'}`} title={String(t.blockedDetail?.reason || t.validationDetail?.verdict || '')}>workflow · {t.workflowState.replace(/_/g, ' ')}{recoveryRetryScheduled ? ` · retry in ${recoveryRetryIn}m` : ''}</div> : null}
+              {t.workflowState ? <div className={`small ${workflowBlocked || artifactEvidenceMissing ? 'warn-text' : 'muted'}`} title={artifactEvidenceMissing ? 'Manager validation did not record structured artifact or test evidence. The lifecycle verdict does not prove the current project checkout contains the deliverables.' : String(t.blockedDetail?.reason || t.validationDetail?.verdict || '')}>workflow · {artifactEvidenceMissing ? 'manager validated · artifact evidence not recorded' : t.workflowState.replace(/_/g, ' ')}{recoveryRetryScheduled ? ` · retry in ${recoveryRetryIn}m` : ''}</div> : null}
               {(() => {
                 const u = taskUsage[ref(t)];
                 if (!u || !u.tokens) return null;
@@ -1646,6 +1787,11 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#60a5fa', background: 'rgba(96,165,250,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
                     ⇢ {t.ownerName} · {delegatedLabel}
                   </span>
+                ) : ownerStopped ? (
+                  <span className="small" title={`${t.ownerName} owns this Doing task but is ${ownerAgent?.status || 'not running'}. The task was not completed automatically; use ↻ to ask Manager recovery to status-check and reroute it.`}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
+                    ⏸ {t.ownerName} · stopped
+                  </span>
                 ) : working ? (
                   <span className="small" title={`${t.ownerName} recently picked this up${uAbs ? ` — moved to Doing ${uAbs}` : ''}`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#3ccb78', background: 'rgba(60,203,120,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
@@ -1667,8 +1813,13 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
                     ◴ needs assignment
                   </span>
+                ) : ownerBusyElsewhere ? (
+                  <span className="small" title={`${t.ownerName} has an active Manager query, but it is not attributed to ${ref(t)}. This task remains assigned; use check status to reconcile it.`}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#e0a33c', background: 'rgba(224,163,60,0.13)', borderRadius: 10, padding: '1px 7px', fontWeight: 600 }}>
+                    ◴ {t.ownerName} · busy elsewhere
+                  </span>
                 ) : t.ownerName ? (
-                  <span className="muted small" title={phase === 'done' ? 'completed by this agent' : 'assigned, not yet started'}>{phase === 'done' ? '✓' : '◴'} {t.ownerName}</span>
+                  <span className="muted small" title={phase === 'done' ? 'completed by this agent' : `Assigned to ${t.ownerName}; no active Manager query is attributed to this exact task.`}>{phase === 'done' ? '✓' : '◴'} {t.ownerName}{owned ? ' · assigned' : ''}</span>
                 ) : !isDone(t) ? (
                   <select className="cell-select" style={{ fontSize: 11 }} defaultValue="" disabled={busy} onChange={(e) => void assign(t, e.target.value)}>
                     <option value="">assign…</option>
@@ -1676,19 +1827,21 @@ function TasksPanel({ store }: { store: FleetStore }) {
                   </select>
                 ) : <span className="muted small">—</span>}
                 <span className="grow" />
-                {workflowBlocked ? <button className="btn small" disabled={busy} title={`Recover ${ref(t)} using its persisted recovery path`} onClick={(e) => { e.stopPropagation(); void recoverWorkflowTask(t); }}>↻</button> : stale ? <button className="btn small" disabled={busy} title={`Jump-start ${ref(t)} through the manager`} onClick={(e) => { e.stopPropagation(); void jumpstart(t); }}>↻</button> : null}
+                {artifactEvidenceMissing ? <button className="btn small" disabled={busy} title={`Read-only check of ${ref(t)} against its exact project root; no delegation, edits, or task changes`} onClick={(e) => { e.stopPropagation(); void auditTaskEvidence(t); }}>verify evidence</button> : null}
+                {workflowBlocked ? <button className="btn small" disabled={busy} title={`Recover ${ref(t)} using its persisted recovery path`} onClick={(e) => { e.stopPropagation(); void recoverWorkflowTask(t); }}>↻ recover</button> : owned ? <button className="btn small" disabled={busy} title={ownerStopped ? `Non-destructively status-check and recover ${ref(t)} from stopped owner ${t.ownerName}` : stale ? `Non-destructively status-check stalled task ${ref(t)}` : `Ask ${t.ownerName} for an authoritative status on ${ref(t)} without deleting or changing the task first`} onClick={(e) => { e.stopPropagation(); void statusCheck(t); }}>{ownerStopped || stale ? '↻ recover' : 'check status'}</button> : null}
                 {confirmDel === ref(t) ? (
                   <>
                     <button className="btn icon-danger small" disabled={busy} onClick={() => void del(t)}>Delete?</button>
                     <button className="btn small" disabled={busy} onClick={() => setConfirmDel(null)}>×</button>
                   </>
                 ) : (
-                  <button className="btn icon-danger small" disabled={busy} title="Delete task" onClick={() => setConfirmDel(ref(t))}>✕</button>
+                  <button className="btn icon-danger small" disabled={busy} title="Delete task permanently" aria-label={`Delete ${ref(t)} permanently`} onClick={() => setConfirmDel(ref(t))}>✕</button>
                 )}
               </div>
               <div className="muted" style={{ marginTop: 3, display: 'flex', gap: 9, flexWrap: 'wrap', fontSize: 10.5, opacity: 0.85 }}>
                 <span title={cAbs ? `created ${cAbs}` : undefined}>⊕ created {agoAt(t.createdAt, nowMs)} ago</span>
                 {working && t.updatedAt ? <span style={{ color: '#3ccb78' }} title={uAbs ? `moved to Doing ${uAbs}` : undefined}>▶ in Doing {agoAt(t.updatedAt, nowMs)}</span> : null}
+                {ownerStopped ? <span style={{ color: '#e0a33c' }} title={`${t.ownerName} is ${ownerAgent?.status || 'not running'}; task state remains Doing until Manager recovery or operator reconciliation`}>⏸ owner stopped · recovery needed</span> : null}
                 {delegated && childRefs.length ? (
                   <span style={{ color: '#60a5fa' }} title={childSummary ? `Delegated child tasks:\n${childSummary}` : `Delegated child tasks: ${childRefs.join(', ')}`}>
                     ⇢ {activeChildren.length ? `${activeChildren.length} active / ` : ''}{childRefs.length} delegated

@@ -178,6 +178,7 @@ export interface Task {
   blockedDetail?: Record<string, unknown> | null;
   validationDetail?: Record<string, unknown> | null;
   outcomeDetail?: Record<string, unknown> | null;
+  completionEvidence?: unknown;
   lifecycleUpdatedAt?: number | null;
   delegationAudit?: {
     status?: 'ok' | 'pending-delegation' | 'needs-delegation' | string;

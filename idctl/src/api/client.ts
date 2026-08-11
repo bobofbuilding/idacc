@@ -188,10 +188,13 @@ export class ManagerError extends Error {
   /** HTTP status that produced this error (when known). 404 = route missing on
    *  a stock/older manager; used by requireRoute() to give an actionable message. */
   readonly status?: number;
-  constructor(message: string, status?: number) {
+  /** Structured Manager response detail, retained for recovery-oriented UI. */
+  readonly details?: unknown;
+  constructor(message: string, status?: number, details?: unknown) {
     super(message);
     this.name = 'ManagerError';
     this.status = status;
+    this.details = details;
   }
 }
 
@@ -253,6 +256,12 @@ function delegatesField(value: unknown): string[] | null {
   return stringList(value) ?? null;
 }
 
+function nullableRecordField(value: unknown): Record<string, unknown> | null | undefined {
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
 export function normalizeTaskRecord(raw: unknown): Task | null {
   const row = objectRecord(raw);
   if (!Object.keys(row).length) return null;
@@ -273,6 +282,32 @@ export function normalizeTaskRecord(raw: unknown): Task | null {
     createdAt: timestampMs(row.createdAt ?? row.created_at) ?? 0,
     updatedAt: timestampMs(row.updatedAt ?? row.updated_at),
     completedAt: timestampMs(row.completedAt ?? row.completed_at) ?? null,
+    ...(textField(row.workflowState ?? row.workflow_state) ? { workflowState: textField(row.workflowState ?? row.workflow_state) } : {}),
+    ...(nullableRecordField(row.workflowContract ?? row.workflow_contract) !== undefined
+      ? { workflowContract: nullableRecordField(row.workflowContract ?? row.workflow_contract) }
+      : {}),
+    ...(textField(row.assignmentId ?? row.assignment_id) ? { assignmentId: textField(row.assignmentId ?? row.assignment_id) } : {}),
+    ...(nullableRecordField(row.delegationLineage ?? row.delegation_lineage) !== undefined
+      ? { delegationLineage: nullableRecordField(row.delegationLineage ?? row.delegation_lineage) }
+      : {}),
+    ...(nullableRecordField(row.blockedDetail ?? row.blocked_detail) !== undefined
+      ? { blockedDetail: nullableRecordField(row.blockedDetail ?? row.blocked_detail) }
+      : {}),
+    ...(nullableRecordField(row.validationDetail ?? row.validation_detail) !== undefined
+      ? { validationDetail: nullableRecordField(row.validationDetail ?? row.validation_detail) }
+      : {}),
+    ...(nullableRecordField(row.outcomeDetail ?? row.outcome_detail) !== undefined
+      ? { outcomeDetail: nullableRecordField(row.outcomeDetail ?? row.outcome_detail) }
+      : {}),
+    ...((row.completionEvidence ?? row.completion_evidence) !== undefined
+      ? { completionEvidence: row.completionEvidence ?? row.completion_evidence }
+      : {}),
+    ...(timestampMs(row.lifecycleUpdatedAt ?? row.lifecycle_updated_at) != null
+      ? { lifecycleUpdatedAt: timestampMs(row.lifecycleUpdatedAt ?? row.lifecycle_updated_at) }
+      : {}),
+    ...(nullableRecordField(row.delegationAudit ?? row.delegation_audit) !== undefined
+      ? { delegationAudit: nullableRecordField(row.delegationAudit ?? row.delegation_audit) as Task['delegationAudit'] }
+      : {}),
   };
 }
 
@@ -758,7 +793,7 @@ export class ManagerClient {
     if (agent) body.agent = agent;
     if (sessionId) body.session_id = sessionId;
     const env = await this.post<RemoteEnvelope<T>>('/remote', body, signal);
-    if (!env.ok) throw new ManagerError(env.error ?? 'manager rejected command');
+    if (!env.ok) throw new ManagerError(env.error ?? 'manager rejected command', undefined, env.result);
     return env;
   }
 

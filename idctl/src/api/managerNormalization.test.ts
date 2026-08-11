@@ -21,6 +21,11 @@ const task = normalizeTaskRecord({
   title: 'Ship the relay guard',
   status: undefined,
   owner_name: 1234,
+  project_id: 'bounties',
+  workflow_state: 'validated',
+  validation_detail: { verdict: 'approved', completion_query_id: 'query_done_1' },
+  outcome_detail: { result: { address: '0xacfbD241aE6D4DF4805D99e759503e64AB993cd4' } },
+  completion_evidence: { result: 'Durable completion reply' },
   created_at: '1780000000',
   completed_at: null,
 });
@@ -28,6 +33,11 @@ const task = normalizeTaskRecord({
 assert.equal(task?.shortId, '#abc12345');
 assert.equal(task?.status, 'todo');
 assert.equal(task?.ownerName, '1234');
+assert.equal(task?.projectId, 'bounties');
+assert.equal(task?.workflowState, 'validated');
+assert.equal(task?.validationDetail?.completion_query_id, 'query_done_1');
+assert.deepEqual(task?.outcomeDetail?.result, { address: '0xacfbD241aE6D4DF4805D99e759503e64AB993cd4' });
+assert.deepEqual(task?.completionEvidence, { result: 'Durable completion reply' });
 assert.equal(task?.createdAt, 1780000000000);
 assert.equal(task?.completedAt, null);
 

@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 const table = readFileSync(new URL('../src/renderer/views/AgentTable.tsx', import.meta.url), 'utf8');
 const client = readFileSync(new URL('../../idctl/src/api/client.ts', import.meta.url), 'utf8');
 const bridge = readFileSync(new URL('../src/main/bridge.ts', import.meta.url), 'utf8');
+const snapshot = readFileSync(new URL('../../idctl/src/settings/agentConfiguration.ts', import.meta.url), 'utf8');
 
 const applyStart = table.indexOf('async function applyConfigDrafts()');
 const applyEnd = table.indexOf('function confirmAgentChange(', applyStart);
@@ -18,6 +19,12 @@ assert.doesNotMatch(
 );
 assert.match(applyFlow, /const appliedKeys: string\[\] = \[\]/);
 assert.match(applyFlow, /Object\.entries\(prev\)\.filter\(\(\[key\]\) => !applied\.has\(key\)\)/);
+assert.match(table, /speed: storedAgentSpeed\(a\)/,
+  'compare-and-set baselines must preserve the durable empty speed value');
+assert.match(table, /normalizeSpeedPreference\(draft\?\.next\.speed \?\? storedAgentSpeed\(a\)\)/,
+  'the speed picker must normalize durable empty speed only for display');
+assert.match(snapshot, /metadataRuntime\?\.startsWith\('provider:'\)/,
+  'provider lanes must match the Manager configuration snapshot');
 assert.doesNotMatch(table, /autoRecommendedAgentKeys|if \(agent\.model\) continue/,
   'catalog loading must not silently stage model changes');
 assert.match(table, /const runtimeCatalogVersion = useSyncVersion\(\['runtime-catalog'\]\)/,

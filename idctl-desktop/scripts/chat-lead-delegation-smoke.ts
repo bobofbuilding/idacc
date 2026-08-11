@@ -7,9 +7,12 @@ import {
   stripDirectLeadOverride,
 } from '../src/shared/chatDelegation.ts';
 import {
+  fanOutObjective,
   fanOutObjectiveToActiveTeamLeads,
   isRepositoryAuthorityObjective,
 } from '../src/main/work.ts';
+import { ManagerError } from '../../idctl/src/api/client.ts';
+import { formatTaskRetrievalResponse, isCompletedTaskResultRequest, isTaskRetrievalOnlyRequest } from '../src/shared/taskRetrieval.ts';
 
 assert.equal(shouldDelegatePrimaryLeadRequest('delegate this to the other team leads'), true);
 assert.equal(shouldDelegatePrimaryLeadRequest('audit each project, push updates, resolve conflicts, and merge into main'), true);
@@ -37,16 +40,48 @@ assert.equal(
   false,
   'policy text mentioning updates and projects must not be treated as repository authority',
 );
+assert.equal(
+  isTaskRetrievalOnlyRequest('Return the completed legal deliverables from #dcfc0409. Do not delegate or mark new work.'),
+  true,
+);
+assert.equal(isTaskRetrievalOnlyRequest('Implement the work in #dcfc0409 without delegation.'), false);
+assert.equal(isCompletedTaskResultRequest('Return the public funding address from completed task #2d87fb3d.'), true);
+assert.equal(isCompletedTaskResultRequest('Implement the remaining work in task #2d87fb3d.'), false);
+const retrieval = formatTaskRetrievalResponse([{
+  ref: '#dcfc0409',
+  found: true,
+  team: 'legal',
+  task: {
+    title: 'Prepare legal deliverables',
+    status: 'done',
+    workflowState: 'validated',
+    createdAt: 1,
+  },
+  completionReply: 'Legal deliverable: terms and privacy review complete.',
+  structuredDeliverables: { evmAddresses: [], urls: [], outcomeResult: { result: 'Policy packet stored' } },
+}]);
+assert.match(retrieval, /No delegation or new work was started/);
+assert.match(retrieval, /Policy packet stored/);
+assert.match(retrieval, /terms and privacy review complete/);
 
 async function main(): Promise<void> {
   const chat = await readFile(new URL('../src/renderer/views/Chat.tsx', import.meta.url), 'utf8');
+  const dashboard = await readFile(new URL('../src/renderer/views/Dashboard.tsx', import.meta.url), 'utf8');
   const bridge = await readFile(new URL('../src/main/bridge.ts', import.meta.url), 'utf8');
   const work = await readFile(new URL('../src/main/work.ts', import.meta.url), 'utf8');
 
   assert.match(chat, /isPrimaryLeadChatTarget\(team, target, store\.coordinator\)/, 'pinned Dashboard Chat should still recognize the default-team primary lead');
   assert.match(chat, /shouldDelegatePrimaryLeadRequest\(text\)/, 'Chat should classify actionable primary-lead work locally');
+  assert.match(chat, /isTaskRetrievalOnlyRequest\(text\)/, 'explicit exact-task retrieval must bypass agent delegation');
+  assert.match(chat, /isCompletedTaskResultRequest\(text\)/, 'completed-result lookups must resolve without manager delegation');
+  assert.match(chat, /formatTaskRetrievalResponse\(taskContexts\)/, 'retrieval-only replies must come from durable Manager evidence');
+  assert.match(chat, /'tasks:context'/, 'exact task references must be grounded in current Manager task evidence');
+  assert.match(chat, /AUTHORITATIVE MANAGER TASK EVIDENCE/, 'non-terminal exact-task questions must still supersede stale agent memory');
   assert.match(chat, /work:fanoutToTeamLeads/, 'Chat should use deterministic main-process delegation');
   assert.match(chat, /scopedMessage, team, projectId \|\| undefined/, 'Chat should pass its selected project into lead delegation');
+  assert.match(chat, /Open \{taskRef\} in Work/, 'duplicate-task failures should link directly to the blocking Work task');
+  assert.match(chat, /sessionStorage\.setItem\('idacc:tasks:search', taskRef\)/, 'the Work link should focus the exact blocking task');
+  assert.match(dashboard, /<Chat store=\{store\} navigate=\{navigate\}/, 'Dashboard Chat should forward navigation to duplicate-task recovery links');
   assert.match(bridge, /fanOutObjectiveToActiveTeamLeads/, 'the bridge should expose active team-lead fan-out');
   assert.match(work, /resolveActiveTeamLeadTargets\(client, currentTeam\)/, 'team leads should be resolved from fresh manager state');
   assert.match(work, /repository remote\/default branch/, 'operations fan-out should include an early release preflight');
@@ -76,6 +111,8 @@ async function main(): Promise<void> {
       dispatched.push({ team, command });
       if (command.includes('/agent') && command.includes('ops-lead') && command.endsWith(' start')) {
         rosters['operations-team'][0].status = 'running';
+      } else if (command.startsWith('/agent ') && command.endsWith(' start')) {
+        throw new Error('agent start unavailable in smoke fixture');
       }
       return { ok: true, result: { queryId: `query-${team}` } };
     },
@@ -128,7 +165,36 @@ async function main(): Promise<void> {
   assert.match(createRow.command, / --plan "audit-reconcile-authorized-projects-\d{8}t\d{6}z"/);
   assert.doesNotMatch(createRow.command, /^\/task create "Audit reconcile authorized projects" --owner ops-lead\b/, 'terminal history must not recreate the fixed task slug');
 
+  const duplicateClient: any = {
+    ...makeClient('operations-team'),
+    async remote() {
+      throw new ManagerError('existing_task_found', 409, {
+        existing_task: 'finish-bounties-interface',
+        existing_task_ref: '#c1ee4ddf',
+        existing_status: 'doing',
+        existing_title: 'Finish Bounties interface',
+        existing_owner: 'coder',
+        suggested_action: 'status-check',
+      });
+    },
+    withTeam() { return this; },
+  };
+  const duplicateResult = await fanOutObjective(
+    duplicateClient,
+    'Finish the Bounties interface.',
+    ['operations-team'],
+    'bounties',
+    '/workspace/projects/bounties',
+  );
+  assert.equal(duplicateResult[0]?.status, 'deferred');
+  assert.equal(duplicateResult[0]?.existingTask?.ref, '#c1ee4ddf');
+  assert.equal(duplicateResult[0]?.existingTask?.owner, 'coder');
+  assert.match(duplicateResult[0]?.detail || '', /existing task #c1ee4ddf .* is doing with coder; open Work → Tasks to status-check it/);
+
   console.log('chat primary-lead delegation guard ok');
 }
 
-void main();
+main().then(
+  () => process.exit(0),
+  (error) => { console.error(error); process.exit(1); },
+);

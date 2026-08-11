@@ -657,7 +657,7 @@ export function useFleet(activeView?: string): FleetStore {
     };
     void load();
     return () => { alive = false; clearTimeout(timer); };
-  }, [needsAllTeamsAgents]);
+  }, [needsAllTeamsAgents, tick]);
 
   return { connection, managerUrl, team, coordinator, agents, teams, events, inbox, chatUnread, lastError, lastUpdated, viewAll, allAgents, refresh, refreshChatUnread, setTeam };
 }

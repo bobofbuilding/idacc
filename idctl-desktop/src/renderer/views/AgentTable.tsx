@@ -4,6 +4,7 @@ import { statusClass } from '../agentStatus.ts';
 import type { RuntimeCooldown } from '../../../../idctl/src/api/client.ts';
 import type { Agent } from '../../../../idctl/src/api/types.ts';
 import { CLAUDE_FAST_MODE_NOTICE, RUNTIMES, offerableRuntimes, effortOptions, normalizeSpeedPreference, runtimeHasEffort, speedOptionLabel, speedOptions, runtimeHasSpeed, runtimeDisplayLabel, runtimePickerGroup, runtimeHasManagerHarness, managedRuntimeHasEvidence, type RuntimeModelLaneKind } from '../../../../idctl/src/settings/runtimeCatalog.ts';
+import { agentConfigurationRuntime, effectiveAgentSpeed, storedAgentSpeed } from '../../../../idctl/src/settings/agentConfiguration.ts';
 import { recommendAgentModel } from '../../../../idctl/src/settings/agentModelPolicy.ts';
 import {
   getRuntimeCatalogSnapshot,
@@ -102,10 +103,10 @@ function effortOf(a: Agent): string {
   return typeof e === 'string' ? e : '';
 }
 function speedOf(a: Agent): string {
-  return normalizeSpeedPreference(a.metadata?.speed);
+  return effectiveAgentSpeed(a);
 }
 function runtimeOf(a: Agent): string | undefined {
-  return a.runtime ?? (typeof a.metadata?.runtime === 'string' ? a.metadata.runtime : undefined);
+  return agentConfigurationRuntime(a);
 }
 function displayValue(value: string | undefined, fallback = 'default'): string {
   const v = (value ?? '').trim();
@@ -396,7 +397,7 @@ export function AgentTable({ store, onProbe, probeBusy }: { store: FleetStore; o
     return current;
   }
   function configOf(a: TeamAgent): AgentConfigState {
-    return { runtime: runtimeOf(a), model: a.model, effort: effortOf(a), speed: speedOf(a) };
+    return { runtime: runtimeOf(a), model: a.model, effort: effortOf(a), speed: storedAgentSpeed(a) };
   }
   function configChanges(from: AgentConfigState, to: AgentConfigState): Array<[string, string | undefined, string | undefined]> {
     return ([
@@ -434,7 +435,7 @@ export function AgentTable({ store, onProbe, probeBusy }: { store: FleetStore; o
         : current.effort && !effortOptions(runtime).includes(current.effort) ? '' : current.effort;
       const speed = !runtimeHasSpeed(runtime)
         ? baseline.speed
-        : speedOptions(runtime).includes(current.speed) ? current.speed : speedOptions(runtime)[0] ?? 'default';
+        : speedOptions(runtime).includes(current.speed) ? current.speed : '';
       const next = { ...current, runtime, model, effort, speed };
       const out = { ...prev };
       if (sameConfig(baseline, next)) delete out[key];
@@ -651,7 +652,7 @@ export function AgentTable({ store, onProbe, probeBusy }: { store: FleetStore; o
     const displayRuntime = draft?.next.runtime ?? currentRuntime;
     const displayModelRaw = draft?.next.model ?? a.model;
     const displayEffort = draft?.next.effort ?? effortOf(a);
-    const displaySpeed = draft?.next.speed ?? speedOf(a);
+    const displaySpeed = normalizeSpeedPreference(draft?.next.speed ?? storedAgentSpeed(a));
     const runtimeModels = runtimeCatalogModels(catalog, displayRuntime);
     const modelDrift = !modelInRuntimeCatalog(catalog, displayRuntime, displayModelRaw);
     const displayModel = modelDrift ? '' : displayModelRaw;

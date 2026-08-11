@@ -853,7 +853,7 @@ export function Dashboard({
           ) : null}
           {controlIntentStatus ? <div className="control-intent-status muted small" aria-live="polite">{controlIntentStatus}</div> : null}
           {primaryLeadPresent ? (
-            <Chat store={store} embedded teamOverride={DASHBOARD_CHAT_TEAM} lockTarget={DASHBOARD_CHAT_TARGET} onControlIntent={proposeControlIntent} key={`${DASHBOARD_CHAT_TEAM}:${DASHBOARD_CHAT_TARGET}`} />
+            <Chat store={store} navigate={navigate} embedded teamOverride={DASHBOARD_CHAT_TEAM} lockTarget={DASHBOARD_CHAT_TARGET} onControlIntent={proposeControlIntent} key={`${DASHBOARD_CHAT_TEAM}:${DASHBOARD_CHAT_TARGET}`} />
           ) : (
             <section className="card" style={{ flex: 1, display: 'grid', placeItems: 'center' }}>
               <div style={{ maxWidth: 520, textAlign: 'center' }}>

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   allTeamsAgentsPollDelay,
   eventLoopEpochIsCurrent,
@@ -8,6 +9,18 @@ import {
   snapshotConnectionAfterFailure,
   viewNeedsAllTeamsAgents,
 } from '../src/renderer/store.ts';
+
+const storeSource = readFileSync(new URL('../src/renderer/store.ts', import.meta.url), 'utf8');
+const tasksSource = readFileSync(new URL('../src/renderer/views/Tasks.tsx', import.meta.url), 'utf8');
+assert.match(
+  storeSource,
+  /\}, \[needsAllTeamsAgents, tick\]\);/,
+  'an explicit fleet refresh must immediately reload the all-team roster used by HR rows',
+);
+assert.match(tasksSource, /const ownerStopped = owned && !!ownerAgent && !liveAgent\(ownerAgent\.status\)/,
+  'Doing tasks must stop advertising working when their known owner is stopped');
+assert.match(tasksSource, /owner stopped · recovery needed/,
+  'stopped-owner tasks must expose a recovery state instead of a live-working badge');
 
 const ev = (topic) => ({ topic, payload: {}, timestamp: Date.now() });
 
