@@ -120,8 +120,11 @@ interface SettingsSecretCodec {
 
 let settingsSecretCodec: SettingsSecretCodec | null = null;
 const unlockedEncryptedProviderCredentials = new Set<string>();
+const hydratedProviderCredentialCache = new Map<string, string>();
 const SETTINGS_SECRET_MIGRATION_VERSION = 1;
 const hydratedMcpConnectionCache = new Map<string, McpConnectionFields>();
+
+type ProtectedStorageAccess = { unlockProtectedStorage?: boolean };
 
 export function configureSettingsSecretCodec(codec: SettingsSecretCodec): void {
   settingsSecretCodec = codec;
@@ -132,11 +135,18 @@ function requireSettingsSecretCodec(): SettingsSecretCodec {
   return settingsSecretCodec;
 }
 
-function providerKey(provider: ProviderProfile): string | undefined {
+function providerKey(
+  provider: ProviderProfile,
+  options: ProtectedStorageAccess = {},
+): string | undefined {
   if (!providerTransportDecision(provider.baseUrl).ok) return undefined;
   if (provider.apiKeyEncrypted) {
+    const cached = hydratedProviderCredentialCache.get(provider.apiKeyEncrypted);
+    if (cached) return cached;
+    if (options.unlockProtectedStorage === false) return resolveProviderKey(provider);
     const decrypted = settingsSecretCodec?.decrypt(provider.apiKeyEncrypted);
     if (decrypted) {
+      hydratedProviderCredentialCache.set(provider.apiKeyEncrypted, decrypted);
       unlockedEncryptedProviderCredentials.add(provider.name);
       return decrypted;
     }
@@ -156,6 +166,10 @@ function providerForStorage(input: ProviderProfile): ProviderProfile {
   const encrypted = plaintext
     ? requireSettingsSecretCodec().encrypt(plaintext)
     : previous?.apiKeyEncrypted;
+  if (plaintext && encrypted) {
+    hydratedProviderCredentialCache.set(encrypted, plaintext);
+    unlockedEncryptedProviderCredentials.add(input.name);
+  }
   const stored: ProviderProfile = {
     ...(previous ?? {}),
     ...input,
@@ -224,6 +238,9 @@ function mcpForStorage(input: McpServerProfile): McpServerProfile {
   const connectionEncrypted = hasIncoming
     ? requireSettingsSecretCodec().encrypt(JSON.stringify(incoming))
     : previous?.connectionEncrypted;
+  if (hasIncoming && connectionEncrypted) {
+    hydratedMcpConnectionCache.set(connectionEncrypted, incoming);
+  }
   const stored: McpServerProfile = {
     ...(previous ?? {}),
     ...input,
@@ -236,10 +253,16 @@ function mcpForStorage(input: McpServerProfile): McpServerProfile {
   return stored;
 }
 
-function hydrateMcp(profile: McpServerProfile): McpServerProfile {
+function hydrateMcp(
+  profile: McpServerProfile,
+  options: ProtectedStorageAccess = {},
+): McpServerProfile {
   if (!profile.connectionEncrypted) return pinKnownMcpConnection({ ...profile });
   let connection = hydratedMcpConnectionCache.get(profile.connectionEncrypted);
   if (!connection) {
+    if (options.unlockProtectedStorage === false) {
+      throw new Error(`The saved connection for MCP server "${profile.name}" is locked for this session.`);
+    }
     const plaintext = settingsSecretCodec?.decrypt(profile.connectionEncrypted);
     if (!plaintext) throw new Error(`Cannot decrypt the saved connection for MCP server "${profile.name}".`);
     try {
@@ -263,11 +286,13 @@ function mcpConnectionEnvironmentName(name: string): string {
   return `IDACC_MCP_CONNECTION_${digest.toUpperCase()}`;
 }
 
-export function managedMcpConnectionEnvironment(): Record<string, string> {
+export function managedMcpConnectionEnvironment(
+  options: ProtectedStorageAccess = {},
+): Record<string, string> {
   const environment: Record<string, string> = {};
   for (const stored of loadSettings().mcpServers ?? []) {
     try {
-      const profile = hydrateMcp(stored);
+      const profile = hydrateMcp(stored, options);
       environment[mcpConnectionEnvironmentName(profile.name)] = JSON.stringify(mcpConnection(profile));
     } catch {
       // A locked/corrupt entry remains encrypted and unavailable. The Manager
@@ -278,7 +303,9 @@ export function managedMcpConnectionEnvironment(): Record<string, string> {
 }
 
 function refreshManagedMcpConnectionEnvironment(): void {
-  configureUnifiedStackMcpConnections(managedMcpConnectionEnvironment());
+  // Registry writes can update already-unlocked or newly-saved connections,
+  // but must never unlock unrelated entries as a side effect.
+  configureUnifiedStackMcpConnections(managedMcpConnectionEnvironment({ unlockProtectedStorage: false }));
 }
 
 function hydrateRegisteredMcp(profile: McpServerProfile): McpServerProfile {
@@ -358,9 +385,12 @@ export function migrateSettingsSecrets(): { providers: number; mcpServers: numbe
   config.providers = config.providers.map((provider) => {
     if (!provider.apiKey) return provider;
     providers += 1;
+    const encrypted = provider.apiKeyEncrypted || codec.encrypt(provider.apiKey);
+    hydratedProviderCredentialCache.set(encrypted, provider.apiKey);
+    unlockedEncryptedProviderCredentials.add(provider.name);
     const migrated = {
       ...provider,
-      apiKeyEncrypted: provider.apiKeyEncrypted || codec.encrypt(provider.apiKey),
+      apiKeyEncrypted: encrypted,
     };
     delete migrated.apiKey;
     return migrated;
@@ -374,9 +404,12 @@ export function migrateSettingsSecrets(): { providers: number; mcpServers: numbe
     if (!MCP_CONNECTION_FIELDS.some((field) => server[field] !== undefined)) return server;
     mcpServers += 1;
     const pinned = pinKnownMcpConnection(server);
+    const connection = mcpConnection(pinned);
+    const encrypted = codec.encrypt(JSON.stringify(connection));
+    hydratedMcpConnectionCache.set(encrypted, connection);
     const migrated = {
       ...pinned,
-      connectionEncrypted: codec.encrypt(JSON.stringify(mcpConnection(pinned))),
+      connectionEncrypted: encrypted,
     };
     for (const field of MCP_CONNECTION_FIELDS) delete migrated[field];
     return migrated;
@@ -384,6 +417,63 @@ export function migrateSettingsSecrets(): { providers: number; mcpServers: numbe
   config.settingsSecretMigrationVersion = SETTINGS_SECRET_MIGRATION_VERSION;
   saveSettings(config);
   return { providers, mcpServers };
+}
+
+export interface SecureSettingsBridgeStatus {
+  migrationPending: boolean;
+  protectedProviders: number;
+  unlockedProviders: number;
+  protectedMcpServers: number;
+  unlockedMcpServers: number;
+}
+
+export interface SecureSettingsBridgeUnlockResult {
+  migrated: { providers: number; mcpServers: number };
+  status: SecureSettingsBridgeStatus;
+}
+
+export function secureSettingsSessionStatus(): SecureSettingsBridgeStatus {
+  const config = loadSettings();
+  const protectedProviders = config.providers.filter((provider) => Boolean(provider.apiKeyEncrypted)).length;
+  const protectedMcpServers = (config.mcpServers ?? []).filter((server) => Boolean(server.connectionEncrypted)).length;
+  const legacySecretsPresent = config.providers.some((provider) => Boolean(provider.apiKey))
+    || (config.mcpServers ?? []).some((server) => (
+      !server.connectionEncrypted
+      && MCP_CONNECTION_FIELDS.some((field) => server[field] !== undefined)
+    ));
+  return {
+    migrationPending: (config.settingsSecretMigrationVersion ?? 0) < SETTINGS_SECRET_MIGRATION_VERSION
+      && legacySecretsPresent,
+    protectedProviders,
+    unlockedProviders: config.providers.filter((provider) => (
+      Boolean(provider.apiKeyEncrypted)
+      && hydratedProviderCredentialCache.has(provider.apiKeyEncrypted!)
+    )).length,
+    protectedMcpServers,
+    unlockedMcpServers: (config.mcpServers ?? []).filter((server) => (
+      Boolean(server.connectionEncrypted)
+      && hydratedMcpConnectionCache.has(server.connectionEncrypted!)
+    )).length,
+  };
+}
+
+/**
+ * Unlock saved provider and MCP material only after an explicit renderer
+ * action. Decrypted values remain process-local and disappear on app exit.
+ */
+export function unlockSecureSettingsSession(): SecureSettingsBridgeUnlockResult {
+  const migrated = migrateSettingsSecrets();
+  const config = loadSettings();
+  for (const provider of config.providers) {
+    if (!provider.apiKeyEncrypted) continue;
+    const decrypted = hydratedProviderCredentialCache.get(provider.apiKeyEncrypted)
+      ?? settingsSecretCodec?.decrypt(provider.apiKeyEncrypted);
+    if (!decrypted) continue;
+    hydratedProviderCredentialCache.set(provider.apiKeyEncrypted, decrypted);
+    unlockedEncryptedProviderCredentials.add(provider.name);
+  }
+  configureUnifiedStackMcpConnections(managedMcpConnectionEnvironment({ unlockProtectedStorage: true }));
+  return { migrated, status: secureSettingsSessionStatus() };
 }
 
 function assertDefaultPrimaryWrite(team: string, agent: string): void {
@@ -1262,19 +1352,22 @@ function providerLaneName(runtime: string): string | null {
   }
 }
 
-function resolveProviderLaneAssignment(runtime: string): { providerName: string; availableModels?: string[]; provider: { name: string; kind?: string; baseUrl: string; apiKey?: string } } | null {
+function resolveProviderLaneAssignment(
+  runtime: string,
+  options: ProtectedStorageAccess = {},
+): { providerName: string; availableModels?: string[]; provider: { name: string; kind?: string; baseUrl: string; apiKey?: string } } | null {
   const providerName = providerLaneName(runtime);
   if (!providerName) return null;
   const p = loadSettings().providers.find((x) => x.name === providerName);
   if (!p) throw new Error(`provider lane "${providerName}" is no longer configured in Settings`);
-  if (!providerRouteReadyForAssignment(p)) throw new Error(`provider lane "${providerName}" is not ready; Connect & sync it in Settings first`);
+  if (!providerRouteReadyForAssignment(p, options)) throw new Error(`provider lane "${providerName}" is not ready; Connect & sync it in Settings first`);
   const needsKey = providerNeedsKey(p);
   // A local/no-key provider may retain an obsolete encrypted key after its
   // profile is edited. Never unlock the OS credential store for that dead
   // field during automatic Manager restart restoration. Credential-backed
   // providers still decrypt only when their live route actually needs it.
   const apiKey = needsKey
-    ? providerKey(p)
+    ? providerKey(p, options)
     : (isLoopbackProvider(p) ? 'idacc-local-provider-no-key' : '');
   if (needsKey && !apiKey) throw new Error(`provider lane "${providerName}" is missing an API key`);
   return {
@@ -1289,9 +1382,12 @@ function resolveProviderLaneAssignment(runtime: string): { providerName: string;
   };
 }
 
-function providerRouteReadyForAssignment(p: ProviderProfile): boolean {
+function providerRouteReadyForAssignment(
+  p: ProviderProfile,
+  options: ProtectedStorageAccess = {},
+): boolean {
   if (!providerTransportDecision(p.baseUrl).ok) return false;
-  const keyReady = !providerNeedsKey(p) || Boolean(providerKey(p));
+  const keyReady = !providerNeedsKey(p) || Boolean(providerKey(p, options));
   const modelCount = p.lastSync?.models?.length ?? p.lastSync?.modelCount ?? 0;
   if (isLocalProvider(p)) return keyReady && localProviderRouteIsLive(p);
   return p.enabled !== false && keyReady && modelCount > 0 && (p.lastSync?.status === 'live' || p.lastSync?.status === 'preset' || modelCount > 0);
@@ -1335,7 +1431,7 @@ async function applyAgentConfigurationFromSettings(
  */
 export async function resumeManagedProviderAgentsAfterRestart(
   signal?: AbortSignal,
-  options: { refreshLocalProviders?: boolean } = {},
+  options: { refreshLocalProviders?: boolean; unlockProtectedStorage?: boolean } = {},
 ): Promise<ProviderRehydrationReport> {
   if (options.refreshLocalProviders !== false) {
     await probeLocalRuntimes().catch(() => {
@@ -1353,7 +1449,9 @@ export async function resumeManagedProviderAgentsAfterRestart(
       ])];
     },
     listAgents: (team, activeSignal) => client.withTeam(team).agents(activeSignal),
-    resolveAssignment: resolveProviderLaneAssignment,
+    resolveAssignment: (runtime) => resolveProviderLaneAssignment(runtime, {
+      unlockProtectedStorage: options.unlockProtectedStorage,
+    }),
     rebindAndResume: (team, agentId, runtime, provider, activeSignal) =>
       client.withTeam(team).rebindAndResumeAgentProviderRuntime(
         agentId,

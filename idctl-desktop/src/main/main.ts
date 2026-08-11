@@ -13,9 +13,10 @@ import {
   configureKeyProvider,
   configureManagedManager,
   configureSettingsSecretCodec,
-  migrateSettingsSecrets,
   managedMcpConnectionEnvironment,
   resumeManagedProviderAgentsAfterRestart,
+  secureSettingsSessionStatus,
+  unlockSecureSettingsSession,
   resetDraftDispatcherWork,
   startDraftDispatcher,
   startGoalDriver,
@@ -111,6 +112,7 @@ import {
 import {
   configureUnifiedBrainAutomation,
   configureUnifiedStackMcpConnections,
+  restartUnifiedStackService,
   startUnifiedStack,
   stopUnifiedStack,
   subscribeUnifiedStackServiceReady,
@@ -1728,17 +1730,44 @@ function secureCredentialStorageAvailable(): boolean {
   return secureStorageStatus(safeStorage).available;
 }
 
+const decryptedSecretCache = new Map<string, string>();
+let protectedStorageUnlockAuthorized = false;
+
+async function withProtectedStorageUnlock<T>(work: () => Promise<T> | T): Promise<T> {
+  if (protectedStorageUnlockAuthorized) return work();
+  protectedStorageUnlockAuthorized = true;
+  try {
+    return await work();
+  } finally {
+    protectedStorageUnlockAuthorized = false;
+  }
+}
+
 function encryptSecret(secret: string): string {
   if (!secureCredentialStorageAvailable()) {
     throw new Error('Secure operating-system credential storage is unavailable. Unlock or configure your system credential store and retry.');
   }
-  return safeStorage.encryptString(secret).toString('base64');
+  const encrypted = safeStorage.encryptString(secret).toString('base64');
+  decryptedSecretCache.set(encrypted, secret);
+  return encrypted;
 }
 
-function decryptSecret(encrypted?: string): string | undefined {
-  if (!encrypted || !secureCredentialStorageAvailable()) return undefined;
+function decryptSecret(
+  encrypted?: string,
+  options: { unlockProtectedStorage?: boolean } = {},
+): string | undefined {
+  if (!encrypted) return undefined;
+  const cached = decryptedSecretCache.get(encrypted);
+  if (cached) return cached;
+  if (
+    options.unlockProtectedStorage === false
+    || !protectedStorageUnlockAuthorized
+    || !secureCredentialStorageAvailable()
+  ) return undefined;
   try {
-    return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+    const decrypted = safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+    decryptedSecretCache.set(encrypted, decrypted);
+    return decrypted;
   } catch {
     return undefined;
   }
@@ -1746,20 +1775,10 @@ function decryptSecret(encrypted?: string): string | undefined {
 
 function configureSecureSettings(): void {
   configureSettingsSecretCodec({ encrypt: encryptSecret, decrypt: decryptSecret });
-  try {
-    // The migration is version-gated and never decrypts an already-encrypted
-    // value. The environment hydration below is therefore the sole startup
-    // unlock, and unchanged MCP connections are cached for the session.
-    const migrated = migrateSettingsSecrets();
-    if (migrated.providers || migrated.mcpServers) {
-      console.info(`[settings] encrypted ${migrated.providers} provider and ${migrated.mcpServers} MCP connection secret set(s)`);
-    }
-    configureUnifiedStackMcpConnections(managedMcpConnectionEnvironment());
-  } catch (error) {
-    // Linux keyrings can be temporarily unavailable before the desktop session
-    // unlocks. Existing data remains untouched and migration retries next boot.
-    console.warn('[settings] secure secret migration deferred:', error);
-  }
+  // Startup is intentionally passive: saved credentials stay locked and
+  // legacy plaintext is not migrated until the user chooses Unlock in
+  // Settings. Cached values are process-local, so this call is empty at boot.
+  configureUnifiedStackMcpConnections(managedMcpConnectionEnvironment({ unlockProtectedStorage: false }));
 }
 
 function presentProviderRehydrationStatus(report: ProviderRehydrationReport): void {
@@ -1773,6 +1792,12 @@ function presentProviderRehydrationStatus(report: ProviderRehydrationReport): vo
     resumed: report.resumed,
     issues: report.issues.map((issue) => issue.reason),
   });
+
+  const secureStatus = secureSettingsSessionStatus();
+  const protectedStorageLockOnly = secureStatus.protectedProviders > secureStatus.unlockedProviders
+    && report.issues.length > 0
+    && report.issues.every((issue) => issue.reason === 'provider_settings_unavailable');
+  if (protectedStorageLockOnly) return;
 
   const options = {
     type: 'warning' as const,
@@ -1819,6 +1844,7 @@ async function resumeProviderAgentsWithStartupRetry(
   return settleProviderRuntimeRehydration({
     resume: (attempt) => resumeManagedProviderAgentsAfterRestart(signal, {
       refreshLocalProviders: attempt === 0,
+      unlockProtectedStorage: false,
     }),
     wait: (delayMs) => waitForProviderRehydrationRetry(delayMs, signal),
   });
@@ -1870,8 +1896,11 @@ function evmKeySourceOf(rpc: EvmRpcProfile): EvmRpcKeySource {
   return 'none';
 }
 
-function resolveEvmRpcKey(rpc: EvmRpcProfile): string | undefined {
-  return decryptSecret(rpc.apiKeyEncrypted) || rpc.apiKey || process.env[evmEnvKeyName(rpc.id)] || undefined;
+function resolveEvmRpcKey(
+  rpc: EvmRpcProfile,
+  options: { unlockProtectedStorage?: boolean } = {},
+): string | undefined {
+  return decryptSecret(rpc.apiKeyEncrypted, options) || rpc.apiKey || process.env[evmEnvKeyName(rpc.id)] || undefined;
 }
 
 function redactEvmRpc(rpc: EvmRpcProfile): EvmRpcRow {
@@ -1944,9 +1973,12 @@ function redactRpcSecretText(text: string | undefined, rpc: EvmRpcProfile, apiKe
   return out;
 }
 
-function loadEvmRpcsMigratingSecrets(): EvmRpcProfile[] {
+function loadEvmRpcsMigratingSecrets(
+  options: { migrateProtectedStorage?: boolean } = {},
+): EvmRpcProfile[] {
   const cfg = loadSettings();
   const rpcs = cfg.evmRpcs ?? [];
+  if (options.migrateProtectedStorage !== true) return rpcs;
   let changed = false;
   for (const rpc of rpcs) {
     const legacyKey = rpc.apiKey?.trim();
@@ -1970,6 +2002,79 @@ function loadEvmRpcsMigratingSecrets(): EvmRpcProfile[] {
     saveSettings(cfg);
   }
   return rpcs;
+}
+
+type SecureSettingsStatus = {
+  migrationPending: boolean;
+  protectedProviders: number;
+  unlockedProviders: number;
+  protectedMcpServers: number;
+  unlockedMcpServers: number;
+  protectedEvmRpcs: number;
+  unlockedEvmRpcs: number;
+  lockedCount: number;
+  needsUnlock: boolean;
+};
+
+function currentSecureSettingsStatus(): SecureSettingsStatus {
+  const bridge = secureSettingsSessionStatus();
+  const rpcs = loadSettings().evmRpcs ?? [];
+  const protectedEvmRpcs = rpcs.filter((rpc) => Boolean(rpc.apiKeyEncrypted)).length;
+  const unlockedEvmRpcs = rpcs.filter((rpc) => (
+    Boolean(rpc.apiKeyEncrypted)
+    && decryptedSecretCache.has(rpc.apiKeyEncrypted!)
+  )).length;
+  const evmMigrationPending = rpcs.some((rpc) => Boolean(
+    rpc.apiKey?.trim()
+    || (!rpc.apiKeyEncrypted && extractEmbeddedRpcKey(rpc.httpsUrl)),
+  ));
+  const lockedCount = (bridge.protectedProviders - bridge.unlockedProviders)
+    + (bridge.protectedMcpServers - bridge.unlockedMcpServers)
+    + (protectedEvmRpcs - unlockedEvmRpcs);
+  const migrationPending = bridge.migrationPending || evmMigrationPending;
+  return {
+    ...bridge,
+    migrationPending,
+    protectedEvmRpcs,
+    unlockedEvmRpcs,
+    lockedCount,
+    needsUnlock: migrationPending || lockedCount > 0,
+  };
+}
+
+async function unlockProtectedSettingsForSession(): Promise<{
+  status: SecureSettingsStatus;
+  managerRestarted: boolean;
+  migrated: { providers: number; mcpServers: number; evmRpcs: number };
+}> {
+  return withProtectedStorageUnlock(async () => {
+    const bridge = unlockSecureSettingsSession();
+    const beforeRpcs = loadSettings().evmRpcs ?? [];
+    const legacyEvmRpcs = beforeRpcs.filter((rpc) => Boolean(
+      rpc.apiKey?.trim()
+      || (!rpc.apiKeyEncrypted && extractEmbeddedRpcKey(rpc.httpsUrl)),
+    )).length;
+    const rpcs = loadEvmRpcsMigratingSecrets({ migrateProtectedStorage: true });
+    for (const rpc of rpcs) {
+      if (rpc.apiKeyEncrypted) decryptSecret(rpc.apiKeyEncrypted, { unlockProtectedStorage: true });
+    }
+    const status = currentSecureSettingsStatus();
+    let managerRestarted = false;
+    if (status.unlockedMcpServers > 0) {
+      await restartUnifiedStackService('manager');
+      managerRestarted = true;
+    } else if (status.unlockedProviders > 0) {
+      await rehydrateProviderAgentsForReadyManager();
+    }
+    return {
+      status: currentSecureSettingsStatus(),
+      managerRestarted,
+      migrated: {
+        ...bridge.migrated,
+        evmRpcs: legacyEvmRpcs,
+      },
+    };
+  });
 }
 
 function rpcUrlForRequest(httpsUrl: string, apiKey?: string): string {
@@ -1998,7 +2103,7 @@ function validateEvmRpcInput(input: EvmRpcProfile): void {
 }
 
 async function probeEvmRpc(id: string): Promise<{ rpcs: EvmRpcRow[]; outcome: EvmRpcRequest }> {
-  const rpc = loadEvmRpcsMigratingSecrets().find((x) => x.id === id);
+  const rpc = loadEvmRpcsMigratingSecrets({ migrateProtectedStorage: true }).find((x) => x.id === id);
   if (!rpc) throw new Error('EVM RPC endpoint not found');
   const key = resolveEvmRpcKey(rpc);
   const started = Date.now();
@@ -2497,7 +2602,12 @@ async function keyProductionReadiness(options: { probeProtectedStorage?: boolean
     remediation: authorityStable ? undefined : 'Keep live autonomous authority disabled until an independently audited stable authority module is active.',
   });
 
-  const rehearsal = await verifySafeRehearsal();
+  const rehearsal = probeProtectedStorage
+    ? await verifySafeRehearsal()
+    : {
+        ok: false,
+        detail: 'Protected Sepolia RPC checks are not run automatically. Choose Re-run preflight to verify lifecycle evidence.',
+      };
   checks.push({
     id: 'testnet-rehearsal',
     label: 'Testnet rehearsal',
@@ -2780,6 +2890,13 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
         if (next) await configureUnifiedBrainAutomation(next);
         return next ?? null;
       }
+    case 'secureSettings:status':
+      return currentSecureSettingsStatus();
+    case 'secureSettings:unlock':
+      if (args[0] !== true) {
+        throw new Error('Protected settings unlock requires explicit confirmation.');
+      }
+      return unlockProtectedSettingsForSession();
     case 'evmRpc:list':
       return loadEvmRpcsMigratingSecrets().map(redactEvmRpc);
     case 'evmRpc:save':

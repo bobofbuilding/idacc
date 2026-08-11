@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.713] — 2026-08-12
+### What changed
+- Keep saved provider, MCP, and EVM RPC credentials locked during startup and passive page loads so IDACC does not request macOS Keychain access automatically.
+- Add an explicit **Unlock for this session** control in Settings, cache decrypted credentials only in memory, and restart the bundled Manager only after the user confirms an MCP unlock.
+- Keep encrypted provider agents safely paused until a session unlock, defer protected Identity preflight checks, and add regressions covering every former background unlock path.
+
 ## [0.1.712] — 2026-08-11
 ### What changed
 - Repair conflict-safe model and runtime switching, and preserve authoritative completed-task results.

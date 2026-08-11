@@ -175,6 +175,22 @@ const API_KINDS: ProviderKind[] = ['openai-compatible', 'openai', 'anthropic'];
 /** Provider profile enriched by the bridge with where its key resolves from. */
 type ProviderRow = ProviderProfile & { keySource?: 'config' | 'env' | 'none'; needsKey?: boolean };
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
+type SecureSettingsStatus = {
+  migrationPending: boolean;
+  protectedProviders: number;
+  unlockedProviders: number;
+  protectedMcpServers: number;
+  unlockedMcpServers: number;
+  protectedEvmRpcs: number;
+  unlockedEvmRpcs: number;
+  lockedCount: number;
+  needsUnlock: boolean;
+};
+type SecureSettingsUnlockResult = {
+  status: SecureSettingsStatus;
+  managerRestarted: boolean;
+  migrated: { providers: number; mcpServers: number; evmRpcs: number };
+};
 type ManagerCapabilities = {
   cc_api_version?: number;
   extension?: string;
@@ -366,6 +382,9 @@ function shouldCheckUpdateOnSettingsOpen(status: { checking?: boolean; lastCheck
 export function Settings({ store, navigate }: { store: FleetStore; navigate?: (view: string) => void }) {
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [evmRpcs, setEvmRpcs] = useState<EvmRpcRow[]>([]);
+  const [secureSettings, setSecureSettings] = useState<SecureSettingsStatus | null>(null);
+  const [secureSettingsBusy, setSecureSettingsBusy] = useState(false);
+  const [secureSettingsMsg, setSecureSettingsMsg] = useState('');
   const [rpcNetwork, setRpcNetwork] = useState('Ethereum mainnet');
   const [rpcUrl, setRpcUrl] = useState('https://eth-mainnet.g.alchemy.com/v2/{API_KEY}');
   const [rpcApiKey, setRpcApiKey] = useState('');
@@ -555,6 +574,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   async function reload() {
     setProviders(await call<ProviderRow[]>('providers:list').catch(() => []));
     setEvmRpcs(await call<EvmRpcRow[]>('evmRpc:list').catch(() => []));
+    setSecureSettings(await call<SecureSettingsStatus>('secureSettings:status').catch(() => null));
     const identityStatus = await call<RootIdentityStatus>('rootIdentity:get').catch(() => ({
       settings: defaultRootIdentitySettings(),
       activeProvider: 'local' as const,
@@ -592,6 +612,34 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       }).catch(() => {});
     }
     await refreshManagedSubscriptions();
+  }
+
+  async function unlockSecureSettings() {
+    if (secureSettingsBusy) return;
+    const confirmed = window.confirm([
+      'Unlock protected integrations for this IDACC session?',
+      '',
+      'macOS may ask for your Keychain password once. Saved provider, MCP, and RPC credentials will then stay available only until IDACC closes.',
+      '',
+      'If protected MCP connections are present, IDACC will restart its bundled Manager and resume eligible agents.',
+    ].join('\n'));
+    if (!confirmed) return;
+    setSecureSettingsBusy(true);
+    setSecureSettingsMsg('Unlocking protected integrations…');
+    try {
+      const result = await call<SecureSettingsUnlockResult>('secureSettings:unlock', true);
+      setSecureSettings(result.status);
+      const migrated = result.migrated.providers + result.migrated.mcpServers + result.migrated.evmRpcs;
+      const detail = result.status.lockedCount > 0
+        ? `${result.status.lockedCount} protected item${result.status.lockedCount === 1 ? '' : 's'} could not be unlocked.`
+        : 'Protected integrations are unlocked for this session.';
+      setSecureSettingsMsg(`${detail}${migrated ? ` ${migrated} older item${migrated === 1 ? '' : 's'} secured.` : ''}${result.managerRestarted ? ' The bundled Manager was restarted.' : ''}`);
+    } catch (error) {
+      setSecureSettingsMsg(`Unlock failed: ${error instanceof Error ? error.message : String(error)}`);
+      setSecureSettings(await call<SecureSettingsStatus>('secureSettings:status').catch(() => null));
+    } finally {
+      setSecureSettingsBusy(false);
+    }
   }
   async function recheckSubs() {
     await refreshManagedSubscriptions({ busy: true, notice: true, force: true });
@@ -2877,6 +2925,44 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             </button>
           </div>
         </div>
+      </section>
+
+      <section className="card">
+        <h3>Protected integrations</h3>
+        <p className="muted small" style={{ marginTop: -4 }}>
+          IDACC starts with saved provider, MCP, and RPC credentials locked, so opening the app or Settings does not ask for your macOS Keychain password. Unlock is optional and lasts only until IDACC closes.
+        </p>
+        {secureSettings ? (
+          <div className="kv">
+            <span>provider credentials</span>
+            <b>{secureSettings.unlockedProviders}/{secureSettings.protectedProviders} unlocked</b>
+            <span>MCP connections</span>
+            <b>{secureSettings.unlockedMcpServers}/{secureSettings.protectedMcpServers} unlocked</b>
+            <span>RPC credentials</span>
+            <b>{secureSettings.unlockedEvmRpcs}/{secureSettings.protectedEvmRpcs} unlocked</b>
+          </div>
+        ) : (
+          <p className="muted small">checking protected integrations…</p>
+        )}
+        <div className="row-actions" style={{ marginTop: 10 }}>
+          <button
+            className="btn primary"
+            type="button"
+            disabled={secureSettingsBusy || !secureSettings?.needsUnlock}
+            onClick={() => void unlockSecureSettings()}
+          >
+            {secureSettingsBusy ? 'Unlocking…' : secureSettings?.needsUnlock ? 'Unlock for this session' : 'Unlocked for this session'}
+          </button>
+          <span className="muted small">
+            To avoid Keychain prompts entirely, use local/no-key or signed-in subscription runtimes and remove encrypted API, MCP, and RPC credentials.
+          </span>
+        </div>
+        {secureSettings?.migrationPending ? (
+          <p className="warn-text small" style={{ marginBottom: 0 }}>Older saved connection details will be moved into protected storage only after you choose Unlock.</p>
+        ) : null}
+        {secureSettingsMsg ? (
+          <p className={`small ${/failed|could not/i.test(secureSettingsMsg) ? 'status-error' : 'ok-text'}`} style={{ marginBottom: 0 }}>{secureSettingsMsg}</p>
+        ) : null}
       </section>
 
       <section className="card">
