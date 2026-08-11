@@ -9,6 +9,10 @@ import {
   createComputerUseRequestLifecycle,
   trackComputerUseServerSockets,
 } from '../src/main/computeruse/requestLifecycle.ts';
+import {
+  driverCapability,
+  releaseAll,
+} from '../src/main/computeruse/driver.mac.ts';
 
 function deferred<T>(): {
   promise: Promise<T>;
@@ -17,6 +21,15 @@ function deferred<T>(): {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((complete) => { resolve = complete; });
   return { promise, resolve };
+}
+
+// A shutdown/disarm backstop before any explicit input must not initialize the
+// native CGEvent binding. Passive capability remains passive on both sides of
+// the release attempt; on macOS this is what prevents the Accessibility pane.
+{
+  assert.equal(driverCapability('passive').ok, true);
+  releaseAll();
+  assert.equal(driverCapability('passive').ok, true);
 }
 
 // An ordinary disarm invalidates a delayed capture without closing the local
@@ -135,6 +148,10 @@ const brokerSource = readFileSync(
   'utf8',
 );
 const mainSource = readFileSync(join(desktopRoot, 'src/main/main.ts'), 'utf8');
+const driverSource = readFileSync(
+  join(desktopRoot, 'src/main/computeruse/driver.mac.ts'),
+  'utf8',
+);
 
 const screenshotSource = brokerSource.slice(
   brokerSource.indexOf("if (type === 'screenshot')"),
@@ -178,5 +195,16 @@ assert.ok(
   'stop must revoke admission, close/drain the listener, then reset profile state',
 );
 assert.match(mainSource, /trackBackgroundStop\(stopBroker\(\)\)/);
+const releaseAllSource = driverSource.slice(
+  driverSource.indexOf('export function releaseAll(): void'),
+  driverSource.indexOf('export function scroll('),
+);
+assert.match(releaseAllSource, /const n = _nut/);
+assert.match(releaseAllSource, /heldButtons\.size === 0/);
+assert.doesNotMatch(
+  releaseAllSource,
+  /\bnut\(\)/,
+  'shutdown release must never lazy-load the native input driver',
+);
 
 console.log('computer use shutdown smoke: ok');

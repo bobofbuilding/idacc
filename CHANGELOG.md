@@ -8,6 +8,19 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.711] — 2026-08-11
+### What changed
+- Keep Computer Use shutdown and ordinary disarm passive: do not initialize the
+  native macOS input driver, and release only mouse buttons that IDACC actually
+  left held. This prevents shutdown/restart from opening the Accessibility pane.
+- Version-gate secure-settings migration, never decrypt already-encrypted MCP
+  connections merely to inspect them during startup, and cache each unchanged
+  connection after its first session unlock. This removes duplicate Keychain
+  access while preserving encrypted Manager restoration.
+- Add restart regressions proving a never-used Computer Use driver remains
+  unloaded during shutdown and completed secret migrations cannot probe stored
+  ciphertext again.
+
 ## [0.1.710] — 2026-08-10
 ### What changed
 - Bundle Manager v0.1.170, including the project-scoped delegation lifecycle
