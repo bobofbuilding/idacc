@@ -30,6 +30,7 @@ type Libnut = {
 let _nut: Libnut | null = null;
 let _loadErr = '';
 let _tried = false;
+const heldButtons = new Set<string>();
 function nut(): Libnut | null {
   if (_tried) return _nut;
   _tried = true;
@@ -72,11 +73,27 @@ export function click(x: number, y: number, button?: string, double = false): bo
 }
 export function mouseDown(x: number, y: number, button?: string): boolean {
   const n = nut(); if (!n) return false;
-  try { n.moveMouse(Math.round(x), Math.round(y)); n.mouseToggle('down', btn(button)); return true; } catch { return false; }
+  const b = btn(button);
+  try {
+    n.moveMouse(Math.round(x), Math.round(y));
+    n.mouseToggle('down', b);
+    heldButtons.add(b);
+    return true;
+  } catch {
+    return false;
+  }
 }
 export function mouseUp(x: number, y: number, button?: string): boolean {
   const n = nut(); if (!n) return false;
-  try { n.moveMouse(Math.round(x), Math.round(y)); n.mouseToggle('up', btn(button)); return true; } catch { return false; }
+  const b = btn(button);
+  try {
+    n.moveMouse(Math.round(x), Math.round(y));
+    n.mouseToggle('up', b);
+    heldButtons.delete(b);
+    return true;
+  } catch {
+    return false;
+  }
 }
 export function drag(fromX: number, fromY: number, toX: number, toY: number, button?: string): boolean {
   const n = nut(); if (!n) return false;
@@ -84,22 +101,37 @@ export function drag(fromX: number, fromY: number, toX: number, toY: number, but
   let down = false;
   try {
     n.moveMouse(Math.round(fromX), Math.round(fromY));
-    n.mouseToggle('down', b); down = true;
+    n.mouseToggle('down', b); down = true; heldButtons.add(b);
     n.dragMouse(Math.round(toX), Math.round(toY));
-    n.mouseToggle('up', b); down = false;
+    n.mouseToggle('up', b); down = false; heldButtons.delete(b);
     return true;
   } catch {
     return false;
   } finally {
     // NEVER leave the physical button stuck down if a native call threw mid-drag.
-    if (down) { try { n.mouseToggle('up', b); } catch { /* best effort */ } }
+    if (down) {
+      try { n.mouseToggle('up', b); heldButtons.delete(b); } catch { /* best effort */ }
+    }
   }
 }
 
-/** Backstop: release any held mouse buttons (called on disarm/panic). */
+/**
+ * Backstop: release only buttons this driver knows it left held.
+ *
+ * Shutdown and ordinary disarm must remain passive. In particular, they must
+ * never call nut(), because initializing the CGEvent binding is itself an
+ * Accessibility-sensitive operation on macOS. A release is necessary only
+ * after an explicit mouse-down successfully crossed the native boundary.
+ */
 export function releaseAll(): void {
-  const n = nut(); if (!n) return;
-  for (const b of ['left', 'right', 'middle']) { try { n.mouseToggle('up', b); } catch { /* */ } }
+  const n = _nut;
+  if (!n || heldButtons.size === 0) return;
+  for (const b of [...heldButtons]) {
+    try {
+      n.mouseToggle('up', b);
+      heldButtons.delete(b);
+    } catch { /* preserve the held marker for a later panic/disarm retry */ }
+  }
 }
 export function scroll(dx: number, dy: number): boolean {
   const n = nut(); if (!n) return false;

@@ -1747,6 +1747,9 @@ function decryptSecret(encrypted?: string): string | undefined {
 function configureSecureSettings(): void {
   configureSettingsSecretCodec({ encrypt: encryptSecret, decrypt: decryptSecret });
   try {
+    // The migration is version-gated and never decrypts an already-encrypted
+    // value. The environment hydration below is therefore the sole startup
+    // unlock, and unchanged MCP connections are cached for the session.
     const migrated = migrateSettingsSecrets();
     if (migrated.providers || migrated.mcpServers) {
       console.info(`[settings] encrypted ${migrated.providers} provider and ${migrated.mcpServers} MCP connection secret set(s)`);

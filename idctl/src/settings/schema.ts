@@ -8,6 +8,13 @@ export type ConfigSchemaVersion = 1;
 export interface IdctlConfig {
   /** On-disk schema version; bump on incompatible changes to enable migration. */
   version: ConfigSchemaVersion;
+  /**
+   * Last completed desktop secure-settings migration. This is deliberately
+   * separate from the shared config schema: checking an already-encrypted
+   * value can unlock an operating-system credential store, so completed
+   * migrations must not probe it again during every application launch.
+   */
+  settingsSecretMigrationVersion?: number;
   /** Saved id-agents manager connections. */
   managers: ManagerProfile[];
   /** Inference backend connections (cloud + local). */

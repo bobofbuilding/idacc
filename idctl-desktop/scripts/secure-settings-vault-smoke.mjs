@@ -16,6 +16,7 @@ const identity = readFileSync(join(root, 'src', 'renderer', 'views', 'Identity.t
 
 assert.match(schema, /apiKeyEncrypted\?: string/);
 assert.match(schema, /connectionEncrypted\?: string/);
+assert.match(schema, /settingsSecretMigrationVersion\?: number/);
 assert.match(bridge, /function providerForStorage/);
 assert.match(bridge, /function mcpForStorage/);
 assert.match(bridge, /function hydrateRegisteredMcp/);
@@ -29,6 +30,19 @@ assert.match(policy, /macOS-Keychain/);
 assert.match(policy, /Windows-DPAPI/);
 assert.match(main, /configureSettingsSecretCodec/);
 assert.match(main, /migrateSettingsSecrets\(\)/);
+const secretMigration = bridge.slice(
+  bridge.indexOf('export function migrateSettingsSecrets'),
+  bridge.indexOf('function assertDefaultPrimaryWrite'),
+);
+assert.match(secretMigration, /settingsSecretMigrationVersion/);
+assert.match(secretMigration, /if \(server\.connectionEncrypted\) return server/);
+assert.doesNotMatch(
+  secretMigration,
+  /codec\.decrypt|hydrateMcp\(/,
+  'startup migration must not decrypt already-encrypted settings',
+);
+assert.match(bridge, /hydratedMcpConnectionCache\.get\(profile\.connectionEncrypted\)/);
+assert.match(bridge, /hydratedMcpConnectionCache\.set\(profile\.connectionEncrypted, connection\)/);
 assert.match(providerTransport, /Plain HTTP providers are allowed only on exact localhost, 127\.0\.0\.1, or \[::1\]/);
 assert.match(providerTransport, /Provider URLs cannot contain a query string/);
 assert.match(providerTransport, /Provider URLs cannot contain a fragment/);

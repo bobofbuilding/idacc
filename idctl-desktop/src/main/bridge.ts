@@ -120,6 +120,8 @@ interface SettingsSecretCodec {
 
 let settingsSecretCodec: SettingsSecretCodec | null = null;
 const unlockedEncryptedProviderCredentials = new Set<string>();
+const SETTINGS_SECRET_MIGRATION_VERSION = 1;
+const hydratedMcpConnectionCache = new Map<string, McpConnectionFields>();
 
 export function configureSettingsSecretCodec(codec: SettingsSecretCodec): void {
   settingsSecretCodec = codec;
@@ -236,13 +238,19 @@ function mcpForStorage(input: McpServerProfile): McpServerProfile {
 
 function hydrateMcp(profile: McpServerProfile): McpServerProfile {
   if (!profile.connectionEncrypted) return pinKnownMcpConnection({ ...profile });
-  const plaintext = settingsSecretCodec?.decrypt(profile.connectionEncrypted);
-  if (!plaintext) throw new Error(`Cannot decrypt the saved connection for MCP server "${profile.name}".`);
-  let connection: McpConnectionFields;
-  try {
-    connection = JSON.parse(plaintext) as McpConnectionFields;
-  } catch {
-    throw new Error(`Saved connection for MCP server "${profile.name}" is corrupt.`);
+  let connection = hydratedMcpConnectionCache.get(profile.connectionEncrypted);
+  if (!connection) {
+    const plaintext = settingsSecretCodec?.decrypt(profile.connectionEncrypted);
+    if (!plaintext) throw new Error(`Cannot decrypt the saved connection for MCP server "${profile.name}".`);
+    try {
+      connection = JSON.parse(plaintext) as McpConnectionFields;
+    } catch {
+      throw new Error(`Saved connection for MCP server "${profile.name}" is corrupt.`);
+    }
+    // Keep the decrypted value process-local after the first explicit/session
+    // hydration. Registry refreshes and rebuilds must not repeatedly reopen the
+    // operating-system credential store for unchanged ciphertext.
+    hydratedMcpConnectionCache.set(profile.connectionEncrypted, connection);
   }
   const hydrated = { ...profile, ...connection };
   delete hydrated.connectionEncrypted;
@@ -340,8 +348,11 @@ function rendererAgentMcpStamp(servers: McpServerSpec[]): string {
 
 /** Migrate legacy plaintext provider and MCP connection material in place. */
 export function migrateSettingsSecrets(): { providers: number; mcpServers: number } {
-  const codec = requireSettingsSecretCodec();
   const config = loadSettings();
+  if ((config.settingsSecretMigrationVersion ?? 0) >= SETTINGS_SECRET_MIGRATION_VERSION) {
+    return { providers: 0, mcpServers: 0 };
+  }
+  const codec = requireSettingsSecretCodec();
   let providers = 0;
   let mcpServers = 0;
   config.providers = config.providers.map((provider) => {
@@ -355,19 +366,11 @@ export function migrateSettingsSecrets(): { providers: number; mcpServers: numbe
     return migrated;
   });
   config.mcpServers = (config.mcpServers ?? []).map((server) => {
-    if (server.connectionEncrypted) {
-      const decrypted = codec.decrypt(server.connectionEncrypted);
-      if (!decrypted) return server;
-      try {
-        const connection = JSON.parse(decrypted) as McpConnectionFields;
-        const pinned = pinKnownMcpConnection({ ...server, ...connection });
-        if (JSON.stringify(mcpConnection(pinned)) === JSON.stringify(connection)) return server;
-        mcpServers += 1;
-        return { ...server, connectionEncrypted: codec.encrypt(JSON.stringify(mcpConnection(pinned))) };
-      } catch {
-        return server;
-      }
-    }
+    // Existing encrypted rows are already migrated. Never decrypt them merely
+    // to inspect or repin their contents during application startup. Known MCP
+    // package pins are applied in-memory by hydrateMcp when the connection is
+    // actually supplied to the managed runtime.
+    if (server.connectionEncrypted) return server;
     if (!MCP_CONNECTION_FIELDS.some((field) => server[field] !== undefined)) return server;
     mcpServers += 1;
     const pinned = pinKnownMcpConnection(server);
@@ -378,7 +381,8 @@ export function migrateSettingsSecrets(): { providers: number; mcpServers: numbe
     for (const field of MCP_CONNECTION_FIELDS) delete migrated[field];
     return migrated;
   });
-  if (providers || mcpServers) saveSettings(config);
+  config.settingsSecretMigrationVersion = SETTINGS_SECRET_MIGRATION_VERSION;
+  saveSettings(config);
   return { providers, mcpServers };
 }
 
