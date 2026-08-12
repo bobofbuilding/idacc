@@ -117,6 +117,7 @@ jobs:
         shell: bash
         run: |
           npm run test:credential-isolation --prefix idctl-desktop
+          npm run test:codex-coordination --prefix idctl-desktop
           npm run test:secure-settings-vault --prefix idctl-desktop
           npm run test:profile-migrations --prefix idctl-desktop
           npm run test:startup-recovery --prefix idctl-desktop

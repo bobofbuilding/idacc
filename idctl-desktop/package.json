@@ -2,7 +2,7 @@
   "name": "idagents-control-center",
   "productName": "ID Agents Control Center",
   "desktopName": "idagents-control-center.desktop",
-  "version": "0.1.714",
+  "version": "0.1.715",
   "description": "Unified private AI-agent desktop application with bundled Manager and Brain.",
   "license": "MIT",
   "author": "IDACC Contributors",
@@ -90,6 +90,7 @@
     "test:context-budget-retention": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/context-budget-retention-smoke.ts",
     "test:computer-use-retention": "node ../idctl/node_modules/tsx/dist/cli.mjs scripts/computer-use-profile-retention-smoke.ts",
     "test:computer-use-session-discovery": "node scripts/computer-use-session-discovery-smoke.mjs",
+    "test:codex-coordination": "node scripts/codex-coordination-smoke.mjs",
     "test:context-history": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/context-budget-history.mjs",
     "test:dashboard-coordination": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/dashboard-coordination-roster-smoke.mjs",
     "test:dashboard-command-surface": "node scripts/dashboard-command-surface-smoke.mjs",
@@ -175,6 +176,10 @@
       {
         "from": "resources/computeruse-mcp",
         "to": "computeruse-mcp"
+      },
+      {
+        "from": "resources/idacc-coordination-mcp",
+        "to": "idacc-coordination-mcp"
       },
       {
         "from": "resources/idacc-runtime",

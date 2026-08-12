@@ -86,6 +86,7 @@ import { startBroker, armBroker, disarmBroker, setWatching, setBrokerDisplay, br
 import { configureComputerUseAuditManager } from './computeruse/audit.ts';
 import { getPermissions, openPermissionSettings, type CuPermissionPane } from './computeruse/permissions.ts';
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
+import { startCodexCoordinationBroker, stopCodexCoordinationBroker } from './codexCoordination.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
 import { appProfilePaths, initializeAppProfile, updateManagedManagerProfileUrl } from './appProfile.ts';
 import { normalizeAppProfileName } from './appProfileSelection.ts';
@@ -1013,6 +1014,9 @@ function quiesceConsumerOwnedServices(): void {
     trackBackgroundStop(Promise.reject(error));
   }
   try { trackBackgroundStop(stopBroker()); } catch (error) {
+    trackBackgroundStop(Promise.reject(error));
+  }
+  try { trackBackgroundStop(stopCodexCoordinationBroker()); } catch (error) {
     trackBackgroundStop(Promise.reject(error));
   }
   try { globalShortcut.unregisterAll(); } catch { /* shortcuts may be unavailable */ }
@@ -3717,6 +3721,14 @@ if (!ownsSingleInstanceLock) {
       configureManagedManager(activeManagerUrl, adminToken);
       configureComputerUseAuditManager(activeManagerUrl, adminToken);
       configureKeyProviderFromSettings();
+      try {
+        const coordination = await startCodexCoordinationBroker(bridgeCall);
+        if (coordination.detail) console.warn(`[codex-coordination] ${coordination.registration}: ${coordination.detail}`);
+      } catch (error) {
+        // Codex integration is optional for app startup. Keep the Manager/UI
+        // available and surface the bounded integration failure in diagnostics.
+        console.warn('[codex-coordination] failed to start:', error);
+      }
       stopProviderRuntimeRehydrationListener = subscribeUnifiedStackServiceReady((event) => {
         if (event.name !== 'manager' || appShutdown.isQuiescing()) return;
         return rehydrateProviderAgentsForReadyManager();

@@ -8,6 +8,16 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.715] — 2026-08-12
+### What changed
+- Expose production-safe IDACC project, catalog, task-discipline, inter-agent,
+  team-coordinator, and Manager-health tools to ordinary local Codex tasks
+  through an app-owned MCP broker without disclosing Manager credentials or
+  dynamic service ports.
+- Register the bundled Codex MCP adapter idempotently, preserve user disablement,
+  refuse to overwrite conflicting user-owned configuration, and follow IDACC
+  restarts and profile switches through a private session locator.
+
 ## [0.1.714] — 2026-08-12
 ### What changed
 - Add durable team and agent renaming in HR Manager while preserving the primary hierarchy across restarts.

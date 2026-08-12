@@ -318,6 +318,7 @@ jobs:
           npm run test:chat-delegation --prefix idctl-desktop
           npm run test:computer-use-retention --prefix idctl-desktop
           npm run test:computer-use-session-discovery --prefix idctl-desktop
+          npm run test:codex-coordination --prefix idctl-desktop
           npm run test:chat-failure --prefix idctl-desktop
           npm run test:brain-plans-profile --prefix idctl-desktop
           npm run test:goals-plan-separation --prefix idctl-desktop
