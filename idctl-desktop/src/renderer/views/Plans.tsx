@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import { useToast } from '../components/toast.tsx';
 import { buildPrimaryLeadPlanWork, mergePlanTaskRefs, planWorkGoalId } from '../../shared/planWork.ts';
+import { buildPlanGenerationPrompt } from '../../shared/planGeneration.ts';
 import { primaryLeadReadiness } from '../../shared/planRouting.ts';
 
 /**
@@ -97,8 +98,6 @@ function group<T>(items: T[], keyOf: (x: T) => string, buckets: { key: string; l
   return buckets.map((b) => ({ ...b, items: items.filter((x) => keyOf(x) === b.key) })).filter((g) => g.items.length);
 }
 
-const GEN_PROMPT = (req: string) =>
-  `Create a clear, structured implementation plan for this request. Use Markdown: a one-line overview, then numbered phases with concrete steps, dependencies, and risks/considerations. Be specific and actionable.\n\nRequest: ${req}`;
 const UPDATE_PROMPT = (content: string, instr: string) =>
   `Here is the current plan (Markdown):\n\n${content}\n\nRevise it according to these instructions: ${instr}\n\nReturn the COMPLETE updated plan in Markdown (the full document, not just the changes).`;
 const SUGGEST_PROMPT = (content: string) =>
@@ -760,7 +759,7 @@ export function Plans({ store }: { store: FleetStore }) {
     const tok = ++genTok.current;
     setBusy(true); setMsg(`generating plan with ${genAgent}…`);
     try {
-      const content = okContent(await call<string>('dispatch', `/ask ${genAgent} ${qArg(GEN_PROMPT(request))}`));
+      const content = okContent(await call<string>('dispatch', `/ask ${genAgent} ${qArg(buildPlanGenerationPrompt(request))}`));
       if (genTok.current !== tok) return;
       if (!content) { if (aliveRef.current) setMsg('agent returned an empty plan — try again'); return; }
       const now = Date.now();

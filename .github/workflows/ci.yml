@@ -114,6 +114,7 @@ jobs:
           npm run test:codex-coordination --prefix idctl-desktop
           npm run test:chat-failure --prefix idctl-desktop
           npm run test:brain-plans-profile --prefix idctl-desktop
+          npm run test:plan-generation-advisory --prefix idctl-desktop
           npm run test:goals-plan-separation --prefix idctl-desktop
           npm run test:dream-view-polish --prefix idctl-desktop
           npm run test:consumer-onboarding --prefix idctl-desktop

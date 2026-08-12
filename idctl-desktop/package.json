@@ -119,6 +119,7 @@
     "test:consumer-onboarding-integration": "node scripts/consumer-onboarding-integration-smoke.mjs",
     "test:team-agent-groups": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/team-agent-groups-smoke.mjs",
     "test:plans-routing": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/plans-routing-smoke.mjs",
+    "test:plan-generation-advisory": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/plan-generation-advisory-smoke.ts",
     "test:plans-inbox": "node scripts/plans-inbox-recovery-smoke.mjs",
     "test:brain-approval-agent-review": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/brain-approval-agent-review-smoke.mjs",
     "test:plans-team-lead-delegation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/plans-team-lead-delegation-smoke.mjs",
