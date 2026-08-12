@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.716] — 2026-08-12
+### What changed
+- Preserve the Manager's safe, actionable recovery message alongside a failed
+  agent-configuration error code, so IDACC can explain why a reviewed change
+  or start was rolled back instead of showing only a generic 503 code.
+
 ## [0.1.715] — 2026-08-12
 ### What changed
 - Expose production-safe IDACC project, catalog, task-discipline, inter-agent,
