@@ -89,10 +89,13 @@ assert.match(releaseHelpers, /run\.event === "workflow_dispatch"/);
 assert.match(releaseHelpers, /multiple matching \$kind Production release runs/);
 assert.match(resumeScript, /release_active_workflow_record/);
 assert.match(resumeScript, /release_successful_workflow_record/);
-assert.match(resumeScript, /gh workflow run release\.yml/);
+assert.match(resumeScript, /DISPATCH_ARGS=\([\s\S]*workflow run release\.yml/);
 assert.match(resumeScript, /--field "version=\$VER"/);
 assert.match(resumeScript, /--field "publish=\$PUBLISH"/);
-assert.match(resumeScript, /--field "signing_mode=signed"/);
+assert.match(resumeScript, /SIGNING_MODE="signed"/);
+assert.match(resumeScript, /--signing-mode=unsigned/);
+assert.match(resumeScript, /--field "signing_mode=\$SIGNING_MODE"/);
+assert.match(resumeScript, /unsigned_acknowledgement=publish-v\$VER-unsigned/);
 assert.match(resumeScript, /--field "request_id=\$REQUEST_ID"/);
 assert.match(resumeScript, /REQUEST_ID="idacc-\$\(node -e/);
 assert.match(resumeScript, /release_wait_for_dispatched_workflow_record/);
@@ -100,7 +103,7 @@ assert.match(resumeScript, /release_wait_for_workflow_run/);
 assert.match(resumeScript, /scripts\/verify-public-release\.mjs/);
 assert.match(resumeScript, /unset GH_TOKEN GITHUB_TOKEN IDACC_RELEASE_TOKEN RELEASE_ADMIN_TOKEN/);
 assert.match(resumeScript, /\$STATE" = "prerelease"/);
-const dispatchCompletion = resumeScript.slice(resumeScript.indexOf('gh workflow run release.yml'));
+const dispatchCompletion = resumeScript.slice(resumeScript.indexOf('DISPATCH_ARGS=('));
 assert.ok(
   dispatchCompletion.indexOf('release_wait_for_dispatched_workflow_record')
     < dispatchCompletion.indexOf('release_wait_for_workflow_run')

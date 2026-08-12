@@ -3,7 +3,7 @@
 # Canonical IDACC release command.
 #
 #   scripts/release.sh "<changelog note>"
-#   scripts/release.sh "<changelog note>" 0.2.0
+#   scripts/release.sh "<changelog note>" 0.2.0 --signing-mode=unsigned
 #   scripts/release.sh "<changelog note>" --publish=false
 #   scripts/release.sh --resume 0.2.0 --publish=true
 #
@@ -25,8 +25,8 @@ source "$ROOT/scripts/lib/release-command.sh"
 usage() {
   cat >&2 <<'EOF'
 usage:
-  scripts/release.sh "<changelog note>" [X.Y.Z] [--publish=true|false]
-  scripts/release.sh --resume X.Y.Z [--publish=true|false]
+  scripts/release.sh "<changelog note>" [X.Y.Z] [--publish=true|false] [--signing-mode=signed|unsigned]
+  scripts/release.sh --resume X.Y.Z [--publish=true|false] [--signing-mode=signed|unsigned]
 EOF
   exit 2
 }
@@ -41,11 +41,14 @@ NOTE="${1:-}"
 shift
 
 PUBLISH="true"
+SIGNING_MODE="signed"
 VER_ARG=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --publish=true) PUBLISH="true" ;;
     --publish=false) PUBLISH="false" ;;
+    --signing-mode=signed) SIGNING_MODE="signed" ;;
+    --signing-mode=unsigned) SIGNING_MODE="unsigned" ;;
     --commit|--commit-only|--no-publish)
       release_fail "$1 is retired; use --publish=false to run the complete cross-platform workflow and retain a draft"
       ;;
@@ -296,7 +299,7 @@ REMOTE_MAIN="$(git ls-remote --refs origin refs/heads/main | awk 'NR == 1 { prin
 release_assert_remote_tag "$TAG" "$TAG_OBJECT" "$RELEASE_COMMIT"
 release_wait_for_github_verified_tag "$REPOSITORY" "$TAG" "$RELEASE_COMMIT"
 
-bash "$ROOT/scripts/resume-release.sh" "$VER" "--publish=$PUBLISH"
+bash "$ROOT/scripts/resume-release.sh" "$VER" "--publish=$PUBLISH" "--signing-mode=$SIGNING_MODE"
 PUSHED_TAG=""
 trap - EXIT
 

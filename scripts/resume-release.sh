@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/lib/release-command.sh"
 
 usage() {
-  printf 'usage: scripts/release.sh --resume X.Y.Z [--publish=true|false]\n' >&2
+  printf 'usage: scripts/release.sh --resume X.Y.Z [--publish=true|false] [--signing-mode=signed|unsigned]\n' >&2
   exit 2
 }
 
@@ -17,10 +17,13 @@ shift || true
 [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage
 
 PUBLISH="true"
+SIGNING_MODE="signed"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --publish=true) PUBLISH="true" ;;
     --publish=false) PUBLISH="false" ;;
+    --signing-mode=signed) SIGNING_MODE="signed" ;;
+    --signing-mode=unsigned) SIGNING_MODE="unsigned" ;;
     *) usage ;;
   esac
   shift
@@ -116,13 +119,19 @@ if [ "$PUBLISH" = "false" ] && [ "$STATE" = "draft" ] && [ -n "$SUCCESSFUL_RUN" 
 fi
 
 REQUEST_ID="idacc-$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
-gh workflow run release.yml \
-  --repo "$REPOSITORY" \
-  --ref "$TAG" \
-  --field "version=$VER" \
-  --field "publish=$PUBLISH" \
-  --field "signing_mode=signed" \
+DISPATCH_ARGS=(
+  workflow run release.yml
+  --repo "$REPOSITORY"
+  --ref "$TAG"
+  --field "version=$VER"
+  --field "publish=$PUBLISH"
+  --field "signing_mode=$SIGNING_MODE"
   --field "request_id=$REQUEST_ID"
+)
+if [ "$SIGNING_MODE" = "unsigned" ]; then
+  DISPATCH_ARGS+=(--field "unsigned_acknowledgement=publish-v$VER-unsigned")
+fi
+gh "${DISPATCH_ARGS[@]}"
 
 RUN_RECORD="$(release_wait_for_dispatched_workflow_record \
   "$REPOSITORY" "$TAG" "$RELEASE_COMMIT" "$PUBLISH" "$REQUEST_ID")"
