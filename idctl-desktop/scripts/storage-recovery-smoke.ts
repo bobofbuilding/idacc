@@ -102,6 +102,11 @@ try {
 const mainSource = readFileSync(join(process.cwd(), 'src', 'main', 'main.ts'), 'utf8');
 assert.match(mainSource, /buttons: \['Cancel', 'Preserve histories'\][\s\S]*?cancelId: 0/);
 assert.match(mainSource, /buttons: \['Cancel', 'Create backup and retire copies'\][\s\S]*?cancelId: 0/);
+assert.match(mainSource, /beginStorageOperation\(profile, 'import-historical-memories'/);
+assert.match(mainSource, /beginStorageOperation\(profile, 'retire-legacy-storage'/);
+assert.match(mainSource, /cancelStorageOperation\(profile, operation\.id\)/);
+assert.match(mainSource, /confirmStorageOperation\(profile, operation\.id\)/);
+assert.match(mainSource, /completeStorageOperation\(profile, operation\.id/);
 assert.match(mainSource, /Historical-memory preservation was cancelled\. No data was changed/);
 assert.match(mainSource, /Legacy-storage retirement was cancelled\. No data was changed/);
 const settingsSource = readFileSync(join(process.cwd(), 'src', 'renderer', 'views', 'Settings.tsx'), 'utf8');
