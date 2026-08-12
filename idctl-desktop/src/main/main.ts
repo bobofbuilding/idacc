@@ -89,6 +89,11 @@ import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
 import { startCodexCoordinationBroker, stopCodexCoordinationBroker } from './codexCoordination.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
 import { appProfilePaths, initializeAppProfile, updateManagedManagerProfileUrl } from './appProfile.ts';
+import {
+  importHistoricalMemoryPayloads,
+  retireVerifiedLegacyStorage,
+  storageRecoveryStatus,
+} from './storageRecovery.ts';
 import { normalizeAppProfileName } from './appProfileSelection.ts';
 import {
   readAppProfilePreference,
@@ -2871,6 +2876,48 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return appShutdown.status();
     case 'app:version':
       return app.getVersion();
+    case 'storageRecovery:status':
+      return storageRecoveryStatus(appProfilePaths());
+    case 'storageRecovery:importHistorical': {
+      const expectedPayloads = Number((args[0] as { expectedPayloads?: unknown } | undefined)?.expectedPayloads);
+      const status = storageRecoveryStatus(appProfilePaths());
+      if (!Number.isSafeInteger(expectedPayloads) || expectedPayloads !== status.historicalPayloadsFound) {
+        throw new Error('Historical-memory count changed; review the current storage recovery status before importing.');
+      }
+      const confirmation = {
+        type: 'warning' as const,
+        buttons: ['Cancel', 'Preserve histories'],
+        defaultId: 0,
+        cancelId: 0,
+        message: `Preserve ${status.historicalPayloadsFound} historical memory payloads?`,
+        detail: 'Historical versions will be imported as retired memories. Active values and legacy backups are unchanged.',
+      };
+      const answer = win
+        ? await dialog.showMessageBox(win, confirmation)
+        : await dialog.showMessageBox(confirmation);
+      if (answer.response !== 1) throw new Error('Historical-memory preservation was cancelled. No data was changed.');
+      return importHistoricalMemoryPayloads(appProfilePaths(), { userConfirmed: true, expectedPayloads });
+    }
+    case 'storageRecovery:retireLegacy': {
+      const expectedImported = Number((args[0] as { expectedImported?: unknown } | undefined)?.expectedImported);
+      const status = storageRecoveryStatus(appProfilePaths());
+      if (!Number.isSafeInteger(expectedImported) || expectedImported !== status.historicalPayloadsImported || !status.recoveryComplete) {
+        throw new Error('Verified historical-memory state changed; review storage recovery before cleanup.');
+      }
+      const confirmation = {
+        type: 'warning' as const,
+        buttons: ['Cancel', 'Create backup and retire copies'],
+        defaultId: 0,
+        cancelId: 0,
+        message: `Retire ${status.cleanupBytes} bytes of verified legacy storage?`,
+        detail: 'IDACC creates and verifies a fresh Brain backup first. This permanently removes only the listed legacy and duplicate profile copies.',
+      };
+      const answer = win
+        ? await dialog.showMessageBox(win, confirmation)
+        : await dialog.showMessageBox(confirmation);
+      if (answer.response !== 1) throw new Error('Legacy-storage retirement was cancelled. No data was changed.');
+      return retireVerifiedLegacyStorage(appProfilePaths(), { userConfirmed: true, expectedImported });
+    }
     case 'update:status':
       return getStatus();
     case 'update:check':

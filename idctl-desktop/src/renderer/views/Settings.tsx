@@ -103,6 +103,13 @@ type SettingsUpdateStatus = {
   lastChecked?: number;
 };
 
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** power).toFixed(power >= 3 ? 1 : 0)} ${units[power]}`;
+}
+
 function compareDisplayedVersions(left: string | undefined, right: string | undefined): number {
   if (!left || !right) return 0;
   const parse = (value: string): number[] => value
@@ -175,6 +182,18 @@ const API_KINDS: ProviderKind[] = ['openai-compatible', 'openai', 'anthropic'];
 /** Provider profile enriched by the bridge with where its key resolves from. */
 type ProviderRow = ProviderProfile & { keySource?: 'config' | 'env' | 'none'; needsKey?: boolean };
 type EvmRpcRow = Omit<EvmRpcProfile, 'apiKey' | 'apiKeyEncrypted'> & { keySource: EvmRpcKeySource };
+type StorageRecoveryStatus = {
+  currentMemoryCount: number;
+  historicalPayloadsFound: number;
+  historicalPayloadsImported: number;
+  recoveryComplete: boolean;
+  legacySnapshotCount: number;
+  legacyBrainBytes: number;
+  cleanupBytes: number;
+  cleanupTargets: Array<{ label: string; path: string; bytes: number }>;
+  currentBackupsKept: number;
+  currentBackupsRetired: number;
+};
 type SecureSettingsStatus = {
   migrationPending: boolean;
   protectedProviders: number;
@@ -482,6 +501,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [updateApplying, setUpdateApplying] = useState(false);
   const [updateApplyError, setUpdateApplyError] = useState('');
   const updateApplyRef = useRef(false);
+  const [storageRecovery, setStorageRecovery] = useState<StorageRecoveryStatus | null>(null);
+  const [storageRecoveryBusy, setStorageRecoveryBusy] = useState<'scan' | 'import' | 'cleanup' | null>('scan');
+  const [storageRecoveryMsg, setStorageRecoveryMsg] = useState('');
   const [unifiedStack, setUnifiedStack] = useState<UnifiedStackViewStatus | null>(null);
   const [brainAutomation, setBrainAutomation] = useState<BrainAutomationSettings>(
     defaultBrainAutomationSettings,
@@ -590,6 +612,14 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     setWalletConnectProjectId('');
     setWalletConnectProjectIdEditing(!/^[a-f0-9]{32}$/i.test(rootConnector.projectId));
     setVersion(await call<string>('app:version').catch(() => ''));
+    setStorageRecoveryBusy('scan');
+    try {
+      setStorageRecovery(await call<StorageRecoveryStatus>('storageRecovery:status'));
+    } catch (error) {
+      setStorageRecoveryMsg(`Storage audit failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setStorageRecoveryBusy(null);
+    }
     setManagerCaps(await call<ManagerCapabilities>('manager:capabilities').catch(() => null));
     const u = await call<typeof upd>('update:getSettings').catch(() => null);
     setUpd(u);
@@ -785,6 +815,40 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     // terminal event.
     if (next === null || !('checking' in next) || !next.checking) setUpdStatus(next);
     setUnifiedStack(await call<UnifiedStackViewStatus>('unifiedStack:status').catch(() => null));
+  }
+  async function importHistoricalMemoryHistory() {
+    if (!storageRecovery || storageRecovery.historicalPayloadsFound < 1) return;
+    setStorageRecoveryBusy('import');
+    setStorageRecoveryMsg('Waiting for protected confirmation to preserve historical memory payloads…');
+    try {
+      const result = await call<StorageRecoveryStatus & { importedNow: number; verifiedRows: number }>(
+        'storageRecovery:importHistorical',
+        { expectedPayloads: storageRecovery.historicalPayloadsFound },
+      );
+      setStorageRecovery(result);
+      setStorageRecoveryMsg(`Verified ${result.verifiedRows} historical payloads in the live Brain; ${result.importedNow} inserted now.`);
+    } catch (error) {
+      setStorageRecoveryMsg(`Historical-memory preservation stopped safely: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setStorageRecoveryBusy(null);
+    }
+  }
+  async function retireLegacyStorage() {
+    if (!storageRecovery?.recoveryComplete) return;
+    setStorageRecoveryBusy('cleanup');
+    setStorageRecoveryMsg('Waiting for protected confirmation before creating a backup and retiring legacy copies…');
+    try {
+      const result = await call<StorageRecoveryStatus & { removedBytes: number; removedTargets: unknown[] }>(
+        'storageRecovery:retireLegacy',
+        { expectedImported: storageRecovery.historicalPayloadsImported },
+      );
+      setStorageRecovery(result);
+      setStorageRecoveryMsg(`Cleanup complete: ${formatBytes(result.removedBytes)} removed after backup and database verification.`);
+    } catch (error) {
+      setStorageRecoveryMsg(`Legacy cleanup stopped safely: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setStorageRecoveryBusy(null);
+    }
   }
   async function downloadVerifiedUpdate() {
     if (updStatus?.checking || updStatus?.downloading || updStatus?.staged) return;
@@ -2880,6 +2944,60 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           />
         </section>
       ) : null}
+
+      <section className="card" aria-live="polite">
+        <h3>Storage &amp; recovery</h3>
+        <p className="muted small" style={{ marginTop: -4 }}>
+          Legacy memories are preserved as retired versions before any verified old copies can be retired.
+        </p>
+        {storageRecovery ? (
+          <>
+            <div className="kv">
+              <span>live Brain memories</span>
+              <b>{storageRecovery.currentMemoryCount.toLocaleString()}</b>
+              <span>historical payloads</span>
+              <b className={storageRecovery.recoveryComplete ? 'ok-text' : 'warn-text'}>
+                {storageRecovery.historicalPayloadsImported}/{storageRecovery.historicalPayloadsFound} verified
+              </b>
+              <span>retired legacy Brains</span>
+              <b>{storageRecovery.legacySnapshotCount} snapshots · {formatBytes(storageRecovery.legacyBrainBytes)}</b>
+              <span>verified cleanup candidates</span>
+              <b>{storageRecovery.cleanupTargets.length} targets · {formatBytes(storageRecovery.cleanupBytes)}</b>
+            </div>
+            <details style={{ marginTop: 10 }}>
+              <summary className="muted small">Review exact cleanup targets</summary>
+              <ul className="muted small">
+                {storageRecovery.cleanupTargets.map((target) => (
+                  <li key={target.path}>{target.label} · {formatBytes(target.bytes)}</li>
+                ))}
+              </ul>
+            </details>
+            <div className="row-actions" style={{ marginTop: 10, gap: 8, flexWrap: 'wrap' }}>
+              <button
+                className="btn primary"
+                type="button"
+                disabled={storageRecoveryBusy !== null || storageRecovery.recoveryComplete || storageRecovery.historicalPayloadsFound < 1}
+                onClick={() => void importHistoricalMemoryHistory()}
+              >
+                {storageRecoveryBusy === 'import' ? 'Preserving…' : storageRecovery.recoveryComplete ? 'Historical memories verified' : `Preserve ${storageRecovery.historicalPayloadsFound} histories`}
+              </button>
+              <button
+                className="btn"
+                type="button"
+                disabled={storageRecoveryBusy !== null || !storageRecovery.recoveryComplete || storageRecovery.cleanupBytes < 1}
+                onClick={() => void retireLegacyStorage()}
+              >
+                {storageRecoveryBusy === 'cleanup' ? 'Cleaning…' : `Retire ${formatBytes(storageRecovery.cleanupBytes)}`}
+              </button>
+            </div>
+          </>
+        ) : (
+          <p className="muted small">{storageRecoveryBusy === 'scan' ? 'Auditing profile recovery data…' : 'Storage recovery status is unavailable.'}</p>
+        )}
+        {storageRecoveryMsg ? (
+          <p className={`small ${/failed|stopped|cancelled/i.test(storageRecoveryMsg) ? 'status-error' : 'ok-text'}`} style={{ marginBottom: 0 }}>{storageRecoveryMsg}</p>
+        ) : null}
+      </section>
 
       <section className="card">
         <h3>Hardware — compute on the commanded machine</h3>

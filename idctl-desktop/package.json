@@ -98,6 +98,7 @@
     "test:dashboard-activity-filter": "node scripts/dashboard-activity-filter-smoke.mjs",
     "test:activity-feed-actions": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/activity-feed-actions-smoke.mjs",
     "test:org-hierarchy": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/org-hierarchy-coordinator-smoke.mjs",
+    "test:storage-recovery": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/storage-recovery-smoke.ts",
     "test:team-ops-fleet": "node scripts/team-ops-fleet-smoke.mjs",
     "test:team-structure-chart": "node scripts/team-structure-chart-smoke.mjs",
     "test:hr-manage-agents": "node scripts/hr-manage-agents-smoke.mjs",
