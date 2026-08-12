@@ -458,8 +458,16 @@ export class ManagerClient {
       const text = await res.text();
       if (!text) return '';
       try {
-        const j = JSON.parse(text) as { error?: unknown };
-        return typeof j?.error === 'string' && j.error ? `: ${j.error}` : '';
+        const j = JSON.parse(text) as { error?: unknown; message?: unknown; detail?: unknown };
+        // Manager mutation failures deliberately carry a stable machine code
+        // plus a human recovery reason. Preserve both: callers need the code
+        // for policy, while the reason is the only actionable signal when a
+        // verified rebuild rolls a change back.
+        const parts = [j?.error, j?.message, j?.detail]
+          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          .filter((value, index, values) => values.indexOf(value) === index)
+          .map((value) => value.slice(0, 400));
+        return parts.length ? `: ${parts.join(' — ')}` : '';
       } catch {
         return `: ${text.slice(0, 400)}`;
       }
