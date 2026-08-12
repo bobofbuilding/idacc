@@ -40,6 +40,18 @@ export function isPrimaryLeadChatTarget(
     && (normalizedTarget === normalizedCoordinator || normalizedTarget === 'lead');
 }
 
+/** A team coordinator is an orchestration target, never an untracked execution
+ * lane.  Explicit delegation requests to one are converted into a
+ * manager-backed coordination task instead of trusting a prose-only reply. */
+export function isCoordinatorChatTarget(
+  target: string | undefined,
+  coordinator?: string,
+): boolean {
+  const normalizedTarget = String(target || '').trim().toLowerCase();
+  const normalizedCoordinator = String(coordinator || '').trim().toLowerCase();
+  return !!normalizedTarget && !!normalizedCoordinator && normalizedTarget === normalizedCoordinator;
+}
+
 export interface DelegationProjectInventoryEntry {
   id: string;
   name: string;

@@ -10,6 +10,7 @@ import { mergeExactQueryActivity } from '../../shared/chatActivity.ts';
 import { formatTaskRetrievalResponse, isCompletedTaskResultRequest, isTaskRetrievalOnlyRequest } from '../../shared/taskRetrieval.ts';
 import {
   buildAuthorizedProjectInventory,
+  isCoordinatorChatTarget,
   isPrimaryLeadChatTarget,
   shouldDelegatePrimaryLeadRequest,
   stripDirectLeadOverride,
@@ -56,6 +57,13 @@ type FanoutResult = {
   queryId?: string;
   detail?: string;
   existingTask?: { ref: string; name?: string; title?: string; status?: string; owner?: string; suggestedAction?: string };
+};
+type CoordinatorDelegationResult = {
+  team: string;
+  lead: string;
+  created: Array<{ ok?: boolean; ref?: string; title?: string; error?: string; warning?: string }>;
+  dispatched: number;
+  deferred: number;
 };
 type LivePlan = { num?: string; title: string; file: string; status?: string; mtime?: number };
 type LivePlansResponse = { dir: string | null; plans: LivePlan[] };
@@ -960,6 +968,32 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     return true;
   }
 
+  async function beginCoordinatorDelegation(sid: string, replyId: number, scopedMessage: string, projectId?: string): Promise<boolean> {
+    try {
+      const result = await call<CoordinatorDelegationResult>('work:delegateToCoordinator', scopedMessage, {
+        team,
+        lead: target,
+        projectId: projectId || undefined,
+        planId: `chat-${sid}-${Date.now().toString(36)}`,
+      });
+      const created = result.created.filter((row) => row.ok);
+      const refs = created.map((row) => row.ref).filter((ref): ref is string => Boolean(ref));
+      const failure = result.created.find((row) => !row.ok);
+      await resolveMsg(sid, replyId, {
+        text: created.length
+          ? `Created and dispatched tracked coordination work for ${result.team}/${result.lead}: ${refs.join(', ') || created.map((row) => row.title).join(', ')}. The coordinator must now create and supervise the required child tasks; progress is visible in Work.`
+          : `✗ Coordinator delegation did not start: ${failure?.error || failure?.warning || 'no manager-backed task was created.'}`,
+        pending: false,
+        reasoning: created.length ? 'manager-backed coordinator task created' : 'delegation blocked',
+        taskRefs: refs.length ? refs : undefined,
+      });
+    } catch (error) {
+      await resolveMsg(sid, replyId, { role: 'system', text: `✗ Coordinator delegation did not start: ${error instanceof Error ? error.message : String(error)}`, pending: false });
+    }
+    setBusy(false);
+    return true;
+  }
+
   function newChat() { const s = blankSession(); adoptSession(s); persist(s); }
   async function openChat(id: string) {
     if (id === session?.id) return;
@@ -1261,8 +1295,11 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
       // 2. Hand off to the resumable dispatch — it kicks the query, commits it to
       // session.inflight (which drives the UI), and polls until a reply lands.
       const primaryLead = isPrimaryLeadChatTarget(team, target, store.coordinator);
+      const coordinatorTarget = isCoordinatorChatTarget(target, store.coordinator);
       if (primaryLead && shouldDelegatePrimaryLeadRequest(text)) {
         await beginLeadDelegation(sid, replyId, scopedMessage, session.projectId);
+      } else if (coordinatorTarget && shouldDelegatePrimaryLeadRequest(text)) {
+        await beginCoordinatorDelegation(sid, replyId, scopedMessage, session.projectId);
       } else {
         await beginDispatch(sid, replyId, target, scopedMessage, { planRequest, planText: text });
       }

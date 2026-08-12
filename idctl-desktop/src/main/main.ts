@@ -2714,11 +2714,12 @@ async function createWindow(): Promise<BrowserWindow> {
     let crashState: RendererCrashState | null = null;
     if (details.reason === 'crashed' || details.reason === 'oom') {
       crashState = recordRendererCrash(details);
-      if (!rendererSafeMode) {
-        void appShutdown.request({ kind: 'relaunch' });
-        return;
-      }
     }
+    // A renderer failure is not a request to restart the app-owned Manager.
+    // Relaunching the whole process briefly swaps the live fleet for bootstrap
+    // state and can strand an accepted chat dispatch.  Reload only the renderer
+    // against the still-running, profile-bound stack; repeated crashes are
+    // already bounded by scheduleRendererRecovery's safe-mode fallback.
     if (win && !win.isDestroyed()) scheduleRendererRecovery(win, details, crashState);
   });
   win.webContents.on('did-finish-load', () => scheduleRendererStableReset());
@@ -2866,6 +2867,8 @@ function startScheduledDreamArchiveLoop(): () => Promise<void> {
 // App-level (main-process) methods that don't go through the manager bridge.
 async function appCall(method: string, args: unknown[]): Promise<unknown> {
   switch (method) {
+    case 'app:runtimeStatus':
+      return appShutdown.status();
     case 'app:version':
       return app.getVersion();
     case 'update:status':
@@ -3275,7 +3278,10 @@ if (ownsSingleInstanceLock) {
   ipcMain.handle('idagents:call', async (event, method: string, args: unknown[]) => {
     try {
       requireTrustedIpcSender(event);
-      if (appShutdown.isQuiescing()) {
+      // Let the renderer read the lifecycle state while shutdown is in progress
+      // so it can clear stale fleet counts instead of displaying the last good
+      // snapshot as if the Manager were still accepting work.
+      if (method !== 'app:runtimeStatus' && appShutdown.isQuiescing()) {
         throw new Error('IDACC is shutting down and cannot accept new requests.');
       }
       const finishIpcCall = activeIpcWork.begin();

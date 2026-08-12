@@ -12,6 +12,17 @@ import {
 
 const storeSource = readFileSync(new URL('../src/renderer/store.ts', import.meta.url), 'utf8');
 const tasksSource = readFileSync(new URL('../src/renderer/views/Tasks.tsx', import.meta.url), 'utf8');
+const mainSource = readFileSync(new URL('../src/main/main.ts', import.meta.url), 'utf8');
+assert.match(storeSource, /call<AppRuntimeStatus>\('app:runtimeStatus'\)/,
+  'shutdown status must be read before accepting a fleet snapshot');
+assert.match(storeSource, /setAgents\(\[\]\);[\s\S]*setAllAgents\(\[\]\);[\s\S]*setTeams\(\[\]\);/,
+  'a shutting-down app must clear stale active fleet counts');
+const rendererGone = mainSource.match(/win\.webContents\.on\('render-process-gone',[\s\S]*?\n  \}\);/);
+assert.ok(rendererGone, 'main process should own a renderer recovery handler');
+assert.match(rendererGone[0], /scheduleRendererRecovery/, 'renderer loss must use bounded renderer recovery');
+assert.doesNotMatch(rendererGone[0], /appShutdown\.request/, 'renderer loss must not restart the bundled Manager');
+assert.match(mainSource, /case 'app:runtimeStatus':\s*return appShutdown\.status\(\);/,
+  'renderer must be able to inspect lifecycle state while shutdown is in progress');
 assert.match(
   storeSource,
   /\}, \[needsAllTeamsAgents, tick\]\);/,

@@ -31,6 +31,10 @@ export interface TeamLeadDelegationResult {
   raw?: string;
 }
 export interface TeamLeadDelegationOptions { currentTeam?: string; primaryLead?: string; projectId?: string; planId?: string }
+export interface CoordinatorDelegationResult extends CreatePlanResult {
+  team: string;
+  lead: string;
+}
 
 /** Quote a free-text argument as ONE token for the manager tokenizer (matches client qArg). */
 function qArg(s: string): string { return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; }
@@ -1142,6 +1146,50 @@ export async function delegateObjectiveToTeamLeads(
     errors,
     raw: decomp.raw,
   };
+}
+
+/**
+ * A direct chat to a named team coordinator is still a request for tracked
+ * work.  Materialize its parent task before the agent sees the objective, so
+ * a coordinator cannot silently reduce an implementation request to an
+ * inventory-only response with no child-task lifecycle to supervise.
+ */
+export async function delegateObjectiveToCoordinator(
+  baseClient: ManagerClient,
+  objective: string,
+  options: { team?: string; lead?: string; projectId?: string; projectRoot?: string; planId?: string } = {},
+): Promise<CoordinatorDelegationResult> {
+  const team = String(options.team || baseClient.team || 'default').trim() || 'default';
+  const scoped = baseClient.withTeam(team);
+  const roster = await scoped.agents().catch(() => [] as Agent[]);
+  const requestedLead = String(options.lead || '').trim();
+  const lead = requestedLead && roster.some((agent) => agent.name === requestedLead && isActiveStatus(agent.status))
+    ? requestedLead
+    : pickActiveLead(roster);
+  if (!lead) return {
+    team,
+    lead: requestedLead,
+    created: [{ idx: 0, ref: 'coordinator', title: 'Coordinate requested work', agent: requestedLead, ok: false, error: `no active coordinator is available on ${team}`, dependsOn: [], dispatched: false }],
+    dispatched: 0,
+    deferred: 1,
+  };
+  const runId = String(options.planId || `chat-coordination-${Date.now().toString(36)}`);
+  const result = await createAndDispatchPlan(scoped, objective, [{
+    title: `Coordinate ${clip(objective, 72)}`,
+    agent: lead,
+    description: FANOUT_PROMPT(objective, team, options.projectId, options.projectRoot),
+    dependsOn: [],
+  }], {
+    dispatch: true,
+    respectOwners: true,
+    allowCoordinatorOwners: true,
+    ownerOpenTaskCap: Math.max(WORK_OWNER_OPEN_TASK_CAP, WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP),
+    leadCoordination: true,
+    projectId: options.projectId,
+    planId: runId,
+    coordinator: lead,
+  });
+  return { ...result, team, lead };
 }
 
 // ---- Cross-team fan-out -------------------------------------------------

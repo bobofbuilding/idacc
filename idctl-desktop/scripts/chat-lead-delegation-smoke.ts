@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   buildAuthorizedProjectInventory,
+  isCoordinatorChatTarget,
   isPrimaryLeadChatTarget,
   shouldDelegatePrimaryLeadRequest,
   stripDirectLeadOverride,
@@ -25,6 +26,8 @@ assert.equal(isPrimaryLeadChatTarget('default', 'lead', 'lead'), true);
 assert.equal(isPrimaryLeadChatTarget('default', 'lead'), true);
 assert.equal(isPrimaryLeadChatTarget('engineering-team', 'engineering-lead', 'engineering-lead'), false);
 assert.equal(isPrimaryLeadChatTarget('default', 'coder', 'lead'), false);
+assert.equal(isCoordinatorChatTarget('bob', 'bob'), true);
+assert.equal(isCoordinatorChatTarget('worker', 'bob'), false);
 const inventory = buildAuthorizedProjectInventory('audit each project one by one', [
   { id: 'alpha', name: 'Alpha', status: 'active', path: '/work/alpha', links: ['https://github.com/example/alpha'] },
   { id: 'paused', name: 'Paused', status: 'paused', path: '/work/paused' },
@@ -78,13 +81,17 @@ async function main(): Promise<void> {
   assert.match(chat, /'tasks:context'/, 'exact task references must be grounded in current Manager task evidence');
   assert.match(chat, /AUTHORITATIVE MANAGER TASK EVIDENCE/, 'non-terminal exact-task questions must still supersede stale agent memory');
   assert.match(chat, /work:fanoutToTeamLeads/, 'Chat should use deterministic main-process delegation');
+  assert.match(chat, /work:delegateToCoordinator/, 'direct coordinator Chat work should be materialized as a manager-backed task');
+  assert.match(chat, /isCoordinatorChatTarget\(target, store\.coordinator\)/, 'named team coordinators should not receive an untracked prose-only work request');
   assert.match(chat, /scopedMessage, team, projectId \|\| undefined/, 'Chat should pass its selected project into lead delegation');
   assert.match(chat, /Open \{taskRef\} in Work/, 'duplicate-task failures should link directly to the blocking Work task');
   assert.match(chat, /sessionStorage\.setItem\('idacc:tasks:search', taskRef\)/, 'the Work link should focus the exact blocking task');
   assert.match(dashboard, /<Chat store=\{store\} navigate=\{navigate\}/, 'Dashboard Chat should forward navigation to duplicate-task recovery links');
   assert.match(bridge, /fanOutObjectiveToActiveTeamLeads/, 'the bridge should expose active team-lead fan-out');
+  assert.match(bridge, /delegateObjectiveToCoordinator/, 'the bridge should expose tracked direct-coordinator delegation');
   assert.match(work, /resolveActiveTeamLeadTargets\(client, currentTeam\)/, 'team leads should be resolved from fresh manager state');
   assert.match(work, /repository remote\/default branch/, 'operations fan-out should include an early release preflight');
+  assert.match(work, /export async function delegateObjectiveToCoordinator/, 'direct coordinator requests should create a durable parent task');
 
   const dispatched: Array<{ team: string; command: string }> = [];
   const activeQueries: Record<string, number> = {};

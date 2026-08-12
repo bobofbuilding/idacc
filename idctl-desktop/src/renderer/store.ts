@@ -173,6 +173,8 @@ export interface FleetStore {
   setTeam: (team: string) => Promise<void>;
 }
 
+type AppRuntimeStatus = { phase?: 'running' | 'quiescing' | 'cleanup-failed' | 'finalizing' };
+
 const EVENT_BUFFER = 1000;
 const SNAPSHOT_POLL_MS = 5000;
 const SNAPSHOT_FAILURES_BEFORE_OFFLINE = 2;
@@ -529,6 +531,19 @@ export function useFleet(activeView?: string): FleetStore {
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
+        const lifecycle = await call<AppRuntimeStatus>('app:runtimeStatus').catch(() => ({ phase: 'running' }));
+        if (!alive) return;
+        if (lifecycle.phase && lifecycle.phase !== 'running') {
+          snapshotFailuresRef.current = SNAPSHOT_FAILURES_BEFORE_OFFLINE;
+          wasOnlineRef.current = false;
+          setConnection('offline');
+          setAgents([]);
+          setAllAgents([]);
+          setTeams([]);
+          setInbox([]);
+          setLastError('IDACC is shutting down; fleet data is no longer live.');
+          return;
+        }
         const [info, ag, tm, ib] = await Promise.all([
           call<{ managerUrl: string; team?: string; coordinator?: string }>('info'),
           call<Agent[]>('agents'),

@@ -60,7 +60,7 @@ import { testMcpServer } from './mcpTest.ts';
 import { headroomCoreAudit, headroomStatus } from './headroom.ts';
 import { contextBudgetDryRun, contextBudgetReport, loadRecentContextBudgetRecords, optimizeAskCommand, readContextBudgetRecord } from './contextBudget.ts';
 import { replayContextBudgetFromChatHistory, type ContextBudgetHistoryReplayOptions } from './contextReplay.ts';
-import { auditValidatedTaskEvidence, decomposeWork, createAndDispatchPlan, delegateObjectiveToTeamLeads, fanOutObjective, fanOutObjectiveToActiveTeamLeads, reconcileOwnerlessWaiting, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
+import { auditValidatedTaskEvidence, decomposeWork, createAndDispatchPlan, delegateObjectiveToCoordinator, delegateObjectiveToTeamLeads, fanOutObjective, fanOutObjectiveToActiveTeamLeads, reconcileOwnerlessWaiting, teamLeads, triageUnassigned, type SubTask, type TeamLeadDelegationOptions } from './work.ts';
 import { normalizeGoalDriverConfig, readGoalDriverStatus, runGoalDriverOnce, startGoalDriverLoop, syncActiveWorkGoalInstructions, syncGoalDriverConfig, type GoalDriverConfig } from './goaldriver.ts';
 import { discoverClaudeCliModels } from './claudeModels.ts';
 import {
@@ -2624,6 +2624,16 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // assigned team-lead task rows. Returns failures for Inbox blocker routing.
   'work:delegateToTeamLeads': (objective: string, opts?: TeamLeadDelegationOptions) =>
     delegateObjectiveToTeamLeads(client, String(objective), opts ?? {}),
+  'work:delegateToCoordinator': async (objective: string, opts?: { team?: string; lead?: string; projectId?: string; planId?: string }) => {
+    const route = await projectRouting(opts?.projectId, opts?.team, opts?.lead);
+    const project = opts?.projectId ? (await managerProjects()).find((entry) => entry.id === String(opts.projectId)) : undefined;
+    return delegateObjectiveToCoordinator(client, String(objective), {
+      ...opts,
+      team: route.team,
+      lead: route.lead,
+      projectRoot: project?.path,
+    });
+  },
   // Cross-team fan-out: hand one objective to several teams' ACTIVE leads at once.
   'work:teamLeads': (teams: string[]) => teamLeads(client, Array.isArray(teams) ? teams.map(String) : []),
   'work:fanout': async (objective: string, teams: string[], projectId?: string) => {
