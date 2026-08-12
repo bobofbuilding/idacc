@@ -60,6 +60,12 @@ import {
   type RuntimeManifest,
   type UnifiedServiceName,
 } from './unifiedStackPolicy.ts';
+import {
+  BRAIN_BACKUP_KEEP_COUNT,
+  BRAIN_BACKUP_MAX_BYTES,
+  STORAGE_BACKUP_RESERVE_BYTES,
+  STORAGE_BLOCK_FREE_BYTES,
+} from './storageGovernor.ts';
 
 declare const __IDACC_RUNTIME_MANIFEST_SHA256__: string;
 declare const __IDACC_REVIEW_BUILD__: boolean;
@@ -838,7 +844,11 @@ function companionEnvironment(companion: ManagedCompanion): NodeJS.ProcessEnv {
       BRAIN_CONNECTORS_REGISTRY: join(dirname(profile.config), 'brain-connectors.json'),
       BRAIN_CONNECTOR_STATE_DIR: join(profile.brain, 'connectors'),
       IDACC_BRAIN_BACKUP_DIR: join(profile.root, 'backups', 'brain'),
-      IDACC_BRAIN_BACKUP_KEEP_DAYS: '14',
+      IDACC_BRAIN_BACKUP_KEEP_DAYS: '7',
+      IDACC_BRAIN_BACKUP_MAX_COUNT: String(BRAIN_BACKUP_KEEP_COUNT),
+      IDACC_BRAIN_BACKUP_MAX_BYTES: String(BRAIN_BACKUP_MAX_BYTES),
+      IDACC_BRAIN_BACKUP_MIN_FREE_BYTES: String(STORAGE_BLOCK_FREE_BYTES),
+      IDACC_BRAIN_BACKUP_RESERVE_BYTES: String(STORAGE_BACKUP_RESERVE_BYTES),
       ...(name === 'brain-listener' && companion.statusPath && companion.instanceNonce ? {
         BRAIN_LISTENER_STATUS_FILE: companion.statusPath,
         BRAIN_LISTENER_INSTANCE_NONCE: companion.instanceNonce,

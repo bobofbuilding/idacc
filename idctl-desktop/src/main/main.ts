@@ -94,6 +94,14 @@ import {
   retireVerifiedLegacyStorage,
   storageRecoveryStatus,
 } from './storageRecovery.ts';
+import {
+  beginStorageOperation,
+  cancelStorageOperation,
+  completeStorageOperation,
+  confirmStorageOperation,
+  failStorageOperation,
+} from './storageOperationLease.ts';
+import { storageGovernorStatus } from './storageGovernor.ts';
 import { normalizeAppProfileName } from './appProfileSelection.ts';
 import {
   readAppProfilePreference,
@@ -2878,12 +2886,19 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return app.getVersion();
     case 'storageRecovery:status':
       return storageRecoveryStatus(appProfilePaths());
+    case 'storageGovernor:status':
+      return storageGovernorStatus(appProfilePaths());
     case 'storageRecovery:importHistorical': {
       const expectedPayloads = Number((args[0] as { expectedPayloads?: unknown } | undefined)?.expectedPayloads);
-      const status = storageRecoveryStatus(appProfilePaths());
+      const profile = appProfilePaths();
+      const status = storageRecoveryStatus(profile);
       if (!Number.isSafeInteger(expectedPayloads) || expectedPayloads !== status.historicalPayloadsFound) {
         throw new Error('Historical-memory count changed; review the current storage recovery status before importing.');
       }
+      const operation = beginStorageOperation(profile, 'import-historical-memories', {
+        expectedPayloads,
+        historicalPayloadsFound: status.historicalPayloadsFound,
+      });
       const confirmation = {
         type: 'warning' as const,
         buttons: ['Cancel', 'Preserve histories'],
@@ -2892,18 +2907,44 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
         message: `Preserve ${status.historicalPayloadsFound} historical memory payloads?`,
         detail: 'Historical versions will be imported as retired memories. Active values and legacy backups are unchanged.',
       };
-      const answer = win
-        ? await dialog.showMessageBox(win, confirmation)
-        : await dialog.showMessageBox(confirmation);
-      if (answer.response !== 1) throw new Error('Historical-memory preservation was cancelled. No data was changed.');
-      return importHistoricalMemoryPayloads(appProfilePaths(), { userConfirmed: true, expectedPayloads });
+      let answer: Electron.MessageBoxReturnValue;
+      try {
+        answer = win
+          ? await dialog.showMessageBox(win, confirmation)
+          : await dialog.showMessageBox(confirmation);
+      } catch (error) {
+        cancelStorageOperation(profile, operation.id);
+        throw error;
+      }
+      if (answer.response !== 1) {
+        cancelStorageOperation(profile, operation.id);
+        throw new Error('Historical-memory preservation was cancelled. No data was changed.');
+      }
+      confirmStorageOperation(profile, operation.id);
+      try {
+        const result = importHistoricalMemoryPayloads(profile, { userConfirmed: true, expectedPayloads });
+        completeStorageOperation(profile, operation.id, {
+          importedNow: result.importedNow,
+          verifiedRows: result.verifiedRows,
+        });
+        return result;
+      } catch (error) {
+        failStorageOperation(profile, operation.id, error);
+        throw error;
+      }
     }
     case 'storageRecovery:retireLegacy': {
       const expectedImported = Number((args[0] as { expectedImported?: unknown } | undefined)?.expectedImported);
-      const status = storageRecoveryStatus(appProfilePaths());
+      const profile = appProfilePaths();
+      const status = storageRecoveryStatus(profile);
       if (!Number.isSafeInteger(expectedImported) || expectedImported !== status.historicalPayloadsImported || !status.recoveryComplete) {
         throw new Error('Verified historical-memory state changed; review storage recovery before cleanup.');
       }
+      const operation = beginStorageOperation(profile, 'retire-legacy-storage', {
+        expectedImported,
+        cleanupBytes: status.cleanupBytes,
+        targets: status.cleanupTargets.map((target) => ({ path: target.path, bytes: target.bytes, label: target.label })),
+      });
       const confirmation = {
         type: 'warning' as const,
         buttons: ['Cancel', 'Create backup and retire copies'],
@@ -2912,11 +2953,32 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
         message: `Retire ${status.cleanupBytes} bytes of verified legacy storage?`,
         detail: 'IDACC creates and verifies a fresh Brain backup first. This permanently removes only the listed legacy and duplicate profile copies.',
       };
-      const answer = win
-        ? await dialog.showMessageBox(win, confirmation)
-        : await dialog.showMessageBox(confirmation);
-      if (answer.response !== 1) throw new Error('Legacy-storage retirement was cancelled. No data was changed.');
-      return retireVerifiedLegacyStorage(appProfilePaths(), { userConfirmed: true, expectedImported });
+      let answer: Electron.MessageBoxReturnValue;
+      try {
+        answer = win
+          ? await dialog.showMessageBox(win, confirmation)
+          : await dialog.showMessageBox(confirmation);
+      } catch (error) {
+        cancelStorageOperation(profile, operation.id);
+        throw error;
+      }
+      if (answer.response !== 1) {
+        cancelStorageOperation(profile, operation.id);
+        throw new Error('Legacy-storage retirement was cancelled. No data was changed.');
+      }
+      confirmStorageOperation(profile, operation.id);
+      try {
+        const result = retireVerifiedLegacyStorage(profile, { userConfirmed: true, expectedImported });
+        completeStorageOperation(profile, operation.id, {
+          removedBytes: result.removedBytes,
+          backupPath: result.backupPath,
+          removedTargets: result.removedTargets.map((target) => ({ path: target.path, bytes: target.bytes, label: target.label })),
+        });
+        return result;
+      } catch (error) {
+        failStorageOperation(profile, operation.id, error);
+        throw error;
+      }
     }
     case 'update:status':
       return getStatus();

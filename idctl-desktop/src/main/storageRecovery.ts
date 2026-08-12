@@ -16,6 +16,7 @@ import {
   readPrivateAppTextFile,
   writePrivateAppTextFileAtomic,
 } from './appStatePrivacy.ts';
+import { assertStorageReservation } from './storageGovernor.ts';
 
 const LEGACY_SNAPSHOT_RE = /^brain-\d{8}\.db$/;
 const CURRENT_BACKUP_RE = /^brain-\d{8}\.db$/;
@@ -393,6 +394,7 @@ function currentBackupPath(paths: AppProfilePaths): string {
 function createVerifiedCurrentBackup(paths: AppProfilePaths): string {
   const root = currentBackupRoot(paths);
   ensurePrivateAppDirectory(root);
+  assertStorageReservation(paths, statSync(databasePath(paths)).size, 'Verified Brain backup');
   const destination = currentBackupPath(paths);
   const temporary = join(root, `.brain-recovery-${process.pid}-${randomBytes(8).toString('hex')}.db`);
   const source = new DatabaseSync(databasePath(paths), { readOnly: true });
@@ -649,4 +651,3 @@ export function retireVerifiedLegacyStorage(
     backupPath,
   };
 }
-

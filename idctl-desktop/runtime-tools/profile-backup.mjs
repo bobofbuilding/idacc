@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   renameSync,
+  statfsSync,
   statSync,
   unlinkSync,
 } from 'node:fs';
@@ -15,6 +16,10 @@ import { DatabaseSync } from 'node:sqlite';
 const databasePath = resolve(process.env.BRAIN_DB_PATH || '');
 const backupRoot = resolve(process.env.IDACC_BRAIN_BACKUP_DIR || '');
 const keepDays = Math.max(1, Number(process.env.IDACC_BRAIN_BACKUP_KEEP_DAYS || 14));
+const maxCount = Math.max(1, Number(process.env.IDACC_BRAIN_BACKUP_MAX_COUNT || 3));
+const maxBytes = Math.max(1, Number(process.env.IDACC_BRAIN_BACKUP_MAX_BYTES || 12 * 1024 ** 3));
+const minFreeBytes = Math.max(0, Number(process.env.IDACC_BRAIN_BACKUP_MIN_FREE_BYTES || 5 * 1024 ** 3));
+const reserveBytes = Math.max(0, Number(process.env.IDACC_BRAIN_BACKUP_RESERVE_BYTES || 1024 ** 3));
 const targetHour = Math.min(23, Math.max(0, Number(process.env.IDACC_BRAIN_BACKUP_HOUR || 3)));
 const targetMinute = Math.min(59, Math.max(0, Number(process.env.IDACC_BRAIN_BACKUP_MINUTE || 30)));
 
@@ -43,12 +48,40 @@ function verified(path) {
   }
 }
 
-function prune() {
+function backups() {
+  return readdirSync(backupRoot)
+    .filter((name) => /^brain-\d{8}\.db$/.test(name))
+    .map((name) => ({ name, path: join(backupRoot, name), stat: statSync(join(backupRoot, name)) }))
+    .sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs);
+}
+
+function prune(requiredBytes = 0) {
   const cutoff = Date.now() - keepDays * 24 * 60 * 60 * 1000;
-  for (const name of readdirSync(backupRoot)) {
-    if (!/^brain-\d{8}\.db$/.test(name)) continue;
-    const path = join(backupRoot, name);
-    if (statSync(path).mtimeMs < cutoff) unlinkSync(path);
+  for (const backup of backups()) {
+    if (backup.stat.mtimeMs < cutoff) unlinkSync(backup.path);
+  }
+  let kept = 0;
+  let bytes = 0;
+  for (const backup of backups()) {
+    const fitsCount = kept < maxCount;
+    const fitsBytes = bytes + backup.stat.size + requiredBytes <= maxBytes;
+    // Retain one verified restore point even if a legacy configuration supplied
+    // an unrealistically small byte cap. A new snapshot remains blocked below.
+    if ((fitsCount && fitsBytes) || kept === 0) {
+      kept += 1;
+      bytes += backup.stat.size;
+    } else {
+      unlinkSync(backup.path);
+    }
+  }
+}
+
+function assertCapacity(requiredBytes) {
+  const fs = statfsSync(backupRoot);
+  const free = Number(fs.bavail) * Number(fs.bsize);
+  const needed = Math.max(minFreeBytes, Number(requiredBytes) + reserveBytes);
+  if (free < needed) {
+    throw new Error(`backup blocked by disk-pressure governor: requires ${needed} free bytes, found ${free}`);
   }
 }
 
@@ -60,6 +93,10 @@ function createBackup() {
     console.log(`[profile-backup] verified existing ${destination}`);
     return;
   }
+  const sourceBytes = statSync(databasePath).size;
+  // Reclaim eligible backups before allocating a second full SQLite image.
+  prune(sourceBytes);
+  assertCapacity(sourceBytes);
   const temporary = join(backupRoot, `.brain-${process.pid}-${randomBytes(8).toString('hex')}.db`);
   const source = new DatabaseSync(databasePath, { readOnly: true });
   try {

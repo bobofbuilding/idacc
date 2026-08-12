@@ -194,6 +194,13 @@ type StorageRecoveryStatus = {
   currentBackupsKept: number;
   currentBackupsRetired: number;
 };
+type StorageGovernorStatus = {
+  profileBytes: number;
+  freeBytes: number | null;
+  mode: 'healthy' | 'warn' | 'paused' | 'blocked';
+  categories: Record<'brain' | 'manager' | 'backups' | 'migrationArchives' | 'workspace' | 'logs' | 'cache' | 'recovery', number>;
+  policy: { brainBackupKeepCount: number; brainBackupMaxBytes: number; warnFreeBytes: number; pauseFreeBytes: number; blockFreeBytes: number };
+};
 type SecureSettingsStatus = {
   migrationPending: boolean;
   protectedProviders: number;
@@ -502,6 +509,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [updateApplyError, setUpdateApplyError] = useState('');
   const updateApplyRef = useRef(false);
   const [storageRecovery, setStorageRecovery] = useState<StorageRecoveryStatus | null>(null);
+  const [storageGovernor, setStorageGovernor] = useState<StorageGovernorStatus | null>(null);
   const [storageRecoveryBusy, setStorageRecoveryBusy] = useState<'scan' | 'import' | 'cleanup' | null>('scan');
   const [storageRecoveryMsg, setStorageRecoveryMsg] = useState('');
   const [unifiedStack, setUnifiedStack] = useState<UnifiedStackViewStatus | null>(null);
@@ -615,6 +623,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     setStorageRecoveryBusy('scan');
     try {
       setStorageRecovery(await call<StorageRecoveryStatus>('storageRecovery:status'));
+      setStorageGovernor(await call<StorageGovernorStatus>('storageGovernor:status').catch(() => null));
     } catch (error) {
       setStorageRecoveryMsg(`Storage audit failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -2953,6 +2962,12 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         {storageRecovery ? (
           <>
             <div className="kv">
+              <span>profile storage</span>
+              <b className={storageGovernor?.mode === 'blocked' || storageGovernor?.mode === 'paused' ? 'warn-text' : 'ok-text'}>
+                {storageGovernor ? `${formatBytes(storageGovernor.profileBytes)} · ${storageGovernor.mode}` : 'checking…'}
+              </b>
+              <span>free disk space</span>
+              <b>{storageGovernor?.freeBytes == null ? 'unavailable' : formatBytes(storageGovernor.freeBytes)}</b>
               <span>live Brain memories</span>
               <b>{storageRecovery.currentMemoryCount.toLocaleString()}</b>
               <span>historical payloads</span>
@@ -2964,6 +2979,11 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
               <span>verified cleanup candidates</span>
               <b>{storageRecovery.cleanupTargets.length} targets · {formatBytes(storageRecovery.cleanupBytes)}</b>
             </div>
+            {storageGovernor ? (
+              <p className="muted small" style={{ marginBottom: 0 }}>
+                Backup policy: retain at most {storageGovernor.policy.brainBackupKeepCount} local daily copies and {formatBytes(storageGovernor.policy.brainBackupMaxBytes)} total. IDACC blocks full-copy recovery below {formatBytes(storageGovernor.policy.blockFreeBytes)} free.
+              </p>
+            ) : null}
             <details style={{ marginTop: 10 }}>
               <summary className="muted small">Review exact cleanup targets</summary>
               <ul className="muted small">
