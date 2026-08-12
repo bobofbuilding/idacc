@@ -84,7 +84,7 @@ description: Read the profile-owned Brain through its curated MCP tools.
 writeFileSync(managerConfigEntry, 'defaults: {}\nagents: []\n', { mode: 0o600 });
 
 const managerCapabilities = {
-  cc_api_version: 6,
+  cc_api_version: 7,
   extension: 'id-agents-control-center',
   features: [
     'observability',
@@ -93,6 +93,7 @@ const managerCapabilities = {
     'atomic-agent-config',
     'agent-config',
     'team-config',
+    'identity-rename',
     'library',
     'brain-context',
     'brain-control',
@@ -126,6 +127,8 @@ const managerCapabilities = {
     ['POST', '/agents/:id/delegates', 'agent-config'],
     ['POST', '/agents/:id/team', 'agent-config'],
     ['POST', '/agents/:id/metadata', 'agent-config'],
+    ['PATCH', '/agents/:id/metadata', 'identity-rename'],
+    ['PATCH', '/teams/:name', 'identity-rename'],
     ['GET', '/teams/:name/config', 'team-config'],
     ['POST', '/teams/:name/delegates', 'team-config'],
     ['GET', '/library/plugins', 'library'],

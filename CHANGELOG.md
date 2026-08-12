@@ -11,6 +11,7 @@ subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 ## [0.1.714] — 2026-08-12
 ### What changed
 - Add durable team and agent renaming in HR Manager while preserving the primary hierarchy across restarts.
+- Align the production integration fixture with the Manager v7 identity rename contract.
 
 ## [0.1.713] — 2026-08-12
 ### What changed
