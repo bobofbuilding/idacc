@@ -8,6 +8,21 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.721] — 2026-08-12
+### What changed
+- Consolidate dependency maintenance updates, retain Electron 41 runtime compatibility, and refresh the signed production update channel.
+- test(release): align attest action pin verification
+- fix(deps): retain safe Electron 41 runtime compatibility
+- build(deps-dev): bump tsx from 4.23.1 to 4.23.11 in /idctl
+- Align release version metadata
+- Finalize agent configuration diagnostics
+- Prepare v0.1.716 diagnostic update
+- Surface manager configuration recovery details
+- Expose production-safe IDACC coordination to Codex
+- build(deps-dev): bump the desktop-development group across 1 directory with 4 updates
+- build(deps-dev): bump @types/react from 19.2.17 to 19.2.18 in /idctl
+- build(deps): bump actions/attest from 4.2.1 to 4.2.2
+
 ## [0.1.720] — 2026-08-12
 ### What changed
 - Preserve the Manager's safe, actionable recovery message alongside a failed
