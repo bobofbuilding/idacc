@@ -20,7 +20,7 @@ assert.deepEqual(coordinators, {
 
 const teamsSource = await readFile(new URL('../src/renderer/views/Teams.tsx', import.meta.url), 'utf8');
 assert.ok(
-  teamsSource.includes("const coordChoices = t.name === PRIMARY_TEAM ? ags.filter")
+  teamsSource.includes("const coordChoices = t.name === primaryTeam ? ags.filter")
     && !teamsSource.includes('const runningAgents = ags.filter(isRunnableAgent);'),
   'coordinator selection should use roster membership rather than process liveness',
 );

@@ -588,6 +588,27 @@ export class ManagerClient {
     }
   }
 
+  private async patch<T>(path: string, body: unknown, signal?: AbortSignal, timeoutMs = DEFAULT_MANAGER_TIMEOUT_MS): Promise<T> {
+    const req = this.requestSignal(signal, timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(`${this.cfg.managerUrl}${path}`, {
+        method: 'PATCH',
+        headers: this.headers(),
+        body: JSON.stringify(body ?? {}),
+        signal: req.signal,
+      });
+    } catch (err) {
+      req.cleanup();
+      throw this.requestError('PATCH', path, err, req.timedOut());
+    }
+    try {
+      return await this.jsonOrThrow<T>('PATCH', path, res);
+    } finally {
+      req.cleanup();
+    }
+  }
+
   /**
    * Wrap a write whose manager route a stock/older id-agents may not expose.
    * A 404 (route missing) is rethrown as a clear, actionable ManagerError naming
@@ -730,6 +751,50 @@ export class ManagerClient {
     const q = this.cfg.team ? `?team=${encodeURIComponent(this.cfg.team)}` : '';
     const data = await this.get<{ agents?: unknown[] }>(`/agents${q}`, signal);
     return (data.agents ?? []).map(normalizeAgentRecord).filter((a): a is Agent => !!a);
+  }
+
+  async renameTeam(
+    name: string,
+    newName: string,
+    options: { primaryAgent?: string; validators?: string[]; signal?: AbortSignal } = {},
+  ): Promise<{ ok: boolean; previousName: string; name: string; agentCount: number; identityUpdated?: boolean }> {
+    const orgIdentity = options.primaryAgent
+      ? {
+        primary: true,
+        primaryAgent: options.primaryAgent,
+        validators: options.validators ?? [],
+      }
+      : undefined;
+    return this.requireRoute('Rename a team', () => this.patch(
+      `/teams/${encodeURIComponent(name)}`,
+      { name: newName, ...(orgIdentity ? { orgIdentity } : {}) },
+      options.signal,
+    ));
+  }
+
+  async setTeamOrgIdentity(
+    name: string,
+    primaryAgent: string,
+    validators: string[],
+    signal?: AbortSignal,
+  ): Promise<{ ok: boolean; name: string; identityUpdated?: boolean }> {
+    return this.requireRoute('Update primary team identity', () => this.patch(
+      `/teams/${encodeURIComponent(name)}`,
+      { orgIdentity: { primary: true, primaryAgent, validators } },
+      signal,
+    ));
+  }
+
+  async renameAgent(
+    agentId: string,
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<{ ok: boolean; id: string; previousName: string; name: string }> {
+    return this.requireRoute('Rename an agent', () => this.patch(
+      `/agents/${encodeURIComponent(agentId)}/metadata`,
+      { name },
+      signal,
+    ));
   }
 
   // ---- Live event stream ------------------------------------------------

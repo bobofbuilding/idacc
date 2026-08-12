@@ -28,14 +28,17 @@ assert.ok(
     && teams.includes('className="hr-agent-instructions"')
     && styles.includes('height: clamp(320px, 44vh, 520px)')
     && teams.includes('Agent goals')
-    && teams.includes('move to team…'),
-  'Manage > Agents should own instruction, goal, and reassignment controls',
+    && teams.includes('move to team…')
+    && teams.includes('aria-label="New agent name"')
+    && teams.includes("await call<{ rebuilt: boolean; warning?: string }>('agent:rename'")
+    && bridge.includes("'agent:rename': (id: string, source: string, target: string, team: string)"),
+  'Manage > Agents should own identity, instruction, goal, and reassignment controls',
 );
 assert.ok(
   teams.includes("await ensureRenderedAgentFresh('Delete agent'")
     && teams.includes("await call('agent:delete', fresh.name, team)")
-    && teams.includes('isDefaultBackboneAgent(team, agent.name)'),
-  'agent deletion should re-check current manager state and protect default leadership',
+    && teams.includes('isPrimaryBackboneAgent(team, agent.name)'),
+  'agent deletion should re-check current manager state and protect the configured primary leadership',
 );
 assert.ok(
   bridge.includes("'agent:delete': (agent: string, team?: string)")
@@ -47,14 +50,16 @@ assert.ok(
     && teams.includes('runTeamMaintenance()')
     && teams.includes('openAgentDirectory(row.team)')
     && teams.includes('[maintDeleteSource, setMaintDeleteSource] = useState(false)')
+    && teams.includes("await call<{ agentCount: number; rebuilt: string[]; warnings: string[] }>('team:rename'")
+    && bridge.includes("'team:rename': (source: string, target: string)")
     && teams.includes("await call('team:delete', source);")
     && !teams.includes("await call('team:delete', source).catch(() => {});"),
   'team administration and overview drill-down should stay inside Manage',
 );
 assert.ok(
-  teams.includes('activeTeam !== PRIMARY_TEAM ? <RelayPolicySection /> : null')
-    && teams.includes('selectedAgent.team !== PRIMARY_TEAM ? ('),
-  'default-team hierarchy and agent records should not expose editable cross-team relay controls',
+  teams.includes('activeTeam !== primaryTeam ? <RelayPolicySection /> : null')
+    && teams.includes('selectedAgent.team !== primaryTeam ? ('),
+  'primary-team hierarchy and agent records should not expose editable cross-team relay controls',
 );
 
 console.log('HR manage agents smoke: ok');

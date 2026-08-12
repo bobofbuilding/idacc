@@ -24,12 +24,12 @@ import { isDashboardRelevantEvent } from '../../shared/dashboardEvents.ts';
 import type { InboxItem, NewsItem, Task } from '../../../../idctl/src/api/types.ts';
 
 /**
- * Dashboard = talk to default/lead + watch the fleet. The main panel is intentionally
- * pinned to the default primary lead; team-specific routing belongs in HR Manager.
+ * Dashboard = talk to the configured fleet primary + watch the fleet. Team-specific routing
+ * belongs in HR Manager; renaming the primary identity updates this target automatically.
  */
 
-const DASHBOARD_CHAT_TEAM = 'default';
-const DASHBOARD_CHAT_TARGET = 'lead';
+const STARTER_CHAT_TEAM = 'default';
+const STARTER_CHAT_TARGET = 'lead';
 
 function ago(ts?: number): string {
   if (!ts) return '';
@@ -580,14 +580,16 @@ export function Dashboard({
     });
   }, []);
   useEffect(() => { loadHierarchy(); }, [loadHierarchy, store.lastUpdated, hierarchySyncVersion]);
+  const dashboardChatTeam = hier.primary?.team ?? STARTER_CHAT_TEAM;
+  const dashboardChatTarget = hier.primary?.agent ?? STARTER_CHAT_TARGET;
   const fleetStructure = useMemo(() => buildFleetStructureSnapshot({
     teams: store.teams,
     allAgents: store.allAgents,
     activeAgents: store.agents,
-    activeTeam: store.team ?? DASHBOARD_CHAT_TEAM,
+    activeTeam: store.team ?? dashboardChatTeam,
     hierarchy: hier,
-    primaryTeam: DASHBOARD_CHAT_TEAM,
-  }), [store.teams, store.allAgents, store.agents, store.team, hier]);
+    primaryTeam: dashboardChatTeam,
+  }), [store.teams, store.allAgents, store.agents, store.team, hier, dashboardChatTeam]);
   // Teams that currently have ≥1 running agent (idle teams hidden from the picker).
   const activeTeams = useMemo(
     () => uniqSorted([
@@ -604,8 +606,8 @@ export function Dashboard({
     [fleetStructure.teamNames],
   );
   const primaryLeadPresent = useMemo(
-    () => fleetStructure.agents.some((agent) => agent.team === DASHBOARD_CHAT_TEAM && agent.name === DASHBOARD_CHAT_TARGET),
-    [fleetStructure.agents],
+    () => fleetStructure.agents.some((agent) => agent.team === dashboardChatTeam && agent.name === dashboardChatTarget),
+    [fleetStructure.agents, dashboardChatTeam, dashboardChatTarget],
   );
   // Holistic activity feed: recent events plus durable task/comms state across
   // EVERY team (newest first). Events alone are lossy: a task/news row can exist
@@ -814,8 +816,8 @@ export function Dashboard({
         <h1>Dashboard</h1>
         <div className="muted small" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           talk to
-          <span className="readonly-target" title="Dashboard chat is pinned to the default primary lead. Use HR Manager for team-specific conversations.">
-            {DASHBOARD_CHAT_TEAM} · {DASHBOARD_CHAT_TARGET}
+          <span className="readonly-target" title="Dashboard chat follows the configured fleet primary. Use HR Manager for team-specific conversations.">
+            {dashboardChatTeam} · {dashboardChatTarget}
           </span>
         </div>
       </header>
@@ -833,7 +835,7 @@ export function Dashboard({
 
       {/* Explicit flex row so the chat fills the left and the activity tile always shows on the right. */}
       <div style={{ display: 'flex', gap: 14, flex: 1, minHeight: 0, alignItems: 'stretch' }}>
-        {/* Primary lead chat: locked to default/lead (no team or agent picker). */}
+        {/* Primary lead chat follows the configured identity (no team or agent picker). */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           {controlIntent ? (
             <section className="control-intent-proposal" role="alertdialog" aria-label={`Confirm ${controlIntent.title}`}>
@@ -853,12 +855,12 @@ export function Dashboard({
           ) : null}
           {controlIntentStatus ? <div className="control-intent-status muted small" aria-live="polite">{controlIntentStatus}</div> : null}
           {primaryLeadPresent ? (
-            <Chat store={store} navigate={navigate} embedded teamOverride={DASHBOARD_CHAT_TEAM} lockTarget={DASHBOARD_CHAT_TARGET} onControlIntent={proposeControlIntent} key={`${DASHBOARD_CHAT_TEAM}:${DASHBOARD_CHAT_TARGET}`} />
+            <Chat store={store} navigate={navigate} embedded teamOverride={dashboardChatTeam} lockTarget={dashboardChatTarget} onControlIntent={proposeControlIntent} key={`${dashboardChatTeam}:${dashboardChatTarget}`} />
           ) : (
             <section className="card" style={{ flex: 1, display: 'grid', placeItems: 'center' }}>
               <div style={{ maxWidth: 520, textAlign: 'center' }}>
-                <h3>Default lead is not provisioned</h3>
-                <p className="muted">Complete the default team build before using Dashboard chat. Runtime checks will keep unsupported or offline assignments out of the roster.</p>
+                <h3>Primary lead is not provisioned</h3>
+                <p className="muted">Provision {dashboardChatTeam}/{dashboardChatTarget} before using Dashboard chat. Runtime checks will keep unsupported or offline assignments out of the roster.</p>
                 {navigate ? <button className="btn primary" onClick={() => navigate('teams:build')}>Open HR Manager Build</button> : null}
               </div>
             </section>

@@ -477,27 +477,30 @@ export function unlockSecureSettingsSession(): SecureSettingsBridgeUnlockResult 
 }
 
 function assertDefaultPrimaryWrite(team: string, agent: string): void {
-  if (team !== PRIMARY_TEAM || agent !== DEFAULT_PRIMARY_AGENT) {
-    throw new Error(`primary lead is locked to ${PRIMARY_TEAM}/${DEFAULT_PRIMARY_AGENT}`);
+  const primary = loadSettings().primaryCoordinator ?? { team: PRIMARY_TEAM, agent: DEFAULT_PRIMARY_AGENT };
+  if (team !== primary.team || agent !== primary.agent) {
+    throw new Error(`primary lead is locked to ${primary.team}/${primary.agent}; rename it from HR Manager > Manage > Agents`);
   }
 }
 
 function assertDefaultCoordinatorWrite(team: string, agent: string): void {
-  if (team === PRIMARY_TEAM && agent !== DEFAULT_PRIMARY_AGENT) {
-    throw new Error(`default coordinator is locked to ${PRIMARY_TEAM}/${DEFAULT_PRIMARY_AGENT}`);
+  const primary = loadSettings().primaryCoordinator ?? { team: PRIMARY_TEAM, agent: DEFAULT_PRIMARY_AGENT };
+  if (team === primary.team && agent !== primary.agent) {
+    throw new Error(`primary-team coordinator is locked to ${primary.team}/${primary.agent}; rename it from HR Manager > Manage > Agents`);
   }
 }
 
 function normalizeSecondaryLeadWrites(leads: SecondaryLead[]): SecondaryLead[] {
+  const primary = loadSettings().primaryCoordinator ?? { team: PRIMARY_TEAM, agent: DEFAULT_PRIMARY_AGENT };
   const byAgent = new Map<string, SecondaryLead>();
-  for (const agent of DEFAULT_VALIDATORS) byAgent.set(agent, { agent, team: PRIMARY_TEAM, leadsTeams: [] });
+  for (const agent of DEFAULT_VALIDATORS) byAgent.set(agent, { agent, team: primary.team, leadsTeams: [] });
   for (const lead of leads) {
     const agent = slugName(String(lead.agent ?? ''));
-    if (!agent || agent === DEFAULT_PRIMARY_AGENT) continue;
-    const existing = byAgent.get(agent) ?? { agent, team: PRIMARY_TEAM, leadsTeams: [] };
+    if (!agent || agent === primary.agent) continue;
+    const existing = byAgent.get(agent) ?? { agent, team: primary.team, leadsTeams: [] };
     existing.leadsTeams = Array.from(new Set([
       ...existing.leadsTeams,
-      ...(lead.leadsTeams ?? []).map((t) => String(t).trim()).filter((t) => t && t !== PRIMARY_TEAM && t !== 'public'),
+      ...(lead.leadsTeams ?? []).map((t) => String(t).trim()).filter((t) => t && t !== primary.team && t !== 'public'),
     ])).sort((a, b) => a.localeCompare(b));
     byAgent.set(agent, existing);
   }
@@ -1442,9 +1445,10 @@ export async function resumeManagedProviderAgentsAfterRestart(
   return rehydrateManagedProviderAgents({
     listTeams: async (activeSignal) => {
       const teams = await client.teams(activeSignal);
+      const primaryTeam = loadSettings().primaryCoordinator?.team ?? PRIMARY_TEAM;
       return [...new Set([
-        PRIMARY_TEAM,
-        cfg.team ?? PRIMARY_TEAM,
+        primaryTeam,
+        cfg.team ?? primaryTeam,
         ...teams.map((team) => team.name),
       ])];
     },
@@ -1761,7 +1765,7 @@ function requireCurrentComputerUseAgent(agents: Agent[], agentId: string, agentN
 
 // idctl-desktop is the operator's local control center talking to 127.0.0.1,
 // so it is a legitimate admin client (admin-gated routes: skill install, MCP attach).
-let cfg: Config = loadConfig({ team: 'default', admin: true });
+let cfg: Config = loadConfig({ team: loadSettings().primaryCoordinator?.team ?? PRIMARY_TEAM, admin: true });
 let client = new ManagerClient(cfg);
 brain.setTransport((request) => client.brainRequest(request));
 configureControlEventEmitter((event) => client.emitControlEvent(event));
@@ -1785,7 +1789,12 @@ export function configureManagedManager(url: string, adminToken?: string): void 
   // in-flight reads from the previous endpoint/profile satisfy the new client.
   readCallCache.clear();
   controllerProofs.clear();
-  cfg = { ...cfg, managerUrl: url, apiKey: adminToken };
+  cfg = {
+    ...cfg,
+    managerUrl: url,
+    apiKey: adminToken,
+    team: loadSettings().primaryCoordinator?.team ?? cfg.team ?? PRIMARY_TEAM,
+  };
   client = new ManagerClient(cfg);
   brain.setTransport((request) => client.brainRequest(request));
   configureControlEventEmitter((event) => client.emitControlEvent(event));
@@ -1806,8 +1815,10 @@ let mcpRegistryWriteTail: Promise<void> = Promise.resolve();
 
 function controlStateClient(): ManagerClient {
   // App-wide control state must not move when the operator changes the visible
-  // team. The default team is the durable control-plane namespace.
-  return client.withTeam(PRIMARY_TEAM);
+  // team. It follows the configured primary team, whose stable Manager id
+  // preserves the namespace even when the operator renames that team.
+  const team = loadSettings().primaryCoordinator?.team ?? PRIMARY_TEAM;
+  return client.withTeam(team);
 }
 
 function serializeControlStateWrite<T>(write: () => Promise<T>): Promise<T> {
@@ -1915,6 +1926,154 @@ async function persistOrgControl(): Promise<OrgControlState> {
   const value = orgControlSnapshot();
   await serializeControlStateWrite(() => controlStateClient().controlStateSet('global', 'organization', value));
   return value;
+}
+
+function rewriteTeamIdentitySettings(source: string, target: string): void {
+  const settings = loadSettings();
+  const coordinators = { ...(settings.coordinators ?? {}) };
+  if (Object.hasOwn(coordinators, source)) {
+    coordinators[target] = coordinators[source];
+    delete coordinators[source];
+  }
+  settings.coordinators = coordinators;
+  if (settings.primaryCoordinator?.team === source) {
+    settings.primaryCoordinator = { ...settings.primaryCoordinator, team: target };
+  }
+  settings.secondaryLeads = (settings.secondaryLeads ?? []).map((lead) => ({
+    ...lead,
+    team: lead.team === source ? target : lead.team,
+    leadsTeams: Array.from(new Set((lead.leadsTeams ?? []).map((team) => team === source ? target : team))),
+  }));
+  settings.knownTeams = Array.from(new Set((settings.knownTeams ?? []).map((team) => team === source ? target : team)));
+  settings.projects = (settings.projects ?? []).map((project) => project.team === source ? { ...project, team: target } : project);
+  saveSettings(settings);
+}
+
+function rewriteAgentIdentitySettings(team: string, source: string, target: string): void {
+  const settings = loadSettings();
+  const coordinators = { ...(settings.coordinators ?? {}) };
+  if (coordinators[team] === source) coordinators[team] = target;
+  settings.coordinators = coordinators;
+  if (settings.primaryCoordinator?.team === team && settings.primaryCoordinator.agent === source) {
+    settings.primaryCoordinator = { team, agent: target };
+  }
+  settings.secondaryLeads = (settings.secondaryLeads ?? []).map((lead) => (
+    lead.team === team && lead.agent === source ? { ...lead, agent: target } : lead
+  ));
+  settings.projects = (settings.projects ?? []).map((project) => (
+    project.team === team && project.lead === source ? { ...project, lead: target } : project
+  ));
+  saveSettings(settings);
+}
+
+function primaryIdentityFromSettings(): { team: string; agent: string; validators: string[] } {
+  const settings = loadSettings();
+  const primary = settings.primaryCoordinator ?? { team: PRIMARY_TEAM, agent: DEFAULT_PRIMARY_AGENT };
+  const validators = Array.from(new Set((settings.secondaryLeads ?? [])
+    .filter((lead) => lead.team === primary.team && lead.agent !== primary.agent)
+    .map((lead) => lead.agent)
+    .filter(Boolean)));
+  return {
+    ...primary,
+    validators: validators.length ? validators : [...DEFAULT_VALIDATORS],
+  };
+}
+
+async function renameTeamIdentity(source: string, target: string): Promise<{
+  ok: true;
+  previousName: string;
+  name: string;
+  agentCount: number;
+  rebuilt: string[];
+  warnings: string[];
+}> {
+  await managerOrgControl();
+  const before = structuredClone(loadSettings());
+  const primary = primaryIdentityFromSettings();
+  const roster = await client.withTeam(source).agents();
+  const isPrimary = primary.team === source;
+  const result = await client.renameTeam(source, target, isPrimary ? {
+    primaryAgent: primary.agent,
+    validators: primary.validators,
+  } : {});
+  try {
+    rewriteTeamIdentitySettings(source, target);
+    if (client.team === source) client = client.withTeam(target);
+    await persistOrgControl();
+  } catch (error) {
+    saveSettings(before);
+    try {
+      await client.withTeam(target).renameTeam(target, source, isPrimary ? {
+        primaryAgent: primary.agent,
+        validators: primary.validators,
+      } : {});
+      if (client.team === target) client = client.withTeam(source);
+      await persistOrgControl();
+    } catch { /* the original error remains authoritative */ }
+    throw error;
+  }
+
+  const rebuilt: string[] = [];
+  const warnings: string[] = [];
+  for (const agent of roster) {
+    if (agent.status !== 'running' && agent.status !== 'starting') continue;
+    try {
+      await client.withTeam(target).restartAgent(agent.name);
+      rebuilt.push(agent.name);
+    } catch (error) {
+      warnings.push(`${agent.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { ...result, ok: true, rebuilt, warnings };
+}
+
+async function renameAgentIdentity(agentId: string, source: string, target: string, team: string): Promise<{
+  ok: true;
+  id: string;
+  previousName: string;
+  name: string;
+  rebuilt: boolean;
+  warning?: string;
+}> {
+  await managerOrgControl();
+  const scoped = client.withTeam(team);
+  const roster = await scoped.agents();
+  const current = roster.find((agent) => agent.id === agentId && agent.name === source);
+  if (!current) throw new Error(`${team}/${source} changed before rename; refresh and try again.`);
+  if (roster.some((agent) => agent.id !== agentId && agent.name === target)) {
+    throw new Error(`${team} already has an agent named ${target}.`);
+  }
+  const before = structuredClone(loadSettings());
+  const result = await scoped.renameAgent(agentId, target);
+  try {
+    rewriteAgentIdentitySettings(team, source, target);
+    const primary = primaryIdentityFromSettings();
+    if (primary.team === team) {
+      await scoped.setTeamOrgIdentity(team, primary.agent, primary.validators);
+    }
+    await persistOrgControl();
+  } catch (error) {
+    saveSettings(before);
+    try {
+      await scoped.renameAgent(agentId, source);
+      const primary = primaryIdentityFromSettings();
+      if (primary.team === team) await scoped.setTeamOrgIdentity(team, primary.agent, primary.validators);
+      await persistOrgControl();
+    } catch { /* the original error remains authoritative */ }
+    throw error;
+  }
+
+  let rebuilt = false;
+  let warning: string | undefined;
+  if (current.status === 'running' || current.status === 'starting') {
+    try {
+      await scoped.restartAgent(target);
+      rebuilt = true;
+    } catch (error) {
+      warning = `renamed, but rebuild failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+  return { ...result, ok: true, rebuilt, ...(warning ? { warning } : {}) };
 }
 
 function taskOverlaySnapshot(settings = loadSettings()): TaskOverlayControlState {
@@ -2232,10 +2391,11 @@ async function strictAllTeamAgentGroups(): Promise<Array<{ team: string; agents:
   // remains best-effort for display, while this path propagates every read
   // failure so a registry entry cannot be deleted from an incomplete snapshot.
   const teams = await client.teams();
+  const primaryTeam = loadSettings().primaryCoordinator?.team ?? PRIMARY_TEAM;
   const names = [...new Set(
     (teams.length
-      ? [PRIMARY_TEAM, cfg.team ?? PRIMARY_TEAM, ...teams.map((row) => row.name)]
-      : [cfg.team ?? PRIMARY_TEAM])
+      ? [primaryTeam, cfg.team ?? primaryTeam, ...teams.map((row) => row.name)]
+      : [cfg.team ?? primaryTeam])
       .map((name) => String(name).trim())
       .filter(Boolean),
   )];
@@ -2615,6 +2775,7 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   'team:preflight': (name: string) => client.deployPreflight(String(name)),
   deployTeam: (name: string) => client.deployTeam(String(name)),
   'team:delete': (name: string) => client.deleteTeam(String(name)),
+  'team:rename': (source: string, target: string) => renameTeamIdentity(String(source), String(target)),
   // Import a team from a pasted spec: spawn each parsed agent into a new team.
   'team:import': (team: string, agents: Array<{ name: string; role?: string; description?: string }>, opts: { runtime?: string; model?: string }) =>
     client.importTeam(String(team), agents ?? [], opts ?? {}),
@@ -2695,6 +2856,8 @@ const METHODS: Record<string, (...a: any[]) => Promise<unknown>> = {
   // reassign a local agent to another team (rebuilds it there)
   'agent:move': (id: string, team: string, sourceTeam?: string, createTarget?: boolean) =>
     (sourceTeam ? client.withTeam(String(sourceTeam)) : client).moveAgent(String(id), String(team), { createTarget: Boolean(createTarget) }),
+  'agent:rename': (id: string, source: string, target: string, team: string) =>
+    renameAgentIdentity(String(id), String(source), String(target), String(team)),
   'agent:delete': (agent: string, team?: string) =>
     (team ? client.withTeam(String(team)) : client).remote(`/delete ${JSON.stringify(String(agent))}`),
 

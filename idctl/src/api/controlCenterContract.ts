@@ -6,7 +6,7 @@
  * controls that rely on Control Center-only routes.
  */
 
-export const CONTROL_CENTER_API_VERSION = 6;
+export const CONTROL_CENTER_API_VERSION = 7;
 export const CONTROL_CENTER_EXTENSION = 'id-agents-control-center';
 
 export interface ControlCenterRoute {
@@ -41,6 +41,8 @@ export const CONTROL_CENTER_REQUIRED_ROUTES: ControlCenterRoute[] = [
   { method: 'POST', path: '/agents/:id/delegates', group: 'agent-config' },
   { method: 'POST', path: '/agents/:id/team', group: 'agent-config' },
   { method: 'POST', path: '/agents/:id/metadata', group: 'agent-config' },
+  { method: 'PATCH', path: '/agents/:id/metadata', group: 'identity-rename' },
+  { method: 'PATCH', path: '/teams/:name', group: 'identity-rename' },
   { method: 'GET', path: '/teams/:name/config', group: 'team-config' },
   { method: 'POST', path: '/teams/:name/delegates', group: 'team-config' },
   { method: 'GET', path: '/library/plugins', group: 'library' },
@@ -54,6 +56,7 @@ export const CONTROL_CENTER_REQUIRED_FEATURES = [
   'atomic-agent-config',
   'agent-config',
   'team-config',
+  'identity-rename',
   'library',
   'brain-context',
   'brain-control',

@@ -85,8 +85,8 @@ interface OrgSyncPlan {
   autoRebuild: boolean;
 }
 
-function secondaryDomainTeams(teams: string[]): { research: string[]; coder: string[] } {
-  const others = teams.filter((t) => t !== 'default' && t !== 'public').sort((a, b) => a.localeCompare(b));
+function secondaryDomainTeams(teams: string[], primaryTeam = PRIMARY_TEAM): { research: string[]; coder: string[] } {
+  const others = teams.filter((t) => t !== primaryTeam && t !== 'public').sort((a, b) => a.localeCompare(b));
   const research = others.filter((t) => /research|security|intel|analy|audit/i.test(t));
   const coder = others.filter((t) => !research.includes(t));
   return { research, coder };
@@ -94,26 +94,31 @@ function secondaryDomainTeams(teams: string[]): { research: string[]; coder: str
 
 /** Default secondary leads when none are configured: researcher + coder on `default`,
  *  splitting the other teams by domain (research/security → researcher, the rest → coder). */
-function defaultSecondaries(teams: string[]): SecondaryLead[] {
-  const { research, coder } = secondaryDomainTeams(teams);
+function defaultSecondaries(teams: string[], primaryTeam = PRIMARY_TEAM): SecondaryLead[] {
+  const { research, coder } = secondaryDomainTeams(teams, primaryTeam);
   return [
-    { agent: 'researcher', team: 'default', leadsTeams: research },
-    { agent: 'coder', team: 'default', leadsTeams: coder },
+    { agent: 'researcher', team: primaryTeam, leadsTeams: research },
+    { agent: 'coder', team: primaryTeam, leadsTeams: coder },
   ];
 }
 
-function mergeConfiguredSecondaries(configured: SecondaryLead[], teams: string[]): SecondaryLead[] {
+function mergeConfiguredSecondaries(
+  configured: SecondaryLead[],
+  teams: string[],
+  primaryTeam = PRIMARY_TEAM,
+  primaryAgent = DEFAULT_PRIMARY_AGENT,
+): SecondaryLead[] {
   const configuredCopy = configured.map((s) => ({
     ...s,
     agent: slugName(s.agent),
-    team: PRIMARY_TEAM,
-    leadsTeams: Array.from(new Set((s.leadsTeams ?? []).filter((t) => t && t !== PRIMARY_TEAM && t !== 'public'))).sort((a, b) => a.localeCompare(b)),
-  })).filter((s) => s.agent && s.agent !== DEFAULT_PRIMARY_AGENT);
+    team: primaryTeam,
+    leadsTeams: Array.from(new Set((s.leadsTeams ?? []).filter((t) => t && t !== primaryTeam && t !== 'public'))).sort((a, b) => a.localeCompare(b)),
+  })).filter((s) => s.agent && s.agent !== primaryAgent);
   for (const agent of DEFAULT_VALIDATORS) {
-    if (!configuredCopy.some((s) => s.agent === agent)) configuredCopy.push({ agent, team: PRIMARY_TEAM, leadsTeams: [] });
+    if (!configuredCopy.some((s) => s.agent === agent)) configuredCopy.push({ agent, team: primaryTeam, leadsTeams: [] });
   }
   const covered = new Set(configuredCopy.flatMap((s) => s.leadsTeams));
-  const uncovered = teams.filter((t) => t !== 'default' && t !== 'public' && !covered.has(t));
+  const uncovered = teams.filter((t) => t !== primaryTeam && t !== 'public' && !covered.has(t));
   const sortSecondaries = (rows: SecondaryLead[]) => rows.sort((a, b) => {
     const ai = DEFAULT_VALIDATORS.indexOf(a.agent);
     const bi = DEFAULT_VALIDATORS.indexOf(b.agent);
@@ -121,11 +126,11 @@ function mergeConfiguredSecondaries(configured: SecondaryLead[], teams: string[]
   });
   if (!uncovered.length) return sortSecondaries(configuredCopy);
 
-  const { research, coder } = secondaryDomainTeams(uncovered);
+  const { research, coder } = secondaryDomainTeams(uncovered, primaryTeam);
   const ensureSecondary = (agent: string): SecondaryLead => {
     let sec = configuredCopy.find((s) => s.agent === agent);
     if (!sec) {
-      sec = { agent, team: 'default', leadsTeams: [] };
+      sec = { agent, team: primaryTeam, leadsTeams: [] };
       configuredCopy.push(sec);
     }
     return sec;
@@ -151,9 +156,21 @@ export function activeCoordinators(configured: Record<string, string>, teams: st
 export async function buildOrgHierarchy(client: ManagerClient): Promise<OrgHierarchy> {
   const cfg = loadSettings();
   const teams = (await client.teams().catch(() => [])).map((t) => t.name).filter(Boolean).sort((a, b) => a.localeCompare(b));
-  const coordinators = { ...activeCoordinators(cfg.coordinators ?? {}, teams), [PRIMARY_TEAM]: DEFAULT_PRIMARY_AGENT };
-  const primary = { team: PRIMARY_TEAM, agent: DEFAULT_PRIMARY_AGENT };
-  const secondaries = cfg.secondaryLeads?.length ? mergeConfiguredSecondaries(cfg.secondaryLeads, teams) : defaultSecondaries(teams);
+  const configuredPrimary = cfg.primaryCoordinator ?? { team: PRIMARY_TEAM, agent: DEFAULT_PRIMARY_AGENT };
+  const primary = teams.includes(configuredPrimary.team)
+    ? configuredPrimary
+    : teams.includes(PRIMARY_TEAM)
+      ? { team: PRIMARY_TEAM, agent: DEFAULT_PRIMARY_AGENT }
+      : null;
+  const primaryTeam = primary?.team ?? PRIMARY_TEAM;
+  const primaryAgent = primary?.agent ?? DEFAULT_PRIMARY_AGENT;
+  const coordinators = {
+    ...activeCoordinators(cfg.coordinators ?? {}, teams),
+    ...(primary ? { [primaryTeam]: primaryAgent } : {}),
+  };
+  const secondaries = cfg.secondaryLeads?.length
+    ? mergeConfiguredSecondaries(cfg.secondaryLeads, teams, primaryTeam, primaryAgent)
+    : defaultSecondaries(teams, primaryTeam);
   return { primary, secondaries, coordinators, teams };
 }
 

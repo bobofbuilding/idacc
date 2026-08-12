@@ -8,6 +8,10 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.714] — 2026-08-12
+### What changed
+- Add durable team and agent renaming in HR Manager while preserving the primary hierarchy across restarts.
+
 ## [0.1.713] — 2026-08-12
 ### What changed
 - Keep saved provider, MCP, and EVM RPC credentials locked during startup and passive page loads so IDACC does not request macOS Keychain access automatically.

@@ -23,7 +23,7 @@ assert.match(
 );
 assert.match(
   teams,
-  /normalizeSecondaryRows\(hier\.secondaries \?\? \[\]\)/,
+  /normalizeSecondaryRows\(hier\.secondaries \?\? \[\], primaryTeam, primaryAgentName\)/,
   'Manage agent summaries should read validator scope from the same hierarchy as Structure',
 );
 assert.match(
