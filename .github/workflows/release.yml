@@ -1139,10 +1139,30 @@ jobs:
         run: |
           TAG_OBJECT="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_OBJECT" --jq '.object.sha')" = "$RELEASE_COMMIT"
+          release_view() {
+            local attempt=1
+            while [ "$attempt" -le 6 ]; do
+              if gh release view "$RELEASE_TAG" "$@"; then return 0; fi
+              sleep "$attempt"
+              attempt=$((attempt + 1))
+            done
+            return 1
+          }
+          upload_release_asset() {
+            local file="$1"
+            local attempt=1
+            while [ "$attempt" -le 6 ]; do
+              if gh release upload "$RELEASE_TAG" "$file"; then return 0; fi
+              sleep "$attempt"
+              attempt=$((attempt + 1))
+            done
+            echo "::error::Failed to upload $(basename "$file") to $RELEASE_TAG after bounded retries." >&2
+            return 1
+          }
           STATE="missing"
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          if release_view >/dev/null 2>&1; then
             STATE="$(
-              gh release view "$RELEASE_TAG" \
+              release_view \
                 --json isDraft,isPrerelease \
                 --jq 'if .isDraft == true then "draft" elif .isPrerelease == true then "prerelease" elif .isDraft == false and .isPrerelease == false then "published" else "invalid" end'
             )"
@@ -1160,6 +1180,7 @@ jobs:
             else
               gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
             fi
+            release_view --json id >/dev/null
             STATE="draft"
           fi
           test "$STATE" != "missing"
@@ -1167,9 +1188,9 @@ jobs:
 
           EXISTING_DIR="$(mktemp -d)"
           trap 'rm -rf "$EXISTING_DIR"' EXIT
-          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$EXISTING_DIR/names"
+          release_view --json assets --jq '.assets[].name' | LC_ALL=C sort > "$EXISTING_DIR/names"
           if [ "$STATE" = "draft" ] && [ "$PREVIOUS_SUCCESS" != "true" ] && [ -s "$EXISTING_DIR/names" ]; then
-            gh release view "$RELEASE_TAG" --json assets --jq '.assets[].apiUrl' \
+            release_view --json assets --jq '.assets[].apiUrl' \
               | while IFS= read -r ASSET_URL; do
                   test -n "$ASSET_URL" || continue
                   ASSET_ENDPOINT="${ASSET_URL#*://}"
@@ -1190,12 +1211,12 @@ jobs:
                 echo "::error::Published release $RELEASE_TAG is missing immutable asset $NAME." >&2
                 exit 1
               fi
-              gh release upload "$RELEASE_TAG" "$FILE"
+              upload_release_asset "$FILE"
             fi
           done
 
           find publish -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort > "$EXISTING_DIR/expected"
-          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$EXISTING_DIR/actual"
+          release_view --json assets --jq '.assets[].name' | LC_ALL=C sort > "$EXISTING_DIR/actual"
           diff -u "$EXISTING_DIR/expected" "$EXISTING_DIR/actual"
 
       - name: Re-download and verify every published byte
