@@ -25,6 +25,7 @@ interface Msg {
   who: string;
   text: string;
   queryId?: string;
+  taskRef?: string;
   files?: { name: string; path?: string; isImage: boolean }[];
   image?: { path: string; prompt: string; model: string };
   trace?: string[];        // the agent's OWN behind-the-scenes steps (background tasks) captured with this reply
@@ -55,6 +56,7 @@ type FanoutResult = {
   lead?: string;
   status: 'dispatched' | 'deferred' | 'no-active-agent' | 'failed';
   queryId?: string;
+  taskRef?: string;
   detail?: string;
   existingTask?: { ref: string; name?: string; title?: string; status?: string; owner?: string; suggestedAction?: string };
 };
@@ -949,7 +951,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     const failed = results.filter((row) => row.status !== 'dispatched' && row.status !== 'deferred');
     const destinations = dispatched.map((row) => `${row.team}/${row.lead || 'lead'}`);
     const issues = [...deferred, ...failed].map((row) => `${row.team}: ${row.detail || row.status}`);
-    const taskRefs = [...new Set([...deferred, ...failed].map((row) => row.existingTask?.ref).filter(Boolean) as string[])];
+    const taskRefs = [...new Set(results.map((row) => row.taskRef ?? row.existingTask?.ref).filter(Boolean) as string[])];
     const text = dispatched.length
       ? [
           `Delegated immediately to ${dispatched.length} team lead${dispatched.length === 1 ? '' : 's'}: ${destinations.join(', ')}.`,

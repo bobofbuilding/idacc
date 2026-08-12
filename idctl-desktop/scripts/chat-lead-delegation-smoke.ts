@@ -155,7 +155,8 @@ async function main(): Promise<void> {
     'default',
   );
   assert.deepEqual(policyResult.map((row) => [row.team, row.lead, row.status]), [['legal', 'general-counsel', 'dispatched']]);
-  assert.ok(dispatched.some((row) => row.team === 'legal' && /^\/ask general-counsel\b/.test(row.command)), 'General Council requests must route directly to legal/general-counsel');
+  assert.ok(dispatched.some((row) => row.team === 'legal' && /^\/task create\b/.test(row.command) && /--owner general-counsel\b/.test(row.command)), 'General Council requests must create a durable legal/general-counsel coordination task');
+  assert.ok(policyResult[0]?.taskRef, 'a lead prompt is not reported without its durable Work reference');
   assert.equal(dispatched.some((row) => row.team === 'operations-team'), false, 'explicit General Council requests must not spill into operations');
   assert.equal(policyResult[0]?.status, 'dispatched', 'a lead with three active queries must still accept a fourth parallel request');
 

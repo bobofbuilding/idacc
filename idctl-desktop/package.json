@@ -101,6 +101,7 @@
     "test:storage-recovery": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/storage-recovery-smoke.ts",
     "test:storage-governor": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/storage-governor-smoke.ts",
     "test:storage-operation-lease": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/storage-operation-lease-smoke.ts",
+    "test:storage-lifecycle": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/storage-lifecycle-smoke.ts",
     "test:team-ops-fleet": "node scripts/team-ops-fleet-smoke.mjs",
     "test:team-structure-chart": "node scripts/team-structure-chart-smoke.mjs",
     "test:hr-manage-agents": "node scripts/hr-manage-agents-smoke.mjs",

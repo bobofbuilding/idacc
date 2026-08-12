@@ -101,7 +101,9 @@ import {
   confirmStorageOperation,
   failStorageOperation,
 } from './storageOperationLease.ts';
-import { storageGovernorStatus } from './storageGovernor.ts';
+import { recordStorageGovernorSample, storageGovernorStatus } from './storageGovernor.ts';
+import { migrationFinalizationStatus } from './migrationFinalization.ts';
+import { workspaceRetentionStatus } from './workspaceRetention.ts';
 import { normalizeAppProfileName } from './appProfileSelection.ts';
 import {
   readAppProfilePreference,
@@ -2888,6 +2890,12 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return storageRecoveryStatus(appProfilePaths());
     case 'storageGovernor:status':
       return storageGovernorStatus(appProfilePaths());
+    case 'storageGovernor:recordSample':
+      return recordStorageGovernorSample(appProfilePaths());
+    case 'migrationFinalization:status':
+      return migrationFinalizationStatus(appProfilePaths());
+    case 'workspaceRetention:status':
+      return workspaceRetentionStatus(appProfilePaths());
     case 'storageRecovery:importHistorical': {
       const expectedPayloads = Number((args[0] as { expectedPayloads?: unknown } | undefined)?.expectedPayloads);
       const profile = appProfilePaths();

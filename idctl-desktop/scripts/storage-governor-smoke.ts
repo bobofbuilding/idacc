@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AppProfilePaths } from '../src/main/appProfile.ts';
-import { allocatedProfileBytes, storageGovernorStatus } from '../src/main/storageGovernor.ts';
+import { allocatedProfileBytes, recordStorageGovernorSample, storageGovernorStatus } from '../src/main/storageGovernor.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'idacc-storage-governor-'));
 const paths: AppProfilePaths = {
@@ -26,6 +26,14 @@ try {
   assert.equal(status.policy.brainBackupKeepCount, 3);
   assert.equal(status.policy.brainBackupMaxBytes, 12 * 1024 ** 3);
   assert.ok(['healthy', 'warn', 'paused', 'blocked'].includes(status.mode));
+  // A month of representative daily observations is bounded to the documented
+  // 30-day window and produces a growth estimate rather than retaining history forever.
+  for (let day = 29; day >= 0; day -= 1) {
+    recordStorageGovernorSample(paths, new Date(Date.now() - day * 24 * 60 * 60 * 1000));
+  }
+  const observed = storageGovernorStatus(paths);
+  assert.equal(observed.growth.samples, 30);
+  assert.notEqual(observed.growth.bytesPerDay, null);
   console.log('storage governor smoke: ok');
 } finally {
   rmSync(root, { recursive: true, force: true });

@@ -6,6 +6,7 @@ import { ensurePrivateAppDirectory, writePrivateAppTextFileAtomic } from './appS
 
 export type StorageOperationKind = 'import-historical-memories' | 'retire-legacy-storage';
 type StorageOperationState = 'pending-confirmation' | 'confirmed' | 'cancelled' | 'completed' | 'failed';
+const OPERATION_TTL_MS = 5 * 60_000;
 
 export interface StorageOperationLease {
   id: string;
@@ -13,6 +14,7 @@ export interface StorageOperationLease {
   kind: StorageOperationKind;
   state: StorageOperationState;
   createdAt: string;
+  expiresAt: string;
   intent: Record<string, unknown>;
   confirmedAt?: string;
   cancelledAt?: string;
@@ -68,6 +70,14 @@ export function beginStorageOperation(
   const active = activePath(paths);
   if (existsSync(active)) {
     const lease = readLease(active);
+    if (lease.state === 'pending-confirmation' && Date.parse(lease.expiresAt) <= Date.now()) {
+      finalize(paths, lease.id, {
+        state: 'cancelled',
+        cancelledAt: new Date().toISOString(),
+        error: 'confirmation expired before execution; no storage mutation was started',
+      });
+      return beginStorageOperation(paths, kind, intent);
+    }
     throw new Error(`Storage recovery is already controlled by ${lease.kind} (${lease.state}, operation ${lease.id}). Review that operation before starting another.`);
   }
   const lease: StorageOperationLease = {
@@ -76,6 +86,7 @@ export function beginStorageOperation(
     kind,
     state: 'pending-confirmation',
     createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + OPERATION_TTL_MS).toISOString(),
     intent,
   };
   let descriptor: number | undefined;
@@ -105,6 +116,14 @@ function finalize(paths: AppProfilePaths, id: string, patch: Partial<StorageOper
 
 export function confirmStorageOperation(paths: AppProfilePaths, id: string): StorageOperationLease {
   const lease = assertActive(paths, id);
+  if (lease.state === 'pending-confirmation' && Date.parse(lease.expiresAt) <= Date.now()) {
+    finalize(paths, lease.id, {
+      state: 'cancelled',
+      cancelledAt: new Date().toISOString(),
+      error: 'confirmation expired before execution; no storage mutation was started',
+    });
+    throw new Error(`Storage operation ${id} expired and was cancelled. Start a new operation to continue.`);
+  }
   if (lease.state !== 'pending-confirmation') throw new Error(`Storage operation ${id} is ${lease.state}; it cannot be confirmed.`);
   const confirmed = { ...lease, state: 'confirmed' as const, confirmedAt: new Date().toISOString() };
   writeActive(paths, confirmed);

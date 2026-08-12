@@ -15,7 +15,7 @@ import { matchingExistingTeamName } from '../../../idctl/src/settings/teamNames.
 import { optimizeAskCommand } from './contextBudget.ts';
 
 export interface SubTask { title: string; description: string; agent: string; dependsOn: number[] }
-export interface CreatedTask { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; warning?: string; dependsOn: number[]; dispatched: boolean; deferred?: boolean; managerKickoff?: boolean }
+export interface CreatedTask { idx: number; ref: string; title: string; agent: string; ok: boolean; error?: string; warning?: string; dependsOn: number[]; dispatched: boolean; deferred?: boolean; managerKickoff?: boolean; existingTask?: ExistingTaskHint }
 export interface DecomposeResult { ok: boolean; subtasks: SubTask[]; raw: string; error?: string }
 export interface CreatePlanResult { created: CreatedTask[]; dispatched: number; deferred: number }
 export interface TeamLeadDelegationTarget { team: string; lead: string; activeCount: number; totalCount: number; runtime?: string; status?: string; skills: string[] }
@@ -936,6 +936,7 @@ export async function createAndDispatchPlan(
         agent: st.agent,
         ok: false,
         error: existing ? existingTaskHintDetail(existing) : e instanceof Error ? e.message : String(e),
+        existingTask: existing,
         dependsOn: st.dependsOn,
         dispatched: false,
       });
@@ -1228,6 +1229,7 @@ export interface FanoutResult {
   queryId?: string;
   detail?: string;
   existingTask?: ExistingTaskHint;
+  taskRef?: string;
 }
 
 function recordOf(value: unknown): Record<string, unknown> {
@@ -1336,11 +1338,33 @@ export async function fanOutObjective(client: ManagerClient, objective: string, 
         const agents = (await tc.agents().catch(() => [])) as Agent[];
         const lead = pickActiveLead(agents);
         if (!lead) return { team, status: 'no-active-agent', detail: agents.length ? `${agents.length} agent(s), none running` : 'no agents' };
-        const guard = await guardLeadQueue(tc, lead, 'fan-out');
-        if (!guard.ok) return { team, lead, status: 'deferred', detail: guard.detail };
-        const env = await remoteBudgeted<{ queryId?: string }>(tc, `/ask ${lead} ${qArg(FANOUT_PROMPT(obj, team, projectId, projectRoot))}`, 'work:fanout');
-        recordLeadDispatch(tc, lead, env.result?.queryId, 'work:fanout');
-        return { team, lead, status: 'dispatched', queryId: env.result?.queryId };
+        // A lead prompt alone is not delegation evidence. Materialize a
+        // manager-owned coordination parent first so activity can never claim
+        // “team leads prompted” while Work has no durable task to recover.
+        const created = await createAndDispatchPlan(tc, obj, [{
+          title: `Coordinate ${clip(obj, 72)}`,
+          agent: lead,
+          description: FANOUT_PROMPT(obj, team, projectId, projectRoot),
+          dependsOn: [],
+        }], {
+          dispatch: true,
+          respectOwners: true,
+          allowCoordinatorOwners: true,
+          ownerOpenTaskCap: Math.max(WORK_OWNER_OPEN_TASK_CAP, WORK_TEAM_LEAD_OWNER_OPEN_TASK_CAP),
+          leadCoordination: true,
+          projectId,
+          planId: `fanout-${Date.now().toString(36)}-${team}`,
+          coordinator: lead,
+        });
+        const task = created.created[0];
+        if (!task?.ok) return {
+          team,
+          lead,
+          status: task?.existingTask || task?.deferred ? 'deferred' : 'failed',
+          detail: task?.error || task?.warning || 'manager did not create a durable coordination task',
+          existingTask: task?.existingTask,
+        };
+        return { team, lead, status: 'dispatched', detail: `created tracked coordination task ${task.ref}`, taskRef: task.ref };
       } catch (e) {
         const existingTask = existingTaskHintFromError(e);
         if (existingTask) {
@@ -1422,7 +1446,7 @@ export async function fanOutObjectiveToActiveTeamLeads(
       team: operations.team,
       lead: operations.lead,
       status: 'dispatched',
-      detail: `reused open task ${ref}; jumpstart requested`,
+      detail: `reused open task ${ref}; jumpstart requested`, taskRef: ref,
     }];
   }
 
@@ -1458,9 +1482,10 @@ export async function fanOutObjectiveToActiveTeamLeads(
     team: operations.team,
     lead: operations.lead,
     status: 'dispatched',
-    detail: terminalHistory
+      detail: terminalHistory
       ? `created fresh task ${task.ref}; previous ${REPOSITORY_AUTHORITY_TASK_NAME} is terminal`
       : `created task ${task.ref}`,
+      taskRef: task.ref,
   }];
 }
 

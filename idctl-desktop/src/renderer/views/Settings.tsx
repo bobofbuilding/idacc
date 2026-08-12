@@ -198,9 +198,13 @@ type StorageGovernorStatus = {
   profileBytes: number;
   freeBytes: number | null;
   mode: 'healthy' | 'warn' | 'paused' | 'blocked';
-  categories: Record<'brain' | 'manager' | 'backups' | 'migrationArchives' | 'workspace' | 'logs' | 'cache' | 'recovery', number>;
+  categories: Record<string, number>;
+  budgets: { totalProfileBytes: number; workspaceBytes: number; backupsBytes: number; state: 'within-budget' | 'over-budget'; exceeded: string[] };
+  growth: { samples: number; sevenDayBytes: number | null; bytesPerDay: number | null; estimatedDaysToBlock: number | null };
   policy: { brainBackupKeepCount: number; brainBackupMaxBytes: number; warnFreeBytes: number; pauseFreeBytes: number; blockFreeBytes: number };
 };
+type MigrationFinalizationStatus = { coolingOffDays: number; readyCount: number; readyBytes: number };
+type WorkspaceRetentionStatus = { eligibleBytes: number; candidates: Array<{ dataClass: string; bytes: number; eligible: boolean }> };
 type SecureSettingsStatus = {
   migrationPending: boolean;
   protectedProviders: number;
@@ -510,6 +514,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const updateApplyRef = useRef(false);
   const [storageRecovery, setStorageRecovery] = useState<StorageRecoveryStatus | null>(null);
   const [storageGovernor, setStorageGovernor] = useState<StorageGovernorStatus | null>(null);
+  const [migrationFinalization, setMigrationFinalization] = useState<MigrationFinalizationStatus | null>(null);
+  const [workspaceRetention, setWorkspaceRetention] = useState<WorkspaceRetentionStatus | null>(null);
   const [storageRecoveryBusy, setStorageRecoveryBusy] = useState<'scan' | 'import' | 'cleanup' | null>('scan');
   const [storageRecoveryMsg, setStorageRecoveryMsg] = useState('');
   const [unifiedStack, setUnifiedStack] = useState<UnifiedStackViewStatus | null>(null);
@@ -623,7 +629,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     setStorageRecoveryBusy('scan');
     try {
       setStorageRecovery(await call<StorageRecoveryStatus>('storageRecovery:status'));
-      setStorageGovernor(await call<StorageGovernorStatus>('storageGovernor:status').catch(() => null));
+      setStorageGovernor(await call<StorageGovernorStatus>('storageGovernor:recordSample').catch(() => null));
+      setMigrationFinalization(await call<MigrationFinalizationStatus>('migrationFinalization:status').catch(() => null));
+      setWorkspaceRetention(await call<WorkspaceRetentionStatus>('workspaceRetention:status').catch(() => null));
     } catch (error) {
       setStorageRecoveryMsg(`Storage audit failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -2981,9 +2989,16 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             </div>
             {storageGovernor ? (
               <p className="muted small" style={{ marginBottom: 0 }}>
-                Backup policy: retain at most {storageGovernor.policy.brainBackupKeepCount} local daily copies and {formatBytes(storageGovernor.policy.brainBackupMaxBytes)} total. IDACC blocks full-copy recovery below {formatBytes(storageGovernor.policy.blockFreeBytes)} free.
+                Backup policy: retain at most {storageGovernor.policy.brainBackupKeepCount} local daily copies and {formatBytes(storageGovernor.policy.brainBackupMaxBytes)} total. IDACC blocks full-copy recovery below {formatBytes(storageGovernor.policy.blockFreeBytes)} free. Budget: {formatBytes(storageGovernor.budgets.totalProfileBytes)} total / {formatBytes(storageGovernor.budgets.workspaceBytes)} workspaces{storageGovernor.budgets.exceeded.length ? ` · review required: ${storageGovernor.budgets.exceeded.join(', ')}` : ''}.
               </p>
             ) : null}
+            {storageGovernor?.growth.samples ? (
+              <p className="muted small" style={{ marginBottom: 0 }}>
+                Storage history: {storageGovernor.growth.samples} daily samples{storageGovernor.growth.bytesPerDay != null ? ` · ${formatBytes(storageGovernor.growth.bytesPerDay)}/day over seven days` : ''}{storageGovernor.growth.estimatedDaysToBlock != null ? ` · estimated ${Math.ceil(storageGovernor.growth.estimatedDaysToBlock)} days to critical disk pressure at current growth` : ''}.
+              </p>
+            ) : null}
+            {migrationFinalization?.readyCount ? <p className="muted small" style={{ marginBottom: 0 }}>Migration finalization: {migrationFinalization.readyCount} verified rollback/archive candidate(s), {formatBytes(migrationFinalization.readyBytes)}, are past the {migrationFinalization.coolingOffDays}-day cooling-off period. Review them in this protected recovery flow before retirement.</p> : null}
+            {workspaceRetention?.eligibleBytes ? <p className="muted small" style={{ marginBottom: 0 }}>Workspace retention review: {formatBytes(workspaceRetention.eligibleBytes)} of typed temporary/cache/dependency/output/upload data is past its review window. IDACC does not delete active workspaces automatically.</p> : null}
             <details style={{ marginTop: 10 }}>
               <summary className="muted small">Review exact cleanup targets</summary>
               <ul className="muted small">
