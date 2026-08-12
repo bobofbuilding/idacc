@@ -8,7 +8,7 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## [0.1.718] — 2026-08-12
+## [0.1.720] — 2026-08-12
 ### What changed
 - Preserve the Manager's safe, actionable recovery message alongside a failed
   agent-configuration error code, so IDACC can explain why a reviewed change
