@@ -126,7 +126,7 @@ jobs:
             exit 1
           fi
 
-      - name: Detect a draft backed by an immutable successful-run artifact
+      - name: Detect a draft backed by an immutable verified-run artifact
         id: release-resume
         shell: bash
         env:
@@ -143,11 +143,51 @@ jobs:
             && [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = "true" ]; then
             mapfile -t CANDIDATE_RUN_IDS < <(
               gh api \
-                "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?event=workflow_dispatch&branch=$RELEASE_TAG&status=success&per_page=100" \
-                --jq ".workflow_runs[] | select(.head_sha == \"$RELEASE_COMMIT\" and .status == \"completed\" and .conclusion == \"success\") | .id"
+                "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?event=workflow_dispatch&branch=$RELEASE_TAG&status=completed&per_page=100" \
+                --jq ".workflow_runs[] | select(.head_sha == \"$RELEASE_COMMIT\" and .status == \"completed\") | .id"
             )
             for RUN_ID in "${CANDIDATE_RUN_IDS[@]}"; do
               [[ "$RUN_ID" =~ ^[0-9]+$ ]] || continue
+              # A completed run whose only failed job was publication has
+              # already produced and attested every immutable package. Treat
+              # it as an artifact source only after proving all build and
+              # attestation jobs passed. The promote-draft job then compares
+              # every byte with the draft before publishing it.
+              RUN_CONCLUSION="$(gh api \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" \
+                --jq '.conclusion')"
+              VERIFIED_ARTIFACT_RUN=false
+              if [ "$RUN_CONCLUSION" = "success" ]; then
+                VERIFIED_ARTIFACT_RUN=true
+              elif [ "$RUN_CONCLUSION" = "failure" ]; then
+                JOBS_FILE="$RUNNER_TEMP/idacc-release-jobs-$RUN_ID.json"
+                gh api \
+                  "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" \
+                  > "$JOBS_FILE"
+                VERIFIED_ARTIFACT_RUN="$(node -e '
+                  const fs = require("node:fs");
+                  const jobs = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).jobs || [];
+                  const required = [
+                    "Validate immutable release source",
+                    "Verify exact Manager and Brain sources",
+                    "Linux x64 AppImage and Debian package",
+                    "Windows x64 consumer bundle",
+                    "macOS arm64 consumer bundle",
+                    "macOS Intel consumer bundle",
+                    "Attest linux-x64",
+                    "Attest win32-x64",
+                    "Attest darwin-x64",
+                    "Attest darwin-arm64",
+                    "Assemble verified release",
+                    "Attest assembled release",
+                  ];
+                  const byName = new Map(jobs.map((job) => [job.name, job.conclusion]));
+                  const allRequiredSucceeded = required.every((name) => byName.get(name) === "success");
+                  const onlyPublishFailed = byName.get("Publish verified release") === "failure";
+                  process.stdout.write(allRequiredSucceeded && onlyPublishFailed ? "true" : "false");
+                ' "$JOBS_FILE")"
+              fi
+              [ "$VERIFIED_ARTIFACT_RUN" = "true" ] || continue
               ARTIFACT_COUNT="$(gh api \
                 "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
                 --jq '[.artifacts[] | select(.name == "idacc-assembled-release" and .expired == false)] | length')"

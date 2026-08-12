@@ -25,6 +25,10 @@ assert.match(workflow, /previous_success_artifact_id:\s*\$\{\{\s*steps\.release-
 assert.ok(workflow.includes('.head_sha == \\"$RELEASE_COMMIT\\"'));
 assert.match(workflow, /actions\/runs\/\$RUN_ID\/artifacts\?per_page=100/);
 assert.ok(workflow.includes('.name == "idacc-assembled-release" and .expired == false'));
+assert.match(workflow, /actions\/runs\/\$RUN_ID\/jobs\?per_page=100/);
+assert.match(workflow, /const onlyPublishFailed = byName\.get\("Publish verified release"\) === "failure"/);
+assert.match(workflow, /"Attest assembled release"/);
+assert.match(workflow, /\[ "\$VERIFIED_ARTIFACT_RUN" = "true" \] \|\| continue/);
 
 const promotion = workflow.slice(workflow.indexOf('  promote-draft:'));
 assert.match(promotion, /actions:\s*read/);
