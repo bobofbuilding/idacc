@@ -869,7 +869,25 @@ export async function createAndDispatchPlan(
       const env = await client.remote<{ task?: { shortId?: string; name?: string; ownerName?: string | null; status?: string | null }; warning?: string }>(cmd);
       const task = env.result?.task;
       const remoteWarning = typeof env.result?.warning === 'string' && env.result.warning.trim() ? env.result.warning.trim() : undefined;
-      const ref = task?.shortId ?? task?.name ?? st.title;
+      const ref = task?.shortId ?? task?.name;
+      // A manager acknowledgement without a durable task identity is not a
+      // dispatch.  Reporting it as one produces the exact false-success state
+      // where Chat claims work started but Work has no card to audit or recover.
+      if (!ref) {
+        created.push({
+          idx: i,
+          ref: st.title,
+          title: st.title,
+          agent: st.agent,
+          ok: false,
+          error: 'manager accepted the request without returning a task reference; no auditable task was created',
+          warning: remoteWarning,
+          dependsOn: st.dependsOn,
+          dispatched: false,
+          deferred: true,
+        });
+        continue;
+      }
       if (opts.lane && ref) { try { setTaskLane(ref, opts.lane); } catch { /* overlay is best-effort */ } }
       const hasOwnerField = task ? Object.prototype.hasOwnProperty.call(task, 'ownerName') : false;
       const actualOwner = agentNameKey(task?.ownerName ?? '');

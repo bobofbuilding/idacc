@@ -157,6 +157,35 @@ assert.equal(rejectedDispatch.deferred, 1);
 remoteCommands.length = 0;
 dispatchCommands.length = 0;
 
+const missingReceiptClient = {
+  ...client,
+  async remote(command) {
+    remoteCommands.push(command);
+    return { ok: true, result: { warning: 'request accepted' } };
+  },
+};
+
+const missingReceipt = await createAndDispatchPlan(
+  missingReceiptClient,
+  'Create auditable coordination work.',
+  [{
+    title: 'Require a durable task receipt',
+    description: 'The manager must return a task reference before Chat may claim delegation started.',
+    agent: 'research-lead',
+    dependsOn: [],
+  }],
+  { dispatch: true, respectOwners: true, allowCoordinatorOwners: true },
+);
+
+assert.equal(missingReceipt.created[0]?.ok, false);
+assert.equal(missingReceipt.created[0]?.dispatched, false);
+assert.match(missingReceipt.created[0]?.error || '', /without returning a task reference/);
+assert.equal(missingReceipt.dispatched, 0, 'a response without a task receipt must never be presented as dispatched');
+assert.equal(remoteCommands.filter((cmd) => /^\/ask\b/.test(cmd)).length, 0, 'IDACC must not ask an owner when task creation produced no auditable receipt');
+
+remoteCommands.length = 0;
+dispatchCommands.length = 0;
+
 const busyOwnerClient = {
   ...client,
   async tasksByStatus(status) {

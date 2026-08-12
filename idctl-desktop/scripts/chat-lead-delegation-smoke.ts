@@ -121,6 +121,20 @@ async function main(): Promise<void> {
       } else if (command.startsWith('/agent ') && command.endsWith(' start')) {
         throw new Error('agent start unavailable in smoke fixture');
       }
+      if (command.startsWith('/task create ')) {
+        const owner = command.match(/--owner\s+([^\s]+)/)?.[1]?.replace(/^"|"$/g, '') || '';
+        return {
+          ok: true,
+          result: {
+            task: {
+              shortId: '#created',
+              name: 'audit-reconcile-authorized-projects',
+              ownerName: owner,
+              status: 'doing',
+            },
+          },
+        };
+      }
       return { ok: true, result: { queryId: `query-${team}` } };
     },
     withTeam: (next: string) => makeClient(next),
