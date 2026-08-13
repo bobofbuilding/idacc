@@ -8,6 +8,12 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.723] — 2026-08-13
+### What changed
+- Make the production-safe IDACC-to-Codex coordination bridge visible in Settings, including a safe registration refresh and an explicit instruction to start a new Codex task when an existing task has no attached tools.
+- Add a scoped external-work validation handoff. It creates tracked coordinator validation work with project and evidence references, and never accepts the report itself as completion proof.
+- Preserve the Manager endpoint and administrator credential inside IDACC; the renderer and Codex receive only safe bridge status.
+
 ## [0.1.721] — 2026-08-12
 ### What changed
 - Consolidate dependency maintenance updates, retain Electron 41 runtime compatibility, and refresh the signed production update channel.
