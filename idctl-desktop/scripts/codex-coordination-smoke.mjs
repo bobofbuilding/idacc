@@ -20,9 +20,14 @@ assert.match(bridgeSource, /writePrivateAppTextFileAtomic/);
 assert.match(bridgeSource, /timingSafeEqual/);
 assert.match(bridgeSource, /IDACC_COORDINATION_MANAGED/);
 assert.match(bridgeSource, /A user-owned Codex MCP server already uses the idacc-coordination name/);
+assert.match(bridgeSource, /codexCoordinationStatus/);
+assert.match(bridgeSource, /refreshCodexCoordinationRegistration/);
+assert.match(bridgeSource, /ingest-external/);
 assert.doesNotMatch(bridgeSource, /IDACC_MANAGER_AGENT_TOKEN|X-Id-Admin/);
 assert.match(mainSource, /startCodexCoordinationBroker\(bridgeCall\)/);
 assert.match(mainSource, /stopCodexCoordinationBroker\(\)/);
+assert.match(mainSource, /codexCoordination:status/);
+assert.match(mainSource, /codexCoordination:refresh/);
 assert.equal(packageJson.scripts['test:codex-coordination'], 'node scripts/codex-coordination-smoke.mjs');
 assert.ok(packageJson.build.extraResources.some((entry) => (
   entry.from === 'resources/idacc-coordination-mcp'
@@ -150,6 +155,23 @@ try {
     name: 'idacc_catalog',
     arguments: { team: 'default' },
   });
+
+  const handoff = await request(5, 'tools/call', {
+    name: 'idacc_task_discipline',
+    arguments: {
+      action: 'ingest-external',
+      team: 'default',
+      primaryLead: 'bob',
+      projectId: 'bounties',
+      recordId: 'external-bounties-1',
+      title: 'Validate released Bounties work',
+      summary: 'Completed outside the managed task lifecycle.',
+      evidence: ['commit bae53bc', 'production smoke passed'],
+    },
+  });
+  assert.equal(handoff.result.structuredContent.broker, 'second');
+  assert.equal(observations[2].body.name, 'idacc_task_discipline');
+  assert.equal(observations[2].body.arguments.action, 'ingest-external');
 } finally {
   child.kill('SIGTERM');
   await Promise.all([first.close(), second.close()]);

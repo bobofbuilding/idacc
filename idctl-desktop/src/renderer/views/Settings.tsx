@@ -221,6 +221,13 @@ type SecureSettingsUnlockResult = {
   managerRestarted: boolean;
   migrated: { providers: number; mcpServers: number; evmRpcs: number };
 };
+type CodexCoordinationViewStatus = {
+  running: boolean;
+  registration: 'installed' | 'ready' | 'disabled' | 'conflict' | 'codex-unavailable' | 'failed' | 'not-running';
+  message: string;
+  detail?: string;
+  nextAction: 'start-new-codex-task' | 'refresh-bridge' | 'install-codex' | 'resolve-name-conflict' | 'open-idacc';
+};
 type ManagerCapabilities = {
   cc_api_version?: number;
   extension?: string;
@@ -415,6 +422,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   const [secureSettings, setSecureSettings] = useState<SecureSettingsStatus | null>(null);
   const [secureSettingsBusy, setSecureSettingsBusy] = useState(false);
   const [secureSettingsMsg, setSecureSettingsMsg] = useState('');
+  const [codexCoordination, setCodexCoordination] = useState<CodexCoordinationViewStatus | null>(null);
+  const [codexCoordinationBusy, setCodexCoordinationBusy] = useState(false);
   const [rpcNetwork, setRpcNetwork] = useState('Ethereum mainnet');
   const [rpcUrl, setRpcUrl] = useState('https://eth-mainnet.g.alchemy.com/v2/{API_KEY}');
   const [rpcApiKey, setRpcApiKey] = useState('');
@@ -611,6 +620,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     setProviders(await call<ProviderRow[]>('providers:list').catch(() => []));
     setEvmRpcs(await call<EvmRpcRow[]>('evmRpc:list').catch(() => []));
     setSecureSettings(await call<SecureSettingsStatus>('secureSettings:status').catch(() => null));
+    setCodexCoordination(await call<CodexCoordinationViewStatus>('codexCoordination:status').catch(() => null));
     const identityStatus = await call<RootIdentityStatus>('rootIdentity:get').catch(() => ({
       settings: defaultRootIdentitySettings(),
       activeProvider: 'local' as const,
@@ -686,6 +696,15 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
       setSecureSettings(await call<SecureSettingsStatus>('secureSettings:status').catch(() => null));
     } finally {
       setSecureSettingsBusy(false);
+    }
+  }
+  async function refreshCodexCoordination() {
+    if (codexCoordinationBusy) return;
+    setCodexCoordinationBusy(true);
+    try {
+      setCodexCoordination(await call<CodexCoordinationViewStatus>('codexCoordination:refresh'));
+    } finally {
+      setCodexCoordinationBusy(false);
     }
   }
   async function recheckSubs() {
@@ -3116,6 +3135,37 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         {secureSettingsMsg ? (
           <p className={`small ${/failed|could not/i.test(secureSettingsMsg) ? 'status-error' : 'ok-text'}`} style={{ marginBottom: 0 }}>{secureSettingsMsg}</p>
         ) : null}
+      </section>
+
+      <section className="card">
+        <h3>Codex coordination</h3>
+        <p className="muted small" style={{ marginTop: -4 }}>
+          IDACC can attach scoped catalog, task, and team-coordination tools to Codex without exposing the Manager endpoint or administrator credential. Codex fixes its available tools when a task starts, so an already-open task must be replaced with a new task after this bridge is ready.
+        </p>
+        {codexCoordination ? (
+          <div className="kv">
+            <span>bridge</span>
+            <b className={codexCoordination.running ? 'ok-text' : 'status-error'}>{codexCoordination.running ? 'running' : 'not running'}</b>
+            <span>Codex attachment</span>
+            <b>{codexCoordination.registration.replace(/-/g, ' ')}</b>
+            <span>next step</span>
+            <span>{codexCoordination.message}</span>
+          </div>
+        ) : (
+          <p className="muted small">Checking scoped coordination bridge…</p>
+        )}
+        {codexCoordination?.detail ? <p className="warn-text small">{codexCoordination.detail}</p> : null}
+        <div className="row-actions" style={{ marginTop: 10 }}>
+          <button className="btn small" type="button" disabled={codexCoordinationBusy} onClick={() => void refreshCodexCoordination()}>
+            {codexCoordinationBusy ? 'Refreshing…' : 'Refresh Codex bridge'}
+          </button>
+          <button className="btn small" type="button" onClick={() => navigate?.('tasks')}>
+            Open Work
+          </button>
+        </div>
+        <p className="muted small" style={{ marginBottom: 0 }}>
+          To hand off completed external work, start a new Codex task and use task discipline → Record external work for managed validation. The record is created as a tracked validation task; reported evidence never marks work complete on its own.
+        </p>
       </section>
 
       <section className="card">

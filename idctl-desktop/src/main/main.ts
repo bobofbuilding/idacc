@@ -86,7 +86,7 @@ import { startBroker, armBroker, disarmBroker, setWatching, setBrokerDisplay, br
 import { configureComputerUseAuditManager } from './computeruse/audit.ts';
 import { getPermissions, openPermissionSettings, type CuPermissionPane } from './computeruse/permissions.ts';
 import { driverCapability, getMousePos } from './computeruse/driver.mac.ts';
-import { startCodexCoordinationBroker, stopCodexCoordinationBroker } from './codexCoordination.ts';
+import { codexCoordinationStatus, refreshCodexCoordinationRegistration, startCodexCoordinationBroker, stopCodexCoordinationBroker } from './codexCoordination.ts';
 import { syncDomainsForMethod, type StoreChangeEvent } from '../shared/syncDomains.ts';
 import { appProfilePaths, initializeAppProfile, updateManagedManagerProfileUrl } from './appProfile.ts';
 import {
@@ -2886,6 +2886,10 @@ async function appCall(method: string, args: unknown[]): Promise<unknown> {
       return appShutdown.status();
     case 'app:version':
       return app.getVersion();
+    case 'codexCoordination:status':
+      return codexCoordinationStatus();
+    case 'codexCoordination:refresh':
+      return refreshCodexCoordinationRegistration();
     case 'storageRecovery:status':
       return storageRecoveryStatus(appProfilePaths());
     case 'storageGovernor:status':

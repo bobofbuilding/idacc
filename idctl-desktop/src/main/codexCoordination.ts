@@ -29,6 +29,16 @@ export interface CodexCoordinationStatus {
   detail?: string;
 }
 
+/** Deliberately safe to send to the renderer: it contains neither the broker
+ * locator nor its bearer authority. */
+export interface CodexCoordinationViewStatus {
+  running: boolean;
+  registration: CodexCoordinationStatus['registration'] | 'not-running';
+  message: string;
+  detail?: string;
+  nextAction: 'start-new-codex-task' | 'refresh-bridge' | 'install-codex' | 'resolve-name-conflict' | 'open-idacc';
+}
+
 type AgentRecord = {
   id?: unknown;
   name?: unknown;
@@ -74,6 +84,7 @@ const state: {
   port: number;
   sessionFile: string;
   stopPromise: Promise<void> | null;
+  registration: Pick<CodexCoordinationStatus, 'registration' | 'detail'> | null;
 } = {
   server: null,
   sockets: new Set(),
@@ -81,6 +92,7 @@ const state: {
   port: 0,
   sessionFile: '',
   stopPromise: null,
+  registration: null,
 };
 
 function coordinationDirectory(): string {
@@ -290,6 +302,33 @@ async function toolInterAgent(call: BridgeCall, args: Record<string, unknown>) {
 async function toolTaskDiscipline(call: BridgeCall, args: Record<string, unknown>) {
   const action = cleanString(args.action, 'action', 32, true);
   const team = cleanString(args.team, 'team');
+  if (action === 'ingest-external') {
+    if (!team) throw new Error('team is required to record external work for managed validation.');
+    const title = cleanString(args.title, 'title', 160, true);
+    const summary = cleanString(args.summary, 'summary', 4_000, true);
+    const evidence = cleanStringList(args.evidence, 'evidence', 20);
+    const projectId = cleanString(args.projectId, 'projectId');
+    const primaryLead = cleanString(args.primaryLead, 'primaryLead');
+    const recordId = cleanString(args.recordId, 'recordId', 128) || `external-${Date.now().toString(36)}`;
+    const objective = [
+      `Record ${recordId}: independently validate externally completed work — ${title}.`,
+      '',
+      'This is an evidence handoff, not an implementation request. Do not reimplement, publish, deploy, or mark the work complete solely from this report.',
+      'Create a durable managed validation task, inspect the stated project safely, and record a validation conclusion with concrete evidence. Keep the task blocked if evidence is insufficient.',
+      '',
+      `Reporter summary: ${summary}`,
+      evidence.length ? `Evidence references:\n${evidence.map((item) => `- ${item}`).join('\n')}` : 'Evidence references: none supplied.',
+    ].join('\n');
+    return {
+      ok: true,
+      validation: sanitizeSecretPayload(await call('work:delegateToCoordinator', [objective, {
+        team,
+        lead: primaryLead || undefined,
+        projectId: projectId || undefined,
+        planId: recordId,
+      }])),
+    };
+  }
   if (action === 'context') {
     const refs = cleanStringList(args.refs, 'refs', 50);
     if (!refs.length) throw new Error('refs is required for task context.');
@@ -470,6 +509,51 @@ export function ensureCodexCoordinationRegistered(sessionFile = codexCoordinatio
   return added.ok ? { registration: 'installed' } : { registration: 'failed', detail: added.detail };
 }
 
+function coordinationViewStatus(): CodexCoordinationViewStatus {
+  if (!state.server || !state.registration) {
+    return {
+      running: false,
+      registration: 'not-running',
+      message: 'The scoped IDACC coordination bridge is not running. Open or recover IDACC, then start a new Codex task.',
+      nextAction: 'open-idacc',
+    };
+  }
+  const { registration, detail } = state.registration;
+  if (registration === 'ready' || registration === 'installed') {
+    return {
+      running: true,
+      registration,
+      message: 'IDACC registered a scoped coordination bridge. Start a new Codex task to receive it; tasks already open cannot gain tools mid-session.',
+      nextAction: 'start-new-codex-task',
+    };
+  }
+  const actions: Record<Exclude<CodexCoordinationStatus['registration'], 'ready' | 'installed'>, CodexCoordinationViewStatus['nextAction']> = {
+    disabled: 'refresh-bridge',
+    conflict: 'resolve-name-conflict',
+    'codex-unavailable': 'install-codex',
+    failed: 'refresh-bridge',
+  };
+  return {
+    running: true,
+    registration,
+    message: 'IDACC could not attach its scoped coordination bridge to Codex.',
+    ...(detail ? { detail } : {}),
+    nextAction: actions[registration],
+  };
+}
+
+export function codexCoordinationStatus(): CodexCoordinationViewStatus {
+  return coordinationViewStatus();
+}
+
+/** Re-check only the app-owned Codex MCP registration. It cannot start a
+ * Manager, reveal its endpoint/credential, or overwrite a user-owned server. */
+export function refreshCodexCoordinationRegistration(): CodexCoordinationViewStatus {
+  if (!state.server || !state.sessionFile) return coordinationViewStatus();
+  state.registration = ensureCodexCoordinationRegistered(state.sessionFile);
+  return coordinationViewStatus();
+}
+
 function writeSessionFile(): void {
   ensurePrivateAppDirectory(coordinationDirectory());
   state.sessionFile = codexCoordinationSessionPath();
@@ -492,7 +576,8 @@ function currentSessionMatches(): boolean {
 
 export async function startCodexCoordinationBroker(call: BridgeCall): Promise<CodexCoordinationStatus> {
   if (state.server) {
-    return { running: true, port: state.port, sessionFile: state.sessionFile, ...ensureCodexCoordinationRegistered(state.sessionFile) };
+    state.registration = ensureCodexCoordinationRegistered(state.sessionFile);
+    return { running: true, port: state.port, sessionFile: state.sessionFile, ...state.registration };
   }
   if (state.stopPromise) await state.stopPromise;
   state.token = randomBytes(24).toString('hex');
@@ -539,11 +624,12 @@ export async function startCodexCoordinationBroker(call: BridgeCall): Promise<Co
     if (!address || typeof address === 'string' || !address.port) throw new Error('coordination broker did not bind an explicit loopback port');
     state.port = address.port;
     writeSessionFile();
+    state.registration = ensureCodexCoordinationRegistered(state.sessionFile);
     return {
       running: true,
       port: state.port,
       sessionFile: state.sessionFile,
-      ...ensureCodexCoordinationRegistered(state.sessionFile),
+      ...state.registration,
     };
   } catch (error) {
     await stopCodexCoordinationBroker();
@@ -569,6 +655,7 @@ export function stopCodexCoordinationBroker(): Promise<void> {
     state.token = '';
     state.port = 0;
     state.sessionFile = '';
+    state.registration = null;
   })();
   let tracked: Promise<void>;
   tracked = attempt.finally(() => {
