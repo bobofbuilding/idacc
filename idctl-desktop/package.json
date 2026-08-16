@@ -282,7 +282,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@noble/curves": "^2.2.0",
+    "@noble/curves": "^2.3.0",
     "@noble/hashes": "^2.2.0",
     "@nut-tree-fork/libnut-darwin": "^2.7.5",
     "@walletconnect/universal-provider": "^2.23.10",
