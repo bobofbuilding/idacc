@@ -279,10 +279,10 @@ function sortedRecordStamp<T>(record: Record<string, T>): string {
 }
 
 /** Tabbed wrapper: Tasks + Schedule + Loops in one page. */
-export function Tasks({ store, initialTab, area = 'work' }: { store: FleetStore; initialTab?: Tab; area?: WorkArea }) {
+export function Tasks({ store, initialTab, tabRequest, area = 'work' }: { store: FleetStore; initialTab?: Tab; tabRequest?: number; area?: WorkArea }) {
   const tabs = WORK_AREAS[area].map((id) => TABS.find((item) => item.id === id)!);
   const [tab, setTab] = useState<Tab>(initialTab && WORK_AREAS[area].includes(initialTab) ? initialTab : WORK_AREAS[area][0]);
-  useEffect(() => { setTab(initialTab && WORK_AREAS[area].includes(initialTab) ? initialTab : WORK_AREAS[area][0]); }, [initialTab, area]);
+  useEffect(() => { setTab(initialTab && WORK_AREAS[area].includes(initialTab) ? initialTab : WORK_AREAS[area][0]); }, [initialTab, area, tabRequest]);
   function pick(t: Tab) { setTab(t); }
   const showsLearningStatus = tab === 'goals' || tab === 'learn' || tab === 'schedule' || tab === 'loops' || tab === 'dream';
 

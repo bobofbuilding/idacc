@@ -107,6 +107,7 @@ export function App() {
     return isViewId(initialTarget) ? initialTarget : 'dashboard';
   });
   const [teamsFocus, setTeamsFocus] = useState<TeamsFocus | undefined>(() => initialTarget === 'health' || initialTarget === 'teams:health' ? 'health' : initialTarget === 'teams:build' ? 'build' : initialTarget === 'teams:route' ? 'route-hierarchy' : undefined);
+  const [workTabRequest, setWorkTabRequest] = useState(0);
   const [identityTarget, setIdentityTarget] = useState<string | undefined>(() => initialTarget?.startsWith('identity:') ? initialTarget.slice(9) : undefined);
   const [workTab, setWorkTab] = useState<WorkTab>(() => workDestination(initialTarget ?? '')?.tab ?? 'tasks');
   const store = useFleet(view === 'knowledge' || view === 'automations' ? 'tasks' : view);
@@ -136,7 +137,7 @@ export function App() {
     if (target.startsWith('identity:')) { setIdentityTarget(target.slice(9)); setView('identity'); return; }
     if (target === 'identity') setIdentityTarget(undefined);
     const destination = workDestination(target);
-    if (destination) { setWorkTab(destination.tab); setView(destination.view); return; }
+    if (destination) { setWorkTabRequest((request) => request + 1); setWorkTab(destination.tab); setView(destination.view); return; }
     if (target === 'teams:build') { setTeamsFocus('build'); setView('teams'); return; }
     if (target === 'teams:route') {
       setTeamsFocus('route-hierarchy');
@@ -300,6 +301,7 @@ export function App() {
             <Router
               view={view}
               workTab={workTab}
+              workTabRequest={workTabRequest}
               identityTarget={identityTarget}
               store={store}
               navigate={navigateTo}
@@ -347,9 +349,10 @@ export function App() {
   );
 }
 
-function Router({ view, workTab, identityTarget, store, navigate, teamsFocus, onTeamsFocusHandled, commandEnvironment }: {
+function Router({ view, workTab, workTabRequest, identityTarget, store, navigate, teamsFocus, onTeamsFocusHandled, commandEnvironment }: {
   view: ViewId;
   workTab: WorkTab;
+  workTabRequest: number;
   identityTarget?: string;
   store: ReturnType<typeof useFleet>;
   navigate: (target: string) => void;
@@ -365,11 +368,11 @@ function Router({ view, workTab, identityTarget, store, navigate, teamsFocus, on
     case 'inbox':
       return <Inbox store={store} />;
     case 'tasks':
-      return <Tasks store={store} area="work" initialTab={workTab} />;
+      return <Tasks store={store} area="work" initialTab={workTab} tabRequest={workTabRequest} />;
     case 'knowledge':
-      return <Tasks store={store} area="knowledge" initialTab={workTab} />;
+      return <Tasks store={store} area="knowledge" initialTab={workTab} tabRequest={workTabRequest} />;
     case 'automations':
-      return <Tasks store={store} area="automations" initialTab={workTab} />;
+      return <Tasks store={store} area="automations" initialTab={workTab} tabRequest={workTabRequest} />;
     case 'health':
       return <Teams store={store} focus="health" onFocusHandled={onTeamsFocusHandled} navigate={navigate} />;
     case 'identity':
