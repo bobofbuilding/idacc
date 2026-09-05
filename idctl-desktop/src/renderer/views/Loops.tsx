@@ -1,3 +1,4 @@
+import { CalendarSchedule } from '../components/CalendarSchedule.tsx';
 import { useEffect, useRef, useState } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import type { ScheduleEntry } from '../../../../idctl/src/api/client.ts';
@@ -391,7 +392,7 @@ function LoopBuilder({ store, onScheduled }: { store: FleetStore; onScheduled?: 
     const target = valid[0].agent;
     const objective = composeObjective(valid);
     try {
-      let current = editingId ? await ensureLoopFresh(`Schedule loop ${title || editingId}`, ['updatedAt']) : null;
+      let current = editingId ? await ensureLoopFresh(`Schedule workflow ${title || editingId}`, ['updatedAt']) : null;
       if (editingId && !current) return;
       const before = await currentTeamSchedules();
       if (!before) return;
@@ -408,7 +409,7 @@ function LoopBuilder({ store, onScheduled }: { store: FleetStore; onScheduled?: 
       // Recheck both the reusable chain and duplicate set after the confirmation
       // dialog so another window cannot change the approved target or cadence.
       if (editingId) {
-        current = await ensureLoopFresh(`Schedule loop ${title || editingId}`, ['updatedAt']);
+        current = await ensureLoopFresh(`Schedule workflow ${title || editingId}`, ['updatedAt']);
         if (!current) return;
       }
       const confirmedSchedules = await currentTeamSchedules();
@@ -466,7 +467,7 @@ function LoopBuilder({ store, onScheduled }: { store: FleetStore; onScheduled?: 
   return (
     <section className="card">
       <div className="row-actions" style={{ alignItems: 'baseline', marginBottom: 6 }}>
-        <h3 className="grow" style={{ margin: 0 }}>New loop <span className="muted small">· string one or more agents + tasks into a sequence (AI-drafted) — run now or on a persistent cadence</span></h3>
+        <h3 className="grow" style={{ margin: 0 }}>New workflow <span className="muted small">· string one or more agents + tasks into a sequence (AI-drafted) — run now or on a persistent cadence</span></h3>
         {msg ? <span className={`small ${/failed|could not|stopped/.test(msg) ? 'status-error' : 'muted'}`}>{msg}</span> : null}
       </div>
 
@@ -490,7 +491,7 @@ function LoopBuilder({ store, onScheduled }: { store: FleetStore; onScheduled?: 
             <select className="cell-select" value={designer} disabled={locked} onChange={(e) => setDraftAgent(e.target.value)} title="agent that designs the chain">
               {names.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
-            <button className="btn" disabled={locked || !goal.trim()} onClick={() => void draft()}>{drafting ? 'Drafting…' : '✦ Draft chain'}</button>
+            <button className="btn" disabled={locked || !goal.trim()} onClick={() => void draft()}>{drafting ? 'Drafting…' : '✦ Draft steps'}</button>
           </span>
         </span>
         {steps.length ? (<><span>name</span>
@@ -532,12 +533,7 @@ function LoopBuilder({ store, onScheduled }: { store: FleetStore; onScheduled?: 
             </label>
             {scheduleOn ? (
               <>
-                <select className="cell-select" value={days} disabled={locked} onChange={(e) => setDays(e.target.value)}>
-                  {CADENCES.map((c) => <option key={c.days} value={c.days}>{c.label}</option>)}
-                </select>
-                <span className="muted small">at</span>
-                <input style={{ width: 70 }} disabled={locked} value={time} onChange={(e) => setTime(e.target.value)} placeholder="09:00" />
-                <span className="muted small">local time</span>
+                <CalendarSchedule time={time} days={days.split(',').filter(Boolean)} disabled={locked} onTime={setTime} onDays={(value) => setDays(value.join(','))} />
               </>
             ) : null}
           </span>
@@ -557,11 +553,11 @@ function LoopBuilder({ store, onScheduled }: { store: FleetStore; onScheduled?: 
         <span className="grow" />
         {steps.length ? <button className="btn" disabled={locked} onClick={() => void save()}>Save</button> : null}
         {steps.length ? <button className="btn" disabled={locked} title="Run the sequence now, in-app (precise per-step routing; passes each step's output to the next)" onClick={() => void run()}>{running ? 'Running…' : `▶ Run ${steps.length === 1 ? 'now' : `${steps.length}-step chain`}`}</button> : null}
-        {steps.length && scheduleOn ? <button className="btn primary" disabled={locked} title="Schedule this loop on the chosen persistent Manager cadence" onClick={() => void createSchedule()}>Schedule loop</button> : null}
+        {steps.length && scheduleOn ? <button className="btn primary" disabled={locked} title="Schedule this loop on the chosen persistent Manager cadence" onClick={() => void createSchedule()}>Schedule workflow</button> : null}
       </div>
       <p className="muted small" style={{ marginTop: 6 }}>
         <b>Run now</b> executes the steps in order in-app via <span className="mono">/ask</span>, passing each step's output to the next as context (precise per-step routing; app must be open).
-        <b> Schedule loop</b> hands it to the unified Manager while IDACC is running; the definition persists and resumes after restart. A single step runs as-is; a multi-step chain is handed to the first agent as an ordered checklist to run &amp; delegate. Saved loops can be re-run or scheduled anytime.
+        <b> Schedule workflow</b> hands it to the unified Manager while IDACC is running; the definition persists and resumes after restart. A single step runs as-is; a multi-step chain is handed to the first agent as an ordered checklist to run &amp; delegate. Saved workflows can be re-run or scheduled anytime.
       </p>
     </section>
   );
@@ -708,7 +704,7 @@ export function Loops({ store }: { store: FleetStore }) {
                 </td>
               </tr>
             ))}
-            {loops.length === 0 ? <tr><td colSpan={6} className="muted center pad">No scheduled loops yet. Build one above with <b>New loop</b>, tick <b>run on a cadence</b>, and <b>Schedule loop</b> — e.g. weekdays 09:00 to “review the launch queue and report blockers”.</td></tr> : null}
+            {loops.length === 0 ? <tr><td colSpan={6} className="muted center pad">No scheduled workflows yet. Build one above with <b>New workflow</b>, tick <b>run on a cadence</b>, and <b>Schedule workflow</b> — e.g. weekdays 09:00 to “review the launch queue and report blockers”.</td></tr> : null}
           </tbody>
         </table>
         <p className="muted small" style={{ marginTop: 6 }}>

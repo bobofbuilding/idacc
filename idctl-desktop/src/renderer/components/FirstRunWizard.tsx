@@ -251,10 +251,10 @@ export function FirstRunWizard({
         </div>
 
         <p className="muted onboarding-intro">
-          IDACC includes its Agent manager and Brain. Your goals, memory, projects, credentials, and agent work stay in this private profile and are not bundled into application updates.
+          Connect a model provider, create your starter team, then try a first task. Your work and settings stay in your private profile across application updates.
         </p>
 
-        <div className="unified-stack-services">
+        <details open={status.services.some((service) => !service.healthy)}><summary>Service readiness</summary><div className="unified-stack-services">
           {status.services.map((service) => (
             <div className="unified-stack-service" key={service.name}>
               <span className={service.healthy ? 'dot live' : service.bundled ? 'dot busy' : 'dot dead'} />
@@ -263,6 +263,8 @@ export function FirstRunWizard({
             </div>
           ))}
         </div>
+
+        </details>
 
         {status.phase === 'preparing' ? (
           <>

@@ -138,15 +138,22 @@ export function slashCommandFromQuery(query: string, store: FleetStore): Command
 
 /** The full-page views the palette can jump to (kept in sync with App's NAV). */
 const VIEWS: { id: string; label: string; kw?: string }[] = [
-  { id: 'dashboard', label: 'Dashboard', kw: 'home overview fleet' },
+  { id: 'dashboard', label: 'Home', kw: 'home overview fleet' },
   { id: 'inbox', label: 'Inbox', kw: 'messages questions' },
-  { id: 'tasks', label: 'Work · Tasks', kw: 'board kanban plans schedule loops dream' },
+  { id: 'tasks', label: 'Work · Tasks', kw: 'board kanban' },
+  { id: 'tasks:goals', label: 'Work · Goals' },
+  { id: 'tasks:plans', label: 'Work · Plans' },
+  { id: 'knowledge', label: 'Knowledge · Library', kw: 'learn sources' },
+  { id: 'knowledge:dream', label: 'Knowledge · Reflection', kw: 'dream ideas' },
+  { id: 'automations', label: 'Automations · Overview', kw: 'schedule heartbeat' },
+  { id: 'automations:schedule', label: 'Automations · Scheduled checks' },
+  { id: 'automations:loops', label: 'Automations · Workflows', kw: 'loops chain' },
   { id: 'projects', label: 'Projects', kw: 'repo git register' },
-  { id: 'health', label: 'HR Manager · Health', kw: 'health status roster probe' },
+  { id: 'health', label: 'Teams · Health', kw: 'health status roster probe' },
   { id: 'identity', label: 'Identity & Keys', kw: 'wallet safe session' },
-  { id: 'teams', label: 'HR Manager', kw: 'create team agent spawn org' },
-  { id: 'modules', label: 'Capabilities', kw: 'skills plugins mcp' },
-  { id: 'computer', label: 'Computer Use', kw: 'mac control broker' },
+  { id: 'teams', label: 'Teams', kw: 'create team agent spawn org' },
+  { id: 'modules', label: 'Tools', kw: 'skills plugins mcp' },
+  { id: 'computer', label: 'Computer Control', kw: 'mac control broker' },
   { id: 'settings', label: 'Settings', kw: 'providers models inference managers update' },
 ];
 
@@ -160,7 +167,7 @@ export function buildCommands(store: FleetStore): Command[] {
       id: `go.${v.id}`,
       label: `Go to ${v.label}`,
       group: 'Navigate',
-      ownerView: v.id,
+      ownerView: /^(tasks:|knowledge|automations)/.test(v.id) ? 'tasks' : v.id,
       requiredFeatures: [],
       risk: 'none',
       confirmation: 'none',

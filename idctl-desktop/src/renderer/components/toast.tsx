@@ -60,12 +60,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           {toasts.map((t) => {
             const accent = t.kind === 'success' ? '#3ccb78' : t.kind === 'error' ? '#e06c6c' : t.kind === 'progress' ? 'var(--accent, #6aa8ff)' : 'var(--border, #2a2a2a)';
             return (
-              <div key={t.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 9, background: 'var(--panel, #1b1b1b)', border: '1px solid var(--border, #2a2a2a)', borderLeft: `3px solid ${accent}`, borderRadius: 8, padding: '9px 11px', boxShadow: '0 6px 20px rgba(0,0,0,0.4)' }}>
-                <span style={{ color: accent, fontWeight: 700, lineHeight: '18px' }}>
+              <div key={t.id} role={t.kind === 'error' ? 'alert' : 'status'} aria-atomic="true" style={{ display: 'flex', alignItems: 'flex-start', gap: 9, background: 'var(--panel, #1b1b1b)', border: '1px solid var(--border, #2a2a2a)', borderLeft: `3px solid ${accent}`, borderRadius: 8, padding: '9px 11px', boxShadow: '0 6px 20px rgba(0,0,0,0.4)' }}>
+                <span aria-hidden="true" style={{ color: accent, fontWeight: 700, lineHeight: '18px' }}>
                   {t.kind === 'success' ? '✓' : t.kind === 'error' ? '⚠' : t.kind === 'progress' ? <span className="idctl-spin">⟳</span> : '•'}
                 </span>
                 <span style={{ flex: 1, fontSize: 12.5, lineHeight: '18px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{t.text}</span>
-                <button onClick={() => dismiss(t.id)} title="Dismiss" style={{ background: 'none', border: 'none', color: 'var(--muted, #888)', cursor: 'pointer', fontSize: 14, lineHeight: '16px', padding: 0 }}>×</button>
+                <button onClick={() => dismiss(t.id)} title="Dismiss" aria-label="Dismiss notification" style={{ background: 'none', border: 'none', color: 'var(--muted, #888)', cursor: 'pointer', fontSize: 14, lineHeight: '16px', padding: 0 }}>×</button>
               </div>
             );
           })}

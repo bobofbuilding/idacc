@@ -493,7 +493,7 @@ function toSpec(p: McpServerProfile): McpServerSpec {
 }
 /** Render a compact test result (✓ N tools / ✕ error / testing…). */
 function TestCell({ r }: { r?: TestResult }) {
-  if (!r || (r.ok === undefined && !r.testing && !r.error)) return <span className="muted">—</span>;
+  if (!r || (r.ok === undefined && !r.testing && !r.error)) return <span className="muted">Not tested</span>;
   if (r.testing) return <span className="warn-text">testing…</span>;
   if (r.ok) return <span className="ok-text" title={(r.tools ?? []).join(', ')}>✓ {r.tools?.length ?? 0} tools</span>;
   return <span className="status-error" title={r.error}>✕ {(r.error ?? 'failed').slice(0, 44)}</span>;
@@ -1991,7 +1991,7 @@ export function Modules({ store }: { store: FleetStore }) {
   return (
     <div className="view modules">
       <header className="view-head">
-        <h1>Capabilities</h1>
+        <h1>Tools</h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <span className="muted small">scope</span>
           <select className="cell-select" value={scope} onChange={(e) => setScope(e.target.value as CapabilityScope)} title="Apply to the active team, every team, every team lead, or non-default worker agents">
@@ -2059,7 +2059,7 @@ export function Modules({ store }: { store: FleetStore }) {
 
       <div className="tabs">
         {([
-          ['mcp', 'MCP servers'],
+          ['mcp', 'Connections'],
           ['skills', 'Skills'],
           ['plugins', 'Plugins'],
         ] as [CapabilityTab, string][]).map(([id, label]) => (
@@ -2071,7 +2071,7 @@ export function Modules({ store }: { store: FleetStore }) {
 
       {eligibleAgents.length > 0 ? (
         <div className="muted small" title={eligibleAgents.map((a) => `${targetTeamOf(a)}/${a.name}: ${capabilitySurface(tab, agentRuntime(a)).title}`).join('\n')}>
-          Runtime-neutral targeting: {capabilitySurfaceSummary(tab, eligibleAgents)}{advisoryAgents.length ? ` · ${advisoryAgents.length} fallback/advisory` : ''}.
+          Available for selected agents: {capabilitySurfaceSummary(tab, eligibleAgents)}{advisoryAgents.length ? ` · ${advisoryAgents.length} fallback/advisory` : ''}.
         </div>
       ) : null}
 
@@ -2080,7 +2080,7 @@ export function Modules({ store }: { store: FleetStore }) {
       {tab === 'mcp' ? (
       <section className="card grow">
         <div className="row-actions" style={{ alignItems: 'baseline', flexWrap: 'wrap' }}>
-          <h3 className="grow">MCP</h3>
+          <h3 className="grow">Connections <span className="muted small">· MCP tool servers</span></h3>
           <span className="chip tag" title="Registered MCP server profiles">Servers {mcp.length}</span>
           <span
             className="chip tag"
@@ -2270,7 +2270,7 @@ export function Modules({ store }: { store: FleetStore }) {
           <button className="btn small" disabled={brainSyncDisabled} title={brainSyncTitle} onClick={() => void syncSkillsToBrain()}>
             {brainSyncing ? 'Syncing…' : 'Preview & sync'}
           </button>
-          <BrainDashboardLauncher reviewTabs={brainDashboardReviewTabs} />
+          <details className="compact-details"><summary>Advanced: Brain diagnostics</summary><BrainDashboardLauncher reviewTabs={brainDashboardReviewTabs} /></details>
           <button className="btn primary small" onClick={() => setShowCreate((s) => !s)}>
             {showCreate ? '− Cancel' : '+ Create skill'}
           </button>
@@ -2533,7 +2533,7 @@ export function Modules({ store }: { store: FleetStore }) {
           ) : null}
         </div>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Adapter packages stay here. Digested instruction wrappers move to Skills.
+          Plugins add tools and instructions. Packages containing only instructions are available in Skills.
         </p>
         <table className="grid">
           <thead>
@@ -2592,7 +2592,7 @@ export function Modules({ store }: { store: FleetStore }) {
             {pluginRows.length === 0 ? (
               <tr>
                 <td colSpan={4} className="muted center pad">
-                  No active plugin packages. Digested wrappers now live in Skills.
+                  No plugins installed. Open Skills to browse available instructions, or Connections to add a tool server.
                 </td>
               </tr>
             ) : null}

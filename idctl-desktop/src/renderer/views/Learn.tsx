@@ -1,3 +1,4 @@
+import { hasCurrentBrainGraphSync, LEARN_BRAIN_SYNC_SCHEMA_VERSION } from '../../shared/usability.ts';
 import { useEffect, useMemo, useState } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import type {
@@ -32,7 +33,7 @@ type CreatePlanResult = { created: CreatedTask[]; dispatched: number; deferred: 
 const PRIORITIES: LearnPriority[] = ['urgent', 'high', 'normal'];
 const KIND_LABEL: Record<LearnMaterialKind, string> = { github: 'GitHub', folder: 'Folder', site: 'Site', pdf: 'PDF' };
 const STALE_PROCESSING_MS = 20 * 60 * 1000;
-const LEARN_BRAIN_SYNC_SCHEMA_VERSION = 3;
+
 const STATUS_CLASS: Record<string, string> = {
   queued: 'st-paused',
   processing: 'st-active',
@@ -63,15 +64,6 @@ function isStaleProcessing(m: LearnMaterial): boolean {
   return m.status === 'processing' && Date.now() - m.updatedAt > STALE_PROCESSING_MS;
 }
 
-function hasCurrentBrainGraphSync(m: LearnMaterial): boolean {
-  const sync = m.brainSync;
-  if (!sync) return false;
-  if (sync.schemaVersion !== LEARN_BRAIN_SYNC_SCHEMA_VERSION || sync.exactEntity !== true) return false;
-  if (!sync.entity || !sync.sourceEntity || !sync.facts || !sync.edges) return false;
-  const expected = Math.max(0, Number(sync.expectedEdgeCount ?? 0) || 0);
-  const actual = Math.max(0, Number(sync.edgeCount ?? 0) || 0);
-  return expected === 0 || actual >= expected;
-}
 
 function isLearnMaterialComplete(m: LearnMaterial): boolean {
   return m.status === 'ready' && hasCurrentBrainGraphSync(m);
@@ -107,7 +99,7 @@ function materialStageText(m: LearnMaterial): string {
     if (m.brainSync.schemaVersion !== LEARN_BRAIN_SYNC_SCHEMA_VERSION) return 'Brain sync upgrade pending';
     return `Brain sync ${m.brainSync.status}`;
   }
-  if (m.status === 'ready') return 'ready for review';
+  if (m.status === 'ready') return 'Ready to use';
   return m.processingTag || m.stage;
 }
 
@@ -143,9 +135,12 @@ function sourceKind(source: string, picked: 'auto' | LearnMaterialKind): LearnMa
 
 export function Learn({ store }: { store: FleetStore }) {
   const syncVersion = useSyncVersion(['materials']);
+  const [libraryView, setLibraryView] = useState('attention');
+  const [librarySearch, setLibrarySearch] = useState('');
   const [materials, setMaterials] = useState<LearnMaterial[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [note, setNote] = useState('');
   const [source, setSource] = useState('');
   const [title, setTitle] = useState('');
@@ -155,15 +150,17 @@ export function Learn({ store }: { store: FleetStore }) {
   const coordinator = resolveCoordinator(store.agents, store.coordinator) ?? store.agents[0]?.name ?? '';
 
   async function reload() {
-    const list = await call<LearnMaterial[]>('materials:list').catch(() => []);
-    setMaterials(list);
-    setSelectedId((cur) => firstActiveMaterialId(list, cur));
+    try {
+      const list = await call<LearnMaterial[]>('materials:list');
+      setMaterials(list); setLoadError('');
+      setSelectedId((cur) => firstActiveMaterialId(list, cur));
+    } catch { setLoadError('Knowledge could not be refreshed. Showing the last available sources.'); }
   }
 
   useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [syncVersion, store.lastUpdated]);
 
-  const activeMaterials = useMemo(() => materials.filter(isLearnMaterialActive), [materials]);
-  const selected = useMemo(() => materials.find((m) => m.id === selectedId && isLearnMaterialActive(m)) ?? activeMaterials[0] ?? null, [activeMaterials, materials, selectedId]);
+  const activeMaterials = useMemo(() => materials.filter((m) => (libraryView === 'library' ? isLearnMaterialComplete(m) : libraryView === 'processing' ? ['queued', 'processing'].includes(m.status) : isLearnMaterialActive(m) && !['queued', 'processing'].includes(m.status)) && `${m.title} ${m.source}`.toLowerCase().includes(librarySearch.toLowerCase())), [materials, libraryView, librarySearch]);
+  const selected = useMemo(() => activeMaterials.find((m) => m.id === selectedId) ?? activeMaterials[0] ?? null, [activeMaterials, materials, selectedId]);
   const processing = materials.find((m) => m.status === 'processing');
   const staleProcessing = useMemo(() => materials.filter(isStaleProcessing), [materials]);
   const queuedCount = useMemo(() => materials.filter((m) => m.status === 'queued').length, [materials]);
@@ -395,14 +392,14 @@ export function Learn({ store }: { store: FleetStore }) {
       <section className="card learn-intake">
         <div className="learn-intake-head">
           <div>
-            <h3>Learn intake</h3>
+            <h3>Add knowledge source</h3>{loadError ? <p role="alert">{loadError} <button className="btn" onClick={() => void reload()}>Retry</button></p> : null}
             {note ? <div className="muted small">{note}</div> : null}
           </div>
           <div className="learn-auto small" title="Queued materials are processed in the background one at a time. Completed rows are hidden after their Brain graph sync is current; blocked or failed materials stay here for review.">
             <span className="status st-active">Auto-processing on</span>
             {queuedCount ? <span className="muted">({queuedCount})</span> : null}
             {syncPendingCount ? <span className="muted">{syncPendingCount} Brain sync pending</span> : null}
-            {completedCount ? <span className="muted">{completedCount} completed hidden</span> : null}
+            {completedCount ? <span className="muted">{completedCount} ready in Library</span> : null}
           </div>
         </div>
         {staleProcessing.length ? (
@@ -431,20 +428,16 @@ export function Learn({ store }: { store: FleetStore }) {
             <label className="learn-field learn-kind">
               <span className="muted small">Type</span>
               <select className="cell-select" value={kind} disabled={busy} onChange={(e) => setKind(e.target.value as 'auto' | LearnMaterialKind)}>
-                <option value="auto">auto</option>
+                <option value="auto">Detect automatically</option>
                 <option value="github">GitHub</option>
                 <option value="site">Site</option>
               </select>
             </label>
             <label className="learn-field learn-priority">
               <span className="muted small">Priority</span>
-              <select className="cell-select" value={priority} disabled={busy} onChange={(e) => setPriority(e.target.value as LearnPriority)}>
-                {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+              <select className="cell-select" value={pinTop ? "top" : priority} disabled={busy} onChange={(e) => { setPinTop(e.target.value === "top"); setPriority(e.target.value === "top" ? "urgent" : e.target.value as LearnPriority); }}>
+                <option value="top">Next in queue</option>{PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
-            </label>
-            <label className="learn-pin small">
-              <input type="checkbox" checked={pinTop} disabled={busy} onChange={(e) => setPinTop(e.target.checked)} />
-              <span>Prioritize</span>
             </label>
             <div className="learn-actions">
               <button className="btn primary" disabled={busy || !source.trim()} onClick={() => void addUrl()}>Add</button>
@@ -458,7 +451,8 @@ export function Learn({ store }: { store: FleetStore }) {
 
       <div className="split learn-workspace">
         <section className="card grow learn-queue-card">
-          <h3>Active materials <span className="muted small">- {activeMaterials.length} visible{queuedCount ? ` · ${queuedCount} queued` : ''}{completedCount ? ` · ${completedCount} completed hidden` : ''}</span></h3>
+          <div className="row-actions"><input className="composer-input" aria-label="Search knowledge" placeholder="Search sources…" value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)} />{[['attention', 'Needs attention'], ['processing', 'Processing'], ['library', 'Library']].map(([id, label]) => <button className={`btn${libraryView === id ? ' primary' : ''}`} key={id} onClick={() => setLibraryView(id)} aria-pressed={libraryView === id}>{label}</button>)}</div>
+          <h3>Sources <span className="muted small">- {activeMaterials.length} visible{queuedCount ? ` · ${queuedCount} queued` : ''}{completedCount ? ` · ${completedCount} ready in Library` : ''}</span></h3>
           {activeMaterials.length ? (
             <table className="grid">
               <thead>
@@ -478,10 +472,10 @@ export function Learn({ store }: { store: FleetStore }) {
                       <div className="muted small">{KIND_LABEL[m.kind]} - {clip(m.source, 70)}</div>
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
-                      <select className="cell-select small" value={m.priority} disabled={busy} onChange={(e) => void setMaterialPriority(m, e.target.value as LearnPriority)}>
-                        {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+                      <select className="cell-select small" value={m.prioritized ? "top" : m.priority} disabled={busy} onChange={(e) => void setMaterialPriority(m, e.target.value === "top" ? "urgent" : e.target.value as LearnPriority, e.target.value === "top")}>
+                        <option value="top">Next in queue</option>{PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
                       </select>{' '}
-                      <button className="btn small" disabled={busy} title={m.prioritized ? 'Remove top priority pin' : 'Prioritize to top'} onClick={() => void setMaterialPriority(m, m.priority, !m.prioritized)}>{m.prioritized ? 'Unpin' : 'Top'}</button>
+
                     </td>
                     <td><span className={`status ${materialStatusClass(m)}`}>{m.status}</span><div className="muted small">{materialStageText(m)}</div></td>
                     <td className="small">{m.classification?.routedTeams?.join(', ') || '-'}</td>
@@ -491,7 +485,7 @@ export function Learn({ store }: { store: FleetStore }) {
               </tbody>
             </table>
           ) : (
-            <div className="muted center pad">{completedCount ? 'No active Learn materials.' : 'No Learn materials yet.'}</div>
+            <div className="muted center pad">{materials.length ? 'No sources match this view. Choose another view or clear your search.' : 'Add a link, folder, or PDF to start building your library.'}</div>
           )}
         </section>
 

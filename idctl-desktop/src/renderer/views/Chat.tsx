@@ -1,3 +1,4 @@
+import { requestedPlanConsolidation } from '../../shared/usability.ts';
 import { useMemo, useRef, useState, useEffect } from 'react';
 import { call, resolveCoordinator, agentsLeadFirst, type FleetStore } from '../store.ts';
 import {
@@ -133,16 +134,6 @@ function isPlanRequest(text: string): boolean {
 function stripPlanCmd(text: string): string { return text.replace(PLAN_CMD, '').trim(); }
 function newPlanId(): string { return `plan_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
 
-function requestedPlanConsolidation(text: string): string[] | null {
-  if (!/\b(consolidat(?:e|ed|ing|ion)|merge|combine)\b/i.test(text)) return null;
-  const planAt = text.search(/\bplans?\b/i);
-  if (planAt < 0) return null;
-  const numbers = [...text.slice(planAt).matchAll(/#?(\d{1,3})\b/g)]
-    .map((match) => String(Number(match[1])))
-    .filter((value) => value !== '0');
-  const unique = [...new Set(numbers)];
-  return unique.length >= 2 && unique.length <= 12 ? unique : null;
-}
 
 const CHAT_CONTEXT_CHAR_BUDGET = 60_000;
 const CHAT_CONTEXT_MESSAGE_LIMIT = 80;
@@ -406,7 +397,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
     // user can rename anytime (which locks it via `named`).
     const stamp = new Date().toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     return { id: newSessionId(), title: `New chat · ${stamp}`, named: false, team, target: defaultTarget, projectId: '', createdAt: Date.now(), updatedAt: Date.now(),
-      messages: [{ id: 0, role: 'system', who: '', text: 'New chat. Pick an agent, optionally focus a project, attach files, or generate an image — then Send.' }] };
+      messages: [{ id: 0, role: 'system', who: '', text: 'Describe what you want to accomplish. You can choose a project or attach a file for context.' }] };
   }
   function normalizeLockedSession(s: Session): Session {
     if (!pinnedTarget && s.team === team) return s;
@@ -1402,7 +1393,7 @@ export function Chat({ store, embedded = false, lockTarget, teamOverride, naviga
               if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
             }}
           >
-            {msgs.map((m) => {
+            {msgs.filter((m) => !(m.role === 'system' && /^New chat\./i.test(m.text)) || !msgs.some((message) => message.role === 'you')).map((m) => {
               // Scope to the viewed session: between a chat switch and the derive
               // effect updating `running`, a stale running from another session must
               // not spin a same-id message here.

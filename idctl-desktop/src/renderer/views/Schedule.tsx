@@ -1,3 +1,4 @@
+import { heartbeatIntervals } from '../../shared/usability.ts';
 import { useEffect, useRef, useState } from 'react';
 import { call, useSyncVersion, type FleetStore } from '../store.ts';
 import type { CheckIn, ScheduleEntry } from '../../../../idctl/src/api/client.ts';
@@ -7,14 +8,6 @@ import { reconcileScheduleSnapshot } from '../../shared/scheduleSnapshot.ts';
  *  Recurring objective check-ins live in the Loops tab. */
 
 const HEARTBEAT_MSG = 'Heartbeat: review your checklist and act on anything that needs attention.';
-const INTERVALS = [
-  { label: '1 min', s: 60 },
-  { label: '5 min', s: 300 },
-  { label: '15 min', s: 900 },
-  { label: '1 hour', s: 3600 },
-  { label: '6 hours', s: 21600 },
-  { label: '24 hours', s: 86400 },
-];
 
 function fmtInterval(sec: number | null): string {
   if (!sec) return '—';
@@ -94,6 +87,8 @@ export function Schedule({ store }: { store: FleetStore }) {
   const [msg, setMsg] = useState('');
   const [hbInterval, setHbInterval] = useState<Record<string, number>>({});
   const [hbMessage, setHbMessage] = useState<Record<string, string>>({});
+  const [showInactive, setShowInactive] = useState(false);
+  const [agentSearch, setAgentSearch] = useState('');
   const [showClosed, setShowClosed] = useState(false);
   const reloadEpochRef = useRef(0);
   const mutationRef = useRef(false);
@@ -341,6 +336,7 @@ export function Schedule({ store }: { store: FleetStore }) {
   async function setHeartbeat(agent: string, team?: string) {
     const key = targetKey(agent, team);
     const seconds = hbInterval[key] ?? hbFor(agent, team)?.intervalSeconds ?? 3600;
+    if (!Number.isInteger(seconds) || seconds < 60) { setMsg("Choose an interval of at least 60 seconds."); return; }
     const objective = (hbMessage[key] ?? hbFor(agent, team)?.message ?? HEARTBEAT_MSG).trim();
     if (!objective) {
       setMsg(`heartbeat ${agent} blocked: enter a self-check objective`);
@@ -396,7 +392,7 @@ export function Schedule({ store }: { store: FleetStore }) {
       {msg ? <div className="muted small" style={{ marginBottom: 8 }}>{msg}</div> : null}
 
       <section className="card">
-        <h3 style={{ marginBottom: 2 }}>Heartbeats — periodic agent self-checks</h3>
+        <h3 style={{ marginBottom: 2 }}>Scheduled self-checks</h3>
         <p className="muted small" style={{ marginTop: 0 }}>
           On its interval, a heartbeat delivers the configured internal self-check objective so the
           agent can review its work even when nothing new was dispatched. It is a work self-audit,
@@ -404,6 +400,7 @@ export function Schedule({ store }: { store: FleetStore }) {
           definition after restart. <b>Missed</b> = no run in ~2 intervals; <b>last run failed</b> =
           the agent errored on its last self-check.
         </p>
+        <div className="row-actions"><input className="composer-input" aria-label="Find scheduled checks" placeholder="Search agents or teams…" value={agentSearch} onChange={(event) => setAgentSearch(event.target.value)} /><label><input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} /> Include agents without a check</label></div>
         <table className="grid">
           <thead>
             <tr>
@@ -411,12 +408,12 @@ export function Schedule({ store }: { store: FleetStore }) {
               <th>Interval</th>
               <th>Status</th>
               <th>Last run</th>
-              <th>Configure heartbeat</th>
+              <th>Configure check</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {fleetAgents.map((a) => {
+            {fleetAgents.filter((a) => (showInactive || hbFor(a.name, a.team)) && `${a.name} ${a.team ?? ''}`.toLowerCase().includes(agentSearch.toLowerCase())).map((a) => {
               const hb = hbFor(a.name, a.team);
               const missed = hb ? isMissed(hb) : false;
               const failed = !!hb && hb.active && hb.lastStatus === 'failed';
@@ -438,8 +435,9 @@ export function Schedule({ store }: { store: FleetStore }) {
                         value={hbInterval[key] ?? hb?.intervalSeconds ?? 3600}
                         onChange={(e) => setHbInterval((m) => ({ ...m, [key]: Number(e.target.value) }))}
                       >
-                        {INTERVALS.map((iv) => <option key={iv.s} value={iv.s}>{iv.label}</option>)}
+                        {heartbeatIntervals(hbInterval[key] ?? hb?.intervalSeconds ?? 3600).map((iv) => <option key={iv.s} value={iv.s}>{iv.label}</option>)}
                       </select>
+                      <details><summary className="small">Custom interval</summary><label>Seconds <input type="number" min={60} step={1} value={hbInterval[key] ?? hb?.intervalSeconds ?? 3600} onChange={(event) => setHbInterval((current) => ({ ...current, [key]: Number(event.target.value) }))} disabled={busy} /></label></details>
                       <input
                         aria-label={`Heartbeat objective for ${a.team ?? store.team ?? 'default'}/${a.name}`}
                         disabled={busy}

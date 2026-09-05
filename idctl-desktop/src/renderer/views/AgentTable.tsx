@@ -224,6 +224,7 @@ export function AgentTable({ store, onProbe, probeBusy }: { store: FleetStore; o
   const [providers, setProviders] = useState<ProviderRow[]>(() => initialRuntimeCatalog?.providers ?? []);
   const [managedRuntimes, setManagedRuntimes] = useState<Record<string, ManagedRuntimeStatus>>(() => initialRuntimeCatalog?.managedRuntimes ?? {});
   const [coords, setCoords] = useState<Record<string, string>>({}); // team → coordinator (lead) name
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [showStopped, setShowStopped] = useState(false); // by default the grid shows only running agents
   const [freshness, setFreshness] = useState<RuntimeFreshness[]>(() => initialRuntimeCatalog?.freshness ?? []);
   const [runtimeCooldowns, setRuntimeCooldowns] = useState<RuntimeCooldown[]>(() => runtimeCooldownCache?.rows ?? []);
@@ -818,6 +819,7 @@ export function AgentTable({ store, onProbe, probeBusy }: { store: FleetStore; o
               runtime cooldowns {coolingRows.length}
             </span>
           ) : null}
+          <label className="muted small"><input type="checkbox" checked={showAdvanced} onChange={(event) => setShowAdvanced(event.target.checked)} /> Model &amp; technical controls</label>
           <button className="btn small" onClick={() => setShowModels((v) => !v)} title="Show the cached harness and provider model catalog">
             {showModels ? 'Hide models' : `Models${visibleFreshness.length ? ` (${visibleFreshness.length})` : ''}`}
           </button>
@@ -881,7 +883,7 @@ export function AgentTable({ store, onProbe, probeBusy }: { store: FleetStore; o
             <button className="btn primary small" disabled={!!busy} onClick={() => void applyConfigDrafts()}>Apply changes</button>
           </div>
         ) : null}
-        <table className="grid">
+        <table className={`grid${showAdvanced ? "" : " agent-simple"}`}>
           <thead>
             <tr><th>Agent</th><th>Status</th><th title="Settings-available manager execution harness or synced API provider lane. API keys are resolved by IDACC and passed process-local during rebuild.">Harness</th><th>Model</th><th title="Reasoning effort — lower spends fewer subscription tokens (codex & Claude CLI only)">Effort</th><th title={`Output speed — Claude Code runtimes only. ${CLAUDE_FAST_MODE_NOTICE}`}>Speed</th><th>Port</th><th>Actions</th>{onProbe ? <th>Probe</th> : null}</tr>
           </thead>
@@ -908,8 +910,7 @@ export function AgentTable({ store, onProbe, probeBusy }: { store: FleetStore; o
       </section>
 
       {sel ? (
-        <section className="card detail">
-          <h3>{sel.name}</h3>
+        <details className="card detail"><summary>{sel.name} · Agent details</summary>
           <div className="kv">
             <span>status</span><b><span className={`dot ${statusClass(sel)}`} /> {sel.status}</b>
             {agentHint(sel) ? (<><span>hint</span><b className="warn-text">{agentHint(sel)}</b></>) : null}
@@ -953,7 +954,7 @@ export function AgentTable({ store, onProbe, probeBusy }: { store: FleetStore; o
             ) : null}
             <span>workdir</span><b className="mono small">{sel.workingDirectory ?? '—'}</b>
           </div>
-        </section>
+        </details>
       ) : null}
     </>
   );

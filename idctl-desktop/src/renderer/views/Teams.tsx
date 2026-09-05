@@ -79,7 +79,7 @@ type HrHierarchy = {
 };
 type TeamBlueprint = { id: string; team: string; label: string; description: string; spec: string };
 type BlueprintCoverage = TeamBlueprint & { present: number; total: number; missing: string[]; complete: boolean };
-type HrFocus = 'route-hierarchy' | 'health';
+type HrFocus = 'route-hierarchy' | 'health' | 'build';
 type LeadershipBackbone = {
   ready: boolean;
   missingAgents: string[];
@@ -404,6 +404,7 @@ function primaryLabel(primary: { team: string; agent: string } | null): string {
 }
 
 export function Teams({ store, focus, onFocusHandled, navigate }: { store: FleetStore; focus?: HrFocus; onFocusHandled?: () => void; navigate?: (target: string) => void }) {
+  const [directorySearch, setDirectorySearch] = useState('');
   const syncVersion = useSyncVersion(['goals', 'org', 'agents']);
   const hrStructureVersion = useSyncVersion(['org', 'agents', 'teams']);
   const [busy, setBusy] = useState(false);
@@ -411,7 +412,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   const hrOwner = useMemo(() => resolveHrManagerAgent(store), [store.allAgents, store.agents, store.team]);
 
   // HR pillars as tabs + the live structure graph.
-  const [tab, setTab] = useState<'structure' | 'health' | 'build' | 'route'>('structure');
+  const [tab, setTab] = useState<'structure' | 'health' | 'build' | 'route'>('route');
   const hrRuntimeCatalogVersion = useSyncVersion(tab === 'build' ? ['runtime-catalog'] : []);
   const hrSkillCatalogVersion = useSyncVersion(tab === 'build' ? ['modules'] : []);
   const [routePane, setRoutePane] = useState<'operations' | 'overview' | 'agents' | 'hierarchy'>('overview');
@@ -456,6 +457,8 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
     if (focus === 'route-hierarchy') {
       setTab('route');
       setRoutePane('hierarchy');
+    } else if (focus === 'build') {
+      setTab('build');
     } else if (focus === 'health') {
       setTab('health');
     }
@@ -2151,7 +2154,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           </h4>
           <span className="row-actions" style={{ gap: 6, flexWrap: 'wrap' }}>
             <button className={`star${isLead ? ' on' : ''}`} disabled={busy || isLead || leadLocked}
-              title={leadLocked ? `${primaryTeam} coordinator is locked to ${primaryTeam}/${primaryAgentName}` : isLead ? `${selectedAgent.agent.name} is ${selectedAgent.team}'s coordinator` : `Set coordinators in Manage > Hierarchy`}
+              title={leadLocked ? `${primaryTeam} coordinator is locked to ${primaryTeam}/${primaryAgentName}` : isLead ? `${selectedAgent.agent.name} is ${selectedAgent.team}'s coordinator` : `Set coordinators in Directory > Organization rules`}
               onClick={() => setRoutePane('hierarchy')}>{isLead ? '★ lead' : '☆ set in Hierarchy'}</button>
             <select className="cell-select" disabled={busy || selectedAgentLocked || selectedAgent.reassignTargets.length === 0} value="" title={selectedAgentLocked ? `Locked primary leadership roles cannot be moved out of ${primaryTeam}` : 'Move this agent to another team'}
               onChange={(e) => { const to = e.target.value; e.currentTarget.value = ''; if (to) void moveAgentToTeam(selectedAgent.agent.id, selectedAgent.agent.name, selectedAgent.team, to); }}>
@@ -2232,13 +2235,13 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
   return (
     <div className="view modules">
       <header className="view-head">
-        <h1>HR Manager</h1>
+        <h1>Teams</h1>
         <span className="muted small" title="Operational owner for HR Manager staffing and instruction-drafting workflows">
           owner: <b>{hrOwner ? `${hrOwner.team ?? activeTeam}/${hrOwner.name}` : 'unassigned'}</b>
         </span>
       </header>
       <div className="tabs">
-        {([['structure', 'Structure'], ['health', 'Health'], ['build', 'Build'], ['route', 'Manage']] as const).map(([k, lbl]) => (
+        {([['route', 'Directory'], ['structure', 'Organization chart'], ['health', 'Health'], ['build', 'Create team']] as const).map(([k, lbl]) => (
           <button key={k} className={`tab${tab === k ? ' active' : ''}`} onClick={() => setTab(k)}>{lbl}</button>
         ))}
       </div>
@@ -2246,7 +2249,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
         <section className="card">
           <div className="row-actions" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
             <h3 style={{ margin: 0 }}>Team structure — live</h3>
-            <button className="btn" disabled={busy} onClick={() => { setTab('route'); setRoutePane('hierarchy'); }} title="Open Manage > Hierarchy to review primary and coordinator changes">
+            <button className="btn" disabled={busy} onClick={() => { setTab('route'); setRoutePane('hierarchy'); }} title="Open Directory > Organization rules to review primary and coordinator changes">
               Open hierarchy
             </button>
           </div>
@@ -2279,7 +2282,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
 
       {tab === 'route' ? (
         <div className="tabs" style={{ marginTop: -4 }}>
-          {([['overview', 'Overview'], ['agents', 'Agents'], ['operations', 'Team ops'], ['hierarchy', 'Hierarchy']] as const).map(([k, lbl]) => (
+          {([['overview', 'Overview'], ['agents', 'Agents'], ['operations', 'Team actions'], ['hierarchy', 'Organization rules']] as const).map(([k, lbl]) => (
             <button key={k} className={`tab${routePane === k ? ' active' : ''}`} onClick={() => setRoutePane(k)}>{lbl}</button>
           ))}
         </div>
@@ -2299,7 +2302,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             </select>
             <button className="btn small" onClick={() => setTab('build')}>＋ Add agents</button>
             <button className="btn small" onClick={() => setMaintFrom(managedTeamName)}>Merge / rename</button>
-            <button className="btn small" onClick={() => setRoutePane('hierarchy')}>Hierarchy</button>
+            <button className="btn small" onClick={() => setRoutePane('hierarchy')}>Organization rules</button>
           </span>
         </div>
         <div className="kv" style={{ gridTemplateColumns: '110px 1fr 90px 1fr', gap: '5px 12px', marginTop: 12, padding: '10px 0', borderTop: '1px solid var(--border, #2a2a2a)', borderBottom: '1px solid var(--border, #2a2a2a)' }}>
@@ -2309,9 +2312,9 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           <span className="muted small">validators</span><span className="small">{managedTeamSecondaries.length ? managedTeamSecondaries.map((s) => `${s.team}/${s.agent}`).join(', ') : managedTeamName === primaryTeam ? primaryValidatorNames.map((a) => `${primaryTeam}/${a}`).join(', ') : `validators from ${primaryTeam} by org sync`}</span>
         </div>
         <div className="hr-agent-directory" style={{ marginTop: 12 }}>
-          <div className="hr-agent-roster">
+          <div className="hr-agent-roster"><input className="composer-input" aria-label="Search team agents" placeholder="Find an agent…" value={directorySearch} onChange={(event) => setDirectorySearch(event.target.value)} />
             <div className="muted small" style={{ marginBottom: 6 }}>ROSTER · {managedTeamAgents.length}</div>
-            {managedTeamAgents.length ? agentsLeadFirst(managedTeamAgents, managedTeamLead).map((agent) => {
+            {managedTeamAgents.length ? agentsLeadFirst(managedTeamAgents, managedTeamLead).filter((agent) => agent.name.toLowerCase().includes(directorySearch.toLowerCase())).map((agent) => {
               const selected = selectedAgent?.team === managedTeamName && selectedAgent.agent.name === agent.name;
               return (
                 <button key={agent.id} className={`hr-agent-row${selected ? ' selected' : ''}`} onClick={() => setSelectedKey(`agent:${managedTeamName}:${agent.name}`)}>
@@ -2372,7 +2375,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
           <span className="muted small">· lifecycle and guarded team maintenance only. Edit agent records in Agents; set coordinators in Hierarchy.</span>
           <span className="grow" />
           <button className="btn small" disabled={busy} title="Open team rosters and agent records" onClick={() => setRoutePane('agents')}>Agents</button>
-          <button className="btn small" disabled={busy} title="Open hierarchy and org sync" onClick={() => setRoutePane('hierarchy')}>Hierarchy</button>
+          <button className="btn small" disabled={busy} title="Open hierarchy and org sync" onClick={() => setRoutePane('hierarchy')}>Organization rules</button>
         </div>
         <div className="row-actions" style={{ gap: 6, margin: '8px 0 10px', alignItems: 'center', flexWrap: 'wrap' }}>
           <button className="btn small" disabled={teamOpBusy || visibleTeams.length === 0} title="Start every stopped agent across all current teams" onClick={() => void runFleetOp('start')}>▶ Start all</button>
@@ -2465,7 +2468,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       <section className="card">
         <h3>Team overview <span className="muted small">· ownership, relay, and roster status at a glance</span></h3>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Review who each team may delegate to. <b>Manage</b> opens its roster and agent records; coordinator changes stay in Hierarchy.
+          Review who each team may delegate to. <b>Manage</b> opens its roster and agent records; change team leads in Organization rules.
         </p>
         <table className="grid">
           <thead>
@@ -2502,7 +2505,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
       <section className="card">
         <h3>Lead hierarchy &amp; coordinators</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
-          Each team has a <b>coordinator</b> (its lead). The fleet <b>primary</b> is locked to the <b>default</b> team;
+          Each team has a <b>coordinator</b> (its lead). The fleet <b>primary</b> is configured as <b>{primaryTeam}/{primaryAgentName}</b>;
           it delegates to each other team's coordinator, which delegates to its workers. Pick coordinators here, then sync the org.
         </p>
         {hier.controlStateSource === 'local-compat' ? (
@@ -2648,7 +2651,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
  * let AI (or a deterministic parse) draft the roster with a per-agent runtime,
  * model and skills, review/edit it, then build every agent in one pass via
  * `onboard:run` (which carries each agent's persona). Persistent coordinator and
- * relay policy stays in the single authoritative Manage > Hierarchy editor.
+ * relay policy stays in the single authoritative Directory > Organization rules editor.
  */
 function TeamBuilder({
   team,
@@ -3112,7 +3115,7 @@ function TeamBuilder({
     const mergeNote = mergeIntoExisting
       ? `\n\nExisting ${targetTeam} roster stays in place (${preflight.existingAgentCount} current). Duplicate names are skipped before build${alreadyThere.length ? ` (${alreadyThere.length} already there)` : ''}.`
       : '';
-    const routingNote = `\n\nCoordinator and cross-team relay policy will remain unchanged. Configure them once in Manage > Hierarchy after the roster is built.`;
+    const routingNote = `\n\nCoordinator and cross-team relay policy will remain unchanged. Configure them once in Directory > Organization rules after the roster is built.`;
     if (!window.confirm(`${mergeIntoExisting ? 'Build + merge' : 'Build'} ${batch.length} agent${batch.length === 1 ? '' : 's'} ${mergeIntoExisting ? `into existing ${targetTeam}` : `in ${targetTeam}`}?\n\nThis onboards and starts new agents${heartbeat ? ', adds heartbeats' : ''}${probeAfter ? ', and probes them' : ''}.${mergeNote}\n\n${verificationSummary(verification)}${routingNote}${backboneWarning}`)) return;
     setBuilding(true); onBusy(true); setError('');
     onMessage(`${mergeIntoExisting ? 'merging' : 'adding'} ${batch.length} new agent(s) ${mergeIntoExisting ? 'into' : 'to'} ${targetTeam}${alreadyThere.length ? ` (${alreadyThere.length} already there)` : ''}…`);
@@ -3171,18 +3174,18 @@ function TeamBuilder({
       <div className={inline ? '' : 'modal onboard-modal create-team-modal'} onMouseDown={inline ? undefined : (e) => e.stopPropagation()}>
         <div className="modal-title">{inline ? 'Build a team — or merge agents into an existing one' : 'Build a team'}</div>
         <div className="create-team-layout">
-          {/* LEFT: describe + batch options. Routing policy has one owner: Manage > Hierarchy. */}
+          {/* LEFT: describe + batch options. Routing policy has one owner: Directory > Organization rules. */}
           <div>
             <div className="preflight-box" style={{ marginTop: 0, marginBottom: 12, padding: '10px 12px' }}>
               <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>
                 <b className="small">Preloaded teams</b>
                 <span className="grow" />
                 <span className={`small ${leadershipBackbone.ready ? 'ok-text' : 'warn-text'}`}>
-                  default leadership: {leadershipBackbone.ready ? 'ready' : 'incomplete'}
+                  primary leadership: {leadershipBackbone.ready ? 'ready' : 'incomplete'}
                 </span>
               </div>
               <div className="chips" style={{ marginTop: 8 }}>
-                {blueprintCoverages.map((bp) => (
+                {blueprintCoverages.filter((bp) => !(leadershipBackbone.ready && bp.id === 'default-leadership')).map((bp) => (
                   <button key={bp.id} className={`chip${bp.complete ? ' tag' : ''}`} disabled={locked} title={bp.complete ? `${bp.label} is already present` : `Missing: ${bp.missing.join(', ') || 'unknown'}`} onClick={() => applyStartSource(`bp:${bp.id}`)}>
                     {bp.complete ? '✓ ' : '＋ '}{bp.label} {bp.present}/{bp.total}
                   </button>
