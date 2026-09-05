@@ -2592,7 +2592,7 @@ export function Identity({ store, initialAgent }: { store: FleetStore; initialAg
             </>
           ) : (
             <section className="card">
-              <p className="muted">Select an agent.</p>
+              <p className="muted" role={error ? "alert" : "status"}>{selected ? error || "Loading this agent’s identity…" : "Select an agent."}</p>{selected ? <button className="btn" onClick={() => void reload()}>Retry identity lookup</button> : null}
             </section>
           )}
         </section>
