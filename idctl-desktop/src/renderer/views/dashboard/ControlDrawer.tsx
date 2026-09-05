@@ -148,7 +148,7 @@ export function ControlDrawer({
         </header>
         <div className="drawer-body">
           {panel === 'quick' ? <QuickControlsPanel store={store} commandEnvironment={commandEnvironment} navigate={requestClose} onGuardChange={reportGuard} /> : null}
-          {panel === 'project-driver' ? <ProjectDriverPanel store={store} commandEnvironment={commandEnvironment} onGuardChange={reportGuard} onOpenWork={() => requestClose('tasks')} /> : null}
+          {panel === 'project-driver' ? <ProjectDriverPanel store={store} commandEnvironment={commandEnvironment} onGuardChange={reportGuard} onOpenWork={() => requestClose('tasks:plans')} /> : null}
           {panel === 'org' ? <OrgPanel store={store} commandEnvironment={commandEnvironment} onGuardChange={reportGuard} onOpenHr={() => requestClose('teams:route')} /> : null}
           {panel === 'plans' ? <PlansPanel commandEnvironment={commandEnvironment} onGuardChange={reportGuard} onOpenWork={() => requestClose('tasks')} /> : null}
           {panel === 'board' ? <BoardPanel commandEnvironment={commandEnvironment} onGuardChange={reportGuard} onOpenWork={() => requestClose('tasks')} /> : null}

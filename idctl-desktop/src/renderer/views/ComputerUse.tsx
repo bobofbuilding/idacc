@@ -139,6 +139,7 @@ function PermissionRow({
 }
 
 export function ComputerUse({ store }: { store: FleetStore }) {
+  const [controlSearch, setControlSearch] = useState('');
   const [perms, setPerms] = useState<Perms | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [attached, setAttached] = useState<AttachedAgent[]>([]);
@@ -229,7 +230,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
   const attachedStamp = (list: AttachedAgent[], fallbackTeam = activeTeam) => sortedKey((list ?? []).map((a) => `${a.id}:${authorityOf(a, fallbackTeam)}`));
   const describeAttached = (list: AttachedAgent[]) => list.length
     ? list.map((a) => `${a.team ?? activeTeam}/${a.name}`).join(', ')
-    : 'no blessed agents';
+    : 'no allowed agents';
   const describeTargets = (list: { name: string; team?: string }[]) => {
     const names = list.map((a) => `${a.team ?? activeTeam}/${a.name}`);
     return names.length > 6 ? `${names.slice(0, 6).join(', ')} + ${names.length - 6} more` : names.join(', ');
@@ -772,7 +773,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
     return (
       <div className="view cu-view">
         <header className="view-head">
-          <h1>Computer Use</h1>
+          <h1>Computer Control</h1>
           <span className="cu-armpill">Unavailable on this operating system</span>
         </header>
         <section className="card">
@@ -790,28 +791,28 @@ export function ComputerUse({ store }: { store: FleetStore }) {
   return (
     <div className="view cu-view">
       <header className="view-head">
-        <h1>Computer Use</h1>
+        <h1>Computer Control</h1>
         <div className="row-actions" style={{ alignItems: 'center', gap: 10 }}>
           {armed ? (
             <>
-              <button className={`btn ${status?.paused ? 'primary' : ''}`} onClick={() => void togglePause()} title="Block the agent's input without disarming">{status?.paused ? 'Resume' : 'Pause'}</button>
+              <button className={`btn ${status?.paused ? 'primary' : ''}`} onClick={() => void togglePause()} title="Block the agent's input without ending the session">{status?.paused ? 'Resume' : 'Pause'}</button>
               {/* PANIC is the emergency stop — NEVER gated by `busy`, so a slow op (e.g. a rebuild) can't block it. */}
-              <button className="btn cu-panic" onClick={() => void panic()} title={status?.panicHotkey ? 'Stop everything now (⌘⌥⇧P)' : 'Stop everything now'}>■ PANIC</button>
+              <button className="btn cu-panic" onClick={() => void panic()} title={status?.panicHotkey ? 'Stop everything now (⌘⌥⇧P)' : 'Stop everything now'}>■ Emergency stop</button>
             </>
           ) : null}
-          <span className={`cu-armpill ${armed ? 'on' : ''}`}>{armed ? (status?.paused ? '❚❚ paused' : '● ARMED') : '○ disarmed'}</span>
+          <span className={`cu-armpill ${armed ? 'on' : ''}`}>{armed ? (status?.paused ? '❚❚ paused' : '● Control started') : '○ Control stopped'}</span>
           {armed
-            ? <button className="btn icon-danger" onClick={() => void disarm()}>Disarm</button>
+            ? <button className="btn icon-danger" onClick={() => void disarm()}>Stop control</button>
             : <button
                 className="btn primary"
                 disabled={busy || cuUnavailable || !srGranted || !controllerReady || (emptyArmNeedsReview && !allowEmptyArm)}
                 title={cuUnavailable ? cuUnavailableReason : !srGranted ? 'Grant Screen Recording first' : !controllerReady ? 'Restart or repair the bundled Computer Use controller' : emptyArmNeedsReview && !allowEmptyArm ? 'Review empty arm first' : ''}
                 onClick={() => void arm()}
-              >Arm</button>}
+              >Start control</button>}
         </div>
       </header>
 
-      {panicFlash ? <div className="cu-panic-flash">■ PANIC — Computer Use stopped</div> : null}
+      {panicFlash ? <div className="cu-panic-flash">■ Emergency stop — Computer Control stopped</div> : null}
 
       {/* Approval prompts (supervised mode): the agent is blocked until you decide. */}
       {pending.length ? (
@@ -829,17 +830,17 @@ export function ComputerUse({ store }: { store: FleetStore }) {
       ) : null}
 
       <div className="cu-intro muted small">
-        Let a blessed agent <b>see and drive</b> your Mac — mouse, keyboard, scrolling — and watch it live here.
-        Nothing happens unless you <b>Arm</b> it; only agents you bless can act; and while it's driving, <b>use
-        Pause, Disarm, or PANIC to take back control</b>. Every requested screen or input action is logged below.
+        Let an allowed agent <b>see and drive</b> your Mac — mouse, keyboard, scrolling — and watch it live here.
+        Nothing happens unless you <b>Start control</b> it; only agents you allow can act; and while it's driving, <b>use
+        Pause, Stop control, or Emergency stop to take back control</b>. Every requested screen or input action is logged below.
       </div>
       <div className={`cu-readiness${fullControlReady ? ' ready' : ''}`} role="status">
         <b>Full-control readiness</b>
         <span className={controllerReady ? 'ok-text' : 'warn-text'}>{controllerReady ? '✓ controller' : '○ controller'}</span>
         <span className={srGranted ? 'ok-text' : 'warn-text'}>{srGranted ? '✓ screen' : '○ screen'}</span>
         <span className={axGranted && status?.driverOk ? 'ok-text' : 'warn-text'}>{axGranted && status?.driverOk ? '✓ mouse + keyboard' : '○ mouse + keyboard'}</span>
-        <span className={attached.length ? 'ok-text' : 'warn-text'}>{attached.length ? `✓ ${attached.length} blessed` : '○ bless an agent'}</span>
-        <span className={armed ? 'ok-text' : 'warn-text'}>{armed ? '✓ armed' : '○ arm session'}</span>
+        <span className={attached.length ? 'ok-text' : 'warn-text'}>{attached.length ? `✓ ${attached.length} allowed` : '○ allow an agent'}</span>
+        <span className={armed ? 'ok-text' : 'warn-text'}>{armed ? '✓ session started' : '○ start a session'}</span>
         <span className={controlMode === 'full-control' ? 'ok-text' : 'muted'}>{controlModeLabel}</span>
       </div>
       {cuUnavailable ? <div className="cu-msg small">{cuUnavailableReason}</div> : null}
@@ -847,7 +848,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
         <div className="cu-empty-arm">
           <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <input type="checkbox" checked={allowEmptyArm} onChange={(e) => setAllowEmptyArm(e.target.checked)} />
-            Start live view with no blessed agents
+            Start live view with no allowed agents
           </label>
           <span className="muted small">Permission testing only; agents cannot drive.</span>
         </div>
@@ -880,7 +881,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
                 <div className="muted small">Grant <b>ID Agents Control Center</b> Screen Recording, then relaunch.</div>
               </div>
             ) : !armed ? (
-              <div className="cu-placeholder"><div className="cu-ph-title">Press <b>Arm</b> to start the live view</div></div>
+              <div className="cu-placeholder"><div className="cu-ph-title">Press <b>Start control</b> to start the live view</div></div>
             ) : frame ? (
               <img className="cu-frame" src={frame} alt="live screen" />
             ) : status?.captureFailing ? (
@@ -896,7 +897,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
               <div className="cu-placeholder"><div className="cu-ph-title">Starting capture…</div></div>
             )}
             {liveStale ? <div className="cu-stale">live view paused</div> : null}
-            {armed && recentlyActed ? <div className="cu-driving">● {status?.lastAgent || 'agent'} is driving — move your mouse or hit Disarm to take over</div> : null}
+            {armed && recentlyActed ? <div className="cu-driving">● {status?.lastAgent || 'agent'} is driving — move your mouse or choose Stop control to take over</div> : null}
           </div>
           {frameMeta ? <div className="muted small cu-screen-meta">{frameMeta.display?.label ?? 'Display'} · {frameMeta.display?.bounds.width}×{frameMeta.display?.bounds.height} pts · streaming</div> : null}
         </section>
@@ -918,7 +919,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
               tone={axGranted ? 'ok' : perms ? 'bad' : 'warn'}
               title="Accessibility"
               subtitle="required for mouse + keyboard"
-              detail={axGranted ? 'Granted' : 'Not granted - the agent can see the screen but cannot click or type until you grant this.'}
+              detail={axGranted ? 'Granted' : 'Not granted — clicking and typing are unavailable. Viewing also requires Screen Recording permission.'}
               pane="accessibility"
               showRelaunch
               onRefresh={() => void refresh()}
@@ -966,10 +967,10 @@ export function ComputerUse({ store }: { store: FleetStore }) {
 
           <section className="card">
             <h3>Who can drive</h3>
-            <div className="muted small">Bless eligible agents synced from HR Manager. Each grant stays scoped to that agent's team.</div>
-            <div className="cu-bless-add">
+            <div className="muted small">Choose agents to allow. Access remains limited to each agent and its team.</div>
+            <div className="cu-bless-add"><input className="composer-input" aria-label="Search agents for computer control" placeholder="Find an agent or team…" value={controlSearch} onChange={(event) => setControlSearch(event.target.value)} />
               <div className="cu-bless-list" aria-label="Agents available for Computer Use">
-                {availableBlessTargets.length ? availableBlessTargets.map((a) => {
+                {availableBlessTargets.length ? availableBlessTargets.filter((a) => `${teamOf(a)} ${a.name}`.toLowerCase().includes(controlSearch.toLowerCase())).map((a) => {
                   const key = targetKey(a);
                   const selected = selectedBlessIds.includes(key);
                   return (
@@ -987,7 +988,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
                     </label>
                   );
                 }) : (
-                  <div className="muted small">All eligible agents are already blessed.</div>
+                  <div className="muted small">No additional eligible agents found.</div>
                 )}
               </div>
               <div className="cu-bless-actions">
@@ -995,7 +996,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
                 <button className="btn small" disabled={busy || cuUnavailable || !selectedBlessTargets.length} onClick={() => setSelectedBlessIds([])}>Clear</button>
                 <span className="muted small">{selectedBlessTargets.length} selected</span>
                 <button className="btn primary" disabled={busy || cuUnavailable || !selectedBlessTargets.length} title={cuUnavailable ? cuUnavailableReason : undefined} onClick={() => void blessMany(selectedBlessTargets)}>
-                  Bless selected
+                  Allow selected agents
                 </button>
               </div>
             </div>
@@ -1009,7 +1010,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
                   </div>
                 ))}
               </div>
-            ) : <div className="muted small" style={{ marginTop: 6 }}>No agents blessed yet.</div>}
+            ) : <div className="muted small" style={{ marginTop: 6 }}>No agents allowed yet.</div>}
             {legacyAuthority.length ? (
               <div className="cu-legacy small">
                 <b>Legacy authority review</b>
@@ -1025,8 +1026,8 @@ export function ComputerUse({ store }: { store: FleetStore }) {
                       </span>
                       <span className="legacy-review-actions">
                         {target ? (
-                          <button className="btn small" disabled={busy || alreadyBlessed || selectedForBless} onClick={() => { setBlessSelected(targetKey(target), true); setMsg(`Selected ${target.team}/${target.name}. Use Bless selected to mint scoped Computer Use authority; old bare-name tokens remain blocked.`); }}>
-                            {alreadyBlessed ? 'Already blessed' : selectedForBless ? 'Selected' : 'Select for bless'}
+                          <button className="btn small" disabled={busy || alreadyBlessed || selectedForBless} onClick={() => { setBlessSelected(targetKey(target), true); setMsg(`Selected ${target.team}/${target.name}. Use Allow selected agents to mint scoped Computer Use authority; old bare-name tokens remain blocked.`); }}>
+                            {alreadyBlessed ? 'Already allowed' : selectedForBless ? 'Selected' : 'Select agent'}
                           </button>
                         ) : null}
                         {firstAuthority ? (
@@ -1056,10 +1057,10 @@ export function ComputerUse({ store }: { store: FleetStore }) {
                   </div>
                 ))}
               </div>
-            ) : <div className="muted small" style={{ marginTop: 6 }}>No actions yet. Arm, then ask a blessed agent to screenshot and click something.</div>}
+            ) : <div className="muted small" style={{ marginTop: 6 }}>No actions yet. Start control, then ask an allowed agent to screenshot and click something.</div>}
           </section>
 
-          <section className="card cu-safety">
+          <details className="compact-details"><summary>Safety & session permissions</summary><section className="card cu-safety">
             <h3>Safety</h3>
             <label className="cu-mode-row">
               <input type="radio" name="computer-use-mode" checked={controlMode === 'supervised'} disabled={busy || cuUnavailable} onChange={() => void setControlMode('supervised')} />
@@ -1079,16 +1080,16 @@ export function ComputerUse({ store }: { store: FleetStore }) {
               <input type="radio" name="computer-use-mode" checked={controlMode === 'full-control'} disabled={busy || cuUnavailable || !fullControlReady} onChange={() => void setControlMode('full-control')} />
               <span>
                 <b>Full control</b> <span className="muted small">(explicit session grant)</span>
-                <div className="muted small">All mouse and keyboard actions run without per-action approval. Requires the complete readiness row above and resets on Disarm or PANIC.</div>
+                <div className="muted small">All mouse and keyboard actions run without per-action approval. Requires the complete readiness row above and resets on Stop control or Emergency stop.</div>
               </span>
             </label>
             <ul className="muted small">
-              <li><b>Disarmed by default</b> — no screenshot or input until you Arm.</li>
-              <li><b>Only blessed agents</b> can reach the controller; input also needs Accessibility.</li>
-              <li><b>Pause</b> blocks the agent without disarming; <b>PANIC</b>{status?.panicHotkey ? ' (⌘⌥⇧P)' : ''} stops everything instantly.</li>
+              <li><b>Off by default</b> — no screenshot or input until you start control.</li>
+              <li><b>Only allowed agents</b> can reach the controller; input also needs Accessibility.</li>
+              <li><b>Pause</b> blocks the agent without ending the session; <b>Emergency stop</b>{status?.panicHotkey ? ' (⌘⌥⇧P)' : ''} stops everything instantly.</li>
               <li>Screen content is treated as <b>data, never instructions</b>; every action is logged + keystrokes are recorded as a length only.</li>
             </ul>
-          </section>
+          </section></details>
         </aside>
       </div>
     </div>

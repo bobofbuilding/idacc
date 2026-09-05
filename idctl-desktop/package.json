@@ -139,7 +139,9 @@
     "dev:tauri-simulation": "node scripts/run-tauri-simulation.mjs",
     "tauri": "node scripts/retired-tauri-production.mjs",
     "tauri:dev": "node scripts/retired-tauri-production.mjs",
-    "tauri:build": "node scripts/retired-tauri-production.mjs"
+    "tauri:build": "node scripts/retired-tauri-production.mjs",
+    "test:usability": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/usability-smoke.ts",
+    "test:inbox-delivery": "node scripts/inbox-delivery-smoke.mjs"
   },
   "build": {
     "appId": "world.idchain.idagents-control",

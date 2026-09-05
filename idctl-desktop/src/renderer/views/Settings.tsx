@@ -417,6 +417,14 @@ function shouldCheckUpdateOnSettingsOpen(status: { checking?: boolean; lastCheck
 }
 
 export function Settings({ store, navigate }: { store: FleetStore; navigate?: (view: string) => void }) {
+  const [settingsCategory, setSettingsCategory] = useState('models');
+  const [settingsSearch, setSettingsSearch] = useState('');
+  const settingsCategories = [['models', 'Models & providers'], ['connections', 'Connections'], ['identity', 'Identity & security'], ['automation', 'Automation'], ['updates', 'Updates'], ['diagnostics', 'About & recovery']];
+  const showSettingsSection = (category: string, keywords: string) => settingsSearch.trim()
+    ? keywords.toLowerCase().includes(settingsSearch.trim().toLowerCase())
+    : settingsCategory === category;
+  const settingsKeywords = ['Codex coordination bridge integration', 'Storage recovery backup cleanup disk', 'Hardware computer memory disk system diagnostics', 'Connection manager health status', 'Protected integrations credentials unlock keys', 'Profile root identity ENS Safe wallet', 'Root Safe connection wallet recovery WalletConnect', 'Agent chain RPCs network blockchain endpoint', 'Brain learning automation maintenance cadence', 'Self-update version update download', 'Managed subscription sign-ins account login provider', 'Local models backends Ollama download', 'Local image generator images provider', 'Local LLM stacks install provider server', 'Inference backends API provider endpoint key'];
+  const settingsHasMatch = !settingsSearch.trim() || settingsKeywords.some((keywords) => keywords.toLowerCase().includes(settingsSearch.trim().toLowerCase()));
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [evmRpcs, setEvmRpcs] = useState<EvmRpcRow[]>([]);
   const [secureSettings, setSecureSettings] = useState<SecureSettingsStatus | null>(null);
@@ -2414,7 +2422,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   }
   function openStackSetup() {
     setStackTag(STACK_BACKEND_PRESET_FILTER);
-    requestAnimationFrame(() => document.getElementById('local-llm-stacks')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    setSettingsCategory('models'); setSettingsSearch('');
+    requestAnimationFrame(() => { const section = document.getElementById('local-llm-stacks'); const details = section?.querySelector('details'); if (details) details.open = true; section?.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   }
   function stackPrimaryAction(s: LocalStackEntry): boolean {
     if (!stackInstallCmd(s)) return false;
@@ -2959,8 +2968,15 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
     <div className="view">
       <header className="view-head">
         <h1>Settings</h1>
+        <input className="composer-input" aria-label="Search settings" placeholder="Search settings…" value={settingsSearch} onChange={(event) => setSettingsSearch(event.target.value)} />
       </header>
 
+      <nav className="tabs settings-navigation" aria-label="Settings categories">
+        {settingsCategories.map(([id, label]) => <button key={id} className={`tab${settingsCategory === id && !settingsSearch ? ' active' : ''}`} aria-pressed={settingsCategory === id && !settingsSearch} onClick={() => { setSettingsSearch(''); setSettingsCategory(id); }}>{label}</button>)}
+      </nav>
+      {settingsSearch ? <p className="muted">Showing matching sections across all settings. <button className="btn small" onClick={() => setSettingsSearch('')}>Clear search</button></p> : null}
+      {settingsCategory === 'identity' && !settingsSearch ? <button className="btn" onClick={() => navigate?.('identity')}>Open agent identity &amp; wallet setup</button> : null}
+      {settingsCategory === 'automation' && !settingsSearch ? <button className="btn" onClick={() => navigate?.('automations')}>Open scheduled work</button> : null}
       {manualCopy ? (
         <section className="card" aria-live="polite">
           <div className="row-actions">
@@ -2981,7 +2997,8 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         </section>
       ) : null}
 
-      <section className="card" aria-live="polite">
+      {!settingsHasMatch ? <p className="muted" role="status">No settings match “{settingsSearch}”. Try a provider name, wallet, updates, or recovery.</p> : null}
+      <section className="card" aria-live="polite" hidden={!showSettingsSection('diagnostics', 'Storage recovery backup cleanup disk')}>
         <h3>Storage &amp; recovery</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           Legacy memories are preserved as retired versions before any verified old copies can be retired.
@@ -3053,7 +3070,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         ) : null}
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('diagnostics', 'Hardware computer memory disk system diagnostics')}>
         <h3>Hardware — compute on the commanded machine</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           The machine running the manager and Ollama (where local models download and run){store.managerUrl ? <> · <span className="mono">{store.managerUrl.replace(/^https?:\/\//, '')}</span></> : null}. Local-model size warnings are checked against it.
@@ -3082,7 +3099,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         )}
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('diagnostics', 'Connection manager health status')}>
         <h3>Connection</h3>
         <div className="kv">
           <span>manager</span>
@@ -3099,7 +3116,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         </div>
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('connections', 'Protected integrations credentials unlock keys')}>
         <h3>Protected integrations</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           IDACC starts with saved provider, MCP, and RPC credentials locked, so opening the app or Settings does not ask for your macOS Keychain password. Unlock is optional and lasts only until IDACC closes.
@@ -3137,7 +3154,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         ) : null}
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('connections', 'Codex coordination bridge integration')}>
         <h3>Codex coordination</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           IDACC can attach scoped catalog, task, and team-coordination tools to Codex without exposing the Manager endpoint or administrator credential. Codex fixes its available tools when a task starts, so an already-open task must be replaced with a new task after this bridge is ready.
@@ -3168,7 +3185,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         </p>
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('identity', 'Profile root identity ENS Safe wallet')}>
         <h3>Profile root identity</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           New profiles use a local/mock identity and cannot sign live Safe changes. To use your own deployment, manually enter the ENS root reserved for your agents and the EVM Safe that owns recovery authority, then enable it. Existing users may re-enter their own identity here; IDACC never imports or enables a bundled identity or legacy live-signing state automatically.
@@ -3215,7 +3232,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         </div>
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('identity', 'Root Safe connection wallet recovery WalletConnect')}>
         <h3>Root Safe connection</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           Optional WalletConnect approval for the root Safe transaction that provisions or revokes an agent Safe. It is not used for routine agent transactions: deployed agents act through zero-value, target- and function-scoped session keys. IDACC stores only the public Reown project ID; wallet keys never enter the app.
@@ -3288,7 +3305,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         </div>
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('connections', 'Agent chain RPCs network blockchain endpoint')}>
         <h3>Agent chain RPCs</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           JSON-RPC endpoints agents may use when they hold an active granted key. Public RPCs can leave the key blank; Alchemy/Infura-style URLs can use <span className="mono">{'{API_KEY}'}</span>. Linked keys are encrypted by the desktop app and never shown back here.
@@ -3321,7 +3338,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         </div>
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('automation', 'Brain learning automation maintenance cadence')}>
         <h3>Brain learning automation</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           Event learning runs with the unified app and resumes from a private profile cursor. The mutation-capable maintenance cycle stays off until you explicitly enable its non-overlapping schedule.
@@ -3395,7 +3412,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         ) : null}
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('updates', 'Self-update version update download')}>
         <h3>Self-update</h3>
         <div className="kv">
           <span>IDACC version</span>
@@ -3466,7 +3483,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         {updateApplyError ? <div className="small status-error" style={{ marginTop: 8 }}>{updateApplyError}</div> : null}
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('models', 'Managed subscription sign-ins account login provider')}>
         <div className="row-actions" style={{ alignItems: 'center', gap: 8 }}>
           <h3 style={{ margin: 0 }}>Managed subscription sign-ins</h3>
           <span className="grow" />
@@ -3571,7 +3588,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         {subNotice ? <p className="muted small" style={{ marginTop: 8 }}>{subNotice}</p> : null}
       </section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('models', 'Local models backends Ollama download')}><details open={!!settingsSearch}><summary>Browse local models</summary>
         <div className="row-actions" style={{ alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <h3 style={{ margin: 0 }}>Local models & backends</h3>
           <span className="grow" />
@@ -3779,9 +3796,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             );
           })()}
         </div>
-      </section>
+      </details></section>
 
-      <section className="card">
+      <section className="card" hidden={!showSettingsSection('models', 'Local image generator images provider')}><details open={!!settingsSearch}><summary>Image generation settings</summary>
         <h3>Local image generator</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           Optional local image server for chat image requests. IDACC tries this first; if it is unset or unreachable, image generation falls back to an image-capable API backend configured under <b>Inference backends</b>. Run <a className="ext-link" href="https://github.com/AUTOMATIC1111/stable-diffusion-webui" target="_blank" rel="noreferrer">Automatic1111</a> / Forge with <span className="mono">--api</span> on <span className="mono">:7860</span>, or a <a className="ext-link" href="https://localai.io" target="_blank" rel="noreferrer">LocalAI</a>-style OpenAI Images API on <span className="mono">:8080</span>.
@@ -3819,9 +3836,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           <div className="muted small">Fallback: image-capable API backend from Inference backends when available.</div>
           {imgMsg ? <div className={`small ${imageMessageClass(imgMsg)}`}>{imgMsg}</div> : null}
         </div>
-      </section>
+      </details></section>
 
-      <section className="card" id="local-llm-stacks">
+      <section className="card" id="local-llm-stacks" hidden={!showSettingsSection('models', 'Local LLM stacks install provider server')}><details open={!!settingsSearch}><summary>Add a local model server</summary>
         <h3>Local LLM stacks</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           Self-hostable inference servers you can run <b>next to Ollama</b>. <b>Install</b> only installs the app/server; <b>running</b> means a local API answered a scan; <b>backend added</b> means IDACC can route agents to it.
@@ -3952,9 +3969,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             );
           })}
         </div>
-      </section>
+      </details></section>
 
-      <section className="card grow" id="inference-backends">
+      <section className="card grow" id="inference-backends" hidden={!showSettingsSection('models', 'Inference backends API provider endpoint key')}>
         <h3>Inference backends</h3>
 
         <table className="grid">

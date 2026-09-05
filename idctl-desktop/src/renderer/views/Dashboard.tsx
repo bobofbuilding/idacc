@@ -36,7 +36,8 @@ function ago(ts?: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.round(s / 60)}m`;
-  return `${Math.round(s / 3600)}h`;
+  if (s < 86400) return `${Math.round(s / 3600)}h`;
+  return `${Math.round(s / 86400)}d`;
 }
 function str(x: unknown): string { return typeof x === 'string' ? x : ''; }
 async function writeActivityClipboard(value: string): Promise<boolean> {
@@ -446,11 +447,11 @@ function CoordinationTree({
       <h3 style={{ marginTop: 0, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
         Live coordination <span className="muted small">· who's driving what, right now</span>
         <span className="grow" />
-        {spend ? (
+        {spend && spend.count > 0 ? (
           <span className="muted small" title="Fleet token spend in the last 24h (new, non-cached tokens) and the top spender — Reset session on a heavy agent from HR Manager to deflate a bloated context.">
             ✳ {fmtTokens(spend.total)} tokens / 24h · {spend.count} turns{spend.top ? ` · top ${spend.top.agent} ${fmtTokens(spend.top.total)}` : ''}
           </span>
-        ) : null}
+        ) : <span className="muted small">Token usage unavailable — no recorded turns in the last 24 hours</span>}
       </h3>
       {hierarchyWarning ? (
         <div className="row-actions" role="status" style={{ marginBottom: 8, alignItems: 'center' }}>
@@ -612,8 +613,11 @@ export function Dashboard({
   // Holistic activity feed: recent events plus durable task/comms state across
   // EVERY team (newest first). Events alone are lossy: a task/news row can exist
   // without a retained event, so the tile merges all sources before sorting.
+  const [showActivityHistory, setShowActivityHistory] = useState(false);
   const [events, setEvents] = useState<TeamEvent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [tasksAvailable, setTasksAvailable] = useState(false);
+  const [activityChecked, setActivityChecked] = useState<number | null>(null);
   const [news, setNews] = useState<DashboardNews[]>([]);
   const [activityClockTick, setActivityClockTick] = useState(0);
   const [expandedActivityKeys, setExpandedActivityKeys] = useState<Set<string>>(() => new Set());
@@ -625,12 +629,13 @@ export function Dashboard({
     void (async () => {
       const [evs, ts, ns] = await Promise.all([
         call<TeamEvent[]>('events:multi', 80).catch(() => [] as TeamEvent[]),
-        call<Task[]>('tasks:allTeams').catch(() => [] as Task[]),
+        call<Task[]>('tasks:allTeams').catch(() => null),
         call<DashboardNews[]>('news:allTeams', 80).catch(() => [] as DashboardNews[]),
       ]);
       if (!activityLiveRef.current) return;
       setEvents(evs);
-      setTasks(ts);
+      if (ts) { setTasks(ts); setActivityChecked(Date.now()); }
+      setTasksAvailable(ts !== null);
       setNews(ns);
     })();
   }, []);
@@ -813,15 +818,22 @@ export function Dashboard({
   return (
     <div className="view" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <header className="view-head" style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-        <h1>Dashboard</h1>
+        <h1>Home</h1>
         <div className="muted small" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           talk to
-          <span className="readonly-target" title="Dashboard chat follows the configured fleet primary. Use HR Manager for team-specific conversations.">
+          <span className="readonly-target" title="Chat with your primary lead. Open Teams for team-specific conversations.">
             {dashboardChatTeam} · {dashboardChatTarget}
           </span>
         </div>
       </header>
 
+      <p className="muted small" role="status">{activityChecked ? `Work last refreshed ${new Date(activityChecked).toLocaleTimeString()}` : "Waiting for work status"}{!tasksAvailable && activityChecked ? " · Refresh failed; previous results shown" : ""}</p>
+      <div className="home-summary">
+        <button className="card" onClick={() => navigate?.('inbox')}><strong>Needs your attention</strong><span>Review decisions and approvals →</span></button>
+        <button className="card" onClick={() => navigate?.('tasks')}><strong>Work in progress</strong><span>{tasksAvailable ? `${activityTaskStats.open} open tasks · ${activityTaskStats.working} working →` : "Work status unavailable — open to retry"}</span></button>
+        <button className="card" onClick={() => navigate?.('projects')}><strong>Projects</strong><span>Open project goals and results →</span></button>
+      </div>
+      <details className="card compact-details"><summary>Team coordination &amp; usage</summary>
       <CoordinationTree
         store={store}
         fleetAgents={fleetStructure.agents}
@@ -833,8 +845,10 @@ export function Dashboard({
         onOpenSettings={navigate ? () => navigate('settings') : undefined}
       />
 
+      </details>
+
       {/* Explicit flex row so the chat fills the left and the activity tile always shows on the right. */}
-      <div style={{ display: 'flex', gap: 14, flex: 1, minHeight: 0, alignItems: 'stretch' }}>
+      <div className="home-workspace">
         {/* Primary lead chat follows the configured identity (no team or agent picker). */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           {controlIntent ? (
@@ -869,12 +883,13 @@ export function Dashboard({
 
         {/* marginTop offsets the chat's control row so the tile top squares with the chat card
             top (when no project is focused; a focused project's banner adds a little extra). */}
-        <aside className="card" style={{ width: 560, flexShrink: 0, marginTop: 38, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <aside className="card home-activity">
+          <label className="small"><input type="checkbox" checked={showActivityHistory} onChange={(event) => setShowActivityHistory(event.target.checked)} /> Show full history</label>
           <h3 style={{ marginTop: 0 }}>
             Activity <span className="muted small">· {activeTeams.length} active teams · {feedItems.length} recent rows · {activityTaskStats.working} working · {activityTaskStats.open} open tasks · {activityTaskStats.total} total · {news.length + store.inbox.length} recent comms</span>
           </h3>
           <div className="feed-list activity-feed" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-            {feedItems.map((item) => {
+            {feedItems.filter((item) => showActivityHistory || Date.now() - item.at < 7 * 86400000).slice(0, showActivityHistory ? 80 : 15).map((item) => {
               const expanded = expandedActivityKeys.has(item.key);
               const expandable = !!item.fullDesc && item.fullDesc !== item.desc;
               return (

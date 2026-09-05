@@ -1,3 +1,4 @@
+import { learningSummary, type LearningMaterialState } from '../../shared/usability.ts';
 import { useEffect, useState } from 'react';
 import type { ScheduleEntry } from '../../../../idctl/src/api/client.ts';
 import { call, useSyncVersion } from '../store.ts';
@@ -45,19 +46,15 @@ type UnifiedStackStatus = {
   };
 };
 
-type LearnMaterial = {
-  status?: string;
-  brainSync?: { status?: string };
-};
 
 type WorkLearningSnapshot = {
   driver: GoalDriverStatus | null;
   stack: UnifiedStackStatus | null;
-  materials: LearnMaterial[];
-  schedules: ScheduleEntry[];
+  materials: LearningMaterialState[] | null;
+  schedules: ScheduleEntry[] | null;
 };
 
-const EMPTY: WorkLearningSnapshot = { driver: null, stack: null, materials: [], schedules: [] };
+const EMPTY: WorkLearningSnapshot = { driver: null, stack: null, materials: null, schedules: [] };
 
 function timeAgo(value: number | string | null | undefined): string {
   const parsed = typeof value === 'number' ? value : Date.parse(String(value || ''));
@@ -97,8 +94,8 @@ export function WorkLearningStatus() {
       const [driver, stack, materials, schedules] = await Promise.all([
         call<GoalDriverStatus>('goalDriver:getStatus').catch(() => null),
         call<UnifiedStackStatus>('unifiedStack:status').catch(() => null),
-        call<LearnMaterial[]>('materials:list').catch(() => []),
-        call<ScheduleEntry[]>('schedules:allTeams').catch(() => []),
+        call<LearningMaterialState[]>('materials:list').catch(() => null),
+        call<ScheduleEntry[]>('schedules:allTeams').catch(() => null),
       ]);
       if (!live) return;
       setSnapshot({ driver, stack, materials, schedules });
@@ -116,12 +113,8 @@ export function WorkLearningStatus() {
   const automation = snapshot.stack?.brainAutomation;
   const catalog = snapshot.stack?.brainCatalog;
   const driver = snapshot.driver;
-  const queued = snapshot.materials.filter((material) => material.status === 'queued').length;
-  const processing = snapshot.materials.filter((material) => material.status === 'processing').length;
-  const brainPending = snapshot.materials.filter((material) => (
-    material.status === 'ready' && material.brainSync?.status !== 'ok'
-  )).length;
-  const activeSchedules = snapshot.schedules.filter((schedule) => schedule.active).length;
+  const learning = learningSummary(snapshot.materials);
+  const activeSchedules = (snapshot.schedules ?? []).filter((schedule) => schedule.active).length;
   const goalErrors = Number(driver?.runtime?.lastResult?.errorCount || 0);
 
   return (
@@ -131,14 +124,14 @@ export function WorkLearningStatus() {
           <b>Active learning</b>
           <span className={`work-learning-state ${listener?.healthy ? 'ok-text' : 'warn-text'}`}>
             {listener?.healthy
-              ? `running · last event ${timeAgo(listener.lastSuccessfulPollAt)}`
+              ? `running · last checked ${timeAgo(listener.lastSuccessfulPollAt)}`
               : listener?.error || listener?.phase || 'checking…'}
           </span>
           <span className={`work-learning-state ${catalog?.healthy ? 'ok-text' : 'warn-text'}`}>
             {catalog?.healthy ? `${catalog.skillCount} Brain skills` : catalog?.error || 'catalog checking…'}
           </span>
         </div>
-        <span className="muted small">Goals, Learn, schedules, loops, and Dream share this profile Brain and Manager.</span>
+        <span className="muted small">Work, Knowledge, and Automations share this private workspace.</span>
         <button className="btn small" onClick={() => void call('brain:openDashboard', 'learning')}>Open Brain ↗</button>
       </div>
 
@@ -157,13 +150,13 @@ export function WorkLearningStatus() {
         </div>
         <div>
           <span className="muted small">Learn queue</span>
-          <b>{processing ? `${processing} processing` : queued ? `${queued} queued` : 'caught up'}</b>
-          <span className="muted small">{brainPending ? `${brainPending} Brain sync pending` : 'Brain graph synced'}</span>
+          <b>{learning.label}</b>
+          <span className="muted small">{learning.detail}</span>
         </div>
         <div>
           <span className="muted small">Recurring work</span>
-          <b>{activeSchedules} active schedule{activeSchedules === 1 ? '' : 's'}</b>
-          <span className="muted small">Schedule, Loop, and Dream keep their own reviewed cadence</span>
+          <b>{snapshot.schedules === null ? "Schedule status unavailable" : `${activeSchedules} active schedule${activeSchedules === 1 ? "" : "s"}`}</b>
+          <span className="muted small">Review checks, workflows, and reflections in Automations</span>
         </div>
         <div>
           <span className="muted small">Brain maintenance</span>

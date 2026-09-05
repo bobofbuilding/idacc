@@ -69,6 +69,7 @@ jobs:
       - name: Verify cross-platform source and package policy
         run: |
           npm run typecheck --prefix idctl-desktop
+          npm run test:usability --prefix idctl-desktop
           npm run build --prefix idctl-desktop
           npm run test:app-shutdown --prefix idctl-desktop
           npm run test:computer-use-shutdown --prefix idctl-desktop
@@ -135,11 +136,11 @@ jobs:
 
       - name: Verify rendered command and drawer interactions
         if: runner.os != 'Linux'
-        run: npm run test:dashboard-rendered --prefix idctl-desktop
+        run: npm run test:dashboard-rendered --prefix idctl-desktop && npm run test:inbox-delivery --prefix idctl-desktop
 
       - name: Verify rendered command and drawer interactions
         if: runner.os == 'Linux'
-        run: xvfb-run -a npm run test:dashboard-rendered --prefix idctl-desktop
+        run: xvfb-run -a npm run test:dashboard-rendered --prefix idctl-desktop && xvfb-run -a npm run test:inbox-delivery --prefix idctl-desktop
 
       - name: Verify real Electron manager and Brain supervision
         if: runner.os != 'Linux'

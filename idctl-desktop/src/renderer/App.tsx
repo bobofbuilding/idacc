@@ -1,3 +1,4 @@
+import { workDestination, type WorkTab } from './navigation.ts';
 import { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useFleet, call, useSyncVersion } from './store.ts';
 import { PromptProvider } from './components/prompt.tsx';
@@ -32,21 +33,22 @@ import {
   type ControlCenterCapabilities,
 } from '../../../idctl/src/api/controlCenterContract.ts';
 
-type ViewId = 'dashboard' | 'inbox' | 'tasks' | 'projects' | 'health' | 'identity' | 'schedule' | 'teams' | 'modules' | 'computer' | 'settings';
-type TeamsFocus = 'route-hierarchy' | 'health';
+type ViewId = 'knowledge' | 'automations' | 'dashboard' | 'inbox' | 'tasks' | 'projects' | 'health' | 'identity' | 'schedule' | 'teams' | 'modules' | 'computer' | 'settings';
+type TeamsFocus = 'route-hierarchy' | 'health' | 'build';
 
 const DEFAULT_NAV: { id: ViewId; label: string; icon: string; order: number }[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: '▦', order: 10 },
+  { id: 'dashboard', label: 'Home', icon: '▦', order: 10 },
   { id: 'inbox', label: 'Inbox', icon: '□', order: 20 },
   { id: 'tasks', label: 'Work', icon: '☑', order: 40 },
   { id: 'projects', label: 'Projects', icon: '◆', order: 50 },
-  { id: 'teams', label: 'HR Manager', icon: '⛌', order: 80 },
-  { id: 'modules', label: 'Capabilities', icon: '◫', order: 90 },
-  { id: 'identity', label: 'Identity & Keys', icon: '⬡', order: 95 },
-  { id: 'computer', label: 'Computer Use', icon: '🖥', order: 100 },
+  { id: 'teams', label: 'Teams', icon: '⛌', order: 80 },
+  { id: 'knowledge', label: 'Knowledge', icon: '◇', order: 85 },
+  { id: 'automations', label: 'Automations', icon: '◷', order: 86 },
+  { id: 'modules', label: 'Tools', icon: '◫', order: 90 },
+  { id: 'computer', label: 'Computer Control', icon: '🖥', order: 100 },
   { id: 'settings', label: 'Settings', icon: '⚙', order: 110 },
 ];
-const IMPLEMENTED_VIEWS = new Set<ViewId>([...DEFAULT_NAV.map((n) => n.id), 'health', 'inbox', 'schedule']);
+const IMPLEMENTED_VIEWS = new Set<ViewId>([...DEFAULT_NAV.map((n) => n.id), 'health', 'inbox', 'schedule', 'identity']);
 
 class CrashBoundary extends Component<{ children: ReactNode; scope: string }, { error: string | null }> {
   state = { error: null };
@@ -98,11 +100,17 @@ export function App() {
   const [view, setView] = useState<ViewId>(() => {
     // 'schedule' is a Tasks tab now (not in NAV) but still a valid deep-link target.
     // 'health' is now an HR Manager tab, but remains a valid legacy route.
-    if (initialTarget === 'health') return 'teams';
+    if (initialTarget?.startsWith('identity:')) return 'identity';
+    if (initialTarget === 'health' || initialTarget?.startsWith('teams:')) return 'teams';
+    const work = workDestination(initialTarget ?? '');
+    if (work) return work.view;
     return isViewId(initialTarget) ? initialTarget : 'dashboard';
   });
-  const [teamsFocus, setTeamsFocus] = useState<TeamsFocus | undefined>(() => initialTarget === 'health' ? 'health' : undefined);
-  const store = useFleet(view);
+  const [teamsFocus, setTeamsFocus] = useState<TeamsFocus | undefined>(() => initialTarget === 'health' || initialTarget === 'teams:health' ? 'health' : initialTarget === 'teams:build' ? 'build' : initialTarget === 'teams:route' ? 'route-hierarchy' : undefined);
+  const [workTabRequest, setWorkTabRequest] = useState(0);
+  const [identityTarget, setIdentityTarget] = useState<string | undefined>(() => initialTarget?.startsWith('identity:') ? initialTarget.slice(9) : undefined);
+  const [workTab, setWorkTab] = useState<WorkTab>(() => workDestination(initialTarget ?? '')?.tab ?? 'tasks');
+  const store = useFleet(view === 'knowledge' || view === 'automations' ? 'tasks' : view);
   useEffect(() => { try { localStorage.setItem('idctl.view', view); } catch { /* no storage */ } }, [view]);
   const [version, setVersion] = useState<string>('');
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
@@ -126,6 +134,11 @@ export function App() {
     features: commandFeatures,
   }), [commandFeatures, store.connection]);
   const navigateTo = useCallback((target: string) => {
+    if (target.startsWith('identity:')) { setIdentityTarget(target.slice(9)); setView('identity'); return; }
+    if (target === 'identity') setIdentityTarget(undefined);
+    const destination = workDestination(target);
+    if (destination) { setWorkTabRequest((request) => request + 1); setWorkTab(destination.tab); setView(destination.view); return; }
+    if (target === 'teams:build') { setTeamsFocus('build'); setView('teams'); return; }
     if (target === 'teams:route') {
       setTeamsFocus('route-hierarchy');
       setView('teams');
@@ -249,7 +262,8 @@ export function App() {
           {nav.map((n) => (
             <button
               key={n.id}
-              className={`nav-item${view === n.id ? ' active' : ''}`}
+              className={`nav-item${n.id === 'knowledge' ? ' nav-secondary-start' : ''}${view === n.id ? ' active' : ''}`}
+              aria-current={view === n.id ? 'page' : undefined}
               onClick={() => navigateTo(n.id)}
             >
               <span className="nav-icon">{n.icon}</span>
@@ -286,6 +300,9 @@ export function App() {
           <CrashBoundary key={view} scope={nav.find((n) => n.id === view)?.label ?? view}>
             <Router
               view={view}
+              workTab={workTab}
+              workTabRequest={workTabRequest}
+              identityTarget={identityTarget}
               store={store}
               navigate={navigateTo}
               teamsFocus={teamsFocus}
@@ -332,8 +349,11 @@ export function App() {
   );
 }
 
-function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled, commandEnvironment }: {
+function Router({ view, workTab, workTabRequest, identityTarget, store, navigate, teamsFocus, onTeamsFocusHandled, commandEnvironment }: {
   view: ViewId;
+  workTab: WorkTab;
+  workTabRequest: number;
+  identityTarget?: string;
   store: ReturnType<typeof useFleet>;
   navigate: (target: string) => void;
   teamsFocus?: TeamsFocus;
@@ -348,13 +368,17 @@ function Router({ view, store, navigate, teamsFocus, onTeamsFocusHandled, comman
     case 'inbox':
       return <Inbox store={store} />;
     case 'tasks':
-      return <Tasks store={store} />;
+      return <Tasks store={store} area="work" initialTab={workTab} tabRequest={workTabRequest} />;
+    case 'knowledge':
+      return <Tasks store={store} area="knowledge" initialTab={workTab} tabRequest={workTabRequest} />;
+    case 'automations':
+      return <Tasks store={store} area="automations" initialTab={workTab} tabRequest={workTabRequest} />;
     case 'health':
       return <Teams store={store} focus="health" onFocusHandled={onTeamsFocusHandled} navigate={navigate} />;
     case 'identity':
-      return <Identity store={store} />;
+      return <Identity store={store} initialAgent={identityTarget} />;
     case 'schedule':
-      return <Tasks store={store} initialTab="schedule" />;
+      return <Tasks store={store} area="automations" initialTab="schedule" />;
     case 'modules':
       return <Modules store={store} />;
     case 'computer':
@@ -415,7 +439,7 @@ function StatusBar({ store }: { store: ReturnType<typeof useFleet> }) {
   return (
     <footer className="statusbar">
       <span className={`pill ${dot}`}>● {store.connection}</span>
-      <span className="muted">{store.managerUrl || '—'}</span>
+      <span className="muted" title={store.managerUrl || undefined}>Private workspace</span>
       <span className="sep">·</span>
       <span title="running agents across every team">{totalActive} agent{totalActive === 1 ? '' : 's'} active · {liveTeams} team{liveTeams === 1 ? '' : 's'} running</span>
       {store.connection === 'offline' && store.lastError ? (

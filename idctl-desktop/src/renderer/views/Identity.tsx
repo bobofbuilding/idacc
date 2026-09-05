@@ -675,7 +675,8 @@ function accountStamp(a: AgentAccount | null | undefined): string {
   } : null);
 }
 
-export function Identity({ store }: { store: FleetStore }) {
+export function Identity({ store, initialAgent }: { store: FleetStore; initialAgent?: string }) {
+  const [identitySearch, setIdentitySearch] = useState('');
   const [caps, setCaps] = useState<KeyCapabilities | null>(null);
   const [productionReadiness, setProductionReadiness] = useState<KeyProductionReadiness | null>(null);
   const [rootIdentityStatus, setRootIdentityStatus] = useState<RootIdentityStatus>({
@@ -684,7 +685,8 @@ export function Identity({ store }: { store: FleetStore }) {
   });
   const [accounts, setAccounts] = useState<Record<string, AgentAccount>>({});
   const [presets, setPresets] = useState<{ scopes: SessionScope[]; ttls: { label: string; ms: number }[] } | null>(null);
-  const [sel, setSel] = useState<string | null>(null);
+  const [sel, setSel] = useState<string | null>(initialAgent ?? null);
+  useEffect(() => { if (initialAgent) setSel(initialAgent); }, [initialAgent]);
   const [scopeIdx, setScopeIdx] = useState(1);
   const [ttlIdx, setTtlIdx] = useState(1);
   const [authorityTargetsInput, setAuthorityTargetsInput] = useState('');
@@ -1764,6 +1766,16 @@ export function Identity({ store }: { store: FleetStore }) {
     setContractMessage(`Threshold repair prepared. Connect ${rootEns} on Ethereum mainnet, simulate, review, and submit the Safe self-call. Both owners must approve the resulting 2-of-2 policy going forward.`);
   }
 
+  function revealIdentitySection(id: string) {
+    const section = document.getElementById(id);
+    let ancestor = section?.parentElement;
+    while (ancestor) {
+      if (ancestor instanceof HTMLDetailsElement) ancestor.open = true;
+      ancestor = ancestor.parentElement;
+    }
+    section?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+
   async function runProcessAction(action = nextProcessStep?.action) {
     switch (action) {
       case 'provision':
@@ -1782,11 +1794,11 @@ export function Identity({ store }: { store: FleetStore }) {
         await issueSession();
         break;
       case 'review-chains':
-        document.getElementById('identity-chain-access')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        revealIdentitySection('identity-chain-access');
         setProcessMsg('Review chain routes below. Add or probe Agent RPCs from Settings if routes are missing.');
         break;
       case 'review-standards':
-        document.getElementById('identity-standards')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        revealIdentitySection('identity-standards');
         setProcessMsg('Review metadata standards below. Missing standards need manager metadata or future guarded onchain reads.');
         break;
       default:
@@ -1800,7 +1812,7 @@ export function Identity({ store }: { store: FleetStore }) {
       <header className="view-head">
         <div>
           <h1>Identity & Keys</h1>
-          <div className="muted small">One root-controlled Safe and ENS identity per agent, with independently usable but revocable authority.</div>
+          <div className="muted small">Optional wallet setup for agents. Review the next step below; ordinary local work does not require a wallet.</div>
         </div>
         <div className="identity-head-status">
           <span className={caps?.live ? 'ok-text' : 'warn-text'}>{providerStatusLabel(caps)}</span>
@@ -1810,8 +1822,8 @@ export function Identity({ store }: { store: FleetStore }) {
 
       <div className="cols identity-shell">
         <section className="card identity-agents">
-          <h3>Agents</h3>
-          {identityAgents.map((a) => {
+          <h3>Agents</h3><input className="composer-input" aria-label="Search agent identities" placeholder="Find an agent…" value={identitySearch} onChange={(event) => setIdentitySearch(event.target.value)} />
+          {identityAgents.filter((a) => `${a.name} ${a.team ?? ''}`.toLowerCase().includes(identitySearch.toLowerCase())).map((a) => {
             const agentWallet = controllerWallet(a);
             const agentProof = proofs[agentKey(a)];
             const verified = proofMatchesWallet(agentProof, agentWallet);
@@ -1913,7 +1925,7 @@ export function Identity({ store }: { store: FleetStore }) {
                 </div>
               </section>
 
-              <section className="card identity-process" role="status" aria-label="Safe production readiness">
+              <details className="compact-details"><summary>Advanced: production evidence</summary><section className="card identity-process" role="status" aria-label="Safe production readiness">
                 <div className="identity-process-head">
                   <div>
                     <h3>Production release gate</h3>
@@ -1939,7 +1951,7 @@ export function Identity({ store }: { store: FleetStore }) {
                     ))}
                   </div>
                 ) : <p className="muted small">Running production preflight...</p>}
-              </section>
+              </section></details>
 
               {error ? (
                 <div className="identity-alert" role="alert">
@@ -1952,7 +1964,7 @@ export function Identity({ store }: { store: FleetStore }) {
               <section className="card identity-process" role="status">
                 <div className="identity-process-head">
                   <div>
-                    <h3>Agent wallet lifecycle</h3>
+                    <h3>Wallet setup · next steps</h3>
                     <p className="muted small">
                       Identity, signer proof, Safe ownership, and autonomous authority are checked as one guarded lifecycle.
                     </p>
@@ -2171,7 +2183,7 @@ export function Identity({ store }: { store: FleetStore }) {
                 </div>
               </section>
 
-              <section className="card" role="status">
+              <details className="compact-details"><summary>Advanced: network addresses</summary><section className="card" role="status">
                 <div className="identity-legacy-head">
                   <h3>Per-chain addresses</h3>
                   <StatusPill state={executionChainRows.every((row) => row.state === 'verified') ? 'verified' : executionChainRows.some((row) => row.state === 'missing') ? 'missing' : executionChainRows.some((row) => row.state === 'warn') ? 'warn' : 'pending'} />
@@ -2215,9 +2227,9 @@ export function Identity({ store }: { store: FleetStore }) {
                     ))}
                   </tbody>
                 </table>
-              </section>
+              </section></details>
 
-              <section className="card identity-contract-console" role="status">
+              <details className="compact-details"><summary>Advanced: root wallet proposal</summary><section className="card identity-contract-console" role="status">
                 <div className="identity-legacy-head">
                   <h3>Root Safe Bootstrap Proposal</h3>
                   <StatusPill state={contractExecutionState === 'ready' ? 'verified' : contractInputErrors.length ? 'warn' : 'missing'} />
@@ -2329,7 +2341,7 @@ export function Identity({ store }: { store: FleetStore }) {
                   {contractSimulation?.stamp === contractStamp ? contractSimulation.message : contractMessage}
                 </div>
                 <pre className="identity-contract-preview">{contractPreview}</pre>
-              </section>
+              </section></details>
 
               <section className="card identity-gate">
                 <div>
@@ -2410,7 +2422,7 @@ export function Identity({ store }: { store: FleetStore }) {
                   </div>
                 </section>
 
-                <section className="card">
+                <details className="compact-details"><summary>Security review evidence</summary><section className="card">
                   <h3>Security Review</h3>
                   <div className="risk-list">
                     {review.map((r) => (
@@ -2421,7 +2433,7 @@ export function Identity({ store }: { store: FleetStore }) {
                       </div>
                     ))}
                   </div>
-                </section>
+                </section></details>
               </div>
 
               <section className="card">
@@ -2530,7 +2542,7 @@ export function Identity({ store }: { store: FleetStore }) {
                 </p>
               </section>
 
-              <section className="card identity-plan">
+              <details className="compact-details"><summary>Advanced: rollout details</summary><section className="card identity-plan">
                 <div className="identity-plan-head">
                   <div>
                     <h3>Authority rollout</h3>
@@ -2555,7 +2567,7 @@ export function Identity({ store }: { store: FleetStore }) {
                     <p>Safe proposals replace local simulation while Zodiac Roles grants stay scoped, independently usable, and root-revocable. Expiry is shown only when the live provider enforces it.</p>
                   </div>
                 </div>
-              </section>
+              </section></details>
 
               <details className="card identity-details">
                 <summary>Advanced evidence</summary>
@@ -2580,7 +2592,7 @@ export function Identity({ store }: { store: FleetStore }) {
             </>
           ) : (
             <section className="card">
-              <p className="muted">Select an agent.</p>
+              <p className="muted" role={error ? "alert" : "status"}>{selected ? error || "Loading this agent’s identity…" : "Select an agent."}</p>{selected ? <button className="btn" onClick={() => void reload()}>Retry identity lookup</button> : null}
             </section>
           )}
         </section>

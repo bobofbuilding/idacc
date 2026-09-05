@@ -276,13 +276,14 @@ export function Health({ store, navigate, embedded = false }: { store: FleetStor
   return (
     <div className={embedded ? 'health-pane' : 'view'}>
       <header className="view-head">
-        {embedded ? <h2>Health &amp; Probes</h2> : <h1>Health &amp; Probes</h1>}
+        {embedded ? <h2>Agent health</h2> : <h1>Agent health</h1>}
         <button className="btn primary" disabled={!!probing} onClick={() => void probeAllVisible()}>
-          {probing === 'all' ? 'Probing…' : 'Probe all'}
+          {probing === 'all' ? 'Probing…' : 'Test all agents…'}
         </button>
       </header>
 
-      <UsageSection usage={usage} usageAt={usageAt} error={usageError} onRefresh={() => void loadUsage()} />
+      <p className="muted">Tests send a small request to agents and may use model credits.</p>
+      <details className="card"><summary>Usage &amp; performance</summary><UsageSection usage={usage} usageAt={usageAt} error={usageError} onRefresh={() => void loadUsage()} /></details>
 
       {/* The fleet roster is the shared AgentTable — runtime/model dropdowns + lifecycle
           actions + per-row Probe, live & holistic (all teams grouped in "All teams" view). */}

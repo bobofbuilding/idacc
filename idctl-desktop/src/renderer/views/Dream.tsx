@@ -1,3 +1,4 @@
+import { CalendarSchedule } from '../components/CalendarSchedule.tsx';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore } from '../store.ts';
 import type { ScheduleEntry } from '../../../../idctl/src/api/client.ts';
@@ -225,7 +226,7 @@ export function Dream({ store }: { store: FleetStore }) {
       const line = out.split('\n').map((l) => l.trim()).find(Boolean) ?? '';
       const clean = line.replace(/^["'`]+|["'`]+$/g, '').replace(/^[-*\d.\s]+/, '').slice(0, 160);
       if (!clean) { setMsg('no suggestion returned — try again or type your own'); return; }
-      setFocus(clean); setMsg('focus suggested — edit it or ✦ Dream now');
+      setFocus(clean); setMsg('focus suggested — edit it or ✦ Generate review');
     } catch (e) {
       if (alive.current) setMsg(`suggest failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -462,8 +463,8 @@ export function Dream({ store }: { store: FleetStore }) {
     <>
       <section className="card">
         <div className="row-actions" style={{ alignItems: 'center', marginBottom: 6 }}>
-          <h3 style={{ margin: 0 }}>Dream</h3>
-          <span className="muted small">· idle reflection over recent work + the brain</span>
+          <h3 style={{ margin: 0 }}>Reflection</h3>
+          <span className="muted small">· review recent work and suggest improvements</span>
           <span className="grow" />
           {msg ? <span className={`small ${/failed|empty/.test(msg) ? 'status-error' : 'muted'}`}>{msg}</span> : null}
         </div>
@@ -479,31 +480,14 @@ export function Dream({ store }: { store: FleetStore }) {
               {names.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
             <input style={{ flex: '1 1 260px' }} placeholder="optional focus — e.g. “onchain launch readiness”, or ✦ Suggest" value={focus} disabled={locked} onChange={(e) => setFocus(e.target.value)} />
-            <button className="btn" disabled={locked || !agent} title="Let the agent propose a high-value focus from its recent work + the brain" onClick={() => void suggestFocus()}>{suggesting ? 'Suggesting…' : '✦ Suggest focus'}</button>
-            <button className="btn primary" disabled={locked || !agent} onClick={() => void dreamNow()}>{dreaming ? 'Dreaming…' : '✦ Dream now'}</button>
+            <button className="btn" disabled={locked || !agent} title="Let the agent propose a high-value focus from its recent work + the brain" onClick={() => void suggestFocus()}>{suggesting ? 'Suggesting…' : '✦ Suggest a focus'}</button>
+            <button className="btn primary" disabled={locked || !agent} onClick={() => void dreamNow()}>{dreaming ? 'Reviewing…' : '✦ Generate review'}</button>
           </span>
           <span>schedule</span>
           <span style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-            <input
-              type="time"
-              value={scheduleTime}
-              disabled={locked}
-              aria-label="Scheduled Dream time"
-              onChange={(event) => setScheduleTime(event.target.value)}
-            />
-            {DREAM_DAY_OPTIONS.map(([day, label]) => (
-              <button
-                className={`btn small${scheduleDays.includes(day) ? ' primary' : ''}`}
-                key={day}
-                disabled={locked}
-                aria-pressed={scheduleDays.includes(day)}
-                onClick={() => toggleScheduleDay(day)}
-              >
-                {label}
-              </button>
-            ))}
+            <CalendarSchedule time={scheduleTime} days={scheduleDays} disabled={locked} onTime={setScheduleTime} onDays={setScheduleDays} />
             <button className="btn" disabled={locked || !agent || scheduleDays.length === 0} onClick={() => void scheduleNightly()}>
-              {editingScheduleId ? 'Save schedule' : 'Schedule dream'}
+              {editingScheduleId ? 'Save schedule' : 'Schedule review'}
             </button>
             {editingScheduleId ? (
               <button className="btn" disabled={locked} onClick={() => { setEditingScheduleId(null); setMsg('schedule edit cancelled'); }}>
@@ -519,7 +503,7 @@ export function Dream({ store }: { store: FleetStore }) {
         {nightlySchedules.map((schedule) => (
           <div className="skill-card dream-schedule-card" key={`schedule:${schedule.id}`}>
             <div className="skill-card-head">
-              <span className="b">☾ Scheduled dream · {schedule.targets.join(', ') || 'unassigned'}</span>
+              <span className="b">☾ Scheduled reflection · {schedule.targets.join(', ') || 'unassigned'}</span>
               <span className={`chip ${schedule.active ? 'ok' : 'warn'}`}>{schedule.active ? 'active' : 'paused'}</span>
               <span className="grow" />
               <span className="muted small">
@@ -555,7 +539,7 @@ export function Dream({ store }: { store: FleetStore }) {
             </div>
           );
         })}
-        {dreams.length === 0 ? <p className="muted center pad">No dreams yet. Pick an agent and <b>✦ Dream now</b> — it’ll reflect over recent work and the brain, then post a report here.</p> : null}
+        {dreams.length === 0 ? <p className="muted center pad">No reflection reports yet. Pick an agent and <b>✦ Generate review</b> — it’ll reflect over recent work and the brain, then post a report here.</p> : null}
       </div>
     </>
   );

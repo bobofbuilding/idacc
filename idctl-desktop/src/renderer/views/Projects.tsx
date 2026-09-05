@@ -1018,7 +1018,7 @@ export function Projects({ store }: { store: FleetStore }) {
     <div className="view">
       <header className="view-head">
         <h1>Projects</h1>
-        <div className="row-actions" style={{ flexWrap: 'wrap' }}>
+        <details className="new-work-menu"><summary className="btn primary">Add project</summary><div className="row-actions" style={{ flexWrap: 'wrap' }}>
           <button className="btn" disabled={busy || syncing} title={root ? `Scan ${root} and track each subfolder` : 'Find the id-agents workspace projects folder and track its subfolders'} onClick={() => void doSync()}>{syncing ? 'Syncing…' : '⟳ Sync workspace'}</button>
           {dupCount > 0 ? <button className="btn" disabled={busy} title="Merge projects that point at the same folder or repo into one (folders left untouched)" onClick={() => void combineDuplicates()}>⧉ Combine duplicates ({dupCount})</button> : null}
           <button className="btn" disabled={busy} onClick={() => { setGhOpen((v) => !v); setNote(''); }}>{ghOpen ? '− Cancel' : '⤓ Add from GitHub'}</button>
@@ -1037,10 +1037,10 @@ export function Projects({ store }: { store: FleetStore }) {
           >
             {editing === 'new' ? '− Cancel' : '+ New project'}
           </button>
-        </div>
+        </div></details>
       </header>
 
-      <div className="projects-root muted small">
+      <details className="compact-details"><summary>Workspace discovery</summary><div className="projects-root muted small">
         {root ? (
           <>workspace: <span className="mono" title={root}>{root}</span> · <button className="link-btn" disabled={busy || syncing} onClick={() => void changeRoot()}>change…</button></>
         ) : (
@@ -1048,6 +1048,7 @@ export function Projects({ store }: { store: FleetStore }) {
         )}
       </div>
 
+      </details>
       {ghOpen ? (
         <section className="card gh-add">
           <h3>Add from GitHub</h3>
@@ -1111,13 +1112,14 @@ export function Projects({ store }: { store: FleetStore }) {
                     <button className="btn" disabled={busy} onClick={() => setConfirmDel(null)}>Cancel</button>
                   </>
                 ) : (
-                  <button className="btn icon-danger" disabled={busy} title="Delete project (folder is left untouched)" onClick={() => setConfirmDel(p.id)}>✕</button>
+                  <details><summary className="btn">More</summary><button className="btn icon-danger" disabled={busy} onClick={() => setConfirmDel(p.id)}>Remove project from list…</button></details>
                 )}
               </div>
-              {p.description ? <p className="muted small skill-desc">{p.description}</p> : null}
+              {p.description ? <p className="muted small skill-desc">{p.description}</p> : <p className="muted small">Add a description to explain this project’s goal.</p>}
+              <p className="small">Lead: {p.lead || cardLead || "Not assigned"} · Team: {p.team || "Not assigned"}</p>
 
               {p.path ? (
-                <div className="project-git">
+                <details className="project-git"><summary>Files &amp; Git</summary>
                   <div className="row-actions" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                     <GitStatus g={g} />
                     <span className="grow" />
@@ -1125,7 +1127,7 @@ export function Projects({ store }: { store: FleetStore }) {
                       <button className="btn small" title="Connect this folder to a GitHub repo that ALREADY exists — sets it as origin (SSH) and fetches" onClick={() => { setLinkFor(linkFor === p.id ? null : p.id); setLinkUrl((p.links ?? []).find((l) => /github\.com/i.test(l)) ?? ''); setRepoFor(null); setNote(''); }}>{linkFor === p.id ? '− Cancel' : '🔗 Link existing repo'}</button>
                       <button className="btn small" title="Create a NEW GitHub repo for this folder and connect it as origin (SSH)" onClick={() => { setRepoFor(repoFor === p.id ? null : p.id); setRepoName(p.name || ''); setLinkFor(null); setNote(''); }}>{repoFor === p.id ? '− Cancel' : '＋ Create GitHub repo'}</button>
                     </>) : null}
-                    <button className="btn small primary" title="Commit & push this project's changes directly after reviewed git/diff checks; optionally let the project team's lead draft the message" onClick={() => { setCommitFor(commitFor === p.id ? null : p.id); setCommitMsg(''); setNote(''); }}>{commitFor === p.id ? '− Cancel' : '⤴ Commit'}</button>
+                    <button className="btn small primary" title="Commit & push this project's changes directly after reviewed git/diff checks; optionally let the project team's lead draft the message" onClick={() => { setCommitFor(commitFor === p.id ? null : p.id); setCommitMsg(''); setNote(''); }}>{commitFor === p.id ? '− Cancel' : 'Commit & push'}</button>
                     <button className="btn small" title="Open folder" onClick={() => void openProjectFolder(p)}>open ↗</button>
                   </div>
                   <div className="muted small mono project-path" title={p.path}>{p.path}</div>
@@ -1136,7 +1138,7 @@ export function Projects({ store }: { store: FleetStore }) {
                     <span className={`chip tag${autoCommitMode(p) !== 'off' ? ' on' : ''}`}>Auto-commit: {AUTO_COMMIT_LABEL[autoCommitMode(p)]}</span>
                     {!p.team ? <span className="muted">(needs team)</span> : null}
                     <button className="btn small" disabled={busy} onClick={() => setAutomationFor(automationFor === p.id ? null : p.id)}>
-                      {automationFor === p.id ? 'Close automation' : 'Automation'}
+                      {automationFor === p.id ? 'Close automation' : 'Git automation'}
                     </button>
                   </div>
 
@@ -1204,7 +1206,7 @@ export function Projects({ store }: { store: FleetStore }) {
                     </div>
                   ) : null}
                   {out ? <pre className="git-out">{out.output}</pre> : null}
-                </div>
+                </details>
               ) : null}
 
               {(p.tags ?? []).length > 0 ? (

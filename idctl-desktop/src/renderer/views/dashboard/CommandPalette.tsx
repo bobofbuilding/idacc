@@ -190,8 +190,8 @@ export function CommandPalette({
                 >
                   <span className="cmdk-grp">{c.group}</span>
                   <span className="cmdk-label">{c.label}</span>
-                  <span className={`cmdk-risk risk-${c.risk}`}>{c.risk}</span>
-                  {c.hint || running ? <span className="cmdk-hint">{blocked ? 'unavailable' : running ? 'running…' : c.hint}</span> : null}
+                  {c.risk !== 'none' ? <span className={`cmdk-risk risk-${c.risk}`}>{c.risk}</span> : null}
+                  {(c.hint && !['view', 'drawer'].includes(c.hint)) || running ? <span className="cmdk-hint">{blocked ? 'unavailable' : running ? 'running…' : c.hint}</span> : null}
                 </button>
               );
             })()

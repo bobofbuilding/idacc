@@ -388,11 +388,11 @@ export function Goals({ store }: { store: FleetStore }) {
         <button className="btn primary" disabled={busy} onClick={() => setShowNew((v) => !v)}>{showNew ? '− Cancel' : '+ New goal'}</button>
       </div>
 
-      <section className="card" style={{ marginBottom: 10 }}>
+      <details className="card compact-details"><summary>Automatic goal work · all teams</summary>      <section className="card" style={{ marginBottom: 10 }}>
         <div className="row-actions" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
             <input type="checkbox" checked={driverCfg.enabled} disabled={driverBusy} onChange={(e) => void patchDriver({ enabled: e.target.checked })} />
-            <b>Autopilot master</b>
+            <b>Enable automatic goal work</b>
           </label>
           <span className="muted small">Runs only for active goals with Autopilot on; Brain receives edits immediately and the Manager starts bounded work only when the cadence is due.</span>
           <span className="grow" />
@@ -408,8 +408,9 @@ export function Goals({ store }: { store: FleetStore }) {
           </label>
           <button className="btn" disabled={driverBusy} onClick={() => void runDriverNow()}>{driverBusy ? 'Running...' : 'Run now'}</button>
         </div>
-      </section>
+      </section></details>
 
+      {!goals.length && !showNew ? <section className="card center pad"><h3>What would you like your team to achieve?</h3><p className="muted">Create a goal to organize plans, tasks, and progress around an outcome.</p><button className="btn primary" onClick={() => setShowNew(true)}>Create your first goal</button></section> : null}
       {showNew ? (
         <section className="card">
           <h3>New goal</h3>
@@ -442,7 +443,7 @@ export function Goals({ store }: { store: FleetStore }) {
       ) : null}
 
       <div className="skill-catalog">
-        {goalGroups.map((group) => (
+        {goalGroups.filter((group) => group.goals.length > 0).map((group) => (
           <div key={group.priority} style={{ marginBottom: 12 }}>
             <div className="row-actions" style={{ alignItems: 'center', gap: 8, margin: '8px 0 6px' }}>
               <b>{group.label}</b>

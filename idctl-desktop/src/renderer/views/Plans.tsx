@@ -933,7 +933,7 @@ export function Plans({ store }: { store: FleetStore }) {
     const isOpen = brainOpen === p.file;
     const acting = busyFiles.has(p.file);
     const key = brainStatusKey(p.status);
-    const workLabel = key === 'hold' ? 'Resume & work' : key === 'partial' ? 'Continue work' : 'Work';
+    const workLabel = key === 'hold' ? 'Resume plan' : key === 'partial' ? 'Continue plan' : 'Start plan';
     const progress = planProgress[p.file];
     const progressText = progress?.open
       ? `${progress.doing} doing${progress.todo ? ` · ${progress.todo} todo` : ''}${progress.blocked ? ` · ${progress.blocked} blocked/stalled` : ''}`
@@ -1157,19 +1157,20 @@ export function Plans({ store }: { store: FleetStore }) {
             <h3 style={{ margin: 0 }}>Plans</h3>
             <span className="muted small">· {brainActive.length} active{brainCompleted.length ? ` · ${brainCompleted.length} completed` : ''} · ⟳ live</span>
             {brain.dir
-              ? <span className="muted small mono plan-path" title={brain.dir}>{brain.dir.replace(/^.*\/projects\//, '…/')}</span>
+              ? <details><summary className="muted small">Storage details</summary><span className="small mono">{brain.dir}</span></details>
               : <span className="warn-text small">profile plan store unavailable</span>}
           </div>
           <button
             className="btn small"
+            hidden={brain.plans.length < 2}
             disabled={selectedBrainFiles.size < 2 || busyFiles.size > 0}
             title={selectedBrainFiles.size < 2 ? 'Select at least two plans using the combine checkboxes' : 'Create one recoverable plan and archive the selected source files'}
             onClick={() => void consolidateSelectedPlans()}
           >
             Combine selected{selectedBrainFiles.size ? ` (${selectedBrainFiles.size})` : ''}
           </button>
-          <button className="btn small primary" disabled={!nextWorkPlan} title={nextWorkPlan ? `Work next matching plan: ${nextWorkPlan.title}` : busyPlanCount ? 'All matching pending, partial, or paused plans are already running' : 'No pending, partial, or paused plan matches the current filters'} onClick={() => void runNextPlan()}>
-            {nextWorkPlan ? (busyPlanCount ? `Work next (${busyPlanCount} running)` : 'Work next') : busyPlanCount ? `Working ${busyPlanCount}` : 'No work queued'}
+          <button className="btn small primary" hidden={!brain.plans.length} disabled={!nextWorkPlan} title={nextWorkPlan ? `Work next matching plan: ${nextWorkPlan.title}` : busyPlanCount ? 'All matching pending, partial, or paused plans are already running' : 'No pending, partial, or paused plan matches the current filters'} onClick={() => void runNextPlan()}>
+            {nextWorkPlan ? (busyPlanCount ? `Work next (${busyPlanCount} running)` : 'Continue next plan') : busyPlanCount ? `Working ${busyPlanCount}` : 'No work queued'}
           </button>
         </div>
         {brain.plans.length === 0 ? (
@@ -1194,11 +1195,11 @@ export function Plans({ store }: { store: FleetStore }) {
           <div className="plans-section-title">
             <h3 style={{ margin: 0 }}>Your drafts</h3>
             <span className="muted small">· {draftActive.length} active{draftFiled.length ? ` · ${draftFiled.length} filed` : ''}</span>
-            <span className="muted small">draft → active → done → promote removes draft</span>
+            <span className="muted small">Draft → Ready → In progress → Completed</span>
           </div>
         </div>
         {plans.length === 0 ? (
-          <p className="muted center pad">No plans yet. <b>+ Request a plan</b> and an agent will draft one — then update it anytime and it keeps a changelog.</p>
+          <p className="muted center pad">No drafts yet. Choose <b>+ Request plan</b> to draft an objective before starting work.</p>
         ) : draftActive.length === 0 && !includeCompleted ? (
           <p className="muted center pad">No active drafts match the filter.{draftFiled.length ? ' Use Completed to show filed drafts.' : ''}</p>
         ) : (

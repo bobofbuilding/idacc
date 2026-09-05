@@ -1,3 +1,5 @@
+import { AutomationOverview } from './AutomationOverview.tsx';
+import { WORK_AREAS, type WorkArea } from '../navigation.ts';
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { call, resolveCoordinator, useSyncVersion, type FleetStore, type TeamAgent } from '../store.ts';
 import { usePrompt } from '../components/prompt.tsx';
@@ -82,15 +84,16 @@ type WorkflowMetrics = {
   knowledge?: { reusable?: number; reuse_rate?: number | null };
 };
 
-type Tab = 'tasks' | 'goals' | 'plans' | 'learn' | 'schedule' | 'loops' | 'dream';
+type Tab = 'overview' | 'tasks' | 'goals' | 'plans' | 'learn' | 'schedule' | 'loops' | 'dream';
 const TABS: { id: Tab; label: string }[] = [
+  { id: 'overview', label: 'Overview' },
   { id: 'goals', label: 'Goals' },
   { id: 'plans', label: 'Plans' },
   { id: 'tasks', label: 'Tasks' },
-  { id: 'learn', label: 'Learn' },
-  { id: 'schedule', label: 'Schedule' },
-  { id: 'loops', label: 'Loops' },
-  { id: 'dream', label: 'Dream' },
+  { id: 'learn', label: 'Library' },
+  { id: 'schedule', label: 'Scheduled checks' },
+  { id: 'loops', label: 'Workflows' },
+  { id: 'dream', label: 'Reflection' },
 ];
 const MANAGER_STALL_THRESHOLD_MS = 45 * 60 * 1000;
 
@@ -195,8 +198,8 @@ function workflowLane(t: Task): Lane | null {
   return null;
 }
 const LANE_GROUPS: { title: string; lanes: { id: Lane; label: string }[] }[] = [
-  { title: 'Waiting', lanes: [{ id: 'under-review', label: 'Under Review' }, { id: 'holding', label: 'Holding Pattern' }] },
-  { title: 'Main Flow', lanes: [{ id: 'todo', label: 'To Do' }, { id: 'doing', label: 'Doing' }, { id: 'done', label: 'Done' }] },
+  { title: 'Waiting', lanes: [{ id: 'under-review', label: 'Under Review' }, { id: 'holding', label: 'Blocked / waiting' }] },
+  { title: 'Main Flow', lanes: [{ id: 'todo', label: 'To Do' }, { id: 'doing', label: 'In progress' }, { id: 'done', label: 'Done' }] },
 ];
 const RECENT_DONE_CAP = 25; // the Done lane shows the most-recent N completions; older auto-archive
 const TASK_BOARD_POLL_MS = 15000;
@@ -276,25 +279,24 @@ function sortedRecordStamp<T>(record: Record<string, T>): string {
 }
 
 /** Tabbed wrapper: Tasks + Schedule + Loops in one page. */
-export function Tasks({ store, initialTab }: { store: FleetStore; initialTab?: Tab }) {
-  const [tab, setTab] = useState<Tab>(() => {
-    try {
-      const t = (initialTab || localStorage.getItem('idctl.tasks.tab') || 'plans') as Tab;
-      return TABS.some((x) => x.id === t) ? t : 'plans'; // ignore stale/garbage values
-    } catch { return 'plans'; }
-  });
-  function pick(t: Tab) { setTab(t); try { localStorage.setItem('idctl.tasks.tab', t); } catch { /* ignore */ } }
+export function Tasks({ store, initialTab, tabRequest, area = 'work' }: { store: FleetStore; initialTab?: Tab; tabRequest?: number; area?: WorkArea }) {
+  const tabs = WORK_AREAS[area].map((id) => TABS.find((item) => item.id === id)!);
+  const [tab, setTab] = useState<Tab>(initialTab && WORK_AREAS[area].includes(initialTab) ? initialTab : WORK_AREAS[area][0]);
+  useEffect(() => { setTab(initialTab && WORK_AREAS[area].includes(initialTab) ? initialTab : WORK_AREAS[area][0]); }, [initialTab, area, tabRequest]);
+  function pick(t: Tab) { setTab(t); }
   const showsLearningStatus = tab === 'goals' || tab === 'learn' || tab === 'schedule' || tab === 'loops' || tab === 'dream';
 
   return (
     <div className="view">
-      <header className="view-head"><h1>Work</h1></header>
+      <header className="view-head"><h1>{area === 'knowledge' ? 'Knowledge' : area === 'automations' ? 'Automations' : 'Work'}</h1></header>
+      {area === 'automations' ? <p className="muted">Scheduled work runs while IDACC is open. Saved schedules resume when you reopen it. Times use your computer’s timezone.</p> : null}
       <div className="tabs">
-        {TABS.map((t) => (
-          <button key={t.id} className={`tab${tab === t.id ? ' active' : ''}`} onClick={() => pick(t.id)}>{t.label}</button>
+        {tabs.map((t) => (
+          <button key={t.id} className={`tab${tab === t.id ? ' active' : ''}`} aria-pressed={tab === t.id} onClick={() => pick(t.id)}>{t.label}</button>
         ))}
       </div>
-      {showsLearningStatus ? <WorkLearningStatus /> : null}
+      {showsLearningStatus ? <details className="card compact-details"><summary>Automation &amp; knowledge status</summary><WorkLearningStatus /></details> : null}
+      {tab === 'overview' ? <AutomationOverview open={pick} /> : null}
       {tab === 'tasks' ? <TasksPanel store={store} /> : null}
       {tab === 'goals' ? <Goals store={store} /> : null}
       {tab === 'plans' ? <Plans store={store} /> : null}
@@ -310,6 +312,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
   const syncVersion = useSyncVersion(['tasks', 'work', 'questions', 'inbox']);
   const hierarchySyncVersion = useSyncVersion(['org', 'agents', 'work']);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskView, setTaskView] = useState<'active' | 'completed' | 'all'>('active');
   const [workflowMetrics, setWorkflowMetrics] = useState<WorkflowMetrics | null>(null);
   const [hier, setHier] = useState<WorkOrgHierarchy>({ primary: null, secondaries: [], coordinators: {}, teams: [] });
   const [busy, setBusy] = useState(false);
@@ -1381,6 +1384,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
     );
     const search = q.trim().toLowerCase();
     const filtered = tasks.filter((t) => {
+      if (taskView === 'active' && isDone(t)) return false;
+      if (taskView === 'completed' && !isDone(t)) return false;
       if (hideRoutine && isRoutine(t)) return false;
       if (!showArchived && isDone(t) && !recentDoneRefs.has(ref(t))) return false; // recent completions stay visible
       return !search || t.title.toLowerCase().includes(search) || (t.ownerName ?? '').toLowerCase().includes(search) || ref(t).toLowerCase().includes(search);
@@ -1406,7 +1411,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
       hiddenTaskCount: Math.max(0, tasks.length - filtered.length),
       laneItems,
     };
-  }, [activeTeam, blockedRefs, hideRoutine, laneByRef, nowMs, q, showArchived, store.viewAll, tasks]);
+  }, [activeTeam, blockedRefs, hideRoutine, laneByRef, nowMs, q, showArchived, store.viewAll, tasks, taskView]);
   const {
     routineCount,
     openCount,
@@ -1438,18 +1443,20 @@ function TasksPanel({ store }: { store: FleetStore }) {
         </span>
         <span className="grow" />
         <button className="btn" disabled={busy || triaging} title="Run the manager recovery pass now; the same recovery also runs automatically in the manager sweeper" onClick={() => void reconcileNow()}>⟳ Reconcile</button>
-        <button className="btn" disabled={busy || proposing} title="Create work: auto-plan, direct assignment, schedule, loop, or dream" onClick={() => { setShowAssign((v) => !v); setAssignNote(''); setProposal(null); }}>{showAssign ? '− Close' : '⚡ Create work'}</button>
-        <button className="btn primary" disabled={busy} onClick={() => void newTask()}>+ New task</button>
+        <details className="new-work-menu"><summary className="btn primary">New work</summary>
+        <button className="btn" disabled={busy || proposing} title="Create work: auto-plan, direct assignment, schedule, loop, or dream" onClick={() => { setShowAssign((v) => !v); setAssignNote(''); setProposal(null); }}>{showAssign ? 'Close planner' : 'Plan or assign work'}</button>
+        <button className="btn primary" disabled={busy} onClick={() => void newTask()}>Quick task</button>
+        </details>
       </div>
       {workflowMetrics ? (
-        <div className="muted small" style={{ display: 'flex', flexWrap: 'wrap', gap: 14, margin: '0 0 10px', padding: '6px 0', borderBottom: '1px solid var(--border, #2a2a2a)' }}>
+        <details><summary>Workflow statistics</summary><div className="muted small" style={{ display: 'flex', flexWrap: 'wrap', gap: 14, margin: '0 0 10px', padding: '6px 0', borderBottom: '1px solid var(--border, #2a2a2a)' }}>
           <span>workflow sample {workflowMetrics.sample_size ?? 0}</span>
           <span>validated {workflowMetrics.throughput?.validated ?? 0}/{workflowMetrics.throughput?.completed ?? 0}</span>
           <span>mean cycle {workflowMetrics.throughput?.mean_cycle_time_ms ? fmtDur(workflowMetrics.throughput.mean_cycle_time_ms) : '—'}</span>
           <span>blocked {workflowMetrics.reliability?.blocked ?? 0}</span>
           <span>recovered {workflowMetrics.reliability?.recovered ?? 0}</span>
           <span>reusable knowledge {workflowMetrics.knowledge?.reusable ?? 0}</span>
-        </div>
+        </div></details>
       ) : null}
 
       {showAssign ? (
@@ -1675,7 +1682,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
 
       <section className="card grow" style={{ minWidth: 0 }}>
         <div className="row-actions" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 10, alignItems: 'center' }}>
-          <input className="catalog-search" placeholder="search tasks…" value={q} onChange={(e) => setQ(e.target.value)} />
+          {(['active', 'completed', 'all'] as const).map((value) => <button className={`btn${taskView === value ? ' primary' : ''}`} key={value} aria-pressed={taskView === value} onClick={() => setTaskView(value)}>{value === 'active' ? 'Active' : value === 'completed' ? 'Completed' : 'All tasks'}</button>)}
+          <input className="catalog-search" aria-label="Search tasks" placeholder="search tasks…" value={q} onChange={(e) => setQ(e.target.value)} />
           <label className="muted small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
             <input type="checkbox" checked={hideRoutine} onChange={(e) => setHideRoutine(e.target.checked)} />
             hide routine{routineCount ? ` (${routineCount})` : ''}
@@ -1835,7 +1843,7 @@ function TasksPanel({ store }: { store: FleetStore }) {
                     <button className="btn small" disabled={busy} onClick={() => setConfirmDel(null)}>×</button>
                   </>
                 ) : (
-                  <button className="btn icon-danger small" disabled={busy} title="Delete task permanently" aria-label={`Delete ${ref(t)} permanently`} onClick={() => setConfirmDel(ref(t))}>✕</button>
+                  <details><summary className="btn small" aria-label={`More actions for ${ref(t)}`}>More</summary><button className="btn icon-danger small" disabled={busy} onClick={() => setConfirmDel(ref(t))}>Delete task…</button></details>
                 )}
               </div>
               <div className="muted" style={{ marginTop: 3, display: 'flex', gap: 9, flexWrap: 'wrap', fontSize: 10.5, opacity: 0.85 }}>
@@ -1900,7 +1908,8 @@ function TasksPanel({ store }: { store: FleetStore }) {
             </div>
           );
         })()}
-        {tasks.length === 0 ? <p className="muted center pad">No tasks. Create one with “+ New task”, or “⚡ Create work” (plan · assign · schedule · loop · dream).</p> : null}
+        {filteredCount === 0 && tasks.length > 0 ? <p className="muted center pad">No tasks match this view. Try All tasks or clear your search.</p> : null}
+        {tasks.length === 0 ? <p className="muted center pad">No tasks yet. Choose New work to add a task or plan an objective.</p> : null}
       </section>
     </>
   );

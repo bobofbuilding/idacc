@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { call, useSyncVersion, type FleetStore } from '../store.ts';
 import type { InboxItem } from '../../../../idctl/src/api/types.ts';
 import { planInboxStatusForOption } from '../../shared/planInbox.ts';
@@ -98,15 +98,21 @@ function presentQuestion(q: BlockerQuestion): QuestionPresentation {
 
 export function Inbox({ store }: { store: FleetStore }) {
   const syncVersion = useSyncVersion(['questions', 'inbox', 'tasks', 'work']);
+  const [filter, setFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [questions, setQuestions] = useState<BlockerQuestion[]>([]);
   const [deps, setDeps] = useState<Record<string, string[]>>({});
   async function reloadQuestions() {
-    setQuestions(await call<BlockerQuestion[]>('questions:list').catch(() => []));
+    try { setQuestions(await call<BlockerQuestion[]>('questions:list')); setLoadError(''); } catch { setLoadError('Could not refresh decisions. Showing the last available list.'); }
     setDeps(await call<Record<string, string[]>>('tasks:deps').catch(() => ({})));
   }
   useEffect(() => { void reloadQuestions(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [store.lastUpdated, syncVersion]);
   const ordered = useMemo(() => orderByDeps(questions, deps), [questions, deps]);
 
+  const query = search.trim().toLowerCase();
+  const visibleQuestions = ordered.filter((q) => (filter === 'all' || (filter === 'approvals') === (q.source === 'brain-approvals' || !!q.taskRef?.startsWith('brain-approval:'))) && `${q.question} ${q.taskTitle ?? ''} ${q.team}`.toLowerCase().includes(query));
+  const visibleMessages = store.inbox.filter((item) => `${item.from ?? ''} ${item.message}`.toLowerCase().includes(query));
   const total = store.inbox.length + questions.length;
   return (
     <div className="view">
@@ -115,19 +121,23 @@ export function Inbox({ store }: { store: FleetStore }) {
         <span className="muted">{total} awaiting you{questions.length ? ` · ${questions.length} decision${questions.length === 1 ? '' : 's'}` : ''}</span>
       </header>
 
-      {questions.length ? (
+      <div className="row-actions"><input className="composer-input" aria-label="Search inbox" placeholder="Search decisions, tasks, or teams…" value={search} onChange={(event) => setSearch(event.target.value)} />{[['all', 'All'], ['work', 'Work blockers'], ['approvals', 'Approvals'], ['messages', 'Messages']].map(([id, label]) => <button key={id} className={`btn${filter === id ? ' primary' : ''}`} aria-pressed={filter === id} onClick={() => setFilter(id)}>{label}</button>)}</div>
+      {loadError ? <p role="alert">{loadError} <button className="btn" onClick={() => void reloadQuestions()}>Retry</button></p> : null}
+      {questions.length && filter !== 'messages' ? (
         <section className="card">
           <h3>Decisions needed <span className="muted small">· in dependency order — answer prerequisites first to unblock what follows</span></h3>
-          {ordered.map((q) => <QuestionRow key={q.id} q={q} onDone={() => void reloadQuestions()} />)}
+          {visibleQuestions.length === 0 ? <p className="muted">No decisions match these filters.</p> : null}
+          {visibleQuestions.map((q) => <QuestionRow key={q.id} q={q} onDone={() => void reloadQuestions()} />)}
         </section>
       ) : null}
 
-      <section className="card grow">
+      <section className="card grow" hidden={filter === 'work' || filter === 'approvals'}>
         <h3>Manager inbox <span className="muted small">{store.inbox.length ? `· ${store.inbox.length} waiting on your reply` : '· nothing needs a reply right now'}</span></h3>
+        {store.inbox.length > 0 && visibleMessages.length === 0 ? <p className="muted">No messages match your search.</p> : null}
         {store.inbox.length === 0 ? (
           <div className="muted center pad">You're all caught up — no questions from the manager or your agents.</div>
         ) : (
-          store.inbox.map((it) => <InboxRow key={it.query_id} item={it} onDone={() => store.refresh()} />)
+          visibleMessages.map((it) => <InboxRow key={it.query_id} item={it} onDone={() => store.refresh()} />)
         )}
       </section>
     </div>
@@ -142,26 +152,35 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
   const [err, setErr] = useState('');
   const [comment, setComment] = useState('');
   const [showComment, setShowComment] = useState(false);
+  const sending = useRef(false);
+  const acknowledged = useRef(false);
+  const [delivered, setDelivered] = useState(false);
   const subject = q.taskTitle ?? q.taskRef ?? '';
   const isLearnQuestion = q.taskRef?.startsWith('learn:') ?? false;
   const isPlanQuestion = q.taskRef?.startsWith('plan:') ?? false;
-  const isBrainApproval = q.taskRef?.startsWith('brain-approval:') ?? q.source === 'brain-approvals';
+  const isBrainApproval = !!q.taskRef?.startsWith('brain-approval:') || q.source === 'brain-approvals';
   const isSyntheticQuestion = isLearnQuestion || isPlanQuestion;
   const from = q.agent || (isBrainApproval ? 'Brain governance' : isSyntheticQuestion ? 'review gate' : 'agent');
   const brainApprovalId = isBrainApproval ? String(q.metadata?.approvalId ?? q.taskRef?.split(':')[1] ?? '').trim() : '';
   const presentation = presentQuestion(q);
 
-  // Deliver a response to the blocked agent (best-effort, async) and clear the item.
+  // Wait for delivery acknowledgement before updating review state and clearing the item.
   // A response moves the task into the board's "Under Review" lane (the block is being
   // worked on the back of your answer); it auto-resolves once the agent progresses.
   async function deliver(answer: string) {
+    if (sending.current) return;
+    sending.current = true;
     setBusy(true); setErr('');
     try {
-      if (q.agent && !isSyntheticQuestion && !isBrainApproval && answer) void call('dispatch', `/ask ${q.agent} ${qArg(answer)}`).catch(() => {});
-      if (q.taskRef && !isSyntheticQuestion) void call('tasks:setReview', q.taskRef, 'under-review').catch(() => {});
+      if (!acknowledged.current && q.agent && !isSyntheticQuestion && !isBrainApproval && answer) {
+        await call('dispatch', `/ask ${q.agent} ${qArg(answer)}`);
+        acknowledged.current = true; setDelivered(true);
+      }
+      if (q.taskRef && !isSyntheticQuestion) await call('tasks:setReview', q.taskRef, 'under-review');
       await call('questions:remove', q.id);
       onDone();
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
+    finally { sending.current = false; }
   }
   async function resolvePlanQuestion(option: string) {
     setBusy(true); setErr('');
@@ -233,7 +252,9 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
         </details>
       ) : null}
       {/* Options stacked top-to-bottom, hugging the left. */}
-      {presentation.actions.length ? (
+      {delivered ? <p role="status">Reply delivered. Finishing the decision update… {!busy ? <button className="btn" onClick={() => void deliver('')}>Retry finishing update</button> : null}</p> : null}
+      {isBrainApproval ? <p className="muted small">Approval records your decision. Applying the change is a separate reviewed step in Brain.</p> : null}
+      {presentation.actions.length && !delivered ? (
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
           {presentation.actions.map((action) => (
             <button key={action.value} className={`btn${action.primary ? ' primary' : ''}`} style={{ textAlign: 'left' }} disabled={busy} onClick={() => void chooseOption(action.value)} title={isBrainApproval ? `${action.value}; Brain apply remains separate` : action.title}>{action.label}</button>
@@ -241,7 +262,7 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
         </div>
       ) : null}
       {/* Then the secondary actions, underneath the options. */}
-      <div className="row-actions" style={{ marginTop: 8, gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div className="row-actions" hidden={delivered} style={{ marginTop: 8, gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
         {isBrainApproval ? (
           <button className="btn small" disabled={busy} onClick={() => void openBrainHealth()} title="Open the Brain Health triage view without changing this approval">Open Brain Health</button>
         ) : (
@@ -250,16 +271,16 @@ function QuestionRow({ q, onDone }: { q: BlockerQuestion; onDone: () => void }) 
             <button className="btn small" disabled={busy} onClick={() => void handleManually()} title="You'll handle this yourself — the agent sets it aside and won't re-raise it">🛠 I'll handle it</button>
           </>
         )}
-        <button className="btn small" disabled={busy} onClick={() => void skip()} title={isBrainApproval ? 'Dismiss locally; unresolved Brain approvals may return on the next sync' : 'Dismiss without answering'}>{isBrainApproval ? 'Dismiss locally' : 'Skip'}</button>
+        <button className="btn small" disabled={busy} onClick={() => void skip()} title={isBrainApproval ? 'Dismiss locally; unresolved Brain approvals may return on the next sync' : 'Dismiss without answering'}>{isBrainApproval ? 'Hide until next sync' : 'Dismiss without reply'}</button>
       </div>
-      {showComment ? (
+      {showComment && !delivered ? (
         <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'flex-end' }}>
           <textarea style={{ flex: 1, minHeight: 48 }} placeholder="Write your response / instructions for the agent… (⌘/Ctrl+Enter to send)" value={comment} disabled={busy} autoFocus
             onChange={(e) => setComment(e.target.value)} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void sendComment(); }} />
           <button className="btn primary" disabled={busy || !comment.trim()} onClick={() => void sendComment()}>{busy ? '…' : 'Send'}</button>
         </div>
       ) : null}
-      {err ? <p className="status-error small">{err}</p> : null}
+      {err ? <p role="alert" className="status-error small">{err}</p> : null}
     </div>
   );
 }
@@ -272,7 +293,7 @@ function InboxRow({ item, onDone }: { item: InboxItem; onDone: () => void }) {
 
   async function send() {
     const msg = reply.trim();
-    if (!msg) return;
+    if (!msg || busy) return;
     setBusy(true); setErr('');
     try { await call('inbox:respond', item.query_id, msg); onDone(); }
     catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
@@ -303,7 +324,7 @@ function InboxRow({ item, onDone }: { item: InboxItem; onDone: () => void }) {
           Dismiss
         </button>
       </div>
-      {err ? <p className="status-error small">{err}</p> : null}
+      {err ? <p role="alert" className="status-error small">{err}</p> : null}
     </div>
   );
 }
