@@ -2423,7 +2423,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
   function openStackSetup() {
     setStackTag(STACK_BACKEND_PRESET_FILTER);
     setSettingsCategory('models'); setSettingsSearch('');
-    requestAnimationFrame(() => document.getElementById('local-llm-stacks')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    requestAnimationFrame(() => { const section = document.getElementById('local-llm-stacks'); const details = section?.querySelector('details'); if (details) details.open = true; section?.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   }
   function stackPrimaryAction(s: LocalStackEntry): boolean {
     if (!stackInstallCmd(s)) return false;
@@ -3588,7 +3588,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
         {subNotice ? <p className="muted small" style={{ marginTop: 8 }}>{subNotice}</p> : null}
       </section>
 
-      <section className="card" hidden={!showSettingsSection('models', 'Local models backends Ollama download')}>
+      <section className="card" hidden={!showSettingsSection('models', 'Local models backends Ollama download')}><details open={!!settingsSearch}><summary>Browse local models</summary>
         <div className="row-actions" style={{ alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <h3 style={{ margin: 0 }}>Local models & backends</h3>
           <span className="grow" />
@@ -3796,9 +3796,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             );
           })()}
         </div>
-      </section>
+      </details></section>
 
-      <section className="card" hidden={!showSettingsSection('models', 'Local image generator images provider')}>
+      <section className="card" hidden={!showSettingsSection('models', 'Local image generator images provider')}><details open={!!settingsSearch}><summary>Image generation settings</summary>
         <h3>Local image generator</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           Optional local image server for chat image requests. IDACC tries this first; if it is unset or unreachable, image generation falls back to an image-capable API backend configured under <b>Inference backends</b>. Run <a className="ext-link" href="https://github.com/AUTOMATIC1111/stable-diffusion-webui" target="_blank" rel="noreferrer">Automatic1111</a> / Forge with <span className="mono">--api</span> on <span className="mono">:7860</span>, or a <a className="ext-link" href="https://localai.io" target="_blank" rel="noreferrer">LocalAI</a>-style OpenAI Images API on <span className="mono">:8080</span>.
@@ -3836,9 +3836,9 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
           <div className="muted small">Fallback: image-capable API backend from Inference backends when available.</div>
           {imgMsg ? <div className={`small ${imageMessageClass(imgMsg)}`}>{imgMsg}</div> : null}
         </div>
-      </section>
+      </details></section>
 
-      <section className="card" id="local-llm-stacks" hidden={!showSettingsSection('models', 'Local LLM stacks install provider server')}>
+      <section className="card" id="local-llm-stacks" hidden={!showSettingsSection('models', 'Local LLM stacks install provider server')}><details open={!!settingsSearch}><summary>Add a local model server</summary>
         <h3>Local LLM stacks</h3>
         <p className="muted small" style={{ marginTop: -4 }}>
           Self-hostable inference servers you can run <b>next to Ollama</b>. <b>Install</b> only installs the app/server; <b>running</b> means a local API answered a scan; <b>backend added</b> means IDACC can route agents to it.
@@ -3969,7 +3969,7 @@ export function Settings({ store, navigate }: { store: FleetStore; navigate?: (v
             );
           })}
         </div>
-      </section>
+      </details></section>
 
       <section className="card grow" id="inference-backends" hidden={!showSettingsSection('models', 'Inference backends API provider endpoint key')}>
         <h3>Inference backends</h3>

@@ -100,12 +100,14 @@ export function App() {
   const [view, setView] = useState<ViewId>(() => {
     // 'schedule' is a Tasks tab now (not in NAV) but still a valid deep-link target.
     // 'health' is now an HR Manager tab, but remains a valid legacy route.
+    if (initialTarget?.startsWith('identity:')) return 'identity';
     if (initialTarget === 'health' || initialTarget?.startsWith('teams:')) return 'teams';
     const work = workDestination(initialTarget ?? '');
     if (work) return work.view;
     return isViewId(initialTarget) ? initialTarget : 'dashboard';
   });
   const [teamsFocus, setTeamsFocus] = useState<TeamsFocus | undefined>(() => initialTarget === 'health' || initialTarget === 'teams:health' ? 'health' : initialTarget === 'teams:build' ? 'build' : initialTarget === 'teams:route' ? 'route-hierarchy' : undefined);
+  const [identityTarget, setIdentityTarget] = useState<string | undefined>(() => initialTarget?.startsWith('identity:') ? initialTarget.slice(9) : undefined);
   const [workTab, setWorkTab] = useState<WorkTab>(() => workDestination(initialTarget ?? '')?.tab ?? 'tasks');
   const store = useFleet(view === 'knowledge' || view === 'automations' ? 'tasks' : view);
   useEffect(() => { try { localStorage.setItem('idctl.view', view); } catch { /* no storage */ } }, [view]);
@@ -131,6 +133,8 @@ export function App() {
     features: commandFeatures,
   }), [commandFeatures, store.connection]);
   const navigateTo = useCallback((target: string) => {
+    if (target.startsWith('identity:')) { setIdentityTarget(target.slice(9)); setView('identity'); return; }
+    if (target === 'identity') setIdentityTarget(undefined);
     const destination = workDestination(target);
     if (destination) { setWorkTab(destination.tab); setView(destination.view); return; }
     if (target === 'teams:build') { setTeamsFocus('build'); setView('teams'); return; }
@@ -296,6 +300,7 @@ export function App() {
             <Router
               view={view}
               workTab={workTab}
+              identityTarget={identityTarget}
               store={store}
               navigate={navigateTo}
               teamsFocus={teamsFocus}
@@ -342,9 +347,10 @@ export function App() {
   );
 }
 
-function Router({ view, workTab, store, navigate, teamsFocus, onTeamsFocusHandled, commandEnvironment }: {
+function Router({ view, workTab, identityTarget, store, navigate, teamsFocus, onTeamsFocusHandled, commandEnvironment }: {
   view: ViewId;
   workTab: WorkTab;
+  identityTarget?: string;
   store: ReturnType<typeof useFleet>;
   navigate: (target: string) => void;
   teamsFocus?: TeamsFocus;
@@ -367,7 +373,7 @@ function Router({ view, workTab, store, navigate, teamsFocus, onTeamsFocusHandle
     case 'health':
       return <Teams store={store} focus="health" onFocusHandled={onTeamsFocusHandled} navigate={navigate} />;
     case 'identity':
-      return <Identity store={store} />;
+      return <Identity store={store} initialAgent={identityTarget} />;
     case 'schedule':
       return <Tasks store={store} area="automations" initialTab="schedule" />;
     case 'modules':

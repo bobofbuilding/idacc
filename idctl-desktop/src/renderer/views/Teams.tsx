@@ -2164,6 +2164,7 @@ export function Teams({ store, focus, onFocusHandled, navigate }: { store: Fleet
             {selectedAgent.team !== primaryTeam ? (
               <button className="btn small" disabled={busy} title="Edit this team's outbound relay policy" onClick={() => void openRelayForTeam(selectedAgent.team)}>⇄ Routing</button>
             ) : null}
+            <button className="btn small" onClick={() => navigate?.(`identity:${selectedAgent.team}:${selectedAgent.agent.name}`)}>Identity &amp; permissions</button>
             <button className="btn small" disabled={busy} onClick={() => void rebuildSelectedStructureAgent(selectedAgent.agent, selectedAgent.team)}>Rebuild</button>
             <button className="btn small danger" disabled={busy || selectedAgentLocked} title={selectedAgentLocked ? 'The primary leadership backbone cannot be deleted' : `Delete ${selectedAgent.team}/${selectedAgent.agent.name}`}
               onClick={() => void removeManagedAgent(selectedAgent.agent, selectedAgent.team)}>Delete</button>

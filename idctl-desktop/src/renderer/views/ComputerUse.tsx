@@ -988,7 +988,7 @@ export function ComputerUse({ store }: { store: FleetStore }) {
                     </label>
                   );
                 }) : (
-                  <div className="muted small">All eligible agents are already allowed.</div>
+                  <div className="muted small">No additional eligible agents found.</div>
                 )}
               </div>
               <div className="cu-bless-actions">

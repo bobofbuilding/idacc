@@ -675,7 +675,7 @@ function accountStamp(a: AgentAccount | null | undefined): string {
   } : null);
 }
 
-export function Identity({ store }: { store: FleetStore }) {
+export function Identity({ store, initialAgent }: { store: FleetStore; initialAgent?: string }) {
   const [identitySearch, setIdentitySearch] = useState('');
   const [caps, setCaps] = useState<KeyCapabilities | null>(null);
   const [productionReadiness, setProductionReadiness] = useState<KeyProductionReadiness | null>(null);
@@ -685,7 +685,8 @@ export function Identity({ store }: { store: FleetStore }) {
   });
   const [accounts, setAccounts] = useState<Record<string, AgentAccount>>({});
   const [presets, setPresets] = useState<{ scopes: SessionScope[]; ttls: { label: string; ms: number }[] } | null>(null);
-  const [sel, setSel] = useState<string | null>(null);
+  const [sel, setSel] = useState<string | null>(initialAgent ?? null);
+  useEffect(() => { if (initialAgent) setSel(initialAgent); }, [initialAgent]);
   const [scopeIdx, setScopeIdx] = useState(1);
   const [ttlIdx, setTtlIdx] = useState(1);
   const [authorityTargetsInput, setAuthorityTargetsInput] = useState('');
