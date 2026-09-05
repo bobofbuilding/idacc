@@ -8,6 +8,11 @@ Every change pushed or merged to `main` carries its version number in the commit
 subject (`vX.Y.Z: …`), stamped automatically by the `commit-msg` hook — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.1.724] — 2026-09-05
+### What changed
+- Simplify navigation, daily workflows, settings and agent controls; fix Inbox delivery, plan intent parsing, schedule intervals, knowledge status and dependency advisories.
+- Simplify workflows and fix UI and dependency bugs
+
 ## [0.1.723] — 2026-08-13
 ### What changed
 - Make the production-safe IDACC-to-Codex coordination bridge visible in Settings, including a safe registration refresh and an explicit instruction to start a new Codex task when an existing task has no attached tools.
