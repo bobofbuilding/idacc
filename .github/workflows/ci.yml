@@ -280,7 +280,7 @@ jobs:
             --output idctl-desktop/release/metadata
 
       - name: Upload verified CI evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: idacc-macos-${{ env.IDACC_BUILD_ARCH }}-provenance
           if-no-files-found: error
@@ -477,7 +477,7 @@ jobs:
             --output "idctl-desktop/release/metadata/${{ matrix.runtime_platform }}-${{ matrix.arch }}"
 
       - name: Upload native package evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: idacc-${{ matrix.runtime_platform }}-${{ matrix.arch }}-provenance
           if-no-files-found: error
