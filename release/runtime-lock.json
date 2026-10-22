@@ -3,7 +3,7 @@
   "components": {
     "manager": {
       "repository": "https://github.com/bobofbuilding/id-agents.git",
-      "commit": "93dfa92381abe51f6a512962fdf845b24936ff06",
+      "commit": "d758473839e4f438ebbfab182095a0bda4c1942b",
       "tree": "6439dd2e07c83178db5e9dcba55c23416bc4cb42",
       "version": "0.1.173",
       "packageLockSha256": "38f933ea4460ff19a675a7c5c0cf130a00a6b5004fd1c0598767c772e3e98804",
