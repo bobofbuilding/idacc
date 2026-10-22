@@ -276,7 +276,8 @@ assert.equal(
   'node ../scripts/deb-artifact-verifier-smoke.mjs',
 );
 
-assert.match(String(pkg.devDependencies?.electron || ''), /^41\.\d+\.\d+$/, 'Electron 41 is the newest line compatible with manager better-sqlite3 12.8');
+// Native manager compatibility is verified by the staged-runtime and package CI jobs.
+assert.equal(String(pkg.devDependencies?.electron || ''), '42.11.16', 'Electron must use the reviewed certificate security release');
 assert.match(String(pkg.dependencies?.['electron-updater'] || ''), /^\d+\.\d+\.\d+$/, 'electron-updater must be exact');
 assert.match(String(pkg.scripts?.['build:release'] || ''), /--require-runtime/, 'production builds must require a verified staged runtime');
 assert.match(pkg.scripts?.['test:update-descriptor-contract'] || '', /update-descriptor-contract-smoke/);
