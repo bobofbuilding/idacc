@@ -196,7 +196,7 @@ unavailable instead of failing startup.
 
 ## Development
 
-The pinned toolchain is Node 22.17 and npm 10.9.
+The pinned toolchain is Node 22.23.4 and npm 10.9.
 
 ```bash
 npm ci --prefix idctl
