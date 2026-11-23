@@ -235,7 +235,7 @@ assert.equal(
   'the unused Squirrel peer must resolve to the local fail-closed guard, not its vulnerable packaging tree',
 );
 assert.deepEqual(pkg.overrides?.['app-builder-lib'], {
-  '@electron/asar': '4.2.1',
+  '@electron/asar': '4.3.2',
   '@electron/universal': '3.0.6',
   ejs: '5.0.2',
 });
