@@ -24,7 +24,7 @@
     "smoke:providers": "tsx src/__smoke__/provider-smoke.ts"
   },
   "engines": {
-    "node": "22.17.x",
+    "node": ">=22.23.4 <23",
     "npm": "10.9.x"
   },
   "dependencies": {

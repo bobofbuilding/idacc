@@ -235,7 +235,7 @@ assert.equal(
   'the unused Squirrel peer must resolve to the local fail-closed guard, not its vulnerable packaging tree',
 );
 assert.deepEqual(pkg.overrides?.['app-builder-lib'], {
-  '@electron/asar': '4.2.1',
+  '@electron/asar': '4.3.2',
   '@electron/universal': '3.0.6',
   ejs: '5.0.2',
 });
@@ -276,7 +276,8 @@ assert.equal(
   'node ../scripts/deb-artifact-verifier-smoke.mjs',
 );
 
-assert.match(String(pkg.devDependencies?.electron || ''), /^41\.\d+\.\d+$/, 'Electron 41 is the newest line compatible with manager better-sqlite3 12.8');
+// Native manager compatibility is verified by the staged-runtime and package CI jobs.
+assert.equal(String(pkg.devDependencies?.electron || ''), '42.11.16', 'Electron must use the reviewed certificate security release');
 assert.match(String(pkg.dependencies?.['electron-updater'] || ''), /^\d+\.\d+\.\d+$/, 'electron-updater must be exact');
 assert.match(String(pkg.scripts?.['build:release'] || ''), /--require-runtime/, 'production builds must require a verified staged runtime');
 assert.match(pkg.scripts?.['test:update-descriptor-contract'] || '', /update-descriptor-contract-smoke/);
