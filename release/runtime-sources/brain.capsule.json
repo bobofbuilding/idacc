@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "component": "brain",
   "repository": "https://github.com/bobofbuilding/brain.git",
-  "commit": "a735e37a61bbfeaf2265e710dff17ec1db63c08b",
-  "tree": "9b77942c83a438d2671712b07cb577a5790e3d1c",
+  "commit": "e59d695f3260f413cf8f0b4b0b8af9ce2973a68d",
+  "tree": "8679a69a12f4553cdedf9ca95e05dd2928b1bfc3",
   "version": "0.1.9",
-  "packageLockSha256": "b6d564e7c5c54de5ab63c856a63463f9721c0dc02f480a25b86860a05d92423c",
+  "packageLockSha256": "7eeec09a64cd051b54ac930fec0ebb7654a1f7a1cadc9e480a534082ee7b730c",
   "entrypoint": "brain.mjs",
   "serviceId": "idagents-brain",
   "upstreamMapping": "publisher-asserted-private-source-audit",
@@ -314,16 +314,16 @@
     {
       "path": "package-lock.json",
       "mode": "100644",
-      "size": 66809,
-      "sha256": "b6d564e7c5c54de5ab63c856a63463f9721c0dc02f480a25b86860a05d92423c",
-      "gitBlobSha1": "4a965259e56abb3d86a7c2f6866780f2b8b87469"
+      "size": 66943,
+      "sha256": "7eeec09a64cd051b54ac930fec0ebb7654a1f7a1cadc9e480a534082ee7b730c",
+      "gitBlobSha1": "661ebbf55dca18f47fe4f3b43d87b5bd0bea41e7"
     },
     {
       "path": "package.json",
       "mode": "100644",
-      "size": 1290,
-      "sha256": "5beacaed04173855e4ef1b504e0d7ce522d3cca078878bfd3b88f744de5b7030",
-      "gitBlobSha1": "a3b1dcaaec7e5b32ef2e4512e37b80f4db17b5cc"
+      "size": 1289,
+      "sha256": "cf9333ddf8ed7fbd212e1af7033a7d1064cf78ebc1c3ce8736990302f528f909",
+      "gitBlobSha1": "bb23741bc554a75b0dc96d4709f2f3e5e60b4a12"
     },
     {
       "path": "parent-watchdog.mjs",
@@ -529,5 +529,5 @@
       "gitBlobSha1": "0fbdb2936996b6083174bd762969c8675dfd8a66"
     }
   ],
-  "treeSha256": "9cc93c2e3dbc75da058523479a1dea5640c989c6082debe4cf636b2aa0116544"
+  "treeSha256": "676ea00fbe35c2e4fd4c0b7b406ec1e92a5dc37023a7482371077aadcfbeb954"
 }
